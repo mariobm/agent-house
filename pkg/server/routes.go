@@ -195,7 +195,7 @@ func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		list, err := s.store.ListTemplates()
 		if err != nil {
-			errResp(w, 500, err.Error())
+			errRespInternal(w, r, "list templates failed", err)
 			return
 		}
 		if list == nil {
@@ -212,7 +212,7 @@ func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {
 			t.ID = genID()
 		}
 		if t.Engine == "" {
-			t.Engine = "docker"
+			t.Engine = "firecracker"
 		}
 		if t.CPUs == 0 {
 			t.CPUs = 1
@@ -222,7 +222,7 @@ func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {
 		}
 		t.CreatedAt = time.Now()
 		if err := s.store.CreateTemplate(t); err != nil {
-			errResp(w, 500, err.Error())
+			errRespInternal(w, r, "create template failed", err)
 			return
 		}
 		writeJSON(w, 201, t)
@@ -277,7 +277,7 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		list, err := s.store.ListSandboxes(user.ID)
 		if err != nil {
-			errResp(w, 500, err.Error())
+			errRespInternal(w, r, "list sandboxes failed", err)
 			return
 		}
 		if list == nil {
@@ -558,7 +558,7 @@ func (s *Server) handleSandboxStop(w http.ResponseWriter, r *http.Request, id st
 		return
 	}
 	if err := s.engine.Stop(r.Context(), sb.EngineID); err != nil {
-		errResp(w, 500, err.Error())
+		errRespInternal(w, r, "stop sandbox failed", err)
 		return
 	}
 	s.store.StopSandbox(id)
@@ -577,7 +577,7 @@ func (s *Server) handleSandboxStart(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	if err := s.engine.Start(r.Context(), sb.EngineID); err != nil {
-		errResp(w, 500, err.Error())
+		errRespInternal(w, r, "start sandbox failed", err)
 		return
 	}
 	// Refresh from engine — IP may have changed after restart
@@ -638,7 +638,7 @@ func (s *Server) handleSandboxExec(w http.ResponseWriter, r *http.Request, id st
 	// Buffered JSON (existing behavior)
 	result, err := s.engine.Exec(execCtx, sb.EngineID, req.Cmd)
 	if err != nil {
-		errResp(w, 500, err.Error())
+		errRespInternal(w, r, "exec failed", err)
 		return
 	}
 	writeJSON(w, 200, result)
@@ -773,7 +773,7 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		list, err := s.store.ListUserSecrets(user.ID)
 		if err != nil {
-			errResp(w, 500, err.Error())
+			errRespInternal(w, r, "list secrets failed", err)
 			return
 		}
 		if list == nil {
@@ -797,7 +797,7 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.SetSecret(user.ID, req.Name, ciphertext); err != nil {
-			errResp(w, 500, err.Error())
+			errRespInternal(w, r, "store secret failed", err)
 			return
 		}
 		sr, _ := s.store.GetSecret(user.ID, req.Name)
@@ -871,7 +871,7 @@ func (s *Server) handleAllPorts(w http.ResponseWriter, r *http.Request) {
 	user := UserFromContext(r.Context())
 	sandboxes, err := s.store.ListSandboxes(user.ID)
 	if err != nil {
-		errResp(w, 500, err.Error())
+		errRespInternal(w, r, "list sandboxes failed", err)
 		return
 	}
 
@@ -905,7 +905,7 @@ func (s *Server) handleVolumes(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		list, err := s.store.ListVolumes()
 		if err != nil {
-			errResp(w, 500, err.Error())
+			errRespInternal(w, r, "list volumes failed", err)
 			return
 		}
 		if list == nil {
@@ -925,7 +925,7 @@ func (s *Server) handleVolumes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.CreateVolume(req.Name); err != nil {
-			errResp(w, 500, err.Error())
+			errRespInternal(w, r, "create volume failed", err)
 			return
 		}
 		vol, _ := s.store.GetVolume(req.Name)
@@ -956,7 +956,7 @@ func (s *Server) handleVolume(w http.ResponseWriter, r *http.Request) {
 			} else if strings.Contains(err.Error(), "not found") {
 				errResp(w, 404, err.Error())
 			} else {
-				errResp(w, 500, err.Error())
+				errRespInternal(w, r, "delete volume failed", err)
 			}
 			return
 		}
@@ -1136,7 +1136,7 @@ func (s *Server) handleSandboxFiles(w http.ResponseWriter, r *http.Request, id s
 		if r.URL.Query().Get("ls") == "true" {
 			files, err := fe.FileList(r.Context(), sb.EngineID, path)
 			if err != nil {
-				errResp(w, 500, err.Error())
+				errRespInternal(w, r, "list directory failed", err)
 				return
 			}
 			writeJSON(w, 200, files)
@@ -1150,7 +1150,7 @@ func (s *Server) handleSandboxFiles(w http.ResponseWriter, r *http.Request, id s
 			// Stat first to detect errors before writing response body.
 			info, err := fe.FileStat(r.Context(), sb.EngineID, path)
 			if err != nil {
-				errResp(w, 500, err.Error())
+				errRespInternal(w, r, "stat file failed", err)
 				return
 			}
 			w.Header().Set("Content-Type", "application/octet-stream")
@@ -1176,7 +1176,7 @@ func (s *Server) handleSandboxFiles(w http.ResponseWriter, r *http.Request, id s
 		}
 	case http.MethodPut:
 		size := r.ContentLength
-		// Bug #2: Reject unknown Content-Length (chunked/missing)
+		// Reject unknown Content-Length (chunked/missing)
 		if size < 0 {
 			errResp(w, 400, "Content-Length header required for file upload")
 			return
@@ -1186,7 +1186,7 @@ func (s *Server) handleSandboxFiles(w http.ResponseWriter, r *http.Request, id s
 			mode = "0644"
 		}
 		if err := fe.FileWrite(r.Context(), sb.EngineID, path, mode, size, r.Body); err != nil {
-			errResp(w, 500, err.Error())
+			errRespInternal(w, r, "write file failed", err)
 			return
 		}
 		writeJSON(w, 200, map[string]string{"status": "ok"})
@@ -1228,7 +1228,7 @@ func (s *Server) handleSandboxSessions(w http.ResponseWriter, r *http.Request, i
 	if sl, ok := s.engine.(sessionLister); ok {
 		sessions, err := sl.SessionList(r.Context(), sb.EngineID)
 		if err != nil {
-			errResp(w, 500, err.Error())
+			errRespInternal(w, r, "list sessions failed", err)
 			return
 		}
 		writeJSON(w, 200, sessions)

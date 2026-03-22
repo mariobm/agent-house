@@ -1073,3 +1073,49 @@ func TestRequestHasID(t *testing.T) {
 	}
 	resp.Body.Close()
 }
+
+func TestMetricsNoAuth(t *testing.T) {
+	_, ts := setup(t)
+
+	// /metrics should work without auth, like /health
+	req, _ := http.NewRequest("GET", ts.URL+"/metrics", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200 without auth, got %d", resp.StatusCode)
+	}
+	var m map[string]any
+	decodeJSON(t, resp, &m)
+	if _, ok := m["sandboxes"]; !ok {
+		t.Error("expected sandboxes field in metrics")
+	}
+}
+
+func TestClassifyRequest(t *testing.T) {
+	tests := []struct {
+		method string
+		path   string
+		want   string
+	}{
+		{"POST", "/sandboxes", "create"},
+		{"POST", "/sandboxes/abc/exec", "exec"},
+		{"PUT", "/sandboxes/abc/files?path=/test", "exec"},
+		{"GET", "/sandboxes/abc/ws", "exec"},
+		{"GET", "/sandboxes", "read"},
+		{"GET", "/sandboxes/abc", "read"},
+		{"GET", "/sandboxes/abc/ports", "read"},
+		{"DELETE", "/sandboxes/abc", "read"},
+		{"GET", "/templates", "read"},
+		{"POST", "/secrets", "read"},
+	}
+
+	for _, tt := range tests {
+		r, _ := http.NewRequest(tt.method, "http://localhost"+tt.path, nil)
+		got := classifyRequest(r)
+		if got != tt.want {
+			t.Errorf("%s %s: got %q, want %q", tt.method, tt.path, got, tt.want)
+		}
+	}
+}

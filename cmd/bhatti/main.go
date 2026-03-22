@@ -18,6 +18,9 @@ import (
 	"github.com/sahil-shubham/bhatti/pkg/store"
 )
 
+// version is set at build time via -ldflags
+var version = "dev"
+
 func main() {
 	// CLI mode: any subcommand other than "serve" (or no args)
 	if len(os.Args) > 1 && os.Args[1] != "serve" {

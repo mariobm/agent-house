@@ -1555,6 +1555,88 @@ in production.
 
 ---
 
+## v0.2 Roadmap — Custom Images & Persistent Volumes
+
+These features are the core value proposition for coding agents and were
+the original motivation for the project. They build on the v0.1 security
+foundation (Parts 1–8) without changing the auth, network isolation, or
+hardening.
+
+### Custom Rootfs Images
+
+Today every sandbox copies the same base rootfs. To support custom images:
+
+1. **Image registry** — a directory of named rootfs ext4 images at
+   `/var/lib/bhatti/images/`. Each built via `build-rootfs.sh` with
+   different packages (e.g., `python-ml.ext4`, `rust-dev.ext4`).
+2. **API field** — `POST /sandboxes` gets `"image": "python-ml"`. If
+   omitted, uses the default base image.
+3. **Engine change** — `Create()` looks up the image file by name instead
+   of always using `e.cfg.BaseRootfs`. The `cp --reflink=always` is the
+   same — just a different source file.
+
+Templates become a server-layer convenience that maps a name to
+image + cpus + memory + env + init + volume layout. The engine doesn't
+need to know about templates — it just receives a `SandboxSpec` with
+all fields filled in.
+
+### Persistent Volumes
+
+Today `NewVolumes` creates fresh ext4 images inside the sandbox directory,
+destroyed with the sandbox. For persistent storage:
+
+1. **Store volumes outside sandbox dir** — at
+   `/var/lib/bhatti/volumes/{user_id}/{name}.ext4`. Not deleted on
+   sandbox destroy.
+2. **Attach existing volumes** — the engine resolves a volume name to an
+   existing file path instead of always creating fresh:
+   ```
+   if existingPath := lookupVolume(userID, name); existingPath != "" {
+       volPath = existingPath  // attach existing
+   } else {
+       volPath = createNewVolume(userID, name, sizeMB)  // create new
+   }
+   ```
+3. **Firecracker doesn't care** — it gets a `path_on_host` for each drive.
+   Whether the file was just created or has existing data makes no
+   difference. It's a block device.
+4. **Guest doesn't care** — `mount /dev/vdc /workspace` works the same
+   whether the ext4 image is fresh or has data from a previous sandbox.
+
+This enables workspace persistence: a coding agent's `/workspace` survives
+the sandbox being destroyed and recreated. The volume is scoped to a user,
+attachable to any of their sandboxes.
+
+### Rootfs Sizing
+
+Today every sandbox gets a fixed 2GB rootfs. To support larger:
+
+```
+// After copying base image:
+exec.Command("truncate", "-s", fmt.Sprintf("%dM", spec.DiskSizeMB), rootfsPath).Run()
+exec.Command("resize2fs", rootfsPath).Run()
+```
+
+API: `"disk_size_mb": 10240` on `POST /sandboxes`.
+
+### What Exists vs What's Missing
+
+The store tables for templates and volumes already exist. The Firecracker
+engine has all the primitives (copy rootfs, create ext4, attach block
+devices, mount in guest). The missing pieces are:
+
+- Image lookup by name (directory listing)
+- Volume file storage outside sandbox dir
+- Volume name → file path resolution in engine
+- `truncate` + `resize2fs` after rootfs copy
+- Template → SandboxSpec mapping in the server layer
+
+The current template and volume API endpoints are vestigial from the
+Docker engine. They should be reimplemented for Firecracker in v0.2
+rather than shipped as non-functional endpoints.
+
+---
+
 ## Capacity Reference
 
 ```

@@ -116,6 +116,9 @@ func runCLI() {
 		cmdUser(os.Args[2:])
 	case "setup":
 		cmdSetup(os.Args[2:])
+	case "version":
+		fmt.Printf("bhatti %s\n", version)
+		fmt.Printf("api: %s\n", apiURL)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -138,6 +141,7 @@ Commands:
   secret set|list|delete        Manage secrets
   user create|list|delete|rotate-key  Manage users (local)
   setup                         Configure CLI (endpoint + API key)
+  version                       Print version and API endpoint
 
 Environment:
   BHATTI_URL     API endpoint (default: http://localhost:8080)

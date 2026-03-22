@@ -190,7 +190,7 @@ func handleFileWrite(conn net.Conn, payload []byte) {
 	f.Close()
 
 	if writeErr != nil {
-		// Bug #7: Clean up partial temp file on error
+		// Clean up partial temp file on error
 		os.Remove(tmpPath)
 		proto.WriteFrame(conn, proto.ERROR, []byte(writeErr.Error()))
 		return
@@ -270,7 +270,7 @@ func handleFileList(conn net.Conn, payload []byte) {
 		return
 	}
 
-	// Bug #5: Cap entries to prevent exceeding MaxFrameSize
+	// Cap entries to prevent exceeding MaxFrameSize
 	truncated := false
 	if len(names) > maxListEntries {
 		names = names[:maxListEntries]
