@@ -76,7 +76,7 @@ func TestIPPoolAllocateRelease(t *testing.T) {
 	}
 }
 
-func TestIPPoolExhaustion(t *testing.T) {
+func TestIPPoolExhaustionSubnet(t *testing.T) {
 	pool := newIPPool("10.0.1.1")
 
 	// Allocate all 253 IPs

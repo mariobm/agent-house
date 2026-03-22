@@ -5,6 +5,7 @@ package firecracker
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,16 +41,24 @@ func setupFullStack(t *testing.T) (*httptest.Server, string) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	// Register sandbox in store
+	// Create test user and register sandbox
+	keyHash := fmt.Sprintf("%x", sha256.Sum256([]byte("test-token")))
+	st.CreateUser(store.User{
+		ID: "usr_proxy", Name: "proxy-test", APIKeyHash: keyHash,
+		MaxSandboxes: 50, MaxCPUsPerSandbox: 4, MaxMemoryMBPerSandbox: 4096,
+		SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
 	st.CreateSandbox(store.Sandbox{
 		ID: info.ID, Name: info.Name, EngineID: info.EngineID,
 		Status: "running", IP: info.IP,
 		EngineMeta: json.RawMessage("{}"),
+		CreatedBy: "usr_proxy",
 		CreatedAt:  time.Now(),
 	})
 
 	// Start server
-	srv := server.New(eng, st, "test-token")
+	srv := server.New(eng, st)
 	ts := httptest.NewServer(srv)
 	t.Cleanup(func() { srv.Close(); ts.Close() })
 
