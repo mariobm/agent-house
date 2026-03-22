@@ -47,6 +47,10 @@ type SandboxSpec struct {
 	Files      map[string]FileSpec  `json:"files,omitempty"` // path → content
 	NewVolumes []VolumeSpec         `json:"new_volumes,omitempty"`
 	Init       string               `json:"init,omitempty"`
+
+	// Set by server layer, not by API clients
+	UserID      string `json:"-"` // owner's user ID
+	SubnetIndex int    `json:"-"` // owner's subnet index for network isolation
 }
 
 // SandboxInfo is the runtime state of a sandbox.

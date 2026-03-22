@@ -332,6 +332,10 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Set user context for engine-level network isolation
+		spec.UserID = user.ID
+		spec.SubnetIndex = user.SubnetIndex
+
 		info, err := s.engine.Create(r.Context(), spec)
 		if err != nil {
 			errResp(w, 500, "create failed: "+err.Error())

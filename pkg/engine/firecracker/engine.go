@@ -36,11 +36,11 @@ type Config struct {
 
 // Engine manages Firecracker microVMs.
 type Engine struct {
-	mu      sync.RWMutex
-	vms     map[string]*VM
-	cfg     Config
-	nextCID uint32
-	pool    *ipPool
+	mu           sync.RWMutex
+	vms          map[string]*VM
+	cfg          Config
+	nextCID      uint32
+	userNetworks map[string]*UserNetwork // userID → network
 }
 
 // VM holds per-sandbox state.
@@ -60,6 +60,7 @@ type VM struct {
 
 	ID          string
 	Name        string
+	UserID      string // owner's user ID (for bridge cleanup on destroy)
 	SocketPath  string // Firecracker API socket
 	VsockPath   string // vsock UDS for host↔guest
 	RootfsPath  string
@@ -97,15 +98,18 @@ func New(cfg Config) (*Engine, error) {
 	}
 
 	eng := &Engine{
-		vms:     make(map[string]*VM),
-		cfg:     cfg,
-		nextCID: 3, // 0=hypervisor, 1=loopback, 2=host
-		pool:    newIPPool(),
+		vms:          make(map[string]*VM),
+		cfg:          cfg,
+		nextCID:      3, // 0=hypervisor, 1=loopback, 2=host
+		userNetworks: make(map[string]*UserNetwork),
 	}
 
-	// Set up bridge network
-	if err := ensureBridge(); err != nil {
-		return nil, fmt.Errorf("setup bridge: %w", err)
+	// Clean up legacy single-bridge from pre-multi-tenant setup
+	cleanupOldBridge()
+
+	// Set up global firewall rules (6 rules, independent of user/VM count)
+	if err := setupGlobalFirewall(); err != nil {
+		return nil, fmt.Errorf("setup firewall: %w", err)
 	}
 
 	// Clean up orphaned TAP devices from previous crashes.
@@ -137,6 +141,7 @@ func (e *Engine) Shutdown() {
 	}
 
 	cleanupAllTapDevices()
+	cleanupAllUserBridges()
 }
 
 func (e *Engine) getVM(id string) (*VM, error) {
@@ -147,6 +152,49 @@ func (e *Engine) getVM(id string) (*VM, error) {
 		return nil, fmt.Errorf("sandbox %q not found", id)
 	}
 	return vm, nil
+}
+
+// getOrCreateUserNetwork returns the UserNetwork for a user, creating the
+// bridge and IP pool if this is the first sandbox for that user.
+func (e *Engine) getOrCreateUserNetwork(userID string, subnetIndex int) *UserNetwork {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if net, ok := e.userNetworks[userID]; ok {
+		return net
+	}
+
+	gateway, subnet, bridge := subnetFromIndex(subnetIndex)
+	net := &UserNetwork{
+		BridgeName: bridge,
+		GatewayIP:  gateway,
+		Subnet:     subnet,
+		Pool:       newIPPool(gateway),
+	}
+	e.userNetworks[userID] = net
+	return net
+}
+
+// removeUserNetworkIfEmpty removes the user's bridge if they have no more VMs.
+func (e *Engine) removeUserNetworkIfEmpty(userID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	net, ok := e.userNetworks[userID]
+	if !ok {
+		return
+	}
+
+	// Check if any VMs still belong to this user
+	for _, vm := range e.vms {
+		if vm.UserID == userID {
+			return // still has VMs, keep the bridge
+		}
+	}
+
+	destroyUserBridge(net.BridgeName)
+	delete(e.userNetworks, userID)
+	slog.Info("destroyed user bridge", "user", userID, "bridge", net.BridgeName)
 }
 
 // --- Create ---
@@ -177,7 +225,11 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 				destroyTapDevice(tapName)
 			}
 			if guestIP != "" {
-				e.pool.Release(guestIP)
+				e.mu.RLock()
+				if net, ok := e.userNetworks[spec.UserID]; ok {
+					net.Pool.Release(guestIP)
+				}
+				e.mu.RUnlock()
 			}
 			os.RemoveAll(sandboxDir)
 		}
@@ -194,12 +246,16 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	socketPath := filepath.Join(sandboxDir, "firecracker.sock")
 	vsockPath := filepath.Join(sandboxDir, "vsock.sock")
 
-	// 3. Allocate IP and create TAP device
-	guestIP, err = e.pool.Allocate()
+	// 3. Get or create user's network, allocate IP, create TAP
+	userNet := e.getOrCreateUserNetwork(spec.UserID, spec.SubnetIndex)
+	if err = ensureUserBridge(userNet); err != nil {
+		return info, fmt.Errorf("setup user bridge: %w", err)
+	}
+	guestIP, err = userNet.Pool.Allocate()
 	if err != nil {
 		return info, fmt.Errorf("allocate IP: %w", err)
 	}
-	tapName, err = createTapDevice(id)
+	tapName, err = createTapDevice(id, userNet.BridgeName)
 	if err != nil {
 		return info, fmt.Errorf("create tap: %w", err)
 	}
@@ -289,9 +345,10 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	client := fcAPIClient(socketPath)
 
 	// Boot args include ip= for kernel-level network configuration.
+	// Uses the user's bridge gateway instead of a hardcoded IP.
 	bootArgs := fmt.Sprintf(
 		"console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/lohar quiet loglevel=0 ip=%s::%s:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:",
-		guestIP, bridgeIP)
+		guestIP, userNet.GatewayIP)
 
 	if err = fcPut(client, "/boot-source", fmt.Sprintf(
 		`{"kernel_image_path":%q,"boot_args":%q}`,
@@ -352,7 +409,8 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	}
 
 	vm := &VM{
-		ID: id, Name: name, SocketPath: socketPath,
+		ID: id, Name: name, UserID: spec.UserID,
+		SocketPath: socketPath,
 		VsockPath: vsockPath, RootfsPath: rootfsPath,
 		CID: cid, VcpuCount: vcpuCount, MemSizeMib: memMB,
 		TapDevice: tapName, GuestIP: guestIP, GuestMAC: mac,
@@ -619,8 +677,15 @@ func (e *Engine) Destroy(ctx context.Context, id string) error {
 	if vm.TapDevice != "" {
 		destroyTapDevice(vm.TapDevice)
 	}
+
+	// Release IP back to the user's pool
+	userID := vm.UserID
 	if vm.GuestIP != "" {
-		e.pool.Release(vm.GuestIP)
+		e.mu.RLock()
+		if net, ok := e.userNetworks[userID]; ok {
+			net.Pool.Release(vm.GuestIP)
+		}
+		e.mu.RUnlock()
 	}
 
 	rootfsDir := filepath.Dir(vm.RootfsPath)
@@ -631,6 +696,12 @@ func (e *Engine) Destroy(ctx context.Context, id string) error {
 	e.mu.Lock()
 	delete(e.vms, id)
 	e.mu.Unlock()
+
+	// If this was the user's last VM, destroy their bridge
+	if userID != "" {
+		e.removeUserNetworkIfEmpty(userID)
+	}
+
 	return nil
 }
 
@@ -681,9 +752,13 @@ func (e *Engine) VMState(id string) map[string]interface{} {
 // SQLite (numbers may be int, int64, or float64 depending on the driver).
 // All extraction uses type-safe helpers to avoid panics on type mismatch.
 func (e *Engine) RestoreVM(id, name, status string, state map[string]interface{}) {
+	userID := stateStr(state, "user_id")
+	subnetIndex := int(stateInt64(state, "subnet_index"))
+
 	vm := &VM{
 		ID:          id,
 		Name:        name,
+		UserID:      userID,
 		Status:      status,
 		RootfsPath:  stateStr(state, "rootfs_path"),
 		SocketPath:  stateStr(state, "socket_path"),
@@ -703,8 +778,11 @@ func (e *Engine) RestoreVM(id, name, status string, state map[string]interface{}
 		vm.Agent = agent.NewTCPClient(vm.GuestIP)
 	}
 
-	// Reserve the IP in the pool so it's not re-allocated
-	e.pool.Mark(vm.GuestIP)
+	// Reserve the IP in the user's pool
+	if userID != "" && subnetIndex > 0 {
+		userNet := e.getOrCreateUserNetwork(userID, subnetIndex)
+		userNet.Pool.Mark(vm.GuestIP)
+	}
 
 	e.mu.Lock()
 	e.vms[id] = vm

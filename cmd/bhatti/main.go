@@ -141,6 +141,14 @@ func recoverVMs(st *store.Store, provider engine.VMStateProvider) {
 			continue // Not a Firecracker sandbox
 		}
 
+		// Look up user's subnet index for network recovery
+		var subnetIndex int
+		if sb.CreatedBy != "" {
+			if user, err := st.GetUser(sb.CreatedBy); err == nil {
+				subnetIndex = user.SubnetIndex
+			}
+		}
+
 		state := map[string]interface{}{
 			"rootfs_path":   fcState.RootfsPath,
 			"snap_mem_path": fcState.SnapMemPath,
@@ -153,6 +161,8 @@ func recoverVMs(st *store.Store, provider engine.VMStateProvider) {
 			"mem_size_mib":  fcState.MemSizeMib,
 			"socket_path":   fcState.SocketPath,
 			"vsock_path":    fcState.VsockPath,
+			"user_id":       sb.CreatedBy,
+			"subnet_index":  subnetIndex,
 		}
 
 		if sb.Status == "stopped" && fcState.SnapMemPath != "" {
