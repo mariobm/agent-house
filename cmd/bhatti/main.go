@@ -78,17 +78,8 @@ func runDaemon() {
 		recoverVMs(st, provider)
 	}
 
-	// Find web directory
-	webDir := "web"
-	if _, err := os.Stat(webDir); os.IsNotExist(err) {
-		// Try relative to executable
-		if ex, err := os.Executable(); err == nil {
-			webDir = filepath.Join(filepath.Dir(ex), "web")
-		}
-	}
-
 	// Start server
-	srv := server.New(eng, st, cfg.AuthToken, webDir)
+	srv := server.New(eng, st)
 
 	// Resolve the port for display
 	port := cfg.Listen
@@ -136,7 +127,7 @@ func runDaemon() {
 
 // recoverVMs restores Firecracker VMs from the SQLite store on startup.
 func recoverVMs(st *store.Store, provider engine.VMStateProvider) {
-	sandboxes, err := st.ListSandboxes()
+	sandboxes, err := st.ListAllSandboxes()
 	if err != nil {
 		slog.Warn("recovery: list sandboxes", "error", err)
 		return

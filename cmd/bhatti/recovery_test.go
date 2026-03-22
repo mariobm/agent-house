@@ -41,7 +41,7 @@ func createTestSandbox(t *testing.T, st *store.Store, id, name, engineID, status
 	st.CreateSandbox(store.Sandbox{
 		ID: id, Name: name, EngineID: engineID,
 		Status: status, EngineMeta: json.RawMessage("{}"),
-		CreatedAt: time.Now(),
+		CreatedBy: "usr_test", CreatedAt: time.Now(),
 	})
 }
 
@@ -102,7 +102,7 @@ func TestRecoverStoppedMissingSnapshot(t *testing.T) {
 		t.Fatalf("expected 0 restored, got %d", len(mock.restored))
 	}
 	// Status should be updated to unknown
-	sb, _ := st.GetSandbox("sb2")
+	sb, _ := st.GetSandboxByID("sb2")
 	if sb.Status != "unknown" {
 		t.Errorf("status: %q, want 'unknown'", sb.Status)
 	}
@@ -128,7 +128,7 @@ func TestRecoverRunningWithSnapshot(t *testing.T) {
 		t.Errorf("status: %q, want 'stopped'", mock.restored[0].Status)
 	}
 	// Store should also reflect stopped
-	sb, _ := st.GetSandbox("sb3")
+	sb, _ := st.GetSandboxByID("sb3")
 	if sb.Status != "stopped" {
 		t.Errorf("store status: %q, want 'stopped'", sb.Status)
 	}
@@ -147,7 +147,7 @@ func TestRecoverRunningNoSnapshot(t *testing.T) {
 	if len(mock.restored) != 0 {
 		t.Fatalf("expected 0 restored, got %d", len(mock.restored))
 	}
-	sb, _ := st.GetSandbox("sb4")
+	sb, _ := st.GetSandboxByID("sb4")
 	if sb.Status != "unknown" {
 		t.Errorf("status: %q, want 'unknown'", sb.Status)
 	}

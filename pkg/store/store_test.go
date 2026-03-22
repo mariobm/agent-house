@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -89,6 +90,7 @@ func TestSandboxesCRUD(t *testing.T) {
 		Status:     "running",
 		IP:         "172.17.0.2",
 		EngineMeta: json.RawMessage(`{"port":8080}`),
+		CreatedBy:  "usr_alice",
 		CreatedAt:  time.Now().Truncate(time.Second),
 	}
 
@@ -97,20 +99,38 @@ func TestSandboxesCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Get
-	got, err := s.GetSandbox("s1")
+	// Get (scoped)
+	got, err := s.GetSandbox("usr_alice", "s1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Name != "my-sandbox" || got.Status != "running" || got.IP != "172.17.0.2" {
 		t.Fatalf("unexpected sandbox: %+v", got)
 	}
+	if got.CreatedBy != "usr_alice" {
+		t.Fatalf("expected created_by usr_alice, got %s", got.CreatedBy)
+	}
+
+	// Get (wrong user)
+	_, err = s.GetSandbox("usr_bob", "s1")
+	if err == nil {
+		t.Fatal("expected error getting sandbox with wrong user")
+	}
+
+	// Get (unscoped)
+	got, err = s.GetSandboxByID("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "my-sandbox" {
+		t.Fatalf("unexpected sandbox via GetSandboxByID: %+v", got)
+	}
 
 	// Update status
 	if err := s.UpdateSandboxStatus("s1", "stopped"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.GetSandbox("s1")
+	got, _ = s.GetSandbox("usr_alice", "s1")
 	if got.Status != "stopped" {
 		t.Fatalf("expected stopped, got %s", got.Status)
 	}
@@ -119,13 +139,13 @@ func TestSandboxesCRUD(t *testing.T) {
 	if err := s.StopSandbox("s1"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.GetSandbox("s1")
+	got, _ = s.GetSandbox("usr_alice", "s1")
 	if got.StoppedAt == nil {
 		t.Fatal("expected stopped_at to be set")
 	}
 
-	// List
-	list, err := s.ListSandboxes()
+	// List (scoped)
+	list, err := s.ListSandboxes("usr_alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,11 +153,28 @@ func TestSandboxesCRUD(t *testing.T) {
 		t.Fatalf("expected 1 sandbox, got %d", len(list))
 	}
 
-	// Delete
-	if err := s.DeleteSandbox("s1"); err != nil {
+	// List (wrong user)
+	list, _ = s.ListSandboxes("usr_bob")
+	if len(list) != 0 {
+		t.Fatalf("expected 0 sandboxes for bob, got %d", len(list))
+	}
+
+	// ListAll
+	all, _ := s.ListAllSandboxes()
+	if len(all) != 1 {
+		t.Fatalf("expected 1 sandbox in ListAll, got %d", len(all))
+	}
+
+	// Delete (wrong user)
+	if err := s.DeleteSandbox("usr_bob", "s1"); err == nil {
+		t.Fatal("expected error deleting sandbox with wrong user")
+	}
+
+	// Delete (correct user)
+	if err := s.DeleteSandbox("usr_alice", "s1"); err != nil {
 		t.Fatal(err)
 	}
-	list, _ = s.ListSandboxes()
+	list, _ = s.ListSandboxes("usr_alice")
 	if len(list) != 0 {
 		t.Fatal("expected 0 sandboxes after delete")
 	}
@@ -148,12 +185,12 @@ func TestSecretsCRUD(t *testing.T) {
 
 	encrypted := []byte("fake-encrypted-data")
 
-	if err := s.SetSecret("api-key", encrypted); err != nil {
+	if err := s.SetSecret("usr_alice", "api-key", encrypted); err != nil {
 		t.Fatal(err)
 	}
 
-	// Get value
-	got, err := s.GetSecretValue("api-key")
+	// Get value (correct user)
+	got, err := s.GetSecretValue("usr_alice", "api-key")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,8 +198,14 @@ func TestSecretsCRUD(t *testing.T) {
 		t.Fatalf("expected %q, got %q", encrypted, got)
 	}
 
+	// Get value (wrong user)
+	_, err = s.GetSecretValue("usr_bob", "api-key")
+	if err == nil {
+		t.Fatal("expected error getting secret with wrong user")
+	}
+
 	// Get metadata (no value)
-	meta, err := s.GetSecret("api-key")
+	meta, err := s.GetSecret("usr_alice", "api-key")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,16 +215,16 @@ func TestSecretsCRUD(t *testing.T) {
 
 	// Update
 	updated := []byte("new-encrypted-data")
-	if err := s.SetSecret("api-key", updated); err != nil {
+	if err := s.SetSecret("usr_alice", "api-key", updated); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.GetSecretValue("api-key")
+	got, _ = s.GetSecretValue("usr_alice", "api-key")
 	if string(got) != string(updated) {
 		t.Fatalf("after update: expected %q, got %q", updated, got)
 	}
 
-	// List (no values)
-	list, err := s.ListSecrets()
+	// List (scoped)
+	list, err := s.ListUserSecrets("usr_alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,10 +232,22 @@ func TestSecretsCRUD(t *testing.T) {
 		t.Fatalf("expected 1 secret, got %d", len(list))
 	}
 
-	if err := s.DeleteSecret("api-key"); err != nil {
+	// List (wrong user)
+	list, _ = s.ListUserSecrets("usr_bob")
+	if len(list) != 0 {
+		t.Fatalf("expected 0 secrets for bob, got %d", len(list))
+	}
+
+	// Delete (wrong user)
+	if err := s.DeleteSecret("usr_bob", "api-key"); err == nil {
+		t.Fatal("expected error deleting secret with wrong user")
+	}
+
+	// Delete (correct user)
+	if err := s.DeleteSecret("usr_alice", "api-key"); err != nil {
 		t.Fatal(err)
 	}
-	list, _ = s.ListSecrets()
+	list, _ = s.ListUserSecrets("usr_alice")
 	if len(list) != 0 {
 		t.Fatal("expected 0 secrets after delete")
 	}
@@ -205,12 +260,13 @@ func TestSandboxNilEngineMeta(t *testing.T) {
 		ID:        "s2",
 		Name:      "no-meta",
 		Status:    "running",
+		CreatedBy: "usr_test",
 		CreatedAt: time.Now(),
 	}
 	if err := s.CreateSandbox(sb); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.GetSandbox("s2")
+	got, _ := s.GetSandbox("usr_test", "s2")
 	if string(got.EngineMeta) != "{}" {
 		t.Fatalf("expected empty JSON object, got %s", got.EngineMeta)
 	}
@@ -272,6 +328,7 @@ func TestVolumeDeleteBlockedByAttachment(t *testing.T) {
 		ID:        "s-vol-test",
 		Name:      "vol-sandbox",
 		Status:    "running",
+		CreatedBy: "usr_test",
 		CreatedAt: time.Now(),
 	}
 	s.CreateSandbox(sb)
@@ -300,6 +357,7 @@ func TestSandboxVolumes(t *testing.T) {
 		ID:        "s-sv-test",
 		Name:      "sv-sandbox",
 		Status:    "running",
+		CreatedBy: "usr_test",
 		CreatedAt: time.Now(),
 	}
 	s.CreateSandbox(sb)
@@ -381,6 +439,330 @@ func TestEnsureKeypair(t *testing.T) {
 	_ = os.TempDir()
 }
 
+// --- User Tests (Part 1 of PLAN-v5) ---
+
+func TestUserCRUD(t *testing.T) {
+	s := testStore(t)
+
+	u := User{
+		ID:                    "usr_1",
+		Name:                  "alice",
+		APIKeyHash:            "abc123hash",
+		MaxSandboxes:          5,
+		MaxCPUsPerSandbox:     4,
+		MaxMemoryMBPerSandbox: 4096,
+		SubnetIndex:           1,
+		CreatedAt:             time.Now().Truncate(time.Second),
+	}
+
+	// Create
+	if err := s.CreateUser(u); err != nil {
+		t.Fatal(err)
+	}
+
+	// Get by ID
+	got, err := s.GetUser("usr_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "alice" || got.MaxSandboxes != 5 || got.SubnetIndex != 1 {
+		t.Fatalf("unexpected user: %+v", got)
+	}
+
+	// Get by key hash
+	got, err = s.GetUserByKeyHash("abc123hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "usr_1" {
+		t.Fatalf("expected usr_1, got %s", got.ID)
+	}
+
+	// Get by wrong hash
+	_, err = s.GetUserByKeyHash("wronghash")
+	if err == nil {
+		t.Fatal("expected error for wrong hash")
+	}
+
+	// List
+	list, err := s.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 user, got %d", len(list))
+	}
+
+	// Delete (no active sandboxes)
+	if err := s.DeleteUser("usr_1"); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = s.ListUsers()
+	if len(list) != 0 {
+		t.Fatal("expected 0 users after delete")
+	}
+
+	// Delete non-existent
+	if err := s.DeleteUser("usr_nope"); err == nil {
+		t.Fatal("expected error deleting non-existent user")
+	}
+}
+
+func TestUserDeleteRefusedWithSandboxes(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateUser(User{
+		ID: "usr_del", Name: "del-test", APIKeyHash: "hash1",
+		MaxSandboxes: 5, SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
+	s.CreateSandbox(Sandbox{
+		ID: "sb_del", Name: "del-sandbox", Status: "running",
+		CreatedBy: "usr_del", CreatedAt: time.Now(),
+	})
+
+	err := s.DeleteUser("usr_del")
+	if err == nil {
+		t.Fatal("expected error deleting user with active sandboxes")
+	}
+	if !strings.Contains(err.Error(), "active sandbox") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUserDeleteRefusedWithSecrets(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateUser(User{
+		ID: "usr_sec", Name: "sec-test", APIKeyHash: "hash2",
+		MaxSandboxes: 5, SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
+	s.SetSecret("usr_sec", "my-key", []byte("encrypted"))
+
+	err := s.DeleteUser("usr_sec")
+	if err == nil {
+		t.Fatal("expected error deleting user with secrets")
+	}
+	if !strings.Contains(err.Error(), "secret") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestKeyRotation(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateUser(User{
+		ID: "usr_rot", Name: "rot-test", APIKeyHash: "oldhash",
+		MaxSandboxes: 5, SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
+	// Rotate key
+	if err := s.RotateUserKey("usr_rot", "newhash"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Old hash should not work
+	_, err := s.GetUserByKeyHash("oldhash")
+	if err == nil {
+		t.Fatal("expected old hash to not work after rotation")
+	}
+
+	// New hash should work
+	u, err := s.GetUserByKeyHash("newhash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.ID != "usr_rot" {
+		t.Fatalf("expected usr_rot, got %s", u.ID)
+	}
+
+	// Rotate non-existent user
+	if err := s.RotateUserKey("usr_nope", "hash"); err == nil {
+		t.Fatal("expected error rotating non-existent user")
+	}
+}
+
+func TestNextSubnetIndex(t *testing.T) {
+	s := testStore(t)
+
+	// No users → first subnet is 1
+	idx, err := s.NextSubnetIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idx != 1 {
+		t.Fatalf("expected 1, got %d", idx)
+	}
+
+	// Create user with subnet 1
+	s.CreateUser(User{
+		ID: "usr_sub1", Name: "sub1", APIKeyHash: "h1",
+		SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
+	idx, _ = s.NextSubnetIndex()
+	if idx != 2 {
+		t.Fatalf("expected 2, got %d", idx)
+	}
+
+	// Create user with subnet 5 (gap)
+	s.CreateUser(User{
+		ID: "usr_sub5", Name: "sub5", APIKeyHash: "h5",
+		SubnetIndex: 5, CreatedAt: time.Now(),
+	})
+
+	idx, _ = s.NextSubnetIndex()
+	if idx != 6 {
+		t.Fatalf("expected 6, got %d", idx)
+	}
+}
+
+func TestSandboxNameUniquenessPerUser(t *testing.T) {
+	s := testStore(t)
+
+	// Create two sandboxes with same name for same user
+	s.CreateSandbox(Sandbox{
+		ID: "sb1", Name: "dev", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+
+	err := s.CreateSandbox(Sandbox{
+		ID: "sb2", Name: "dev", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected error creating duplicate sandbox name for same user")
+	}
+
+	// Different user can use the same name
+	err = s.CreateSandbox(Sandbox{
+		ID: "sb3", Name: "dev", Status: "running",
+		CreatedBy: "usr_bob", CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("expected different user to create same name: %v", err)
+	}
+
+	// After destroying, same user can reuse the name
+	s.UpdateSandboxStatus("sb1", "destroyed")
+	err = s.CreateSandbox(Sandbox{
+		ID: "sb4", Name: "dev", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("expected name reuse after destroy: %v", err)
+	}
+}
+
+func TestCountUserSandboxes(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateSandbox(Sandbox{
+		ID: "c1", Name: "one", Status: "running",
+		CreatedBy: "usr_cnt", CreatedAt: time.Now(),
+	})
+	s.CreateSandbox(Sandbox{
+		ID: "c2", Name: "two", Status: "stopped",
+		CreatedBy: "usr_cnt", CreatedAt: time.Now(),
+	})
+	s.CreateSandbox(Sandbox{
+		ID: "c3", Name: "three", Status: "destroyed",
+		CreatedBy: "usr_cnt", CreatedAt: time.Now(),
+	})
+
+	count, err := s.CountUserSandboxes("usr_cnt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 non-destroyed sandboxes, got %d", count)
+	}
+
+	// Different user
+	count, _ = s.CountUserSandboxes("usr_other")
+	if count != 0 {
+		t.Fatalf("expected 0 for other user, got %d", count)
+	}
+}
+
+func TestSandboxScoping(t *testing.T) {
+	s := testStore(t)
+
+	// Alice creates a sandbox
+	s.CreateSandbox(Sandbox{
+		ID: "scope1", Name: "alice-dev", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+
+	// Bob creates a sandbox
+	s.CreateSandbox(Sandbox{
+		ID: "scope2", Name: "bob-dev", Status: "running",
+		CreatedBy: "usr_bob", CreatedAt: time.Now(),
+	})
+
+	// Alice lists: sees only hers
+	aliceList, _ := s.ListSandboxes("usr_alice")
+	if len(aliceList) != 1 || aliceList[0].ID != "scope1" {
+		t.Fatalf("alice should see 1 sandbox, got %d", len(aliceList))
+	}
+
+	// Bob lists: sees only his
+	bobList, _ := s.ListSandboxes("usr_bob")
+	if len(bobList) != 1 || bobList[0].ID != "scope2" {
+		t.Fatalf("bob should see 1 sandbox, got %d", len(bobList))
+	}
+
+	// Alice can't get Bob's sandbox
+	_, err := s.GetSandbox("usr_alice", "scope2")
+	if err == nil {
+		t.Fatal("alice should not be able to get bob's sandbox")
+	}
+
+	// Alice can't delete Bob's sandbox
+	err = s.DeleteSandbox("usr_alice", "scope2")
+	if err == nil {
+		t.Fatal("alice should not be able to delete bob's sandbox")
+	}
+
+	// ListAll sees both
+	all, _ := s.ListAllSandboxes()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 sandboxes in ListAll, got %d", len(all))
+	}
+}
+
+func TestSecretScoping(t *testing.T) {
+	s := testStore(t)
+
+	s.SetSecret("usr_alice", "alice-key", []byte("alice-data"))
+	s.SetSecret("usr_bob", "bob-key", []byte("bob-data"))
+
+	// Alice sees only hers
+	aliceList, _ := s.ListUserSecrets("usr_alice")
+	if len(aliceList) != 1 || aliceList[0].Name != "alice-key" {
+		t.Fatalf("alice should see 1 secret, got %v", aliceList)
+	}
+
+	// Alice can't read Bob's
+	_, err := s.GetSecretValue("usr_alice", "bob-key")
+	if err == nil {
+		t.Fatal("alice should not be able to read bob's secret")
+	}
+
+	// Alice can't delete Bob's
+	err = s.DeleteSecret("usr_alice", "bob-key")
+	if err == nil {
+		t.Fatal("alice should not be able to delete bob's secret")
+	}
+
+	// ListAll sees both
+	allSecrets, _ := s.ListAllSecrets()
+	if len(allSecrets) != 2 {
+		t.Fatalf("expected 2 secrets in ListAll, got %d", len(allSecrets))
+	}
+}
+
 // --- Firecracker State Persistence ---
 
 func TestFirecrackerStateRoundTrip(t *testing.T) {
@@ -390,7 +772,7 @@ func TestFirecrackerStateRoundTrip(t *testing.T) {
 	// Create a sandbox first (SaveFirecrackerState updates by sandbox ID)
 	sb := Sandbox{
 		ID: "sb-fc-1", Name: "fc-test", EngineID: "eng-1",
-		Status: "running", EngineMeta: json.RawMessage("{}"),
+		Status: "running", EngineMeta: json.RawMessage("{}"), CreatedBy: "usr_test",
 		CreatedAt: time.Now(),
 	}
 	if err := s.CreateSandbox(sb); err != nil {
@@ -461,7 +843,7 @@ func TestFirecrackerStateUpdate(t *testing.T) {
 
 	sb := Sandbox{
 		ID: "sb-fc-2", Name: "fc-update", EngineID: "eng-2",
-		Status: "running", EngineMeta: json.RawMessage("{}"),
+		Status: "running", EngineMeta: json.RawMessage("{}"), CreatedBy: "usr_test",
 		CreatedAt: time.Now(),
 	}
 	s.CreateSandbox(sb)
@@ -503,7 +885,7 @@ func TestFirecrackerStateDefaults(t *testing.T) {
 	// Non-FC sandbox should return zero-value state
 	sb := Sandbox{
 		ID: "sb-docker", Name: "docker-test", EngineID: "dock-1",
-		Status: "running", EngineMeta: json.RawMessage("{}"),
+		Status: "running", EngineMeta: json.RawMessage("{}"), CreatedBy: "usr_test",
 		CreatedAt: time.Now(),
 	}
 	s.CreateSandbox(sb)

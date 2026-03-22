@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -92,7 +93,7 @@ func (s *Server) routes() {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	sandboxes, _ := s.store.ListSandboxes()
+	sandboxes, _ := s.store.ListAllSandboxes()
 	writeJSON(w, 200, map[string]any{
 		"status":    "ok",
 		"sandboxes": len(sandboxes),
@@ -183,9 +184,11 @@ type createSandboxReq struct {
 }
 
 func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r.Context())
+
 	switch r.Method {
 	case http.MethodGet:
-		list, err := s.store.ListSandboxes()
+		list, err := s.store.ListSandboxes(user.ID)
 		if err != nil {
 			errResp(w, 500, err.Error())
 			return
@@ -198,6 +201,29 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 		var req createSandboxReq
 		if err := readJSON(r, &req); err != nil {
 			errResp(w, 400, "invalid json: "+err.Error())
+			return
+		}
+
+		// Enforce per-user sandbox count limit
+		count, _ := s.store.CountUserSandboxes(user.ID)
+		if count >= user.MaxSandboxes {
+			errResp(w, 429, fmt.Sprintf("sandbox limit reached (%d/%d)", count, user.MaxSandboxes))
+			return
+		}
+
+		// Enforce per-user resource caps
+		if req.CPUs > float64(user.MaxCPUsPerSandbox) {
+			errResp(w, 400, fmt.Sprintf("max %d CPUs per sandbox", user.MaxCPUsPerSandbox))
+			return
+		}
+		if req.MemoryMB > user.MaxMemoryMBPerSandbox {
+			errResp(w, 400, fmt.Sprintf("max %d MB memory per sandbox", user.MaxMemoryMBPerSandbox))
+			return
+		}
+
+		// Validate sandbox name
+		if req.Name != "" && !isValidName(req.Name) {
+			errResp(w, 400, "invalid sandbox name: must match [a-zA-Z0-9][a-zA-Z0-9._-]{0,62}")
 			return
 		}
 
@@ -240,7 +266,7 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			secretEnv := make(map[string]string)
 			secretFiles := make(map[string]engine.FileSpec)
 			for _, secretName := range tmpl.Secrets {
-				encrypted, err := s.store.GetSecretValue(secretName)
+				encrypted, err := s.store.GetSecretValue(user.ID, secretName)
 				if err != nil {
 					errResp(w, 400, fmt.Sprintf("secret %q not found", secretName))
 					return
@@ -308,6 +334,7 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			Status:     info.Status,
 			IP:         info.IP,
 			EngineMeta: json.RawMessage("{}"),
+			CreatedBy:  user.ID,
 			CreatedAt:  time.Now(),
 		}
 		if err := s.store.CreateSandbox(sb); err != nil {
@@ -371,9 +398,11 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	user := UserFromContext(r.Context())
+
 	switch r.Method {
 	case http.MethodGet:
-		sb, err := s.store.GetSandbox(id)
+		sb, err := s.store.GetSandbox(user.ID, id)
 		if err != nil {
 			errResp(w, 404, "not found")
 			return
@@ -387,7 +416,7 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, sb)
 	case http.MethodDelete:
-		sb, err := s.store.GetSandbox(id)
+		sb, err := s.store.GetSandbox(user.ID, id)
 		if err != nil {
 			errResp(w, 404, "not found")
 			return
@@ -397,7 +426,7 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 		s.proxy.StopAll(id)
 		s.store.DetachVolumes(id)
-		if err := s.store.DeleteSandbox(id); err != nil {
+		if err := s.store.DeleteSandbox(user.ID, id); err != nil {
 			errResp(w, 500, err.Error())
 			return
 		}
@@ -412,9 +441,8 @@ func (s *Server) handleSandboxStop(w http.ResponseWriter, r *http.Request, id st
 		errResp(w, 405, "method not allowed")
 		return
 	}
-	sb, err := s.store.GetSandbox(id)
-	if err != nil {
-		errResp(w, 404, "not found")
+	sb := s.getUserSandbox(w, r, id)
+	if sb == nil {
 		return
 	}
 	if err := s.engine.Stop(r.Context(), sb.EngineID); err != nil {
@@ -424,7 +452,7 @@ func (s *Server) handleSandboxStop(w http.ResponseWriter, r *http.Request, id st
 	s.proxy.StopAll(sb.ID)
 	s.store.StopSandbox(id)
 	s.saveVMState(id, sb.EngineID) // persist snapshot paths
-	updated, _ := s.store.GetSandbox(id)
+	updated, _ := s.store.GetSandboxByID(id)
 	writeJSON(w, 200, updated)
 }
 
@@ -433,9 +461,8 @@ func (s *Server) handleSandboxStart(w http.ResponseWriter, r *http.Request, id s
 		errResp(w, 405, "method not allowed")
 		return
 	}
-	sb, err := s.store.GetSandbox(id)
-	if err != nil {
-		errResp(w, 404, "not found")
+	sb := s.getUserSandbox(w, r, id)
+	if sb == nil {
 		return
 	}
 	if err := s.engine.Start(r.Context(), sb.EngineID); err != nil {
@@ -451,7 +478,7 @@ func (s *Server) handleSandboxStart(w http.ResponseWriter, r *http.Request, id s
 		s.store.UpdateSandboxStatus(id, "running")
 	}
 	s.saveVMState(id, sb.EngineID) // persist updated state
-	updated, _ := s.store.GetSandbox(id)
+	updated, _ := s.store.GetSandboxByID(id)
 	writeJSON(w, 200, updated)
 }
 
@@ -464,9 +491,8 @@ func (s *Server) handleSandboxExec(w http.ResponseWriter, r *http.Request, id st
 		errResp(w, 405, "method not allowed")
 		return
 	}
-	sb, err := s.store.GetSandbox(id)
-	if err != nil {
-		errResp(w, 404, "not found")
+	sb := s.getUserSandbox(w, r, id)
+	if sb == nil {
 		return
 	}
 	var req execReq
@@ -547,9 +573,8 @@ var upgrader = websocket.Upgrader{
 }
 
 func (s *Server) handleSandboxWS(w http.ResponseWriter, r *http.Request, id string) {
-	sb, err := s.store.GetSandbox(id)
-	if err != nil {
-		errResp(w, 404, "not found")
+	sb := s.getUserSandbox(w, r, id)
+	if sb == nil {
 		return
 	}
 
@@ -622,9 +647,11 @@ type createSecretReq struct {
 }
 
 func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r.Context())
+
 	switch r.Method {
 	case http.MethodGet:
-		list, err := s.store.ListSecrets()
+		list, err := s.store.ListUserSecrets(user.ID)
 		if err != nil {
 			errResp(w, 500, err.Error())
 			return
@@ -643,12 +670,11 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 			errResp(w, 400, "name and value required")
 			return
 		}
-		// Store the value (will be encrypted by CLI before calling this)
-		if err := s.store.SetSecret(req.Name, []byte(req.Value)); err != nil {
+		if err := s.store.SetSecret(user.ID, req.Name, []byte(req.Value)); err != nil {
 			errResp(w, 500, err.Error())
 			return
 		}
-		sr, _ := s.store.GetSecret(req.Name)
+		sr, _ := s.store.GetSecret(user.ID, req.Name)
 		writeJSON(w, 201, sr)
 	default:
 		errResp(w, 405, "method not allowed")
@@ -656,6 +682,7 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r.Context())
 	name := strings.TrimPrefix(r.URL.Path, "/secrets/")
 	if name == "" {
 		errResp(w, 400, "missing secret name")
@@ -663,7 +690,7 @@ func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodDelete:
-		if err := s.store.DeleteSecret(name); err != nil {
+		if err := s.store.DeleteSecret(user.ID, name); err != nil {
 			errResp(w, 404, err.Error())
 			return
 		}
@@ -687,9 +714,8 @@ func (s *Server) handleSandboxPorts(w http.ResponseWriter, r *http.Request, id s
 		errResp(w, 405, "method not allowed")
 		return
 	}
-	sb, err := s.store.GetSandbox(id)
-	if err != nil {
-		errResp(w, 404, "not found")
+	sb := s.getUserSandbox(w, r, id)
+	if sb == nil {
 		return
 	}
 
@@ -728,7 +754,8 @@ func (s *Server) handleAllPorts(w http.ResponseWriter, r *http.Request) {
 		errResp(w, 405, "method not allowed")
 		return
 	}
-	sandboxes, err := s.store.ListSandboxes()
+	user := UserFromContext(r.Context())
+	sandboxes, err := s.store.ListSandboxes(user.ID)
 	if err != nil {
 		errResp(w, 500, err.Error())
 		return
@@ -843,9 +870,8 @@ func (s *Server) handleSandboxProxyRoute(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	sb, err := s.store.GetSandbox(sandboxID)
-	if err != nil {
-		errResp(w, 404, "not found")
+	sb := s.getUserSandbox(w, r, sandboxID)
+	if sb == nil {
 		return
 	}
 
@@ -969,9 +995,8 @@ type FileEngine interface {
 }
 
 func (s *Server) handleSandboxFiles(w http.ResponseWriter, r *http.Request, id string) {
-	sb, err := s.store.GetSandbox(id)
-	if err != nil {
-		errResp(w, 404, "not found")
+	sb := s.getUserSandbox(w, r, id)
+	if sb == nil {
 		return
 	}
 
@@ -1073,9 +1098,8 @@ func (s *Server) handleSandboxSessions(w http.ResponseWriter, r *http.Request, i
 		errResp(w, 405, "method not allowed")
 		return
 	}
-	sb, err := s.store.GetSandbox(id)
-	if err != nil {
-		errResp(w, 404, "not found")
+	sb := s.getUserSandbox(w, r, id)
+	if sb == nil {
 		return
 	}
 	if err := s.ensureHot(r.Context(), sb.EngineID); err != nil {
@@ -1103,4 +1127,22 @@ func genID() string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
+
+func isValidName(name string) bool {
+	return validNameRe.MatchString(name)
+}
+
+// getUserSandbox is a helper that retrieves a sandbox scoped to the authenticated user.
+// Returns nil and writes a 404 error if not found.
+func (s *Server) getUserSandbox(w http.ResponseWriter, r *http.Request, id string) *store.Sandbox {
+	user := UserFromContext(r.Context())
+	sb, err := s.store.GetSandbox(user.ID, id)
+	if err != nil {
+		errResp(w, 404, "not found")
+		return nil
+	}
+	return sb
 }

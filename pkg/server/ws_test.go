@@ -31,14 +31,22 @@ func TestWebSocketTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := New(eng, st, "") // no auth — websocket.Dialer doesn't set headers easily
+	// Create a test user
+	keyHash := sha256Hex("ws-test-token")
+	st.CreateUser(store.User{
+		ID: "usr_ws", Name: "ws-user", APIKeyHash: keyHash,
+		MaxSandboxes: 50, MaxCPUsPerSandbox: 4, MaxMemoryMBPerSandbox: 4096,
+		SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
+	srv := New(eng, st)
 	ts := httptest.NewServer(srv)
 	defer func() { srv.Close(); ts.Close() }()
 
 	name := uniqueName(t, "ws")
 
 	// Create template
-	resp := doReqNoAuth(t, ts, "POST", "/templates", map[string]any{
+	resp := doReqWSTest(t, ts, "POST", "/templates", map[string]any{
 		"name":  "alpine",
 		"image": "alpine:latest",
 	})
@@ -46,7 +54,7 @@ func TestWebSocketTerminal(t *testing.T) {
 	decodeJSON(t, resp, &tmpl)
 
 	// Create sandbox
-	resp = doReqNoAuth(t, ts, "POST", "/sandboxes", map[string]any{
+	resp = doReqWSTest(t, ts, "POST", "/sandboxes", map[string]any{
 		"template_id": tmpl.ID,
 		"name":        name,
 	})
@@ -55,11 +63,13 @@ func TestWebSocketTerminal(t *testing.T) {
 	}
 	var sb store.Sandbox
 	decodeJSON(t, resp, &sb)
-	defer doReqNoAuth(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil)
+	defer doReqWSTest(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil)
 
-	// Connect WebSocket
+	// Connect WebSocket with auth header
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws"
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	wsHeader := http.Header{}
+	wsHeader.Set("Authorization", "Bearer ws-test-token")
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, wsHeader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +114,7 @@ func TestWebSocketTerminal(t *testing.T) {
 	t.Logf("WebSocket terminal test passed, output: %q", total)
 }
 
-func doReqNoAuth(t *testing.T, ts *httptest.Server, method, path string, body any) *http.Response {
+func doReqWSTest(t *testing.T, ts *httptest.Server, method, path string, body any) *http.Response {
 	t.Helper()
 	var bodyReader *strings.Reader
 	if body != nil {
@@ -118,6 +128,7 @@ func doReqNoAuth(t *testing.T, ts *httptest.Server, method, path string, body an
 		req, _ = http.NewRequest(method, ts.URL+path, nil)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer ws-test-token")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

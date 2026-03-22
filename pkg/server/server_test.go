@@ -115,6 +115,9 @@ func cleanupDockerVolume(t *testing.T, name string) {
 	})
 }
 
+// testAPIKey is the plaintext key used in tests. Its SHA-256 hash is stored in the DB.
+const testAPIKey = "test-token"
+
 func setup(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
 	skipIfNoDocker(t)
@@ -126,12 +129,20 @@ func setup(t *testing.T) (*Server, *httptest.Server) {
 		t.Fatal(err)
 	}
 
+	// Create a test user with the well-known API key
+	keyHash := sha256Hex(testAPIKey)
+	st.CreateUser(store.User{
+		ID: "usr_test", Name: "test-user", APIKeyHash: keyHash,
+		MaxSandboxes: 50, MaxCPUsPerSandbox: 4, MaxMemoryMBPerSandbox: 4096,
+		SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
 	eng, err := dockerengine.New()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	srv := New(eng, st, "test-token")
+	srv := New(eng, st)
 	ts := httptest.NewServer(srv)
 	t.Cleanup(func() {
 		srv.Close()
@@ -149,7 +160,7 @@ func doReq(t *testing.T, ts *httptest.Server, method, path string, body any) *ht
 		bodyReader = bytes.NewReader(b)
 	}
 	req, _ := http.NewRequest(method, ts.URL+path, bodyReader)
-	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -217,26 +228,25 @@ func TestAuthRequired(t *testing.T) {
 	}
 }
 
-func TestNoAuthWhenTokenEmpty(t *testing.T) {
-	skipIfNoDocker(t)
-	ensureAlpinePulled(t)
+func TestAuthInvalidKey(t *testing.T) {
+	_, ts := setup(t)
 
-	dir := t.TempDir()
-	st, _ := store.New(filepath.Join(dir, "test.db"))
-	defer st.Close()
-
-	eng, err := dockerengine.New()
-	if err != nil {
-		t.Fatal(err)
+	req, _ := http.NewRequest("GET", ts.URL+"/templates", nil)
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	resp, _ := http.DefaultClient.Do(req)
+	if resp.StatusCode != 401 {
+		t.Fatalf("expected 401 for wrong key, got %d", resp.StatusCode)
 	}
+}
 
-	srv := New(eng, st, "") // empty token = no auth
-	ts := httptest.NewServer(srv)
-	defer func() { srv.Close(); ts.Close() }()
+func TestAuthQueryParamRejected(t *testing.T) {
+	_, ts := setup(t)
 
-	resp, _ := http.Get(ts.URL + "/templates")
-	if resp.StatusCode != 200 {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	// Query parameter auth should no longer work
+	req, _ := http.NewRequest("GET", ts.URL+"/templates?token="+testAPIKey, nil)
+	resp, _ := http.DefaultClient.Do(req)
+	if resp.StatusCode != 401 {
+		t.Fatalf("expected 401 for query param auth, got %d", resp.StatusCode)
 	}
 }
 
@@ -865,19 +875,21 @@ func TestWSAuthRequired(t *testing.T) {
 	}
 }
 
-func TestWSAuthQueryParam(t *testing.T) {
+func TestWSAuthQueryParamRejected(t *testing.T) {
 	_, ts := setup(t)
 
 	name := uniqueName(t, "wsqp")
 	_, sb := createTemplateAndSandbox(t, ts, name, nil)
 
-	// Connect with correct token in query param
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws?token=test-token"
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("expected WS dial with query param token to succeed: %v", err)
+	// Query param auth should no longer work
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws?token=" + testAPIKey
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected WS dial with query param to fail")
 	}
-	ws.Close()
+	if resp != nil && resp.StatusCode != 401 {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
 }
 
 func TestWSAuthBearerHeader(t *testing.T) {
@@ -889,7 +901,7 @@ func TestWSAuthBearerHeader(t *testing.T) {
 	// Connect with correct token in Authorization header
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws"
 	header := http.Header{}
-	header.Set("Authorization", "Bearer test-token")
+	header.Set("Authorization", "Bearer "+testAPIKey)
 	ws, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 	if err != nil {
 		t.Fatalf("expected WS dial with bearer header to succeed: %v", err)
@@ -903,7 +915,7 @@ func TestRequestBodyTooLarge(t *testing.T) {
 	// Send a 2MB body — should be rejected
 	bigBody := strings.Repeat("x", 2<<20)
 	req, _ := http.NewRequest("POST", ts.URL+"/sandboxes", strings.NewReader(bigBody))
-	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -961,7 +973,7 @@ func TestExecStreamNDJSON(t *testing.T) {
 	// Request with Accept: application/x-ndjson
 	body, _ := json.Marshal(map[string]any{"cmd": []string{"echo", "streamed"}})
 	req, _ := http.NewRequest("POST", ts.URL+"/sandboxes/"+sb.ID+"/exec", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/x-ndjson")
 	resp, err := http.DefaultClient.Do(req)
@@ -1033,9 +1045,11 @@ func TestWSAuthWrongToken(t *testing.T) {
 	name := uniqueName(t, "wsbad")
 	_, sb := createTemplateAndSandbox(t, ts, name, nil)
 
-	// Connect with wrong token
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws?token=wrong-token"
-	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	// Connect with wrong token in header
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws"
+	header := http.Header{}
+	header.Set("Authorization", "Bearer wrong-token")
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
 	if err == nil {
 		t.Fatal("expected WS dial with wrong token to fail")
 	}

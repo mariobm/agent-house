@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +16,10 @@ import (
 	"github.com/sahil-shubham/bhatti/pkg/engine"
 	"github.com/sahil-shubham/bhatti/pkg/store"
 )
+
+type contextKey string
+
+const userContextKey contextKey = "user"
 
 // ThermalEngine is optionally implemented by engines that support thermal management.
 type ThermalEngine interface {
@@ -32,7 +39,6 @@ type ThermalConfig struct {
 type Server struct {
 	engine       engine.Engine
 	store        *store.Store
-	authToken    string
 	mux          *http.ServeMux
 	proxy        *ProxyManager
 	stopScan     context.CancelFunc
@@ -48,20 +54,16 @@ func (s *Server) touchActivity(engineID string) {
 	s.lastActivity.Store(engineID, time.Now())
 }
 
-// New creates a new API server. If webDir is non-empty, serves the web UI at /.
-func New(eng engine.Engine, st *store.Store, authToken string, webDir ...string) *Server {
+// New creates a new API server.
+func New(eng engine.Engine, st *store.Store) *Server {
 	s := &Server{
 		engine:    eng,
 		store:     st,
-		authToken: authToken,
 		mux:       http.NewServeMux(),
 		proxy:     NewProxyManager(eng),
 		startTime: time.Now(),
 	}
 	s.routes()
-	if len(webDir) > 0 && webDir[0] != "" {
-		s.mux.Handle("/", http.FileServer(http.Dir(webDir[0])))
-	}
 	s.startPortScanner(3 * time.Second)
 	return s
 }
@@ -108,7 +110,7 @@ func (s *Server) StartThermalManager(cfg ThermalConfig) {
 }
 
 func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
-	sandboxes, err := s.store.ListSandboxes()
+	sandboxes, err := s.store.ListAllSandboxes()
 	if err != nil {
 		return
 	}
@@ -193,7 +195,7 @@ func (s *Server) startPortScanner(interval time.Duration) {
 }
 
 func (s *Server) scanPorts() {
-	sandboxes, err := s.store.ListSandboxes()
+	sandboxes, err := s.store.ListAllSandboxes()
 	if err != nil {
 		return
 	}
@@ -244,21 +246,46 @@ func (s *Server) scanPorts() {
 
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.authToken != "" && !isStaticPath(r.URL.Path) {
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if token == "" {
-			token = r.URL.Query().Get("token")
-		}
-		if token != s.authToken {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-			return
-		}
+	// Normalize path before any checks to prevent path confusion attacks
+	cleanPath := path.Clean(r.URL.Path)
+
+	// Unauthenticated endpoints (exact match only)
+	if cleanPath == "/health" {
+		s.mux.ServeHTTP(w, r)
+		return
 	}
-	s.mux.ServeHTTP(w, r)
+
+	// Extract bearer token from Authorization header only.
+	// No query parameter auth — eliminates token-in-URL leakage.
+	authHeader := r.Header.Get("Authorization")
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	if token == "" || token == authHeader {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authorization required"})
+		return
+	}
+
+	// Hash the incoming token and look up user by hash.
+	hash := sha256Hex(token)
+	user, err := s.store.GetUserByKeyHash(hash)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid api key"})
+		return
+	}
+
+	// Attach user to request context
+	ctx := context.WithValue(r.Context(), userContextKey, user)
+	s.mux.ServeHTTP(w, r.WithContext(ctx))
 }
 
-func isStaticPath(path string) bool {
-	return path == "/" || path == "/index.html" || path == "/health" || strings.HasPrefix(path, "/static/")
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+// UserFromContext extracts the authenticated user from the request context.
+func UserFromContext(ctx context.Context) *store.User {
+	u, _ := ctx.Value(userContextKey).(*store.User)
+	return u
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

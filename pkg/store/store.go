@@ -57,6 +57,7 @@ type Sandbox struct {
 	Status     string          `json:"status"`
 	IP         string          `json:"ip"`
 	EngineMeta json.RawMessage `json:"engine_meta"`
+	CreatedBy  string          `json:"created_by"`
 	CreatedAt  time.Time       `json:"created_at"`
 	StoppedAt  *time.Time      `json:"stopped_at,omitempty"`
 }
@@ -67,6 +68,18 @@ type SecretRecord struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	// Encrypted value is NOT included in JSON serialization
+}
+
+// User is an authenticated API user.
+type User struct {
+	ID                    string    `json:"id"`
+	Name                  string    `json:"name"`
+	APIKeyHash            string    `json:"-"`                        // never serialized
+	MaxSandboxes          int       `json:"max_sandboxes"`
+	MaxCPUsPerSandbox     int       `json:"max_cpus_per_sandbox"`
+	MaxMemoryMBPerSandbox int       `json:"max_memory_mb_per_sandbox"`
+	SubnetIndex           int       `json:"subnet_index"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 // Store wraps SQLite operations.
@@ -120,6 +133,17 @@ CREATE TABLE IF NOT EXISTS secrets (
 	path TEXT NOT NULL,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS users (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL UNIQUE,
+	api_key_hash TEXT NOT NULL UNIQUE,
+	max_sandboxes INTEGER NOT NULL DEFAULT 5,
+	max_cpus_per_sandbox INTEGER NOT NULL DEFAULT 4,
+	max_memory_mb_per_sandbox INTEGER NOT NULL DEFAULT 4096,
+	subnet_index INTEGER NOT NULL DEFAULT 0,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 // migrations runs ALTER TABLE statements for columns added after initial schema.
@@ -139,6 +163,8 @@ ALTER TABLE sandboxes ADD COLUMN socket_path TEXT DEFAULT '';
 ALTER TABLE sandboxes ADD COLUMN vsock_path TEXT DEFAULT '';
 ALTER TABLE secrets ADD COLUMN value_encrypted BLOB DEFAULT NULL;
 ALTER TABLE secrets ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE sandboxes ADD COLUMN created_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE secrets ADD COLUMN user_id TEXT NOT NULL DEFAULT '';
 `
 
 // New opens (or creates) the SQLite database and runs migrations.
@@ -158,11 +184,121 @@ func New(dbPath string) (*Store, error) {
 		}
 		db.Exec(stmt) // ignore errors (column already exists)
 	}
+
+	// Create unique index on (created_by, name) for non-destroyed sandboxes.
+	// Prevents a user from having two sandboxes with the same name.
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sandboxes_user_name
+		ON sandboxes(created_by, name) WHERE status != 'destroyed'`)
+
 	return &Store{db: db}, nil
 }
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
+
+// --- Users ---
+
+// CreateUser creates a new API user.
+func (s *Store) CreateUser(u User) error {
+	_, err := s.db.Exec(
+		`INSERT INTO users (id, name, api_key_hash, max_sandboxes, max_cpus_per_sandbox, max_memory_mb_per_sandbox, subnet_index, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.ID, u.Name, u.APIKeyHash, u.MaxSandboxes, u.MaxCPUsPerSandbox, u.MaxMemoryMBPerSandbox, u.SubnetIndex, u.CreatedAt,
+	)
+	return err
+}
+
+// GetUserByKeyHash looks up a user by the SHA-256 hash of their API key.
+func (s *Store) GetUserByKeyHash(hash string) (*User, error) {
+	var u User
+	err := s.db.QueryRow(
+		`SELECT id, name, api_key_hash, max_sandboxes, max_cpus_per_sandbox, max_memory_mb_per_sandbox, subnet_index, created_at
+		 FROM users WHERE api_key_hash = ?`, hash).Scan(
+		&u.ID, &u.Name, &u.APIKeyHash, &u.MaxSandboxes, &u.MaxCPUsPerSandbox, &u.MaxMemoryMBPerSandbox, &u.SubnetIndex, &u.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// GetUser looks up a user by ID.
+func (s *Store) GetUser(id string) (*User, error) {
+	var u User
+	err := s.db.QueryRow(
+		`SELECT id, name, api_key_hash, max_sandboxes, max_cpus_per_sandbox, max_memory_mb_per_sandbox, subnet_index, created_at
+		 FROM users WHERE id = ?`, id).Scan(
+		&u.ID, &u.Name, &u.APIKeyHash, &u.MaxSandboxes, &u.MaxCPUsPerSandbox, &u.MaxMemoryMBPerSandbox, &u.SubnetIndex, &u.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// ListUsers returns all users.
+func (s *Store) ListUsers() ([]User, error) {
+	rows, err := s.db.Query(
+		`SELECT id, name, api_key_hash, max_sandboxes, max_cpus_per_sandbox, max_memory_mb_per_sandbox, subnet_index, created_at
+		 FROM users ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Name, &u.APIKeyHash, &u.MaxSandboxes, &u.MaxCPUsPerSandbox, &u.MaxMemoryMBPerSandbox, &u.SubnetIndex, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// DeleteUser removes a user. Fails if the user has active sandboxes or secrets.
+func (s *Store) DeleteUser(id string) error {
+	count, _ := s.CountUserSandboxes(id)
+	if count > 0 {
+		return fmt.Errorf("user has %d active sandbox(es) — destroy them first", count)
+	}
+	secrets, _ := s.ListUserSecrets(id)
+	if len(secrets) > 0 {
+		return fmt.Errorf("user has %d secret(s) — delete them first", len(secrets))
+	}
+	res, err := s.db.Exec(`DELETE FROM users WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("user %q not found", id)
+	}
+	return nil
+}
+
+// NextSubnetIndex returns MAX(subnet_index)+1 for allocating new user networks.
+func (s *Store) NextSubnetIndex() (int, error) {
+	var maxIdx sql.NullInt64
+	s.db.QueryRow(`SELECT MAX(subnet_index) FROM users`).Scan(&maxIdx)
+	if !maxIdx.Valid {
+		return 1, nil
+	}
+	return int(maxIdx.Int64) + 1, nil
+}
+
+// RotateUserKey updates a user's API key hash. Returns error if user not found.
+func (s *Store) RotateUserKey(id, newKeyHash string) error {
+	res, err := s.db.Exec(`UPDATE users SET api_key_hash = ? WHERE id = ?`, newKeyHash, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("user %q not found", id)
+	}
+	return nil
+}
 
 // --- Templates ---
 
@@ -242,24 +378,34 @@ func scanTemplate(s scanner) (*Template, error) {
 
 // --- Sandboxes ---
 
+const sandboxCols = `id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at, stopped_at`
+
 func (s *Store) CreateSandbox(sb Sandbox) error {
 	if sb.EngineMeta == nil {
 		sb.EngineMeta = json.RawMessage("{}")
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO sandboxes (id, name, template_id, engine_id, status, ip, engine_meta_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		sb.ID, sb.Name, sb.TemplateID, sb.EngineID, sb.Status, sb.IP, string(sb.EngineMeta), sb.CreatedAt,
+		`INSERT INTO sandboxes (id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sb.ID, sb.Name, sb.TemplateID, sb.EngineID, sb.Status, sb.IP, string(sb.EngineMeta), sb.CreatedBy, sb.CreatedAt,
 	)
 	return err
 }
 
-func (s *Store) GetSandbox(id string) (*Sandbox, error) {
-	row := s.db.QueryRow(`SELECT id, name, template_id, engine_id, status, ip, engine_meta_json, created_at, stopped_at FROM sandboxes WHERE id = ?`, id)
+// GetSandbox returns a sandbox scoped to a user. Use GetSandboxByID for internal/unscoped access.
+func (s *Store) GetSandbox(userID, id string) (*Sandbox, error) {
+	row := s.db.QueryRow(`SELECT `+sandboxCols+` FROM sandboxes WHERE id = ? AND created_by = ?`, id, userID)
 	return scanSandbox(row)
 }
 
-func (s *Store) ListSandboxes() ([]Sandbox, error) {
-	rows, err := s.db.Query(`SELECT id, name, template_id, engine_id, status, ip, engine_meta_json, created_at, stopped_at FROM sandboxes ORDER BY created_at DESC`)
+// GetSandboxByID returns a sandbox by ID regardless of owner. For internal use (thermal manager, recovery).
+func (s *Store) GetSandboxByID(id string) (*Sandbox, error) {
+	row := s.db.QueryRow(`SELECT `+sandboxCols+` FROM sandboxes WHERE id = ?`, id)
+	return scanSandbox(row)
+}
+
+// ListSandboxes returns sandboxes for a user.
+func (s *Store) ListSandboxes(userID string) ([]Sandbox, error) {
+	rows, err := s.db.Query(`SELECT `+sandboxCols+` FROM sandboxes WHERE created_by = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +419,31 @@ func (s *Store) ListSandboxes() ([]Sandbox, error) {
 		out = append(out, *sb)
 	}
 	return out, rows.Err()
+}
+
+// ListAllSandboxes returns all sandboxes regardless of owner. For internal use (thermal manager, recovery, port scanner).
+func (s *Store) ListAllSandboxes() ([]Sandbox, error) {
+	rows, err := s.db.Query(`SELECT ` + sandboxCols + ` FROM sandboxes ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Sandbox
+	for rows.Next() {
+		sb, err := scanSandbox(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *sb)
+	}
+	return out, rows.Err()
+}
+
+// CountUserSandboxes returns the number of non-destroyed sandboxes for a user.
+func (s *Store) CountUserSandboxes(userID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM sandboxes WHERE created_by = ? AND status != 'destroyed'`, userID).Scan(&count)
+	return count, err
 }
 
 func (s *Store) UpdateSandboxStatus(id, status string) error {
@@ -291,7 +462,21 @@ func (s *Store) StopSandbox(id string) error {
 	return err
 }
 
-func (s *Store) DeleteSandbox(id string) error {
+// DeleteSandbox removes a sandbox scoped to a user.
+func (s *Store) DeleteSandbox(userID, id string) error {
+	res, err := s.db.Exec(`DELETE FROM sandboxes WHERE id = ? AND created_by = ?`, id, userID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("sandbox %q not found", id)
+	}
+	return nil
+}
+
+// DeleteSandboxByID removes a sandbox by ID regardless of owner. For internal cleanup.
+func (s *Store) DeleteSandboxByID(id string) error {
 	res, err := s.db.Exec(`DELETE FROM sandboxes WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -307,7 +492,7 @@ func scanSandbox(s scanner) (*Sandbox, error) {
 	var sb Sandbox
 	var metaJSON string
 	var stoppedAt sql.NullTime
-	err := s.Scan(&sb.ID, &sb.Name, &sb.TemplateID, &sb.EngineID, &sb.Status, &sb.IP, &metaJSON, &sb.CreatedAt, &stoppedAt)
+	err := s.Scan(&sb.ID, &sb.Name, &sb.TemplateID, &sb.EngineID, &sb.Status, &sb.IP, &metaJSON, &sb.CreatedBy, &sb.CreatedAt, &stoppedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -320,34 +505,50 @@ func scanSandbox(s scanner) (*Sandbox, error) {
 
 // --- Secrets ---
 
-// SetSecret creates or updates an encrypted secret.
-func (s *Store) SetSecret(name string, encrypted []byte) error {
+// SetSecret creates or updates an encrypted secret for a user.
+func (s *Store) SetSecret(userID, name string, encrypted []byte) error {
 	now := time.Now()
+	// Use composite key (user_id, name) for uniqueness
 	_, err := s.db.Exec(
-		`INSERT INTO secrets (name, path, value_encrypted, created_at, updated_at)
-		 VALUES (?, '', ?, ?, ?)
-		 ON CONFLICT(name) DO UPDATE SET value_encrypted = excluded.value_encrypted, updated_at = excluded.updated_at`,
-		name, encrypted, now, now)
+		`INSERT INTO secrets (name, path, value_encrypted, user_id, created_at, updated_at)
+		 VALUES (?, '', ?, ?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET value_encrypted = excluded.value_encrypted, updated_at = excluded.updated_at
+		 WHERE user_id = ?`,
+		name, encrypted, userID, now, now, userID)
 	return err
 }
 
-// GetSecretValue returns the encrypted bytes for a secret.
-func (s *Store) GetSecretValue(name string) ([]byte, error) {
+// GetSecretValue returns the encrypted bytes for a user's secret.
+func (s *Store) GetSecretValue(userID, name string) ([]byte, error) {
 	var encrypted []byte
-	err := s.db.QueryRow(`SELECT value_encrypted FROM secrets WHERE name = ?`, name).Scan(&encrypted)
+	err := s.db.QueryRow(`SELECT value_encrypted FROM secrets WHERE name = ? AND user_id = ?`, name, userID).Scan(&encrypted)
 	if err != nil {
 		return nil, fmt.Errorf("secret %q not found", name)
 	}
 	return encrypted, nil
 }
 
-// ListSecrets returns metadata for all secrets (no values).
-func (s *Store) ListSecrets() ([]SecretRecord, error) {
+// ListUserSecrets returns metadata for a user's secrets (no values).
+func (s *Store) ListUserSecrets(userID string) ([]SecretRecord, error) {
+	rows, err := s.db.Query(`SELECT name, created_at, COALESCE(updated_at, created_at) FROM secrets WHERE user_id = ? ORDER BY name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSecretRecords(rows)
+}
+
+// ListAllSecrets returns metadata for all secrets (no values). For admin/internal use.
+func (s *Store) ListAllSecrets() ([]SecretRecord, error) {
 	rows, err := s.db.Query(`SELECT name, created_at, COALESCE(updated_at, created_at) FROM secrets ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanSecretRecords(rows)
+}
+
+func scanSecretRecords(rows *sql.Rows) ([]SecretRecord, error) {
 	var out []SecretRecord
 	for rows.Next() {
 		var sr SecretRecord
@@ -362,11 +563,11 @@ func (s *Store) ListSecrets() ([]SecretRecord, error) {
 	return out, rows.Err()
 }
 
-// GetSecret returns metadata for a secret (no value).
-func (s *Store) GetSecret(name string) (*SecretRecord, error) {
+// GetSecret returns metadata for a user's secret (no value).
+func (s *Store) GetSecret(userID, name string) (*SecretRecord, error) {
 	var sr SecretRecord
 	var createdStr, updatedStr string
-	err := s.db.QueryRow(`SELECT name, created_at, COALESCE(updated_at, created_at) FROM secrets WHERE name = ?`, name).
+	err := s.db.QueryRow(`SELECT name, created_at, COALESCE(updated_at, created_at) FROM secrets WHERE name = ? AND user_id = ?`, name, userID).
 		Scan(&sr.Name, &createdStr, &updatedStr)
 	if err != nil {
 		return nil, err
@@ -476,8 +677,8 @@ func (s *Store) DetachVolumes(sandboxID string) error {
 	return err
 }
 
-func (s *Store) DeleteSecret(name string) error {
-	res, err := s.db.Exec(`DELETE FROM secrets WHERE name = ?`, name)
+func (s *Store) DeleteSecret(userID, name string) error {
+	res, err := s.db.Exec(`DELETE FROM secrets WHERE name = ? AND user_id = ?`, name, userID)
 	if err != nil {
 		return err
 	}
