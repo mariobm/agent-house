@@ -169,10 +169,10 @@ else
 fi
 
 # --- Age key (for secret encryption) ---
-
+# The age key is generated automatically on first secret creation.
+# If it already exists, leave it alone.
 if [[ ! -f "$DATA_DIR/age.key" ]]; then
-    touch "$DATA_DIR/age.key"
-    chmod 600 "$DATA_DIR/age.key"
+    echo "==> Age key will be generated on first secret creation"
 fi
 
 # --- Bootstrap admin user ---
@@ -258,6 +258,9 @@ echo "    bhatti create --name hello"
 echo "    bhatti exec hello -- echo 'it works'"
 echo "    bhatti shell hello"
 echo "    bhatti destroy hello"
+echo ""
+echo "  ⚠  BACK UP: $DATA_DIR/age.key"
+echo "     If lost, all encrypted secrets become unrecoverable."
 if [[ "$INSTALL_SYSTEMD" == "true" ]]; then
     echo ""
     echo "  systemd service: active (bhatti.service)"

@@ -39,6 +39,7 @@ type ThermalConfig struct {
 type Server struct {
 	engine       engine.Engine
 	store        *store.Store
+	dataDir      string // path to data directory (for age.key)
 	mux          *http.ServeMux
 	stopThermal  context.CancelFunc
 	startTime    time.Time
@@ -52,11 +53,17 @@ func (s *Server) touchActivity(engineID string) {
 	s.lastActivity.Store(engineID, time.Now())
 }
 
-// New creates a new API server.
-func New(eng engine.Engine, st *store.Store) *Server {
+// New creates a new API server. dataDir is the path to the data directory
+// containing age.key for secret encryption.
+func New(eng engine.Engine, st *store.Store, dataDir ...string) *Server {
+	dir := ""
+	if len(dataDir) > 0 {
+		dir = dataDir[0]
+	}
 	s := &Server{
 		engine:    eng,
 		store:     st,
+		dataDir:   dir,
 		mux:       http.NewServeMux(),
 		startTime: time.Now(),
 	}

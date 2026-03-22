@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/sahil-shubham/bhatti/pkg/agent"
 	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/sahil-shubham/bhatti/pkg/secrets"
 	"github.com/sahil-shubham/bhatti/pkg/store"
 )
 
@@ -262,16 +264,21 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// Resolve secrets from template
+			// Resolve secrets from template — decrypt before injecting
 			secretEnv := make(map[string]string)
 			secretFiles := make(map[string]engine.FileSpec)
 			for _, secretName := range tmpl.Secrets {
-				encrypted, err := s.store.GetSecretValue(user.ID, secretName)
+				ciphertext, err := s.store.GetSecretValue(user.ID, secretName)
 				if err != nil {
 					errResp(w, 400, fmt.Sprintf("secret %q not found", secretName))
 					return
 				}
-				secretEnv[secretName] = string(encrypted)
+				plaintext, err := s.decryptSecret(ciphertext)
+				if err != nil {
+					errResp(w, 500, fmt.Sprintf("decrypt secret %q failed", secretName))
+					return
+				}
+				secretEnv[secretName] = string(plaintext)
 			}
 
 			// Merge request env overrides
@@ -685,7 +692,13 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 			errResp(w, 400, "name and value required")
 			return
 		}
-		if err := s.store.SetSecret(user.ID, req.Name, []byte(req.Value)); err != nil {
+		// Encrypt the secret value before storing
+		ciphertext, err := s.encryptSecret([]byte(req.Value))
+		if err != nil {
+			errResp(w, 500, "encryption failed")
+			return
+		}
+		if err := s.store.SetSecret(user.ID, req.Name, ciphertext); err != nil {
 			errResp(w, 500, err.Error())
 			return
 		}
@@ -1124,6 +1137,34 @@ func (s *Server) handleSandboxSessions(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 	errResp(w, 501, "engine does not support session listing")
+}
+
+// encryptSecret encrypts a plaintext secret using the age key in dataDir.
+func (s *Server) encryptSecret(plaintext []byte) ([]byte, error) {
+	if s.dataDir == "" {
+		// No dataDir configured (e.g., tests) — store plaintext
+		return plaintext, nil
+	}
+	keyPath := filepath.Join(s.dataDir, "age.key")
+	_, recipient, err := secrets.EnsureKey(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load age key: %w", err)
+	}
+	return secrets.Encrypt(plaintext, recipient)
+}
+
+// decryptSecret decrypts a ciphertext secret using the age key in dataDir.
+func (s *Server) decryptSecret(ciphertext []byte) ([]byte, error) {
+	if s.dataDir == "" {
+		// No dataDir configured (e.g., tests) — data is plaintext
+		return ciphertext, nil
+	}
+	keyPath := filepath.Join(s.dataDir, "age.key")
+	identity, _, err := secrets.EnsureKey(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load age key: %w", err)
+	}
+	return secrets.Decrypt(ciphertext, identity)
 }
 
 func genID() string {

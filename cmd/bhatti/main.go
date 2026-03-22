@@ -76,7 +76,7 @@ func runDaemon() {
 	}
 
 	// Start server
-	srv := server.New(eng, st)
+	srv := server.New(eng, st, cfg.DataDir)
 
 	// Resolve the port for display
 	port := cfg.Listen

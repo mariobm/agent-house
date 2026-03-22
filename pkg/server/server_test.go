@@ -822,3 +822,100 @@ func TestCrossUserSecretIsolationHTTP(t *testing.T) {
 
 	alice(t, "DELETE", "/secrets/alice-secret", nil)
 }
+
+func TestSecretEncryptDecrypt(t *testing.T) {
+	// Setup server with a real dataDir containing an age key
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keyHash := sha256Hex("encrypt-test-key")
+	st.CreateUser(store.User{
+		ID: "usr_enc", Name: "encrypt-user", APIKeyHash: keyHash,
+		MaxSandboxes: 5, MaxCPUsPerSandbox: 4, MaxMemoryMBPerSandbox: 4096,
+		SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
+	eng := newMockEngine()
+	srv := New(eng, st, dir) // pass dataDir for age key
+	ts := httptest.NewServer(srv)
+	t.Cleanup(func() { srv.Close(); ts.Close(); st.Close() })
+
+	doReqEnc := func(method, path string, body any) *http.Response {
+		t.Helper()
+		var bodyReader io.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			bodyReader = bytes.NewReader(b)
+		}
+		req, _ := http.NewRequest(method, ts.URL+path, bodyReader)
+		req.Header.Set("Authorization", "Bearer encrypt-test-key")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// Create a secret
+	resp := doReqEnc("POST", "/secrets", map[string]any{
+		"name": "my-api-key", "value": "sk-super-secret-value-12345",
+	})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create secret: expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	// Verify the stored bytes are NOT plaintext
+	raw, err := st.GetSecretValue("usr_enc", "my-api-key")
+	if err != nil {
+		t.Fatalf("get raw secret: %v", err)
+	}
+	if string(raw) == "sk-super-secret-value-12345" {
+		t.Fatal("secret stored as plaintext — encryption not working!")
+	}
+	if len(raw) == 0 {
+		t.Fatal("secret stored as empty bytes")
+	}
+	t.Logf("stored %d bytes of ciphertext (not plaintext)", len(raw))
+
+	// Verify the secret can be decrypted back to the original value
+	// We test this by checking the server can resolve it correctly.
+	// The secrets list endpoint returns metadata only (no values),
+	// so we test decryption via the internal helper.
+	plaintext, err := srv.decryptSecret(raw)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if string(plaintext) != "sk-super-secret-value-12345" {
+		t.Fatalf("decrypted value = %q, want 'sk-super-secret-value-12345'", plaintext)
+	}
+	t.Log("secret encrypted at rest and decrypts correctly")
+
+	// Update the secret — should re-encrypt
+	resp = doReqEnc("POST", "/secrets", map[string]any{
+		"name": "my-api-key", "value": "sk-updated-value",
+	})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("update secret: expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	raw2, _ := st.GetSecretValue("usr_enc", "my-api-key")
+	if string(raw2) == "sk-updated-value" {
+		t.Fatal("updated secret stored as plaintext")
+	}
+	plaintext2, _ := srv.decryptSecret(raw2)
+	if string(plaintext2) != "sk-updated-value" {
+		t.Fatalf("updated decrypted = %q, want 'sk-updated-value'", plaintext2)
+	}
+	t.Log("secret update re-encrypts correctly")
+
+	// Clean up
+	doReqEnc("DELETE", "/secrets/my-api-key", nil)
+}
