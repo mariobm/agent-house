@@ -4,9 +4,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sahil-shubham/bhatti/pkg/store"
 )
 
 // cliTest holds the test server + helpers for CLI integration tests.
@@ -261,6 +264,145 @@ func TestCLIPS(t *testing.T) {
 		t.Errorf("init session not in ps output: %s", stdout)
 	}
 	t.Logf("ps output:\n%s", stdout)
+}
+
+// --- Local user command tests (no daemon required) ---
+
+func testLocalStore(t *testing.T) *store.Store {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
+func TestGenerateAPIKey(t *testing.T) {
+	key := generateAPIKey()
+	if !strings.HasPrefix(key, "bht_") {
+		t.Errorf("key should have bht_ prefix, got %q", key)
+	}
+	if len(key) != 4+64 { // "bht_" + 32 bytes hex
+		t.Errorf("key length: %d, want %d", len(key), 68)
+	}
+
+	// Two keys should be different
+	key2 := generateAPIKey()
+	if key == key2 {
+		t.Error("two generated keys should not be equal")
+	}
+}
+
+func TestSha256HexCLI(t *testing.T) {
+	hash := sha256HexCLI("test")
+	if len(hash) != 64 {
+		t.Errorf("hash length: %d, want 64", len(hash))
+	}
+	// Known SHA-256 of "test"
+	if hash != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" {
+		t.Errorf("unexpected hash: %s", hash)
+	}
+}
+
+func TestUserCreateAndLookup(t *testing.T) {
+	st := testLocalStore(t)
+
+	key := generateAPIKey()
+	hash := sha256HexCLI(key)
+
+	err := st.CreateUser(store.User{
+		ID: "usr_clitest", Name: "cli-user", APIKeyHash: hash,
+		MaxSandboxes: 10, MaxCPUsPerSandbox: 2, MaxMemoryMBPerSandbox: 2048,
+		SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Lookup by hash (simulates auth middleware)
+	u, err := st.GetUserByKeyHash(hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Name != "cli-user" || u.MaxSandboxes != 10 {
+		t.Fatalf("unexpected user: %+v", u)
+	}
+
+	// List
+	users, _ := st.ListUsers()
+	if len(users) != 1 {
+		t.Fatalf("expected 1 user, got %d", len(users))
+	}
+}
+
+func TestUserRotateKeyFlow(t *testing.T) {
+	st := testLocalStore(t)
+
+	oldKey := generateAPIKey()
+	oldHash := sha256HexCLI(oldKey)
+
+	st.CreateUser(store.User{
+		ID: "usr_rot", Name: "rotate-test", APIKeyHash: oldHash,
+		MaxSandboxes: 5, SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
+	// Rotate
+	newKey := generateAPIKey()
+	newHash := sha256HexCLI(newKey)
+	if err := st.RotateUserKey("usr_rot", newHash); err != nil {
+		t.Fatal(err)
+	}
+
+	// Old key doesn't work
+	_, err := st.GetUserByKeyHash(oldHash)
+	if err == nil {
+		t.Fatal("old key should not work after rotation")
+	}
+
+	// New key works
+	u, err := st.GetUserByKeyHash(newHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Name != "rotate-test" {
+		t.Fatalf("unexpected user: %+v", u)
+	}
+}
+
+func TestUserDeleteFlowWithProtection(t *testing.T) {
+	st := testLocalStore(t)
+
+	st.CreateUser(store.User{
+		ID: "usr_delf", Name: "del-flow", APIKeyHash: "h1",
+		MaxSandboxes: 5, SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
+	// Create a sandbox
+	st.CreateSandbox(store.Sandbox{
+		ID: "sb_delf", Name: "del-sb", Status: "running",
+		CreatedBy: "usr_delf", CreatedAt: time.Now(),
+	})
+
+	// Delete should fail
+	err := st.DeleteUser("usr_delf")
+	if err == nil || !strings.Contains(err.Error(), "active sandbox") {
+		t.Fatalf("expected deletion refused, got: %v", err)
+	}
+
+	// Destroy sandbox
+	st.DeleteSandboxByID("sb_delf")
+
+	// Now delete succeeds
+	if err := st.DeleteUser("usr_delf"); err != nil {
+		t.Fatal(err)
+	}
+
+	users, _ := st.ListUsers()
+	if len(users) != 0 {
+		t.Fatal("expected 0 users after delete")
+	}
 }
 
 func TestCLISecretCRUD(t *testing.T) {

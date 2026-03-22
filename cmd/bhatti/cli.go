@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,13 +13,16 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
 
 	"github.com/sahil-shubham/bhatti/pkg"
+	"github.com/sahil-shubham/bhatti/pkg/store"
 )
 
 var (
@@ -106,6 +112,10 @@ func runCLI() {
 		cmdFile(os.Args[2:])
 	case "secret":
 		cmdSecret(os.Args[2:])
+	case "user":
+		cmdUser(os.Args[2:])
+	case "setup":
+		cmdSetup(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -126,6 +136,8 @@ Commands:
   ps <id|name>                  List sessions in a sandbox
   file read|write|ls <id> PATH  File operations
   secret set|list|delete        Manage secrets
+  user create|list|delete|rotate-key  Manage users (local)
+  setup                         Configure CLI (endpoint + API key)
 
 Environment:
   BHATTI_URL     API endpoint (default: http://localhost:8080)
@@ -466,6 +478,247 @@ func cmdSecret(args []string) {
 	default:
 		fatal("usage: bhatti secret set|list|delete")
 	}
+}
+
+// --- user (local commands — operate on SQLite directly) ---
+
+func cmdUser(args []string) {
+	if len(args) == 0 {
+		fatal("usage: bhatti user create|list|delete|rotate-key")
+	}
+	switch args[0] {
+	case "create":
+		cmdUserCreate(args[1:])
+	case "list":
+		cmdUserList()
+	case "delete":
+		cmdUserDelete(args[1:])
+	case "rotate-key":
+		cmdUserRotateKey(args[1:])
+	default:
+		fatal("usage: bhatti user create|list|delete|rotate-key")
+	}
+}
+
+func cmdUserCreate(args []string) {
+	fs := flag.NewFlagSet("user create", flag.ExitOnError)
+	name := fs.String("name", "", "user name (required)")
+	maxSandboxes := fs.Int("max-sandboxes", 5, "max sandboxes for this user")
+	maxCPUs := fs.Int("max-cpus", 4, "max CPUs per sandbox")
+	maxMemory := fs.Int("max-memory", 4096, "max memory MB per sandbox")
+	fs.Parse(args)
+
+	if *name == "" {
+		fatal("usage: bhatti user create --name NAME [--max-sandboxes N]")
+	}
+
+	st := openLocalStore()
+	defer st.Close()
+
+	// Generate API key
+	apiKey := generateAPIKey()
+	keyHash := sha256HexCLI(apiKey)
+
+	// Allocate subnet index
+	subnetIdx, err := st.NextSubnetIndex()
+	if err != nil {
+		fatal("subnet index:", err)
+	}
+
+	// Generate user ID
+	idBytes := make([]byte, 4)
+	rand.Read(idBytes)
+	userID := "usr_" + hex.EncodeToString(idBytes)
+
+	u := store.User{
+		ID:                    userID,
+		Name:                  *name,
+		APIKeyHash:            keyHash,
+		MaxSandboxes:          *maxSandboxes,
+		MaxCPUsPerSandbox:     *maxCPUs,
+		MaxMemoryMBPerSandbox: *maxMemory,
+		SubnetIndex:           subnetIdx,
+		CreatedAt:             time.Now(),
+	}
+
+	if err := st.CreateUser(u); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			fatal(fmt.Sprintf("user %q already exists", *name))
+		}
+		fatal("create user:", err)
+	}
+
+	fmt.Printf("User created:\n")
+	fmt.Printf("  ID:       %s\n", u.ID)
+	fmt.Printf("  Name:     %s\n", u.Name)
+	fmt.Printf("  Subnet:   %d\n", u.SubnetIndex)
+	fmt.Printf("  API key:  %s\n", apiKey)
+	fmt.Println()
+	fmt.Println("This key will not be shown again. Save it now.")
+	fmt.Printf("\nQuick start:\n")
+	fmt.Printf("  export BHATTI_URL=%s\n", apiURL)
+	fmt.Printf("  export BHATTI_TOKEN=%s\n", apiKey)
+	fmt.Printf("  bhatti create --name my-sandbox\n")
+}
+
+func cmdUserList() {
+	st := openLocalStore()
+	defer st.Close()
+
+	users, err := st.ListUsers()
+	if err != nil {
+		fatal("list users:", err)
+	}
+
+	fmt.Printf("%-12s %-20s %-8s %-6s %-6s %-8s\n",
+		"ID", "NAME", "SANDBOXES", "CPUS", "MEM", "SUBNET")
+	for _, u := range users {
+		count, _ := st.CountUserSandboxes(u.ID)
+		fmt.Printf("%-12s %-20s %d/%-6d %-6d %-6d %-8d\n",
+			u.ID, u.Name, count, u.MaxSandboxes,
+			u.MaxCPUsPerSandbox, u.MaxMemoryMBPerSandbox, u.SubnetIndex)
+	}
+}
+
+func cmdUserDelete(args []string) {
+	if len(args) == 0 {
+		fatal("usage: bhatti user delete <name>")
+	}
+
+	st := openLocalStore()
+	defer st.Close()
+
+	// Find user by name
+	users, _ := st.ListUsers()
+	var userID string
+	for _, u := range users {
+		if u.Name == args[0] {
+			userID = u.ID
+			break
+		}
+	}
+	if userID == "" {
+		fatal(fmt.Sprintf("user %q not found", args[0]))
+	}
+
+	if err := st.DeleteUser(userID); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("deleted user %q\n", args[0])
+}
+
+func cmdUserRotateKey(args []string) {
+	if len(args) == 0 {
+		fatal("usage: bhatti user rotate-key <name>")
+	}
+
+	st := openLocalStore()
+	defer st.Close()
+
+	// Find user by name
+	users, _ := st.ListUsers()
+	var userID string
+	for _, u := range users {
+		if u.Name == args[0] {
+			userID = u.ID
+			break
+		}
+	}
+	if userID == "" {
+		fatal(fmt.Sprintf("user %q not found", args[0]))
+	}
+
+	newKey := generateAPIKey()
+	newHash := sha256HexCLI(newKey)
+
+	if err := st.RotateUserKey(userID, newHash); err != nil {
+		fatal(err)
+	}
+
+	fmt.Printf("API key rotated for %q\n", args[0])
+	fmt.Printf("  New key: %s\n", newKey)
+	fmt.Println()
+	fmt.Println("The old key is immediately invalidated.")
+	fmt.Println("This key will not be shown again. Save it now.")
+}
+
+// openLocalStore opens the SQLite store from the local config.
+// Used by user commands which operate directly on the DB.
+func openLocalStore() *store.Store {
+	cfg, err := pkg.LoadConfig()
+	if err != nil {
+		fatal("load config:", err)
+	}
+	st, err := store.New(filepath.Join(cfg.DataDir, "state.db"))
+	if err != nil {
+		fatal("open store:", err)
+	}
+	return st
+}
+
+func generateAPIKey() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return "bht_" + hex.EncodeToString(b)
+}
+
+func sha256HexCLI(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+// --- setup ---
+
+func cmdSetup(args []string) {
+	// Interactive configuration
+	fmt.Printf("API endpoint [%s]: ", apiURL)
+	var endpoint string
+	fmt.Scanln(&endpoint)
+	if endpoint == "" {
+		endpoint = apiURL
+	}
+
+	fmt.Print("API key: ")
+	keyBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		fatal("read key:", err)
+	}
+	key := strings.TrimSpace(string(keyBytes))
+	if key == "" {
+		fatal("API key is required")
+	}
+
+	// Write config
+	cfgDir := pkg.DefaultDataDir()
+	os.MkdirAll(cfgDir, 0700)
+	cfgPath := filepath.Join(cfgDir, "config.yaml")
+
+	cfgContent := fmt.Sprintf("listen: %s\nauth_token: %s\n",
+		strings.TrimPrefix(endpoint, "http://"),
+		key)
+
+	// For remote endpoints, store the URL as-is
+	if strings.HasPrefix(endpoint, "https://") || strings.HasPrefix(endpoint, "http://") {
+		cfgContent = fmt.Sprintf("auth_token: %s\n", key)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0600); err != nil {
+		fatal("write config:", err)
+	}
+	fmt.Printf("Saved to %s\n", cfgPath)
+
+	// Test connection
+	fmt.Print("Testing connection... ")
+	apiURL = endpoint
+	apiToken = key
+	var health map[string]any
+	if err := apiJSON("GET", "/health", nil, &health); err != nil {
+		fmt.Printf("✗ %v\n", err)
+		return
+	}
+	fmt.Printf("✓ connected (sandboxes: %v, uptime: %v)\n",
+		health["sandboxes"], health["uptime"])
 }
 
 // --- Name-to-ID resolution ---

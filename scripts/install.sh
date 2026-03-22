@@ -156,17 +156,14 @@ fi
 
 if [[ ! -f "$DATA_DIR/config.yaml" ]]; then
     echo "==> Generating config..."
-    TOKEN=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
     cat > "$DATA_DIR/config.yaml" << EOF
 engine: firecracker
 listen: :8080
-auth_token: ${TOKEN}
 data_dir: ${DATA_DIR}
 firecracker_bin: /usr/local/bin/firecracker
 firecracker_kernel: ${KERNEL_PATH}
 firecracker_rootfs: ${ROOTFS_PATH}
 EOF
-    echo "  auth token: ${TOKEN}"
 else
     echo "==> Config already present: $DATA_DIR/config.yaml"
 fi
@@ -178,34 +175,39 @@ if [[ ! -f "$DATA_DIR/age.key" ]]; then
     chmod 600 "$DATA_DIR/age.key"
 fi
 
-# --- User CLI config ---
-# Create ~/.bhatti/config.yaml for the user who ran sudo,
-# so `bhatti list` etc. work without BHATTI_TOKEN env var.
+# --- Bootstrap admin user ---
+# Create the first admin user so the API is usable immediately.
+# The API key is shown once during install.
 
-SUDO_USER_HOME=""
-if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-    SUDO_USER_HOME=$(eval echo "~$SUDO_USER")
-fi
+echo "==> Creating admin user..."
+ADMIN_KEY=$(bhatti user create --name admin --max-sandboxes 50 2>&1 | grep "API key:" | awk '{print $NF}')
 
-TOKEN=$(grep auth_token "$DATA_DIR/config.yaml" | awk '{print $2}')
+if [[ -n "$ADMIN_KEY" ]]; then
+    # Write CLI config for the user who ran sudo
+    SUDO_USER_HOME=""
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        SUDO_USER_HOME=$(eval echo "~$SUDO_USER")
+    fi
 
-if [[ -n "$SUDO_USER_HOME" ]]; then
-    USER_CFG_DIR="$SUDO_USER_HOME/.bhatti"
-    mkdir -p "$USER_CFG_DIR"
-    cat > "$USER_CFG_DIR/config.yaml" << EOF
-auth_token: ${TOKEN}
+    if [[ -n "$SUDO_USER_HOME" ]]; then
+        USER_CFG_DIR="$SUDO_USER_HOME/.bhatti"
+        mkdir -p "$USER_CFG_DIR"
+        cat > "$USER_CFG_DIR/config.yaml" << EOF
+auth_token: ${ADMIN_KEY}
 listen: :8080
 EOF
-    chown -R "$SUDO_USER:$SUDO_USER" "$USER_CFG_DIR"
-    echo "==> Created $USER_CFG_DIR/config.yaml"
-fi
+        chown -R "$SUDO_USER:$SUDO_USER" "$USER_CFG_DIR"
+    fi
 
-# Also create for root (daemon reads from cwd, but CLI as root needs it)
-mkdir -p /root/.bhatti
-cat > /root/.bhatti/config.yaml << EOF
-auth_token: ${TOKEN}
+    # Also for root
+    mkdir -p /root/.bhatti
+    cat > /root/.bhatti/config.yaml << EOF
+auth_token: ${ADMIN_KEY}
 listen: :8080
 EOF
+else
+    echo "  warning: admin user may already exist, skipping"
+fi
 
 # --- Systemd (optional) ---
 
@@ -218,7 +220,7 @@ if [[ "$INSTALL_SYSTEMD" == "true" ]]; then
 
     echo -n "  waiting for daemon..."
     for i in $(seq 1 30); do
-        if curl -sf http://localhost:8080/sandboxes >/dev/null 2>&1; then
+        if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
             echo " ready"
             break
         fi
@@ -238,10 +240,20 @@ echo ""
 echo "============================================"
 echo "  bhatti installed on $(hostname) ($HOST_ARCH)"
 echo ""
+if [[ -n "$ADMIN_KEY" ]]; then
+    echo "  Admin API key: ${ADMIN_KEY}"
+    echo "  (saved to ~/.bhatti/config.yaml)"
+    echo ""
+fi
 echo "  To start the daemon:"
 echo "    cd $DATA_DIR && sudo bhatti serve"
 echo ""
-echo "  Then in another terminal:"
+echo "  Manage users:"
+echo "    sudo bhatti user list"
+echo "    sudo bhatti user create --name alice"
+echo "    sudo bhatti user rotate-key alice"
+echo ""
+echo "  Then as a user:"
 echo "    bhatti create --name hello"
 echo "    bhatti exec hello -- echo 'it works'"
 echo "    bhatti shell hello"
