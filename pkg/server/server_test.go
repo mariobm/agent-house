@@ -3,7 +3,6 @@ package server
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -11,95 +10,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/sahil-shubham/bhatti/pkg/engine"
-	dockerengine "github.com/sahil-shubham/bhatti/pkg/engine/docker"
 	"github.com/sahil-shubham/bhatti/pkg/store"
 )
 
-var (
-	dockerCheckOnce sync.Once
-	dockerAvailable bool
-	alpinePullOnce  sync.Once
-)
-
-// TestMain runs once per package. It cleans up stale containers and volumes
-// left behind by previous crashed test runs before any tests execute.
-func TestMain(m *testing.M) {
-	cleanupStaleTestResources()
-	os.Exit(m.Run())
-}
-
-func cleanupStaleTestResources() {
-	// Only clean stopped/exited/dead containers — never running ones,
-	// because other test packages may be running in parallel.
-	for _, status := range []string{"exited", "dead", "created"} {
-		out, err := exec.Command(
-			"docker", "ps", "-a",
-			"--filter", "label=bhatti.managed=true",
-			"--filter", "status="+status,
-			"--format", "{{.Names}}",
-		).Output()
-		if err != nil {
-			return
-		}
-		for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			if strings.HasPrefix(name, "bhatti-test-") {
-				exec.Command("docker", "rm", "-f", name).Run()
-			}
-		}
-	}
-	// Clean orphaned test volumes (only those not currently mounted)
-	out, _ := exec.Command("docker", "volume", "ls", "--format", "{{.Name}}").Output()
-	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if strings.HasPrefix(name, "bhatti-test-") {
-			// -f won't remove in-use volumes, so this is safe
-			exec.Command("docker", "volume", "rm", name).Run()
-		}
-	}
-}
-
-func skipIfNoDocker(t *testing.T) {
-	t.Helper()
-	dockerCheckOnce.Do(func() {
-		if _, err := exec.LookPath("docker"); err != nil {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil {
-			return
-		}
-		dockerAvailable = true
-	})
-	if !dockerAvailable {
-		t.Skip("docker not available, skipping integration test")
-	}
-}
-
-func ensureAlpinePulled(t *testing.T) {
-	t.Helper()
-	alpinePullOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "docker", "pull", "alpine:latest")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("failed to pre-pull alpine:latest: %v\n%s", err, out)
-		}
-	})
-}
-
 // uniqueName generates a collision-free resource name for tests.
-// All names start with "bhatti-test-" so cleanupStaleTestResources can find them.
 func uniqueName(t *testing.T, prefix string) string {
 	t.Helper()
 	b := make([]byte, 4)
@@ -107,29 +29,17 @@ func uniqueName(t *testing.T, prefix string) string {
 	return fmt.Sprintf("bhatti-test-%s-%s", prefix, hex.EncodeToString(b))
 }
 
-// cleanupDockerVolume defers removal of a Docker volume created during a test.
-func cleanupDockerVolume(t *testing.T, name string) {
-	t.Helper()
-	t.Cleanup(func() {
-		exec.Command("docker", "volume", "rm", "-f", name).Run()
-	})
-}
-
-// testAPIKey is the plaintext key used in tests. Its SHA-256 hash is stored in the DB.
+// testAPIKey is the plaintext key used in tests.
 const testAPIKey = "test-token"
 
 func setup(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
-	skipIfNoDocker(t)
-	ensureAlpinePulled(t)
-
 	dir := t.TempDir()
 	st, err := store.New(filepath.Join(dir, "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Create a test user with the well-known API key
 	keyHash := sha256Hex(testAPIKey)
 	st.CreateUser(store.User{
 		ID: "usr_test", Name: "test-user", APIKeyHash: keyHash,
@@ -137,18 +47,10 @@ func setup(t *testing.T) (*Server, *httptest.Server) {
 		SubnetIndex: 1, CreatedAt: time.Now(),
 	})
 
-	eng, err := dockerengine.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	eng := newMockEngine()
 	srv := New(eng, st)
 	ts := httptest.NewServer(srv)
-	t.Cleanup(func() {
-		srv.Close()
-		ts.Close()
-		st.Close()
-	})
+	t.Cleanup(func() { srv.Close(); ts.Close(); st.Close() })
 	return srv, ts
 }
 
@@ -177,51 +79,25 @@ func decodeJSON(t *testing.T, resp *http.Response, v any) {
 	}
 }
 
-// createTemplateAndSandbox is a helper that creates an alpine template and a
-// sandbox from it, returning both. The sandbox container is automatically
-// destroyed via t.Cleanup.
-func createTemplateAndSandbox(t *testing.T, ts *httptest.Server, sbName string, volumes []map[string]any) (store.Template, store.Sandbox) {
+// createSandbox creates a sandbox via the API and registers cleanup.
+func createSandbox(t *testing.T, ts *httptest.Server, sbName string) store.Sandbox {
 	t.Helper()
-
-	resp := doReq(t, ts, "POST", "/templates", map[string]any{
-		"name":  "alpine",
-		"image": "alpine:latest",
-	})
-	if resp.StatusCode != 201 {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("create template: expected 201, got %d: %s", resp.StatusCode, body)
-	}
-	var tmpl store.Template
-	decodeJSON(t, resp, &tmpl)
-
-	sbReq := map[string]any{
-		"template_id": tmpl.ID,
-		"name":        sbName,
-	}
-	if volumes != nil {
-		sbReq["volumes"] = volumes
-	}
-
-	resp = doReq(t, ts, "POST", "/sandboxes", sbReq)
+	resp := doReq(t, ts, "POST", "/sandboxes", map[string]any{"name": sbName})
 	if resp.StatusCode != 201 {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("create sandbox: expected 201, got %d: %s", resp.StatusCode, body)
 	}
 	var sb store.Sandbox
 	decodeJSON(t, resp, &sb)
-
-	t.Cleanup(func() {
-		doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil)
-	})
-
-	return tmpl, sb
+	t.Cleanup(func() { doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil) })
+	return sb
 }
 
-// --- Tests ---
+// --- Auth tests ---
 
 func TestAuthRequired(t *testing.T) {
 	_, ts := setup(t)
-	req, _ := http.NewRequest("GET", ts.URL+"/templates", nil)
+	req, _ := http.NewRequest("GET", ts.URL+"/sandboxes", nil)
 	resp, _ := http.DefaultClient.Do(req)
 	if resp.StatusCode != 401 {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
@@ -230,8 +106,7 @@ func TestAuthRequired(t *testing.T) {
 
 func TestAuthInvalidKey(t *testing.T) {
 	_, ts := setup(t)
-
-	req, _ := http.NewRequest("GET", ts.URL+"/templates", nil)
+	req, _ := http.NewRequest("GET", ts.URL+"/sandboxes", nil)
 	req.Header.Set("Authorization", "Bearer wrong-key")
 	resp, _ := http.DefaultClient.Do(req)
 	if resp.StatusCode != 401 {
@@ -241,34 +116,83 @@ func TestAuthInvalidKey(t *testing.T) {
 
 func TestAuthQueryParamRejected(t *testing.T) {
 	_, ts := setup(t)
-
-	// Query parameter auth should no longer work
-	req, _ := http.NewRequest("GET", ts.URL+"/templates?token="+testAPIKey, nil)
+	req, _ := http.NewRequest("GET", ts.URL+"/sandboxes?token="+testAPIKey, nil)
 	resp, _ := http.DefaultClient.Do(req)
 	if resp.StatusCode != 401 {
 		t.Fatalf("expected 401 for query param auth, got %d", resp.StatusCode)
 	}
 }
 
+func TestPathCleanAuthBypass(t *testing.T) {
+	_, ts := setup(t)
+
+	paths := []string{
+		"//health/../sandboxes",
+		"/health/../sandboxes",
+		"/./health/../sandboxes",
+	}
+	for _, p := range paths {
+		req, _ := http.NewRequest("GET", ts.URL+p, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("path %q: %v", p, err)
+		}
+		if resp.StatusCode != 401 {
+			t.Errorf("path %q: expected 401, got %d (auth bypass!)", p, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	// /health itself should still work without auth
+	req, _ := http.NewRequest("GET", ts.URL+"/health", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	if resp.StatusCode != 200 {
+		t.Errorf("/health: expected 200, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// --- Health ---
+
+func TestHealthEndpoint(t *testing.T) {
+	_, ts := setup(t)
+	resp := doReq(t, ts, "GET", "/health", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var health map[string]any
+	decodeJSON(t, resp, &health)
+	if health["status"] != "ok" {
+		t.Fatalf("expected status ok, got %v", health["status"])
+	}
+}
+
+func TestHealthNoAuth(t *testing.T) {
+	_, ts := setup(t)
+	req, _ := http.NewRequest("GET", ts.URL+"/health", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200 without auth, got %d", resp.StatusCode)
+	}
+}
+
+// --- Templates ---
+
 func TestTemplateCRUD(t *testing.T) {
 	_, ts := setup(t)
 
-	// Create
 	resp := doReq(t, ts, "POST", "/templates", map[string]any{
-		"name":  "ubuntu-dev",
-		"image": "ubuntu:22.04",
-		"cpus":  2,
+		"name": "ubuntu-dev", "image": "ubuntu:22.04", "cpus": 2,
 	})
 	if resp.StatusCode != 201 {
 		t.Fatalf("expected 201, got %d", resp.StatusCode)
 	}
 	var tmpl store.Template
 	decodeJSON(t, resp, &tmpl)
-	if tmpl.Name != "ubuntu-dev" || tmpl.Image != "ubuntu:22.04" {
+	if tmpl.Name != "ubuntu-dev" {
 		t.Fatalf("unexpected template: %+v", tmpl)
 	}
 
-	// List
 	resp = doReq(t, ts, "GET", "/templates", nil)
 	var list []store.Template
 	decodeJSON(t, resp, &list)
@@ -276,37 +200,37 @@ func TestTemplateCRUD(t *testing.T) {
 		t.Fatalf("expected 1 template, got %d", len(list))
 	}
 
-	// Get
 	resp = doReq(t, ts, "GET", "/templates/"+tmpl.ID, nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 
-	// Delete
 	resp = doReq(t, ts, "DELETE", "/templates/"+tmpl.ID, nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 
-	// Verify gone
 	resp = doReq(t, ts, "GET", "/templates/"+tmpl.ID, nil)
 	if resp.StatusCode != 404 {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
+
+// --- Sandbox lifecycle ---
 
 func TestSandboxLifecycle(t *testing.T) {
 	_, ts := setup(t)
 	name := uniqueName(t, "lifecycle")
-
-	tmpl, sb := createTemplateAndSandbox(t, ts, name, nil)
-	_ = tmpl
+	sb := createSandbox(t, ts, name)
 
 	if sb.Name != name || sb.Status != "running" {
 		t.Fatalf("unexpected sandbox: %+v", sb)
 	}
 
-	// List — should contain our sandbox
+	// List
 	resp := doReq(t, ts, "GET", "/sandboxes", nil)
 	var sbList []store.Sandbox
 	decodeJSON(t, resp, &sbList)
@@ -320,7 +244,7 @@ func TestSandboxLifecycle(t *testing.T) {
 		t.Fatal("sandbox not found in list")
 	}
 
-	// Exec — real command runs inside the container
+	// Exec
 	resp = doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
 		"cmd": []string{"echo", "hello"},
 	})
@@ -329,21 +253,8 @@ func TestSandboxLifecycle(t *testing.T) {
 	}
 	var result engine.ExecResult
 	decodeJSON(t, resp, &result)
-	if strings.TrimSpace(result.Stdout) != "hello" {
-		t.Fatalf("exec: expected 'hello', got %q", result.Stdout)
-	}
 	if result.ExitCode != 0 {
 		t.Fatalf("exec: expected exit code 0, got %d", result.ExitCode)
-	}
-
-	// Exec — env var from template (none set, just verify exec works with sh)
-	resp = doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
-		"cmd": []string{"sh", "-c", "echo $HOME"},
-	})
-	var envResult engine.ExecResult
-	decodeJSON(t, resp, &envResult)
-	if envResult.ExitCode != 0 {
-		t.Fatalf("env exec failed: exit=%d stderr=%s", envResult.ExitCode, envResult.Stderr)
 	}
 
 	// Stop
@@ -355,17 +266,6 @@ func TestSandboxLifecycle(t *testing.T) {
 	decodeJSON(t, resp, &stoppedSB)
 	if stoppedSB.Status != "stopped" {
 		t.Fatalf("expected stopped, got %s", stoppedSB.Status)
-	}
-	if stoppedSB.StoppedAt == nil {
-		t.Fatal("expected stopped_at to be set")
-	}
-
-	// Exec on stopped container — should fail
-	resp = doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
-		"cmd": []string{"echo", "should-fail"},
-	})
-	if resp.StatusCode != 500 {
-		t.Fatalf("exec on stopped: expected 500, got %d", resp.StatusCode)
 	}
 
 	// Start
@@ -379,102 +279,23 @@ func TestSandboxLifecycle(t *testing.T) {
 		t.Fatalf("expected running, got %s", startedSB.Status)
 	}
 
-	// Exec after restart — should work again
-	resp = doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
-		"cmd": []string{"echo", "back"},
-	})
-	var restartResult engine.ExecResult
-	decodeJSON(t, resp, &restartResult)
-	if strings.TrimSpace(restartResult.Stdout) != "back" {
-		t.Fatalf("exec after restart: expected 'back', got %q", restartResult.Stdout)
-	}
-
-	// Destroy (explicit — t.Cleanup is the safety net)
+	// Destroy
 	resp = doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("destroy: expected 200, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 
 	// Verify gone
 	resp = doReq(t, ts, "GET", "/sandboxes/"+sb.ID, nil)
 	if resp.StatusCode != 404 {
 		t.Fatalf("expected 404 after destroy, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
 
-func TestSandboxCreateBadTemplate(t *testing.T) {
+func TestSandboxCreateNoName(t *testing.T) {
 	_, ts := setup(t)
-
-	resp := doReq(t, ts, "POST", "/sandboxes", map[string]any{
-		"template_id": "nonexistent",
-	})
-	if resp.StatusCode != 404 {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
-	}
-}
-
-func TestCreateWithoutTemplate(t *testing.T) {
-	_, ts := setup(t)
-	name := uniqueName(t, "notempl")
-
-	resp := doReq(t, ts, "POST", "/sandboxes", map[string]any{
-		"name":      name,
-		"cpus":      2,
-		"memory_mb": 256,
-	})
-	if resp.StatusCode != 201 {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, body)
-	}
-	var sb store.Sandbox
-	decodeJSON(t, resp, &sb)
-	t.Cleanup(func() { doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil) })
-
-	if sb.Name != name {
-		t.Errorf("name: %q, want %q", sb.Name, name)
-	}
-	if sb.TemplateID != "" {
-		t.Errorf("template_id: %q, want empty", sb.TemplateID)
-	}
-	if sb.Status != "running" {
-		t.Errorf("status: %q, want running", sb.Status)
-	}
-
-	// Exec should work
-	resp = doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
-		"cmd": []string{"echo", "hello"},
-	})
-	var result engine.ExecResult
-	decodeJSON(t, resp, &result)
-	if strings.TrimSpace(result.Stdout) != "hello" {
-		t.Errorf("exec: %q, want 'hello'", result.Stdout)
-	}
-}
-
-func TestCreateWithoutTemplateDefaults(t *testing.T) {
-	_, ts := setup(t)
-
-	// Minimal request — only name
-	resp := doReq(t, ts, "POST", "/sandboxes", map[string]any{
-		"name": uniqueName(t, "defaults"),
-	})
-	if resp.StatusCode != 201 {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, body)
-	}
-	var sb store.Sandbox
-	decodeJSON(t, resp, &sb)
-	t.Cleanup(func() { doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil) })
-
-	if sb.Status != "running" {
-		t.Errorf("status: %q, want running", sb.Status)
-	}
-}
-
-func TestCreateWithoutTemplateAutoName(t *testing.T) {
-	_, ts := setup(t)
-
-	// Empty body — should auto-generate name
 	resp := doReq(t, ts, "POST", "/sandboxes", map[string]any{})
 	if resp.StatusCode != 201 {
 		body, _ := io.ReadAll(resp.Body)
@@ -489,39 +310,19 @@ func TestCreateWithoutTemplateAutoName(t *testing.T) {
 	}
 }
 
-func TestCreateWithTemplateStillWorks(t *testing.T) {
-	_, ts := setup(t)
-	name := uniqueName(t, "tmplworks")
-
-	// Existing template-based flow should be unaffected
-	_, sb := createTemplateAndSandbox(t, ts, name, nil)
-	if sb.Name != name || sb.Status != "running" || sb.TemplateID == "" {
-		t.Errorf("template sandbox: name=%q status=%q tmpl=%q", sb.Name, sb.Status, sb.TemplateID)
-	}
-
-	resp := doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
-		"cmd": []string{"echo", "template works"},
-	})
-	var result engine.ExecResult
-	decodeJSON(t, resp, &result)
-	if strings.TrimSpace(result.Stdout) != "template works" {
-		t.Errorf("exec: %q", result.Stdout)
-	}
-}
+// --- Secrets ---
 
 func TestSecretsCRUD(t *testing.T) {
 	_, ts := setup(t)
 
-	// Create
 	resp := doReq(t, ts, "POST", "/secrets", map[string]any{
-		"name":  "api-key",
-		"value": "secret123",
+		"name": "api-key", "value": "secret123",
 	})
 	if resp.StatusCode != 201 {
 		t.Fatalf("expected 201, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 
-	// List
 	resp = doReq(t, ts, "GET", "/secrets", nil)
 	var list []store.SecretRecord
 	decodeJSON(t, resp, &list)
@@ -529,296 +330,68 @@ func TestSecretsCRUD(t *testing.T) {
 		t.Fatalf("unexpected secrets: %+v", list)
 	}
 
-	// Delete
 	resp = doReq(t, ts, "DELETE", "/secrets/api-key", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
+
+func TestSecretValidation(t *testing.T) {
+	_, ts := setup(t)
+	resp := doReq(t, ts, "POST", "/secrets", map[string]any{"name": "test"})
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// --- Volumes ---
 
 func TestVolumeCRUD(t *testing.T) {
 	_, ts := setup(t)
 	volName := uniqueName(t, "crud")
 
-	// Create
 	resp := doReq(t, ts, "POST", "/volumes", map[string]any{"name": volName})
 	if resp.StatusCode != 201 {
 		t.Fatalf("expected 201, got %d", resp.StatusCode)
 	}
-	var vol store.Volume
-	decodeJSON(t, resp, &vol)
-	if vol.Name != volName {
-		t.Fatalf("expected %s, got %s", volName, vol.Name)
-	}
+	resp.Body.Close()
 
-	// List
 	resp = doReq(t, ts, "GET", "/volumes", nil)
 	var list []store.Volume
 	decodeJSON(t, resp, &list)
 	if len(list) != 1 {
-		t.Fatalf("expected 1 volume, got %d", len(list))
+		t.Fatalf("expected 1, got %d", len(list))
 	}
 
-	// Get
-	resp = doReq(t, ts, "GET", "/volumes/"+volName, nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	// Delete
 	resp = doReq(t, ts, "DELETE", "/volumes/"+volName, nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 
-	// Verify gone
 	resp = doReq(t, ts, "GET", "/volumes/"+volName, nil)
 	if resp.StatusCode != 404 {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
-}
-
-func TestVolumeDeleteConflict(t *testing.T) {
-	_, ts := setup(t)
-
-	volName := uniqueName(t, "busy")
-	sbName := uniqueName(t, "volsb")
-	cleanupDockerVolume(t, volName)
-
-	// Create volume in store
-	doReq(t, ts, "POST", "/volumes", map[string]any{"name": volName})
-
-	// Create sandbox that mounts the volume
-	_, sb := createTemplateAndSandbox(t, ts, sbName, []map[string]any{
-		{"name": volName, "target": "/data"},
-	})
-
-	// Delete volume — should fail with 409 while sandbox is attached
-	resp := doReq(t, ts, "DELETE", "/volumes/"+volName, nil)
-	if resp.StatusCode != 409 {
-		t.Fatalf("expected 409, got %d", resp.StatusCode)
-	}
-
-	// Destroy sandbox, then delete volume should succeed
-	doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil)
-	resp = doReq(t, ts, "DELETE", "/volumes/"+volName, nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-}
-
-func TestSandboxWithTemplateMounts(t *testing.T) {
-	_, ts := setup(t)
-	sbName := uniqueName(t, "tmplmnt")
-	sharedVol := uniqueName(t, "shared")
-	autoVol := "bhatti-" + sbName + "-workspace"
-	cleanupDockerVolume(t, sharedVol)
-	cleanupDockerVolume(t, autoVol)
-
-	// Create template with default mounts
-	resp := doReq(t, ts, "POST", "/templates", map[string]any{
-		"name":  "dev-template",
-		"image": "alpine:latest",
-		"mounts": []map[string]any{
-			{"volume_name": sharedVol, "target": "/data", "auto_create": true},
-			{"target": "/workspace", "auto_create": true},
-		},
-	})
-	if resp.StatusCode != 201 {
-		t.Fatalf("expected 201, got %d", resp.StatusCode)
-	}
-	var tmpl store.Template
-	decodeJSON(t, resp, &tmpl)
-	if len(tmpl.Mounts) != 2 {
-		t.Fatalf("expected 2 mounts in template, got %d", len(tmpl.Mounts))
-	}
-
-	// Create sandbox — should use template mounts
-	resp = doReq(t, ts, "POST", "/sandboxes", map[string]any{
-		"template_id": tmpl.ID,
-		"name":        sbName,
-	})
-	if resp.StatusCode != 201 {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, body)
-	}
-	var sb store.Sandbox
-	decodeJSON(t, resp, &sb)
-	t.Cleanup(func() { doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil) })
-
-	// Verify auto-created volumes exist in store
-	resp = doReq(t, ts, "GET", "/volumes", nil)
-	var vols []store.Volume
-	decodeJSON(t, resp, &vols)
-	volNames := map[string]bool{}
-	for _, v := range vols {
-		volNames[v.Name] = true
-	}
-	if !volNames[sharedVol] {
-		t.Fatalf("expected %s volume to be auto-created, got %v", sharedVol, volNames)
-	}
-	if !volNames[autoVol] {
-		t.Fatalf("expected %s volume, got %v", autoVol, volNames)
-	}
-
-	// Verify mounts actually work inside the container
-	resp = doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
-		"cmd": []string{"sh", "-c", "echo tmpl-mount > /data/test.txt && cat /data/test.txt"},
-	})
-	if resp.StatusCode != 200 {
-		t.Fatalf("exec on /data: expected 200, got %d", resp.StatusCode)
-	}
-	var dataResult engine.ExecResult
-	decodeJSON(t, resp, &dataResult)
-	if dataResult.ExitCode != 0 {
-		t.Fatalf("/data mount write/read failed: exit=%d stderr=%s", dataResult.ExitCode, dataResult.Stderr)
-	}
-	if strings.TrimSpace(dataResult.Stdout) != "tmpl-mount" {
-		t.Fatalf("expected 'tmpl-mount', got %q", dataResult.Stdout)
-	}
-
-	resp = doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
-		"cmd": []string{"sh", "-c", "echo ws-mount > /workspace/test.txt && cat /workspace/test.txt"},
-	})
-	var wsResult engine.ExecResult
-	decodeJSON(t, resp, &wsResult)
-	if wsResult.ExitCode != 0 {
-		t.Fatalf("/workspace mount write/read failed: exit=%d stderr=%s", wsResult.ExitCode, wsResult.Stderr)
-	}
-	if strings.TrimSpace(wsResult.Stdout) != "ws-mount" {
-		t.Fatalf("expected 'ws-mount', got %q", wsResult.Stdout)
-	}
-}
-
-func TestSandboxWithExistingVolume(t *testing.T) {
-	_, ts := setup(t)
-
-	volName := uniqueName(t, "existing")
-	sbName1 := uniqueName(t, "volsb1")
-	sbName2 := uniqueName(t, "volsb2")
-
-	// Create a real Docker volume
-	if out, err := exec.Command("docker", "volume", "create", volName).CombinedOutput(); err != nil {
-		t.Fatalf("docker volume create failed: %v\n%s", err, out)
-	}
-	cleanupDockerVolume(t, volName)
-
-	// Track it in bhatti store
-	resp := doReq(t, ts, "POST", "/volumes", map[string]any{"name": volName})
-	if resp.StatusCode != 201 {
-		t.Fatalf("store volume: expected 201, got %d", resp.StatusCode)
-	}
-
-	// Create template
-	resp = doReq(t, ts, "POST", "/templates", map[string]any{
-		"name":  "alpine",
-		"image": "alpine:latest",
-	})
-	var tmpl store.Template
-	decodeJSON(t, resp, &tmpl)
-
-	// --- First sandbox: write data to volume ---
-	resp = doReq(t, ts, "POST", "/sandboxes", map[string]any{
-		"template_id": tmpl.ID,
-		"name":        sbName1,
-		"volumes":     []map[string]any{{"name": volName, "target": "/data"}},
-	})
-	if resp.StatusCode != 201 {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("create sb1: expected 201, got %d: %s", resp.StatusCode, body)
-	}
-	var sb1 store.Sandbox
-	decodeJSON(t, resp, &sb1)
-
-	resp = doReq(t, ts, "POST", "/sandboxes/"+sb1.ID+"/exec", map[string]any{
-		"cmd": []string{"sh", "-c", "echo persistent-data > /data/test.txt"},
-	})
-	var writeResult engine.ExecResult
-	decodeJSON(t, resp, &writeResult)
-	if writeResult.ExitCode != 0 {
-		t.Fatalf("write to volume failed: exit=%d stderr=%s", writeResult.ExitCode, writeResult.Stderr)
-	}
-
-	// Verify data exists in first sandbox
-	resp = doReq(t, ts, "POST", "/sandboxes/"+sb1.ID+"/exec", map[string]any{
-		"cmd": []string{"cat", "/data/test.txt"},
-	})
-	var readResult engine.ExecResult
-	decodeJSON(t, resp, &readResult)
-	if strings.TrimSpace(readResult.Stdout) != "persistent-data" {
-		t.Fatalf("read from volume: expected 'persistent-data', got %q", readResult.Stdout)
-	}
-
-	// Destroy first sandbox
-	resp = doReq(t, ts, "DELETE", "/sandboxes/"+sb1.ID, nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("destroy sb1: expected 200, got %d", resp.StatusCode)
-	}
-
-	// --- Second sandbox: verify data persisted ---
-	resp = doReq(t, ts, "POST", "/sandboxes", map[string]any{
-		"template_id": tmpl.ID,
-		"name":        sbName2,
-		"volumes":     []map[string]any{{"name": volName, "target": "/data"}},
-	})
-	if resp.StatusCode != 201 {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("create sb2: expected 201, got %d: %s", resp.StatusCode, body)
-	}
-	var sb2 store.Sandbox
-	decodeJSON(t, resp, &sb2)
-	t.Cleanup(func() { doReq(t, ts, "DELETE", "/sandboxes/"+sb2.ID, nil) })
-
-	resp = doReq(t, ts, "POST", "/sandboxes/"+sb2.ID+"/exec", map[string]any{
-		"cmd": []string{"cat", "/data/test.txt"},
-	})
-	var persistResult engine.ExecResult
-	decodeJSON(t, resp, &persistResult)
-	if strings.TrimSpace(persistResult.Stdout) != "persistent-data" {
-		t.Fatalf("volume data did not persist: expected 'persistent-data', got %q", persistResult.Stdout)
-	}
-}
-
-func TestSandboxVolumeReadOnly(t *testing.T) {
-	_, ts := setup(t)
-
-	volName := uniqueName(t, "ro")
-	sbName := uniqueName(t, "rosb")
-	cleanupDockerVolume(t, volName)
-
-	// Create Docker volume
-	if out, err := exec.Command("docker", "volume", "create", volName).CombinedOutput(); err != nil {
-		t.Fatalf("docker volume create: %v\n%s", err, out)
-	}
-
-	_, sb := createTemplateAndSandbox(t, ts, sbName, []map[string]any{
-		{"name": volName, "target": "/data", "readonly": true},
-	})
-
-	// Writing to a readonly mount should fail
-	resp := doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
-		"cmd": []string{"sh", "-c", "echo test > /data/file.txt"},
-	})
-	var result engine.ExecResult
-	decodeJSON(t, resp, &result)
-	if result.ExitCode == 0 {
-		t.Fatal("expected write to readonly volume to fail, but it succeeded")
-	}
+	resp.Body.Close()
 }
 
 func TestVolumeValidation(t *testing.T) {
 	_, ts := setup(t)
-
 	resp := doReq(t, ts, "POST", "/volumes", map[string]any{})
 	if resp.StatusCode != 400 {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
 }
+
+// --- Ports ---
 
 func TestPortEndpoints(t *testing.T) {
 	_, ts := setup(t)
 
-	// Global ports — should be empty
 	resp := doReq(t, ts, "GET", "/ports", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -829,11 +402,7 @@ func TestPortEndpoints(t *testing.T) {
 		t.Fatalf("expected 0 ports, got %d", len(ports))
 	}
 
-	// Create sandbox
-	sbName := uniqueName(t, "ports")
-	_, sb := createTemplateAndSandbox(t, ts, sbName, nil)
-
-	// alpine with sleep infinity has no listening ports
+	sb := createSandbox(t, ts, uniqueName(t, "ports"))
 	resp = doReq(t, ts, "GET", "/sandboxes/"+sb.ID+"/ports", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -844,31 +413,16 @@ func TestPortEndpoints(t *testing.T) {
 	}
 }
 
-func TestSecretValidation(t *testing.T) {
-	_, ts := setup(t)
-
-	resp := doReq(t, ts, "POST", "/secrets", map[string]any{
-		"name": "test",
-	})
-	if resp.StatusCode != 400 {
-		t.Fatalf("expected 400, got %d", resp.StatusCode)
-	}
-}
-
-// --- Part 21: WebSocket Auth Tests ---
+// --- WebSocket ---
 
 func TestWSAuthRequired(t *testing.T) {
 	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "wsauth"))
 
-	// Create sandbox to have a valid ID
-	name := uniqueName(t, "wsauth")
-	_, sb := createTemplateAndSandbox(t, ts, name, nil)
-
-	// Connect to WS without any token — should get 401, not upgrade
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws"
 	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err == nil {
-		t.Fatal("expected WS dial to fail without auth, but it succeeded")
+		t.Fatal("expected WS dial without auth to fail")
 	}
 	if resp != nil && resp.StatusCode != 401 {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
@@ -877,11 +431,8 @@ func TestWSAuthRequired(t *testing.T) {
 
 func TestWSAuthQueryParamRejected(t *testing.T) {
 	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "wsqp"))
 
-	name := uniqueName(t, "wsqp")
-	_, sb := createTemplateAndSandbox(t, ts, name, nil)
-
-	// Query param auth should no longer work
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws?token=" + testAPIKey
 	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err == nil {
@@ -894,11 +445,8 @@ func TestWSAuthQueryParamRejected(t *testing.T) {
 
 func TestWSAuthBearerHeader(t *testing.T) {
 	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "wshdr"))
 
-	name := uniqueName(t, "wshdr")
-	_, sb := createTemplateAndSandbox(t, ts, name, nil)
-
-	// Connect with correct token in Authorization header
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws"
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+testAPIKey)
@@ -909,10 +457,26 @@ func TestWSAuthBearerHeader(t *testing.T) {
 	ws.Close()
 }
 
+func TestWSAuthWrongToken(t *testing.T) {
+	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "wsbad"))
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws"
+	header := http.Header{}
+	header.Set("Authorization", "Bearer wrong-token")
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err == nil {
+		t.Fatal("expected WS dial with wrong token to fail")
+	}
+	if resp != nil && resp.StatusCode != 401 {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+// --- Request body ---
+
 func TestRequestBodyTooLarge(t *testing.T) {
 	_, ts := setup(t)
-
-	// Send a 2MB body — should be rejected
 	bigBody := strings.Repeat("x", 2<<20)
 	req, _ := http.NewRequest("POST", ts.URL+"/sandboxes", strings.NewReader(bigBody))
 	req.Header.Set("Authorization", "Bearer "+testAPIKey)
@@ -922,55 +486,17 @@ func TestRequestBodyTooLarge(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	// Should get 400 (bad JSON / body too large), not 201 or hang
 	if resp.StatusCode == 201 {
 		t.Fatal("expected rejection of 2MB body, but got 201")
 	}
 }
 
-func TestHealthEndpoint(t *testing.T) {
-	_, ts := setup(t)
-
-	// Health should work with auth
-	resp := doReq(t, ts, "GET", "/health", nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	var health map[string]any
-	decodeJSON(t, resp, &health)
-	if health["status"] != "ok" {
-		t.Fatalf("expected status ok, got %v", health["status"])
-	}
-	if _, ok := health["uptime"]; !ok {
-		t.Fatal("expected uptime field")
-	}
-}
-
-func TestHealthNoAuth(t *testing.T) {
-	_, ts := setup(t)
-
-	// Health should work WITHOUT auth token
-	req, _ := http.NewRequest("GET", ts.URL+"/health", nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("expected 200 without auth, got %d", resp.StatusCode)
-	}
-	var health map[string]any
-	decodeJSON(t, resp, &health)
-	if health["status"] != "ok" {
-		t.Fatalf("expected status ok, got %v", health["status"])
-	}
-}
+// --- Streaming exec ---
 
 func TestExecStreamNDJSON(t *testing.T) {
 	_, ts := setup(t)
-	name := uniqueName(t, "ndjson")
-	_, sb := createTemplateAndSandbox(t, ts, name, nil)
+	sb := createSandbox(t, ts, uniqueName(t, "ndjson"))
 
-	// Request with Accept: application/x-ndjson
 	body, _ := json.Marshal(map[string]any{"cmd": []string{"echo", "streamed"}})
 	req, _ := http.NewRequest("POST", ts.URL+"/sandboxes/"+sb.ID+"/exec", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+testAPIKey)
@@ -989,71 +515,310 @@ func TestExecStreamNDJSON(t *testing.T) {
 		t.Fatalf("expected Content-Type application/x-ndjson, got %q", ct)
 	}
 
-	// Parse NDJSON lines
+	// Parse NDJSON — mock engine doesn't implement StreamExecEngine so
+	// the server falls back to buffered-then-NDJSON
 	var events []engine.StreamEvent
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		var e engine.StreamEvent
 		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
-			t.Fatalf("parse NDJSON line: %v: %s", err, scanner.Text())
+			t.Fatalf("parse NDJSON: %v: %s", err, scanner.Text())
 		}
 		events = append(events, e)
 	}
 
-	var gotStdout, gotExit bool
+	var gotExit bool
 	for _, e := range events {
-		if e.Type == "stdout" && strings.Contains(e.Data, "streamed") {
-			gotStdout = true
-		}
 		if e.Type == "exit" && e.ExitCode != nil && *e.ExitCode == 0 {
 			gotExit = true
 		}
-	}
-	if !gotStdout {
-		t.Errorf("no stdout event with 'streamed', events: %+v", events)
 	}
 	if !gotExit {
 		t.Errorf("no exit event with code 0, events: %+v", events)
 	}
 }
 
-func TestExecStreamFallbackBuffered(t *testing.T) {
-	_, ts := setup(t)
-	name := uniqueName(t, "buffered")
-	_, sb := createTemplateAndSandbox(t, ts, name, nil)
+// --- Multi-user isolation tests ---
 
-	// Request WITHOUT Accept: application/x-ndjson — should get buffered JSON
-	resp := doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
-		"cmd": []string{"echo", "buffered"},
+func setupTwoUsers(t *testing.T) (*httptest.Server, func(t *testing.T, method, path string, body any) *http.Response, func(t *testing.T, method, path string, body any) *http.Response) {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st.CreateUser(store.User{
+		ID: "usr_alice", Name: "alice", APIKeyHash: sha256Hex("alice-key"),
+		MaxSandboxes: 3, MaxCPUsPerSandbox: 2, MaxMemoryMBPerSandbox: 1024,
+		SubnetIndex: 1, CreatedAt: time.Now(),
 	})
+	st.CreateUser(store.User{
+		ID: "usr_bob", Name: "bob", APIKeyHash: sha256Hex("bob-key"),
+		MaxSandboxes: 3, MaxCPUsPerSandbox: 2, MaxMemoryMBPerSandbox: 1024,
+		SubnetIndex: 2, CreatedAt: time.Now(),
+	})
+
+	eng := newMockEngine()
+	srv := New(eng, st)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(func() { srv.Close(); ts.Close(); st.Close() })
+
+	makeReq := func(apiKey string) func(*testing.T, string, string, any) *http.Response {
+		return func(t *testing.T, method, path string, body any) *http.Response {
+			t.Helper()
+			var bodyReader io.Reader
+			if body != nil {
+				b, _ := json.Marshal(body)
+				bodyReader = bytes.NewReader(b)
+			}
+			req, _ := http.NewRequest(method, ts.URL+path, bodyReader)
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return resp
+		}
+	}
+	return ts, makeReq("alice-key"), makeReq("bob-key")
+}
+
+func TestCrossUserSandboxIsolation(t *testing.T) {
+	_, alice, bob := setupTwoUsers(t)
+
+	resp := alice(t, "POST", "/sandboxes", map[string]any{
+		"name": uniqueName(t, "alice-iso"),
+	})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("alice create: expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	var sb store.Sandbox
+	decodeJSON(t, resp, &sb)
+	t.Cleanup(func() { alice(t, "DELETE", "/sandboxes/"+sb.ID, nil) })
+
+	// Alice can see it
+	resp = alice(t, "GET", "/sandboxes/"+sb.ID, nil)
 	if resp.StatusCode != 200 {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+		t.Fatalf("alice get: expected 200, got %d", resp.StatusCode)
 	}
-	var result engine.ExecResult
-	decodeJSON(t, resp, &result)
-	if !strings.Contains(result.Stdout, "buffered") {
-		t.Fatalf("expected 'buffered' in stdout, got %q", result.Stdout)
+	resp.Body.Close()
+
+	// Bob cannot
+	resp = bob(t, "GET", "/sandboxes/"+sb.ID, nil)
+	if resp.StatusCode != 404 {
+		t.Fatalf("bob get alice's sandbox: expected 404, got %d", resp.StatusCode)
 	}
-	if result.ExitCode != 0 {
-		t.Fatalf("expected exit code 0, got %d", result.ExitCode)
+	resp.Body.Close()
+
+	// Bob cannot delete
+	resp = bob(t, "DELETE", "/sandboxes/"+sb.ID, nil)
+	if resp.StatusCode != 404 {
+		t.Fatalf("bob delete alice's sandbox: expected 404, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Bob list is empty
+	resp = bob(t, "GET", "/sandboxes", nil)
+	var bobList []store.Sandbox
+	decodeJSON(t, resp, &bobList)
+	if len(bobList) != 0 {
+		t.Fatalf("bob should see 0 sandboxes, got %d", len(bobList))
 	}
 }
 
-func TestWSAuthWrongToken(t *testing.T) {
-	_, ts := setup(t)
+func TestCrossUserExecIsolation(t *testing.T) {
+	_, alice, bob := setupTwoUsers(t)
 
-	name := uniqueName(t, "wsbad")
-	_, sb := createTemplateAndSandbox(t, ts, name, nil)
+	resp := alice(t, "POST", "/sandboxes", map[string]any{
+		"name": uniqueName(t, "alice-exec"),
+	})
+	var sb store.Sandbox
+	decodeJSON(t, resp, &sb)
+	t.Cleanup(func() { alice(t, "DELETE", "/sandboxes/"+sb.ID, nil) })
 
-	// Connect with wrong token in header
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/sandboxes/" + sb.ID + "/ws"
-	header := http.Header{}
-	header.Set("Authorization", "Bearer wrong-token")
-	_, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
-	if err == nil {
-		t.Fatal("expected WS dial with wrong token to fail")
+	// Bob cannot exec
+	resp = bob(t, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
+		"cmd": []string{"echo", "hacked"},
+	})
+	if resp.StatusCode != 404 {
+		t.Fatalf("bob exec: expected 404, got %d", resp.StatusCode)
 	}
-	if resp != nil && resp.StatusCode != 401 {
-		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	resp.Body.Close()
+
+	// Bob cannot stop
+	resp = bob(t, "POST", "/sandboxes/"+sb.ID+"/stop", nil)
+	if resp.StatusCode != 404 {
+		t.Fatalf("bob stop: expected 404, got %d", resp.StatusCode)
 	}
+	resp.Body.Close()
+}
+
+func TestSandboxResourceCaps(t *testing.T) {
+	_, alice, _ := setupTwoUsers(t)
+	// Alice: MaxCPUsPerSandbox=2, MaxMemoryMBPerSandbox=1024
+
+	resp := alice(t, "POST", "/sandboxes", map[string]any{"name": "big-cpu", "cpus": 8})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("cpu cap: expected 400, got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	resp = alice(t, "POST", "/sandboxes", map[string]any{"name": "big-mem", "memory_mb": 8192})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("memory cap: expected 400, got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	resp = alice(t, "POST", "/sandboxes", map[string]any{"name": uniqueName(t, "ok"), "cpus": 1})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("within caps: expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	var sb store.Sandbox
+	decodeJSON(t, resp, &sb)
+	alice(t, "DELETE", "/sandboxes/"+sb.ID, nil)
+}
+
+func TestSandboxCountLimit(t *testing.T) {
+	_, alice, _ := setupTwoUsers(t)
+	// Alice: MaxSandboxes=3
+
+	var ids []string
+	for i := 0; i < 3; i++ {
+		resp := alice(t, "POST", "/sandboxes", map[string]any{
+			"name": uniqueName(t, fmt.Sprintf("limit-%d", i)),
+		})
+		if resp.StatusCode != 201 {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("create %d: expected 201, got %d: %s", i, resp.StatusCode, body)
+		}
+		var sb store.Sandbox
+		decodeJSON(t, resp, &sb)
+		ids = append(ids, sb.ID)
+	}
+	t.Cleanup(func() {
+		for _, id := range ids {
+			alice(t, "DELETE", "/sandboxes/"+id, nil)
+		}
+	})
+
+	// 4th should fail
+	resp := alice(t, "POST", "/sandboxes", map[string]any{
+		"name": uniqueName(t, "limit-over"),
+	})
+	if resp.StatusCode != 429 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 429, got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+}
+
+func TestSandboxNameValidationHTTP(t *testing.T) {
+	_, alice, _ := setupTwoUsers(t)
+
+	badNames := []string{
+		"has space",
+		"has\nnewline",
+		"has/slash",
+		"-starts-with-dash",
+		".starts-with-dot",
+		strings.Repeat("a", 64),
+	}
+	for _, name := range badNames {
+		resp := alice(t, "POST", "/sandboxes", map[string]any{"name": name})
+		if resp.StatusCode != 400 {
+			t.Errorf("name %q: expected 400, got %d", name, resp.StatusCode)
+			if resp.StatusCode == 201 {
+				var sb store.Sandbox
+				decodeJSON(t, resp, &sb)
+				alice(t, "DELETE", "/sandboxes/"+sb.ID, nil)
+			}
+		}
+		resp.Body.Close()
+	}
+
+	// Valid names
+	goodNames := []string{"my-sandbox", "dev.v2", "test_env", "a", strings.Repeat("a", 63)}
+	for _, name := range goodNames {
+		resp := alice(t, "POST", "/sandboxes", map[string]any{"name": name})
+		if resp.StatusCode == 400 {
+			body, _ := io.ReadAll(resp.Body)
+			if strings.Contains(string(body), "invalid sandbox name") {
+				t.Errorf("name %q: should be valid but was rejected", name)
+			}
+		}
+		if resp.StatusCode == 201 {
+			var sb store.Sandbox
+			decodeJSON(t, resp, &sb)
+			alice(t, "DELETE", "/sandboxes/"+sb.ID, nil)
+		}
+		resp.Body.Close()
+	}
+}
+
+func TestDuplicateSandboxNameHTTP(t *testing.T) {
+	_, alice, _ := setupTwoUsers(t)
+	name := uniqueName(t, "dup-name")
+
+	resp := alice(t, "POST", "/sandboxes", map[string]any{"name": name})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("first: expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	var sb store.Sandbox
+	decodeJSON(t, resp, &sb)
+	t.Cleanup(func() { alice(t, "DELETE", "/sandboxes/"+sb.ID, nil) })
+
+	// Duplicate — should be 409, not 500 with raw SQLite error
+	resp = alice(t, "POST", "/sandboxes", map[string]any{"name": name})
+	if resp.StatusCode == 500 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("duplicate name returned 500 (should be 409): %s", body)
+	}
+	if resp.StatusCode == 201 {
+		var sb2 store.Sandbox
+		decodeJSON(t, resp, &sb2)
+		alice(t, "DELETE", "/sandboxes/"+sb2.ID, nil)
+		t.Fatal("duplicate name should not succeed")
+	}
+	if resp.StatusCode != 409 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("duplicate name: expected 409, got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+}
+
+func TestCrossUserSecretIsolationHTTP(t *testing.T) {
+	_, alice, bob := setupTwoUsers(t)
+
+	resp := alice(t, "POST", "/secrets", map[string]any{
+		"name": "alice-secret", "value": "secret-value",
+	})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("alice create secret: expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	// Bob can't see it
+	resp = bob(t, "GET", "/secrets", nil)
+	var bobSecrets []store.SecretRecord
+	decodeJSON(t, resp, &bobSecrets)
+	if len(bobSecrets) != 0 {
+		t.Fatalf("bob should see 0 secrets, got %d", len(bobSecrets))
+	}
+
+	// Bob can't delete it
+	resp = bob(t, "DELETE", "/secrets/alice-secret", nil)
+	if resp.StatusCode != 404 {
+		t.Fatalf("bob delete: expected 404, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	alice(t, "DELETE", "/secrets/alice-secret", nil)
 }

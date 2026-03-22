@@ -13,8 +13,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Engine != "docker" {
-		t.Fatalf("expected docker, got %s", cfg.Engine)
+	if cfg.Engine != "firecracker" {
+		t.Fatalf("expected firecracker, got %s", cfg.Engine)
 	}
 	if cfg.Listen != ":8080" {
 		t.Fatalf("expected :8080, got %s", cfg.Listen)

@@ -319,6 +319,19 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Check for duplicate name before booting a VM.
+		// Without this, a name conflict is only discovered after engine.Create()
+		// has already booted a VM (~3.5s), which then gets destroyed.
+		if spec.Name != "" {
+			existing, _ := s.store.ListSandboxes(user.ID)
+			for _, sb := range existing {
+				if sb.Name == spec.Name && sb.Status != "destroyed" {
+					errResp(w, 409, fmt.Sprintf("sandbox %q already exists", spec.Name))
+					return
+				}
+			}
+		}
+
 		info, err := s.engine.Create(r.Context(), spec)
 		if err != nil {
 			errResp(w, 500, "create failed: "+err.Error())

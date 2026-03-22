@@ -763,6 +763,108 @@ func TestSecretScoping(t *testing.T) {
 	}
 }
 
+// --- Bug exposure tests ---
+
+func TestTwoUsersCreateSameSecretName(t *testing.T) {
+	s := testStore(t)
+
+	// Alice creates "API_KEY"
+	if err := s.SetSecret("usr_alice", "API_KEY", []byte("alice-data")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bob creates "API_KEY" — should succeed (different user namespace)
+	if err := s.SetSecret("usr_bob", "API_KEY", []byte("bob-data")); err != nil {
+		t.Fatalf("bob should be able to create same secret name: %v", err)
+	}
+
+	// Each user should see their own value
+	aliceVal, err := s.GetSecretValue("usr_alice", "API_KEY")
+	if err != nil {
+		t.Fatalf("alice get: %v", err)
+	}
+	if string(aliceVal) != "alice-data" {
+		t.Fatalf("alice value: %q, want 'alice-data'", aliceVal)
+	}
+
+	bobVal, err := s.GetSecretValue("usr_bob", "API_KEY")
+	if err != nil {
+		t.Fatalf("bob get: %v", err)
+	}
+	if string(bobVal) != "bob-data" {
+		t.Fatalf("bob value: %q, want 'bob-data'", bobVal)
+	}
+
+	// Each user should see exactly 1 secret
+	aliceList, _ := s.ListUserSecrets("usr_alice")
+	if len(aliceList) != 1 {
+		t.Fatalf("alice should have 1 secret, got %d", len(aliceList))
+	}
+	bobList, _ := s.ListUserSecrets("usr_bob")
+	if len(bobList) != 1 {
+		t.Fatalf("bob should have 1 secret, got %d", len(bobList))
+	}
+}
+
+func TestDeleteSandboxByID(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateSandbox(Sandbox{
+		ID: "del-byid", Name: "byid-test", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+
+	// DeleteSandboxByID doesn't require user scoping
+	if err := s.DeleteSandboxByID("del-byid"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify gone
+	_, err := s.GetSandboxByID("del-byid")
+	if err == nil {
+		t.Fatal("expected error after delete")
+	}
+
+	// Delete non-existent
+	if err := s.DeleteSandboxByID("nope"); err == nil {
+		t.Fatal("expected error deleting non-existent")
+	}
+}
+
+func TestUserDuplicateNameRejected(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateUser(User{
+		ID: "usr_dup1", Name: "alice", APIKeyHash: "hash_a",
+		MaxSandboxes: 5, SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
+	err := s.CreateUser(User{
+		ID: "usr_dup2", Name: "alice", APIKeyHash: "hash_b",
+		MaxSandboxes: 5, SubnetIndex: 2, CreatedAt: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected error creating user with duplicate name")
+	}
+}
+
+func TestUserDuplicateKeyHashRejected(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateUser(User{
+		ID: "usr_kdup1", Name: "alice", APIKeyHash: "same_hash",
+		MaxSandboxes: 5, SubnetIndex: 1, CreatedAt: time.Now(),
+	})
+
+	err := s.CreateUser(User{
+		ID: "usr_kdup2", Name: "bob", APIKeyHash: "same_hash",
+		MaxSandboxes: 5, SubnetIndex: 2, CreatedAt: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected error creating user with duplicate key hash")
+	}
+}
+
 // --- Firecracker State Persistence ---
 
 func TestFirecrackerStateRoundTrip(t *testing.T) {

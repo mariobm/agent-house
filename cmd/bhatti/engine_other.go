@@ -10,5 +10,5 @@ import (
 )
 
 func newFirecrackerEngine(cfg *pkg.Config) (engine.Engine, error) {
-	return nil, fmt.Errorf("firecracker engine is only available on Linux")
+	return nil, fmt.Errorf("bhatti requires Linux with KVM (firecracker engine only)")
 }

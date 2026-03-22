@@ -40,7 +40,7 @@ func DefaultDataDir() string {
 func LoadConfig() (*Config, error) {
 	dir := DefaultDataDir()
 	cfg := &Config{
-		Engine:  "docker",
+		Engine:  "firecracker",
 		Listen:  ":8080",
 		DataDir: dir,
 	}

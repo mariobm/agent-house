@@ -14,7 +14,6 @@ import (
 
 	"github.com/sahil-shubham/bhatti/pkg"
 	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/engine/docker"
 	"github.com/sahil-shubham/bhatti/pkg/server"
 	"github.com/sahil-shubham/bhatti/pkg/store"
 )
@@ -60,10 +59,8 @@ func runDaemon() {
 	// Create engine
 	var eng engine.Engine
 	switch cfg.Engine {
-	case "firecracker":
+	case "firecracker", "":
 		eng, err = newFirecrackerEngine(cfg)
-	case "docker", "":
-		eng, err = docker.New()
 	default:
 		slog.Error("unknown engine", "engine", cfg.Engine)
 		os.Exit(1)

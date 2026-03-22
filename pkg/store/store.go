@@ -190,6 +190,26 @@ func New(dbPath string) (*Store, error) {
 	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sandboxes_user_name
 		ON sandboxes(created_by, name) WHERE status != 'destroyed'`)
 
+	// Migrate secrets table to composite primary key (user_id, name).
+	// The original table had PRIMARY KEY(name) which prevents two users
+	// from having a secret with the same name. This migration recreates
+	// the table with the correct composite key.
+	db.Exec(`CREATE TABLE IF NOT EXISTS secrets_v2 (
+		user_id TEXT NOT NULL DEFAULT '',
+		name TEXT NOT NULL,
+		path TEXT NOT NULL DEFAULT '',
+		value_encrypted BLOB DEFAULT NULL,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (user_id, name)
+	)`)
+	// Copy data from old table if it exists and secrets_v2 is empty
+	db.Exec(`INSERT OR IGNORE INTO secrets_v2 (user_id, name, path, value_encrypted, created_at, updated_at)
+		SELECT COALESCE(user_id, ''), name, COALESCE(path, ''), value_encrypted,
+		       created_at, COALESCE(updated_at, created_at) FROM secrets`)
+	db.Exec(`DROP TABLE IF EXISTS secrets`)
+	db.Exec(`ALTER TABLE secrets_v2 RENAME TO secrets`)
+
 	return &Store{db: db}, nil
 }
 
@@ -508,13 +528,13 @@ func scanSandbox(s scanner) (*Sandbox, error) {
 // SetSecret creates or updates an encrypted secret for a user.
 func (s *Store) SetSecret(userID, name string, encrypted []byte) error {
 	now := time.Now()
-	// Use composite key (user_id, name) for uniqueness
 	_, err := s.db.Exec(
-		`INSERT INTO secrets (name, path, value_encrypted, user_id, created_at, updated_at)
-		 VALUES (?, '', ?, ?, ?, ?)
-		 ON CONFLICT(name) DO UPDATE SET value_encrypted = excluded.value_encrypted, updated_at = excluded.updated_at
-		 WHERE user_id = ?`,
-		name, encrypted, userID, now, now, userID)
+		`INSERT INTO secrets (user_id, name, value_encrypted, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id, name) DO UPDATE SET
+		     value_encrypted = excluded.value_encrypted,
+		     updated_at = excluded.updated_at`,
+		userID, name, encrypted, now, now)
 	return err
 }
 
