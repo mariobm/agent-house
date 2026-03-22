@@ -168,11 +168,19 @@ func setupGlobalFirewall() error {
 			"-j", "MASQUERADE"}},
 	}
 
-	for _, r := range rules {
+	// Insert rules at the TOP of each chain (-I, not -A) so they take
+	// precedence over UFW's default rules. UFW's ufw-before-forward chain
+	// accepts all ICMP and RELATED,ESTABLISHED traffic — our DROP rules
+	// must come before UFW's chains.
+	//
+	// Rules are inserted in reverse order because each -I inserts at
+	// position 1, pushing previous rules down.
+	for i := len(rules) - 1; i >= 0; i-- {
+		r := rules[i]
 		checkArgs := append([]string{"-t", r.table, "-C", r.chain}, r.args...)
 		if runQuiet("iptables", checkArgs...) != nil {
-			addArgs := append([]string{"-t", r.table, "-A", r.chain}, r.args...)
-			if err := run("iptables", addArgs...); err != nil {
+			insertArgs := append([]string{"-t", r.table, "-I", r.chain, "1"}, r.args...)
+			if err := run("iptables", insertArgs...); err != nil {
 				return fmt.Errorf("iptables rule %v: %w", r.args, err)
 			}
 		}
@@ -187,14 +195,31 @@ func setupGlobalFirewall() error {
 func cleanupOldBridge() {
 	// Remove old bridge if it exists
 	runQuiet("ip", "link", "del", "brbhatti0")
-	// Remove old iptables rules (best effort)
+
+	// Remove old iptables rules (best effort, try multiple variations)
 	defaultIface := detectDefaultInterface()
 	runQuiet("iptables", "-t", "nat", "-D", "POSTROUTING",
 		"-s", "192.168.137.0/24", "-o", defaultIface, "-j", "MASQUERADE")
-	for _, dir := range []string{"-i", "-o"} {
+
+	// Remove old per-bridge FORWARD rules that were inserted with -I
+	// These reference brbhatti0 in -i/-o fields
+	for i := 0; i < 5; i++ { // repeat to catch multiple copies
 		runQuiet("iptables", "-D", "FORWARD",
-			dir, "brbhatti0", "-j", "ACCEPT")
+			"-i", "brbhatti0", "-o", "brbhatti0", "-j", "ACCEPT")
+		runQuiet("iptables", "-D", "FORWARD",
+			"-i", "brbhatti0", "-o", defaultIface, "-j", "ACCEPT")
+		runQuiet("iptables", "-D", "FORWARD",
+			"-i", defaultIface, "-o", "brbhatti0", "-j", "ACCEPT")
 	}
+
+	// Remove old 10.0.0.0/8 rules that may have been appended (-A) at
+	// the wrong position (bottom of chain, after UFW rules)
+	runQuiet("iptables", "-D", "FORWARD", "-s", "10.0.0.0/8", "-d", "10.0.0.0/8", "-j", "DROP")
+	runQuiet("iptables", "-D", "FORWARD", "-s", "10.0.0.0/8", "!", "-d", "10.0.0.0/8", "-j", "ACCEPT")
+	runQuiet("iptables", "-D", "FORWARD", "-d", "10.0.0.0/8", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+	runQuiet("iptables", "-D", "INPUT", "-s", "10.0.0.0/8", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+	runQuiet("iptables", "-D", "INPUT", "-s", "10.0.0.0/8", "-m", "state", "--state", "NEW", "-j", "DROP")
+	runQuiet("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", "10.0.0.0/8", "-o", defaultIface, "-j", "MASQUERADE")
 }
 
 func createTapDevice(sandboxID string, bridge string) (tapName string, err error) {
