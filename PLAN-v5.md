@@ -16,7 +16,7 @@ Part 2 (network)   — per-user bridge networks, iptables isolation
      ↓
 Part 3 (proxy)     — remove TCP auto-forward, harden HTTP reverse proxy
      ↓
-Part 4 (agent)     — guest hardening (exec as lohar, limits, reaping, unmount config)
+Part 4 (agent)     — guest hardening (exec as lohar, limits, unmount config drive)
      ↓
 Part 5 (secrets)   — wire up age encryption, scope to users
      ↓
@@ -88,11 +88,19 @@ type User struct {
 
 ### 1.2 Sandbox Ownership
 
-Add `created_by` column to sandboxes:
+Add `created_by` column to sandboxes, with a uniqueness constraint on
+name within a user's namespace:
 
 ```sql
 ALTER TABLE sandboxes ADD COLUMN created_by TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sandboxes_user_name
+    ON sandboxes(created_by, name) WHERE status != 'destroyed';
 ```
+
+The unique index prevents a user from creating two sandboxes named "dev".
+Without this, `resolveID("dev")` in the CLI does a linear scan and returns
+the first match — ambiguous names would silently target the wrong sandbox.
+The `WHERE status != 'destroyed'` filter allows name reuse after deletion.
 
 **Every store method that touches sandboxes takes a user ID and filters:**
 
@@ -237,11 +245,67 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-### 1.7 Testing
+### 1.7 User Deletion
+
+`DeleteUser` refuses if the user has active sandboxes or secrets. Same
+pattern as `DeleteVolume` refusing when in use. Force explicit cleanup.
+
+```go
+func (s *Store) DeleteUser(id string) error {
+    count, _ := s.CountSandboxes(id)
+    if count > 0 {
+        return fmt.Errorf("user has %d active sandbox(es) — destroy them first", count)
+    }
+    secrets, _ := s.ListSecrets(id)
+    if len(secrets) > 0 {
+        return fmt.Errorf("user has %d secret(s) — delete them first", len(secrets))
+    }
+    // Bridge network cleanup handled by caller (engine layer)
+    _, err := s.db.Exec("DELETE FROM users WHERE id = ?", id)
+    return err
+}
+```
+
+An admin who wants to remove a user runs `bhatti destroy` for each sandbox,
+`bhatti secret delete` for each secret, then `bhatti user delete`. Tedious
+but safe. A `--force` flag that cascades can come later.
+
+### 1.8 API Key Rotation
+
+If a key is compromised, the user needs to rotate without losing their
+sandboxes, secrets, subnet, or identity.
+
+```bash
+bhatti user rotate-key alice
+# → New API key: bht_xyz789...  (shown once)
+#   Old key is immediately invalidated.
+```
+
+Implementation: generate new key, hash it, update `api_key_hash` in the
+`users` row. The user's ID, subnet_index, sandboxes, and secrets are
+unchanged. All existing sessions using the old key fail auth on next request.
+
+```go
+func (s *Store) RotateUserKey(id, newKeyHash string) error {
+    res, err := s.db.Exec("UPDATE users SET api_key_hash = ? WHERE id = ?",
+        newKeyHash, id)
+    if err != nil { return err }
+    n, _ := res.RowsAffected()
+    if n == 0 { return fmt.Errorf("user %q not found", id) }
+    return nil
+}
+```
+
+### 1.9 Testing
 
 - `TestUserCRUD` — create user, get by key hash, list, delete
+- `TestUserDeleteRefused` — create user with sandbox, delete returns error
+- `TestKeyRotation` — create user, rotate key, old key returns 401, new
+  key returns 200, sandboxes still accessible
 - `TestSandboxScoping` — create 2 users, user A creates sandbox, user B
   cannot list/get/delete it
+- `TestSandboxNameUniqueness` — create sandbox "dev", create another "dev"
+  for same user → 409 conflict. Different user can use "dev".
 - `TestSecretScoping` — user A's secrets invisible to user B
 - `TestAuthMiddleware` — no token → 401, invalid token → 401, valid token → 200
 - `TestSandboxLimit` — create up to max_sandboxes, next one returns 429
@@ -296,8 +360,11 @@ func subnetFromIndex(index int) (gateway, subnet, bridge string) {
 
 ### 2.2 Bridge Lifecycle
 
-Bridges are created lazily (first sandbox for a user) and destroyed on
-last sandbox deletion.
+Bridges are created lazily (first sandbox for a user) and destroyed when
+the user's last sandbox is destroyed. "Last sandbox" means last sandbox
+in **any** state — running, stopped, or cold. A cold sandbox still has
+files on disk (rootfs, snapshots) and its TAP device is referenced in the
+snapshot state. The bridge must persist until the user has zero sandboxes.
 
 ```go
 // ensureUserBridge creates the bridge if it doesn't exist.
@@ -313,15 +380,31 @@ func ensureUserBridge(net *UserNetwork) error {
 }
 
 // destroyUserBridge removes the bridge device.
-// Called when user's last sandbox is destroyed.
+// Called from Destroy() after confirming zero remaining sandboxes for the user.
 func destroyUserBridge(bridgeName string) {
     run("ip", "link", "del", bridgeName)
 }
 ```
 
+The check in `Destroy()`:
+
+```go
+// After destroying the sandbox, check if user has any remaining sandboxes
+remaining, _ := s.store.CountSandboxes(user.ID)
+if remaining == 0 {
+    destroyUserBridge(userNet.BridgeName)
+    delete(e.userNetworks, user.ID)
+}
+```
+
+`CountSandboxes` counts all non-destroyed sandboxes regardless of status
+(running, stopped, cold). This ensures the bridge is never pulled out from
+under a cold sandbox whose snapshot references a TAP on that bridge.
+```
+
 ### 2.3 Global Iptables Rules
 
-Set once at engine startup. 5 rules total, regardless of user/VM count:
+Set once at engine startup. 6 rules total, regardless of user/VM count:
 
 ```go
 // setupGlobalFirewall configures isolation rules for all VM traffic.
@@ -344,10 +427,30 @@ func setupGlobalFirewall() error {
         {"filter", "FORWARD", []string{"-d", "10.0.0.0/8", "-m", "state",
             "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}},
 
-        // 4. Block VMs from reaching the host (API, SSH, everything)
-        {"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-j", "DROP"}},
+        // 4. Allow return traffic from VMs to host (agent TCP responses).
+        //
+        // The bhatti daemon initiates TCP connections to VMs (net.Dial to
+        // 10.X.Y.Z:1024). The kernel picks the bridge IP as source. The
+        // SYN-ACK from the VM enters the INPUT chain with source 10.0.0.0/8.
+        // Without this ACCEPT rule, a blanket DROP would kill every agent
+        // connection — exec, file ops, sessions, health checks all fail.
+        //
+        // This MUST come before rule 5 (the DROP). conntrack ensures only
+        // response packets on host-initiated connections are accepted.
+        {"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-m", "state",
+            "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}},
 
-        // 5. NAT for outbound
+        // 5. Block VM-initiated connections to host (API, SSH, everything).
+        //
+        // Only NEW connections from VMs are dropped. This prevents a
+        // compromised VM from connecting to the bhatti API (port 8080),
+        // SSH (port 22), or any other host service. Combined with rule 4,
+        // the host can maintain agent connections while VMs cannot initiate
+        // new connections to the host.
+        {"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-m", "state",
+            "--state", "NEW", "-j", "DROP"}},
+
+        // 6. NAT for outbound
         {"nat", "POSTROUTING", []string{"-s", "10.0.0.0/8", "-o", defaultIface,
             "-j", "MASQUERADE"}},
     }
@@ -369,17 +472,23 @@ func setupGlobalFirewall() error {
 }
 ```
 
+**Rule ordering matters for INPUT.** Rule 4 (ACCEPT ESTABLISHED) must be
+evaluated before rule 5 (DROP NEW). Since both are appended with `-A`, they
+are evaluated in insertion order. If the chain already has rules from a
+previous run, the idempotency check (`-C`) ensures we don't duplicate them.
+
 **Why same-user VMs can talk to each other:** Traffic between VMs on the
 same bridge (e.g., `10.0.1.2` → `10.0.1.3`) stays at L2 — it's switched by
 the bridge, never enters the FORWARD chain. Rule 1 only blocks cross-bridge
 traffic that would go through the host's routing table. This is a feature:
 a user can run a frontend sandbox and a backend sandbox that communicate.
 
-**Why VMs can't reach the host:** Rule 4 drops all traffic from `10.0.0.0/8`
-in the INPUT chain. VMs use `1.1.1.1` and `8.8.8.8` for DNS (injected via
-kernel cmdline). They have no legitimate reason to talk to the host. This
-prevents a leaked API key inside a sandbox from being used to control the
-host API.
+**Why VMs can't initiate connections to the host:** Rule 5 drops NEW
+connections from `10.0.0.0/8` in the INPUT chain. VMs use `1.1.1.1` and
+`8.8.8.8` for DNS (injected via kernel cmdline). They have no legitimate
+reason to initiate connections to the host. This prevents a leaked API key
+inside a sandbox from being used to control the host API. Rule 4 allows the
+return path for host-initiated agent connections (exec, file ops, etc.).
 
 ### 2.4 TAP Device Creation Changes
 
@@ -679,46 +788,69 @@ func handleFileWrite(conn net.Conn, payload []byte) {
 }
 ```
 
-### 4.5 Zombie Reaper
+**Note on disk storage limits:** The 100MB cap applies to the file API path
+only. A user can bypass this via exec (`dd if=/dev/zero of=/bigfile ...`).
+The real disk limit is the **ext4 image size** — `build-rootfs.sh` creates
+a 2048MB image, and `copyRootfs` (whether `cp --reflink=always` or plain
+`cp`) preserves the filesystem size boundary. Writes inside the VM get
+ENOSPC when the 2GB rootfs is full. Volumes have their own size limits set
+at creation time via `size_mb`.
 
-**File:** `cmd/lohar/main.go`
+This is the correct design: the ext4 image is the disk quota. The API file
+write cap is defense-in-depth preventing a single API call from filling the
+filesystem. Document for users: "each sandbox has a 2GB root filesystem."
 
-Replace the comment about not installing a SIGCHLD handler with a proper
-reaper. The concern about racing with `cmd.Wait()` is handled by treating
-ECHILD as success:
+### 4.5 Zombie Reaping — Explicitly Not Done
+
+**Decision:** Keep the current no-reaper design. Do not add a `Wait4(-1)`
+reaper.
+
+The existing code comment explains the reasoning correctly:
+
+```
+// Note: we do NOT install a SIGCHLD handler. Go's runtime manages
+// SIGCHLD for processes started via exec.Command. A manual Wait4(-1)
+// reaper would race with cmd.Wait() and corrupt exit codes.
+// Orphan zombies (from grandchild processes) are acceptable for now.
+```
+
+**Why a generic reaper breaks piped exec:** For piped exec (the primary
+code path agents use), the exit code comes from `cmd.Wait()`:
 
 ```go
-func installSignalHandlers() {
-    // Reap orphaned child processes periodically.
-    // cmd.Wait() calls waitpid(pid) for the specific PID it manages.
-    // Our reaper calls Wait4(-1, WNOHANG) for any child. If the reaper
-    // happens to reap a PID before cmd.Wait() does, cmd.Wait() gets
-    // ECHILD — which exec.Command treats as an error. The session's
-    // exit code is already captured by the PTY reader goroutine, so
-    // this race is harmless.
-    go func() {
-        for {
-            time.Sleep(5 * time.Second)
-            for {
-                var status syscall.WaitStatus
-                pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
-                if pid <= 0 || err != nil {
-                    break
-                }
-            }
-        }
-    }()
-
-    // SIGTERM/SIGINT: clean shutdown
-    sigterm := make(chan os.Signal, 1)
-    signal.Notify(sigterm, syscall.SIGTERM, syscall.SIGINT)
-    go func() {
-        <-sigterm
-        syscall.Sync()
-        syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
-    }()
-}
+exitCode := exitCodeFromErr(cmd.Wait())
 ```
+
+If a reaper calls `Wait4(-1, WNOHANG)` and reaps the child PID before
+`cmd.Wait()` does, `cmd.Wait()` gets ECHILD. `exitCodeFromErr` treats
+this as exit code 1. A process that exited successfully (code 0) gets
+reported as code 1. This silently corrupts exit codes — an `npm test`
+that passed gets reported as failed.
+
+This race is **not** harmless for piped exec. It only appears harmless
+for TTY sessions, where the exit code is captured by the PTY reader
+goroutine independently of `cmd.Wait()`.
+
+**Why zombies are acceptable:** Orphan zombies only accumulate from
+grandchild processes that outlive their parent and get reparented to
+PID 1. In the coding agent workload (short-lived sequential commands),
+these are rare. The VM is ephemeral — zombies are cleaned up on destroy.
+
+**Future option:** If zombie accumulation becomes observable on long-lived
+VMs (check via `ps aux | grep defunct`), the correct fix is a PID-tracking
+reaper that only reaps PIDs not managed by `cmd.Wait()`:
+
+```go
+var trackedPIDs sync.Map // pid → bool
+// Register in handlePipedExec after cmd.Start():
+trackedPIDs.Store(cmd.Process.Pid, true)
+defer trackedPIDs.Delete(cmd.Process.Pid)
+// Reaper skips tracked PIDs:
+if _, tracked := trackedPIDs.Load(pid); !tracked { /* safe to reap */ }
+```
+
+This adds complexity for marginal benefit. Defer until there's evidence
+of the problem in production.
 
 ### 4.6 Constant-Time Token Comparison in Agent
 
@@ -750,8 +882,8 @@ Same change in `cmd/lohar/forward.go`.
   verify error (no such file or directory)
 - `TestSessionLimit` — create 20 sessions, verify 21st returns error
 - `TestFileWriteSizeLimit` — attempt to write 200MB file, verify error
-- `TestZombieReaping` — exec `sh -c 'for i in $(seq 10); do sleep 0 & done'`,
-  wait 10 seconds, exec `ps aux | grep defunct | wc -l`, verify count is 0
+- `TestDiskLimit` — exec `dd if=/dev/zero of=/bigfile bs=1M count=3000`,
+  verify it fails with ENOSPC (rootfs is 2GB)
 
 ---
 
@@ -1236,6 +1368,26 @@ surface, stdlib HTTP server, validated inputs.
 a feature, not a bug. The sandbox is the user's environment — they should be
 able to set any environment variable. The security boundary is between users
 (API scoping + network isolation), not within a single user's sandbox.
+
+**WebSocket auth via query parameter.** Removed. The bhatti API is
+machine-to-machine. The CLI and all programmatic WebSocket clients (Go,
+Python, Node, Rust) support custom headers on upgrade — they send
+`Authorization: Bearer` in the header. The only client that can't set
+headers on WebSocket upgrade is the browser's native `new WebSocket(url)`.
+Since the web UI is a separate project, it should solve its own auth:
+authenticate to its backend, get a short-lived single-use WebSocket ticket,
+connect with `ws://...?ticket=xyz`. The ticket is validated once and
+discarded. This is the standard pattern (Slack, Discord, etc.). Bhatti's
+API should not weaken its auth model to accommodate browser limitations
+that belong to a different project.
+
+**Generic zombie reaper in guest agent.** A `Wait4(-1, WNOHANG)` reaper
+races with `cmd.Wait()` in piped exec, corrupting exit codes (successful
+processes reported as exit code 1). The existing no-reaper design is
+correct. Orphan zombies from grandchild processes are rare in the coding
+agent workload and cleaned up on sandbox destroy. See Part 4.5 for full
+analysis and a PID-tracking reaper design to use if the problem manifests
+in production.
 
 ---
 
