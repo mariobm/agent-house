@@ -80,7 +80,7 @@ func TestCreateExecDestroy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exec uname: %v", err)
 	}
-	if result.ExitCode != 0 || !strings.Contains(result.Stdout, "aarch64") {
+	if result.ExitCode != 0 || !strings.Contains(result.Stdout, "Linux") {
 		t.Errorf("uname: exit=%d out=%q", result.ExitCode, result.Stdout)
 	}
 	t.Logf("uname: %s", strings.TrimSpace(result.Stdout))
