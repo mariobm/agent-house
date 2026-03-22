@@ -39,6 +39,10 @@ func handleTTYSession(conn net.Conn, req proto.ExecRequest) {
 	}
 
 	sess := newSession(req.Argv, true, maxIdle)
+	if sess == nil {
+		proto.WriteFrame(conn, proto.ERROR, []byte("session limit exceeded"))
+		return
+	}
 
 	master, slave, err := openPTY()
 	if err != nil {
@@ -66,10 +70,12 @@ func handleTTYSession(conn net.Conn, req proto.ExecRequest) {
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
+	// Run as lohar (uid 1000). Users can sudo for root.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:  true,
-		Setctty: true,
-		Ctty:    0,
+		Setsid:     true,
+		Setctty:    true,
+		Ctty:       0,
+		Credential: &syscall.Credential{Uid: 1000, Gid: 1000},
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -261,6 +267,10 @@ func openPTY() (master, slave *os.File, err error) {
 // The session can be attached to by the host via SessionAttach("init").
 func runInitSession(script, user string) {
 	sess := newSession([]string{"sh", "-c", script}, true, 0)
+	if sess == nil {
+		logf("init session: session limit exceeded")
+		return
+	}
 	// Override the auto-generated ID with "init"
 	registry.Lock()
 	delete(registry.sessions, sess.ID)

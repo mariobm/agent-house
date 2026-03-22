@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,12 +17,13 @@ import (
 func handleForwardConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// Auth check
+	// Auth check (constant-time comparison)
 	if agentToken != "" {
 		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		msgType, payload, err := proto.ReadFrame(conn)
 		conn.SetReadDeadline(time.Time{})
-		if err != nil || msgType != proto.AUTH || string(payload) != agentToken {
+		if err != nil || msgType != proto.AUTH ||
+			subtle.ConstantTimeCompare(payload, []byte(agentToken)) != 1 {
 			proto.WriteFrame(conn, proto.ERROR, []byte("auth required"))
 			return
 		}

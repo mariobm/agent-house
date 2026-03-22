@@ -62,6 +62,11 @@ func main() {
 		configEnv = cfg.Env
 		writeConfigFiles(cfg.Files)
 		mountVolumes(cfg.Volumes)
+
+		// Unmount config drive — it contains the agent token and env vars
+		// in plaintext JSON. No reason to keep it accessible after boot.
+		syscall.Unmount("/run/bhatti/config", 0)
+		os.RemoveAll("/run/bhatti/config")
 	} else {
 		syscall.Sethostname([]byte("bhatti"))
 		ensureResolvConf()

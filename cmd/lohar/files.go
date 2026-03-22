@@ -136,9 +136,18 @@ func handleFileWrite(conn net.Conn, payload []byte) {
 		return
 	}
 
-	// Bug #2: Reject negative sizes (Content-Length -1 = unknown)
+	// Reject negative sizes (Content-Length -1 = unknown)
 	if req.Size < 0 {
 		proto.WriteFrame(conn, proto.ERROR, []byte("file size must be >= 0"))
+		return
+	}
+
+	// Cap file writes at 100MB. The real disk limit is the ext4 image size
+	// (2GB), but this prevents a single API call from filling the filesystem.
+	const maxWriteSize = 100 << 20
+	if req.Size > maxWriteSize {
+		proto.WriteFrame(conn, proto.ERROR,
+			[]byte(fmt.Sprintf("file too large: %d bytes (max %d)", req.Size, maxWriteSize)))
 		return
 	}
 

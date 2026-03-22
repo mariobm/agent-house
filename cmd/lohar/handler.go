@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -45,7 +46,19 @@ func getActivity() proto.ActivityInfo {
 	}
 }
 
+const maxConcurrentConns = 50
+const maxActiveSessions = 20
+
+var activeConns atomic.Int32
+
 func handleControlConnection(conn net.Conn) {
+	if activeConns.Add(1) > maxConcurrentConns {
+		activeConns.Add(-1)
+		proto.WriteFrame(conn, proto.ERROR, []byte("connection limit exceeded"))
+		conn.Close()
+		return
+	}
+	defer activeConns.Add(-1)
 	defer conn.Close()
 
 	// Auth check: if a token is configured, the first frame must be AUTH.
@@ -53,7 +66,8 @@ func handleControlConnection(conn net.Conn) {
 		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		msgType, payload, err := proto.ReadFrame(conn)
 		conn.SetReadDeadline(time.Time{})
-		if err != nil || msgType != proto.AUTH || string(payload) != agentToken {
+		if err != nil || msgType != proto.AUTH ||
+			subtle.ConstantTimeCompare(payload, []byte(agentToken)) != 1 {
 			proto.WriteFrame(conn, proto.ERROR, []byte("auth required"))
 			return
 		}

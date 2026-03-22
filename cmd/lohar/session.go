@@ -40,6 +40,9 @@ var registry = struct {
 func newSession(argv []string, tty bool, maxIdle time.Duration) *Session {
 	registry.Lock()
 	defer registry.Unlock()
+	if len(registry.sessions) >= maxActiveSessions {
+		return nil // caller checks for nil and returns error
+	}
 	registry.counter++
 	s := &Session{
 		ID:        fmt.Sprintf("s%d", registry.counter),

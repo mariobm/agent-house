@@ -24,8 +24,12 @@ func handlePipedExec(conn net.Conn, req proto.ExecRequest) {
 	if req.Cwd != nil {
 		cmd.Dir = *req.Cwd
 	}
-	// Run in own process group so KILL can terminate the entire tree
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Run as lohar (uid 1000), in own process group for reliable KILL.
+	// Users can sudo if they need root — sudoers has NOPASSWD for lohar.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid:    true,
+		Credential: &syscall.Credential{Uid: 1000, Gid: 1000},
+	}
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
