@@ -441,7 +441,6 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 		if err := s.engine.Destroy(r.Context(), sb.EngineID); err != nil {
 			slog.Warn("engine destroy failed", "sandbox", sb.ID, "error", err)
 		}
-		s.proxy.StopAll(id)
 		s.store.DetachVolumes(id)
 		if err := s.store.DeleteSandbox(user.ID, id); err != nil {
 			errResp(w, 500, err.Error())
@@ -466,7 +465,6 @@ func (s *Server) handleSandboxStop(w http.ResponseWriter, r *http.Request, id st
 		errResp(w, 500, err.Error())
 		return
 	}
-	s.proxy.StopAll(sb.ID)
 	s.store.StopSandbox(id)
 	s.saveVMState(id, sb.EngineID) // persist snapshot paths
 	updated, _ := s.store.GetSandboxByID(id)
@@ -723,7 +721,6 @@ type portInfo struct {
 	SandboxID     string `json:"sandbox_id,omitempty"`
 	ContainerPort int    `json:"container_port"`
 	ProxyURL      string `json:"proxy_url"`
-	HostPort      int    `json:"host_port,omitempty"` // raw TCP forward, if active
 }
 
 func (s *Server) handleSandboxPorts(w http.ResponseWriter, r *http.Request, id string) {
@@ -745,23 +742,12 @@ func (s *Server) handleSandboxPorts(w http.ResponseWriter, r *http.Request, id s
 		ports = []int{}
 	}
 
-	// Build active forward lookup
-	forwards := s.proxy.ActiveForwards(id)
-	fwdMap := map[int]int{} // containerPort → hostPort
-	for _, f := range forwards {
-		fwdMap[f.ContainerPort] = f.HostPort
-	}
-
 	out := make([]portInfo, 0, len(ports))
 	for _, p := range ports {
-		pi := portInfo{
+		out = append(out, portInfo{
 			ContainerPort: p,
 			ProxyURL:      fmt.Sprintf("/sandboxes/%s/proxy/%d/", id, p),
-		}
-		if hp, ok := fwdMap[p]; ok {
-			pi.HostPort = hp
-		}
-		out = append(out, pi)
+		})
 	}
 	writeJSON(w, 200, out)
 }

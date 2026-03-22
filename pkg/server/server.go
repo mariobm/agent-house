@@ -40,8 +40,6 @@ type Server struct {
 	engine       engine.Engine
 	store        *store.Store
 	mux          *http.ServeMux
-	proxy        *ProxyManager
-	stopScan     context.CancelFunc
 	stopThermal  context.CancelFunc
 	startTime    time.Time
 	lastActivity sync.Map // engineID → time.Time — host-side activity cache
@@ -60,19 +58,14 @@ func New(eng engine.Engine, st *store.Store) *Server {
 		engine:    eng,
 		store:     st,
 		mux:       http.NewServeMux(),
-		proxy:     NewProxyManager(eng),
 		startTime: time.Now(),
 	}
 	s.routes()
-	s.startPortScanner(3 * time.Second)
 	return s
 }
 
-// Close stops the port scanner and thermal manager.
+// Close stops background goroutines (thermal manager).
 func (s *Server) Close() {
-	if s.stopScan != nil {
-		s.stopScan()
-	}
 	if s.stopThermal != nil {
 		s.stopThermal()
 	}
@@ -175,74 +168,6 @@ func (s *Server) ensureHot(ctx context.Context, engineID string) error {
 	return te.EnsureHot(ctx, engineID)
 }
 
-// startPortScanner polls running sandboxes for listening ports and auto-forwards them.
-func (s *Server) startPortScanner(interval time.Duration) {
-	ctx, cancel := context.WithCancel(context.Background())
-	s.stopScan = cancel
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				s.scanPorts()
-			}
-		}
-	}()
-}
-
-func (s *Server) scanPorts() {
-	sandboxes, err := s.store.ListAllSandboxes()
-	if err != nil {
-		return
-	}
-	for _, sb := range sandboxes {
-		if sb.Status != "running" {
-			s.proxy.StopAll(sb.ID)
-			continue
-		}
-
-		// Skip non-hot VMs — don't wake them just to scan ports
-		if te, ok := s.engine.(ThermalEngine); ok {
-			if thermal := te.ThermalState(sb.EngineID); thermal != "hot" {
-				continue
-			}
-		}
-
-		ports, err := s.engine.ListeningPorts(context.Background(), sb.EngineID)
-		if err != nil {
-			continue
-		}
-
-		// Get current forwards
-		current := s.proxy.ActiveForwards(sb.ID)
-		currentSet := map[int]bool{}
-		for _, f := range current {
-			currentSet[f.ContainerPort] = true
-		}
-
-		// Forward new ports (tunneled through engine, no IP needed)
-		for _, p := range ports {
-			if !currentSet[p] {
-				s.proxy.Forward(sb.ID, sb.EngineID, p)
-			}
-		}
-
-		// Remove stale forwards
-		portSet := map[int]bool{}
-		for _, p := range ports {
-			portSet[p] = true
-		}
-		for _, f := range current {
-			if !portSet[f.ContainerPort] {
-				s.proxy.StopForward(sb.ID, f.ContainerPort)
-			}
-		}
-	}
-}
 
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

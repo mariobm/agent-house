@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -175,27 +174,4 @@ func (t *mockTermConn) Close() error {
 	return t.conn.Close()
 }
 
-// parseSSOutput is duplicated from the deleted docker package for the
-// one proxy test that references it. Only needed if proxy_test uses it.
-func parseSSOutput(output string) []int {
-	seen := map[int]bool{}
-	var ports []int
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
-			continue
-		}
-		addr := fields[3]
-		idx := strings.LastIndex(addr, ":")
-		if idx < 0 {
-			continue
-		}
-		var p int
-		fmt.Sscanf(addr[idx+1:], "%d", &p)
-		if p > 0 && p < 65536 && !seen[p] {
-			seen[p] = true
-			ports = append(ports, p)
-		}
-	}
-	return ports
-}
+
