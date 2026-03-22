@@ -27,8 +27,25 @@ type UserNetwork struct {
 //	index 255 → 10.1.0.0/24,   gateway 10.1.0.1,   bridge brbhatti-255
 //	max: 10.255.254.0/24 → 65,024 users, 253 VMs each
 func subnetFromIndex(index int) (gateway, subnet, bridge string) {
-	hi := (index - 1) / 254
-	lo := ((index - 1) % 254) + 1
+	// Maps 1-based index to 10.{hi}.{lo}.0/24 subnets.
+	// Skips 10.0.0.0/24 (lo=0 when hi=0 would be ambiguous).
+	//
+	//   index 1   → hi=0, lo=1   → 10.0.1.0/24
+	//   index 254 → hi=0, lo=254 → 10.0.254.0/24
+	//   index 255 → hi=1, lo=0   → 10.1.0.0/24
+	//   index 256 → hi=1, lo=1   → 10.1.1.0/24
+	//   index 509 → hi=1, lo=254 → 10.1.254.0/24
+	//   index 510 → hi=2, lo=0   → 10.2.0.0/24
+	//
+	// Each hi value covers 255 subnets (lo 0-254).
+	// index 1 maps to (0,1), so we offset by 1 to skip (0,0).
+	n := index - 1 // 0-based
+	hi := (n + 1) / 255
+	lo := (n + 1) % 255
+	// index=1 → n=0 → (0+1)/255=0, (0+1)%255=1 → (0,1) ✓
+	// index=254 → n=253 → (254)/255=0, 254%255=254 → (0,254) ✓
+	// index=255 → n=254 → (255)/255=1, 255%255=0 → (1,0) ✓
+	// index=510 → n=509 → (510)/255=2, 510%255=0 → (2,0) ✓
 	gateway = fmt.Sprintf("10.%d.%d.1", hi, lo)
 	subnet = fmt.Sprintf("10.%d.%d.0/24", hi, lo)
 	bridge = fmt.Sprintf("brbhatti-%d", index)
