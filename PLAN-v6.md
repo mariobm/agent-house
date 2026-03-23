@@ -927,6 +927,7 @@ POST /sandboxes/abc123/checkpoint {"name": "dev-ready"}
     copy vol file → .tmp/vol-{name}.ext4
 → write .tmp/manifest.json
 → atomic rename: .tmp/ → snapshots/usr_alice/dev-ready/
+→ store.CreateSnapshot(snapshot) — now durable on disk AND visible via API
 → resume VM
 → release vm.stateMu
 ```
@@ -1138,9 +1139,13 @@ Modifying the original volume after checkpoint would violate snapshot
 isolation. Document this clearly in the API docs so users understand
 "resume gives you a copy, not a reference."
 
-**What the user experiences**: a sandbox that boots in ~50ms with all
-their processes running, files open, dev server responding. Not a fresh
-boot — a continuation.
+**What the user experiences**: a sandbox with all their processes
+running, files open, dev server responding. Not a fresh boot — a
+continuation. Timing: the Firecracker snapshot load is ~50ms, but
+named snapshot resume also copies block devices from the snapshot
+directory first (typically 1-5 seconds depending on total volume size).
+Thermal resume (cold→hot via `Start()`) remains ~50ms with no copies
+because the files are already in the sandbox directory.
 
 ---
 
@@ -1223,6 +1228,12 @@ The guest agent (`lohar`) is baked into the rootfs ext4 image. When we add
 before any sandbox boots. Otherwise every "read-only" volume is mounted
 read-write — silent data corruption on multi-attach.
 
+Note: `scripts/install.sh` already re-injects lohar into the base rootfs
+on every install (lines 145-150). So the BASE rootfs is updated on
+daemon upgrade. The gap is narrower than it appears: only cached OCI
+images and user-saved images retain the old lohar. Phase 2 should add
+a startup version-check warning for stale images (compare lohar hash).
+
 **Steps:**
 1. Update `VolumeMountConfig` in `pkg/engine/firecracker/configdrive.go`
 2. Update `SandboxConfig.Volumes` in `cmd/lohar/main.go` — replace
@@ -1296,27 +1307,58 @@ if status == "running" {
 Also add `"agent_token": vm.Token` to the `VMState()` return map so the
 token is persisted across restarts.
 
+The `FirecrackerState` struct in `pkg/store/store.go` and the
+`SaveFirecrackerState` / `LoadFirecrackerState` methods must be updated
+to include `Token`. Add column migration:
+```sql
+ALTER TABLE sandboxes ADD COLUMN agent_token TEXT DEFAULT '';
+```
+
 **Test:**
 - `TestRestoredVMUsesAuthAgent` — create sandbox, restart daemon
   (triggers RestoreVM), exec → succeeds with auth token, verify that
   connecting without token fails
 
-#### 0.3 SQLite durability for attachment records
+#### 0.2b Persist has_base_snapshot through store round-trip
 
-Add `PRAGMA synchronous=FULL` to the connection string. WAL mode with
-`synchronous=NORMAL` can lose the last transaction on power loss (not
-process crash). For volume attachment records, loss means two VMs could
-get concurrent RW access to the same volume on restart.
+Pre-existing bug: `VMState()` emits `has_base_snapshot` and `RestoreVM()`
+reads it, but the store layer (`SaveFirecrackerState` / `LoadFirecrackerState`)
+doesn't include it. The `FirecrackerState` struct has no `HasBaseSnapshot`
+field. The recovery path in `main.go` builds the state map without it.
 
-```go
-// In store.New():
-db, err := sql.Open("sqlite", dbPath+
-    "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)")
+After daemon restart, `hasBaseSnapshot` is always `false`. The first
+thermal Stop creates a Full snapshot instead of a Diff. Diff snapshots
+(the entire thermal performance optimization — ~52ms vs ~4.4s) don't
+survive restarts.
+
+**Fix:** Add `HasBaseSnapshot bool` to `FirecrackerState`, the
+`SaveFirecrackerState` UPDATE, and the `LoadFirecrackerState` SELECT.
+Add column migration:
+```sql
+ALTER TABLE sandboxes ADD COLUMN has_base_snapshot INTEGER DEFAULT 0;
 ```
 
+Update `saveVMState` in routes.go to pass it through, and the recovery
+state map in main.go to include it.
+
 **Test:**
-- `TestSQLitePragmas` — open store, query `PRAGMA synchronous`, verify
-  returns 2 (FULL)
+- `TestDiffSnapshotSurvivesRestart` — create sandbox, Stop (Full snap),
+  Start, restart daemon (triggers recovery), Stop again → second Stop
+  should create a Diff snapshot (check file size or timing), not Full
+
+#### 0.3 SQLite durability — documented as acceptable
+
+SQLite in WAL mode with `synchronous=NORMAL` (current setting) guarantees
+durability for commits against daemon crashes — the OS preserves page
+cache on process death. Power loss CAN lose the last transaction, but:
+1. The orphan cleanup on startup detects and fixes inconsistent state
+2. The Hetzner server has ECC RAM and UPS-backed NVMe
+3. `synchronous=FULL` adds fsync per commit which measurably increases
+   write latency for every API request
+
+Decision: keep `synchronous=NORMAL`. The orphan cleanup is the real
+safety net. If running on hardware without battery-backed write cache,
+operators can add `&_pragma=synchronous(FULL)` to the connection string.
 
 #### 0.4 Config drive size bump to 4MB
 
@@ -1388,7 +1430,7 @@ Phase 3 integration tests already cover resume networking. Add:
 
 - `TestLoharVersionInRootfs`
 - `TestRestoredVMUsesAuthAgent`
-- `TestSQLitePragmas`
+- `TestDiffSnapshotSurvivesRestart` (has_base_snapshot persistence)
 - `TestConfigDriveLargePayload`
 - `TestConfigDriveNoLoopDevice`
 - `TestResumeNoARPStall`
@@ -1442,6 +1484,7 @@ type Volume struct {
     UserID      string             `json:"user_id"`
     Name        string             `json:"name"`
     SizeMB      int                `json:"size_mb"`
+    Status      string             `json:"status"`    // "creating" or "ready"
     FilePath    string             `json:"-"`
     Attachments []VolumeAttachment `json:"attachments"`
     CreatedAt   time.Time          `json:"created_at"`
@@ -1462,6 +1505,7 @@ func (s *Store) DetachVolume(userID, name, sandboxID string) error
 func (s *Store) DetachAllForSandbox(sandboxID string) error        // called on sandbox destroy
 func (s *Store) DetachOrphanedVolumes() error                      // startup recovery
 func (s *Store) UpdateVolumeSize(userID, name string, sizeMB int) error
+func (s *Store) UpdateVolumeStatus(userID, name, status string) error  // "creating" → "ready"
 ```
 
 `AttachVolume` runs inside a transaction with the junction table:
@@ -1658,7 +1702,7 @@ for _, vol := range req.Volumes {
         } else {
             // We won the race. Create the file.
             if err := createVolume(volPath, vol.SizeMB); err != nil {
-                store.DeleteVolumeByID(storeVol.ID) // force-delete, skip attachment check
+                store.DeleteVolume(userID, vol.Name) // safe: creating volumes have 0 attachments by invariant
                 return fmt.Errorf("create volume %q: %w", vol.Name, err)
             }
             // Mark as ready — now attachable
@@ -1987,6 +2031,7 @@ CREATE TABLE images (
     source TEXT NOT NULL DEFAULT '',      -- 'admin', 'oci:docker.io/library/python:3.12', 'saved:sandbox-abc'
     file_path TEXT NOT NULL,             -- /var/lib/bhatti/images/{name}.ext4 or usr_{id}/{name}.ext4
     size_mb INTEGER NOT NULL DEFAULT 0,
+    oci_digest TEXT NOT NULL DEFAULT '',         -- OCI manifest digest (sha256:...) for no-op pull detection
     oci_config_json TEXT NOT NULL DEFAULT '{}',  -- extracted OCI config (env, workdir, cmd, etc.)
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, name)
@@ -2068,8 +2113,12 @@ pulls, the pull should happen server-side, not client-side.
 
 ```go
 func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts ...Option) (*Config, error) {
-    // 1. Pull image
-    img, err := crane.Pull(ref, craneOpts...)
+    // 1. Pull image — use remote.Image for streaming, NOT crane.Pull.
+    // crane.Pull loads all layers into memory. Large images (CUDA: 5-10GB)
+    // will OOM the daemon. remote.Image + layer.Compressed() streams
+    // each layer to disk before decompression.
+    desc, err := remote.Get(ref, remoteOpts...)
+    img, err := desc.Image()
 
     // 2. Read config
     cfgFile, _ := img.ConfigFile()
@@ -2527,9 +2576,9 @@ if err = copyRootfs(baseImage, rootfsPath); err != nil {
 //   }
 
 // Lohar re-injection: done during image creation (OCI pull, save-as-image,
-// import), NOT on every boot. Injecting on every boot would add 300-800ms
-// (mount rootfs, copy binary, unmount) and negate Firecracker's fast-boot
-// advantage. Instead:
+// import), NOT on every boot. Phase 0.1 adds per-boot injection as a
+// stopgap; Phase 2 REMOVES it from Create() (~50ms overhead eliminated)
+// once all image creation paths inject lohar at build time. Instead:
 //   - OCI pull: injectLohar() during conversion (already in pipeline)
 //   - save-as-image: SaveImage() copies the rootfs which already has the
 //     current lohar (it's a running sandbox from this bhatti version)
@@ -2600,7 +2649,9 @@ func (e *Engine) SaveImage(ctx context.Context, sandboxID, destPath string) erro
     // MISSING from the saved image. This is different from snapshots
     // where mem.snap captures the page cache contents.
     if vm.Thermal == "hot" && vm.Agent != nil {
-        vm.Agent.Exec(context.Background(), []string{"sync"}, nil, "")
+        syncCtx, syncCancel := context.WithTimeout(context.Background(), 10*time.Second)
+        vm.Agent.Exec(syncCtx, []string{"sync"}, nil, "")
+        syncCancel() // if sync times out (hung VM), proceed with save — warn but don't block
     }
 
     wasPaused := vm.Thermal == "warm"
