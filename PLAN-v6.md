@@ -627,9 +627,16 @@ func (s *Server) handleImagePull(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-**Task cleanup:** tasks older than 24 hours are deleted by the
-cleanup goroutine (same one that handles thermal management). This
-prevents the tasks table from growing unbounded.
+**Task cleanup:** completed and failed tasks older than 24 hours are
+deleted by the cleanup goroutine. NEVER delete tasks with status
+`running` — a huge image pull on a slow connection can take hours.
+Deleting a running task's record orphans the image file (background
+goroutine finishes, tries to update task, gets "not found," image
+created on disk but no store record).
+
+```sql
+DELETE FROM tasks WHERE created_at < ? AND status IN ('completed', 'failed')
+```
 
 **Cancellation:** `DELETE /tasks/{id}` cancels a running task (via
 context cancellation). The background goroutine checks `ctx.Err()`
@@ -998,10 +1005,10 @@ POST /snapshots/dev-ready/resume {"name": "new-sandbox"}
     if IP is taken → fail with "IP 10.0.1.3 in use, cannot resume"
 → create TAP device on user's bridge
 → start new Firecracker process
-→ PUT /drives/rootfs   {"path_on_host": NEW rootfs path}     ← REQUIRED
-→ PUT /drives/config   {"path_on_host": NEW config path}     ← REQUIRED
-→ for each volume:
-    PUT /drives/volN    {"path_on_host": NEW volume copy path} ← REQUIRED
+→ PUT drives in EXACT manifest order (Firecracker is order-sensitive):
+    for _, drive := range manifest.Drives {  // MUST iterate in order
+        PUT /drives/{drive.DriveID} {"path_on_host": newPath, "is_read_only": drive.ReadOnly}
+    }
 → PUT /machine-config  {same vcpu/memory as manifest}
 → PUT /network-interfaces/eth0 {guest_mac: SAME, host_dev_name: NEW TAP}
 → PUT /vsock           {guest_cid: NEW, uds_path: NEW}
@@ -1093,7 +1100,9 @@ The manifest must record:
     ],
     "network": {"guest_mac": "02:ab:cd:...", "guest_ip": "10.0.1.2"},
     "agent_token": "abc123...",
-    "original_sandbox": "sandbox-abc123"
+    "original_sandbox": "sandbox-abc123",
+    "user_id": "usr_alice",
+    "subnet_index": 1
 }
 ```
 
@@ -1202,6 +1211,190 @@ uses the template but with more CPUs.
 
 ## Implementation Phases
 
+### Phase 0: Prerequisites (before any feature work)
+
+These are blockers that must ship before Phase 1. Without them, Phase 1's
+read-only volumes silently corrupt data, and existing bugs are amplified.
+
+#### 0.1 Rebuild lohar and base rootfs
+
+The guest agent (`lohar`) is baked into the rootfs ext4 image. When we add
+`ReadOnly bool` to `VolumeMountConfig`, the NEW lohar must be in the rootfs
+before any sandbox boots. Otherwise every "read-only" volume is mounted
+read-write — silent data corruption on multi-attach.
+
+**Steps:**
+1. Update `VolumeMountConfig` in `pkg/engine/firecracker/configdrive.go`
+2. Update `SandboxConfig.Volumes` in `cmd/lohar/main.go` — replace
+   anonymous struct with named type that includes `ReadOnly bool`
+3. Update `mountVolumes` to use `syscall.MS_RDONLY`
+4. Build new lohar: `GOOS=linux GOARCH=amd64 go build -o lohar ./cmd/lohar/`
+5. Inject into base rootfs: `mount rootfs, cp lohar, umount`
+6. Run `scripts/install.sh` on agni-01 (rebuilds rootfs if lohar changed)
+
+**Re-inject lohar on every sandbox boot**: in `engine.Create()`, after
+`copyRootfs()`, mount the rootfs and overwrite `/usr/local/bin/lohar`
+with the current binary. This ensures saved images and OCI images always
+get the latest agent, preventing protocol drift after daemon upgrades.
+
+```go
+// In Create(), after copyRootfs:
+if err = injectLoharIntoRootfs(rootfsPath, e.cfg.DataDir); err != nil {
+    slog.Warn("lohar injection failed", "error", err)
+    // Non-fatal — image's lohar may work, but warn loudly
+}
+
+func injectLoharIntoRootfs(rootfsPath, dataDir string) error {
+    loharSrc := filepath.Join(dataDir, "lohar")
+    if _, err := os.Stat(loharSrc); err != nil {
+        return nil // no lohar binary to inject
+    }
+    // Use debugfs to write without mounting (no loop device needed)
+    // Or mount briefly:
+    mnt, _ := os.MkdirTemp("", "bhatti-inject-*")
+    defer os.RemoveAll(mnt)
+    if err := exec.Command("mount", "-o", "loop", rootfsPath, mnt).Run(); err != nil {
+        return err
+    }
+    defer exec.Command("umount", mnt).Run()
+    return exec.Command("cp", loharSrc, filepath.Join(mnt, "usr/local/bin/lohar")).Run()
+}
+```
+
+Note: this adds ~50ms to sandbox creation (mount + cp + umount). When
+Phase 2 lands with `mke2fs -d`, we can avoid the mount by patching the
+ext4 image directly, but for Phase 0/1 the mount approach works.
+
+**Test:**
+- `TestLoharVersionInRootfs` — boot sandbox, exec `lohar --version` or
+  check lohar binary hash, verify it matches the host's lohar binary
+
+#### 0.2 Fix RestoreVM unauthenticated agent client
+
+Pre-existing bug: `RestoreVM()` creates `agent.NewTCPClient(vm.GuestIP)`
+without an auth token. After daemon restart, exec/shell/file operations
+on restored VMs bypass agent auth entirely. The guest agent expects a
+token (set during initial boot via config drive), but the host client
+doesn't send one.
+
+```go
+// In RestoreVM(), change:
+if status == "running" {
+    vm.Agent = agent.NewTCPClient(vm.GuestIP)
+}
+// To:
+if status == "running" {
+    token := stateStr(state, "agent_token")
+    if token != "" {
+        vm.Agent = agent.NewTCPClientWithAuth(vm.GuestIP, token)
+    } else {
+        vm.Agent = agent.NewTCPClient(vm.GuestIP)
+    }
+}
+```
+
+Also add `"agent_token": vm.Token` to the `VMState()` return map so the
+token is persisted across restarts.
+
+**Test:**
+- `TestRestoredVMUsesAuthAgent` — create sandbox, restart daemon
+  (triggers RestoreVM), exec → succeeds with auth token, verify that
+  connecting without token fails
+
+#### 0.3 SQLite durability for attachment records
+
+Add `PRAGMA synchronous=FULL` to the connection string. WAL mode with
+`synchronous=NORMAL` can lose the last transaction on power loss (not
+process crash). For volume attachment records, loss means two VMs could
+get concurrent RW access to the same volume on restart.
+
+```go
+// In store.New():
+db, err := sql.Open("sqlite", dbPath+
+    "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)")
+```
+
+**Test:**
+- `TestSQLitePragmas` — open store, query `PRAGMA synchronous`, verify
+  returns 2 (FULL)
+
+#### 0.4 Config drive size bump to 4MB
+
+The current 1MB config drive has ~500KB usable after ext4 overhead.
+Phase 1 adds ReadOnly fields and potentially 24 volume mount entries.
+This can exceed the limit, causing silent boot failures (lohar gets
+no config).
+
+In `createConfigDrive()`:
+```go
+// Change from:
+f.Truncate(1 << 20)  // 1MB
+// To:
+f.Truncate(4 << 20)  // 4MB
+```
+
+Also migrate `createConfigDrive` from mount/umount to `mke2fs -d`:
+```go
+func createConfigDrive(path string, cfg SandboxConfig) error {
+    tmpDir, _ := os.MkdirTemp("", "bhatti-config-*")
+    defer os.RemoveAll(tmpDir)
+
+    data, _ := json.MarshalIndent(cfg, "", "  ")
+    os.WriteFile(filepath.Join(tmpDir, "config.json"), data, 0644)
+
+    // Size: config JSON + 50% headroom, minimum 1MB
+    sizeMB := max(len(data)*3/2/1024/1024+1, 1)
+    if sizeMB > 4 { sizeMB = 4 }
+
+    f, _ := os.Create(path)
+    f.Truncate(int64(sizeMB) << 20)
+    f.Close()
+
+    return exec.Command("mke2fs", "-t", "ext4", "-d", tmpDir,
+        "-F", "-q", path).Run()
+}
+```
+
+This eliminates the loop device mount/umount, fixing the pre-existing
+leaked loop device bug on daemon crash.
+
+**Tests:**
+- `TestConfigDriveLargePayload` — create config with 24 volumes, 50
+  env vars, long init script → config drive created successfully,
+  lohar can read it
+- `TestConfigDriveNoLoopDevice` — after createConfigDrive, verify no
+  new loop devices in `losetup -l`
+
+#### 0.5 Fix bridge FDB flush on snapshot resume
+
+The plan's `bridge fdb del $MAC dev $oldTAP` references a TAP that
+no longer exists. Fix: flush by MAC on the bridge device itself, or
+send a gratuitous ARP.
+
+```go
+// After creating new TAP and before snapshot load:
+// Flush any stale FDB entry for this MAC on the user's bridge
+exec.Command("bridge", "fdb", "del", guestMAC, "dev",
+    userNet.BridgeName, "master").Run() // best effort
+```
+
+**Tests:**
+Phase 3 integration tests already cover resume networking. Add:
+- `TestResumeNoARPStall` — resume from checkpoint, immediately exec
+  a network command (curl), verify it works within 1 second (catches
+  FDB staleness causing 5-30s delay)
+
+#### Phase 0 Tests Summary
+
+- `TestLoharVersionInRootfs`
+- `TestRestoredVMUsesAuthAgent`
+- `TestSQLitePragmas`
+- `TestConfigDriveLargePayload`
+- `TestConfigDriveNoLoopDevice`
+- `TestResumeNoARPStall`
+
+---
+
 ### Phase 1: Persistent Volumes
 
 #### 1.1 Store Schema
@@ -1216,6 +1409,7 @@ CREATE TABLE volumes_v2 (
     name TEXT NOT NULL,
     size_mb INTEGER NOT NULL,
     file_path TEXT NOT NULL,              -- /var/lib/bhatti/volumes/{user_id}/{name}.ext4
+    status TEXT NOT NULL DEFAULT 'ready', -- 'creating' (mkfs in progress) or 'ready'
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, name)
 );
@@ -1276,12 +1470,15 @@ func (s *Store) AttachVolume(userID, name, sandboxID, mount string, readOnly boo
     tx, _ := s.db.Begin()
     defer tx.Rollback()
 
-    // Get volume ID
-    var volID string
-    tx.QueryRow("SELECT id FROM volumes_v2 WHERE user_id=? AND name=?",
-        userID, name).Scan(&volID)
+    // Get volume ID and status
+    var volID, status string
+    tx.QueryRow("SELECT id, status FROM volumes_v2 WHERE user_id=? AND name=?",
+        userID, name).Scan(&volID, &status)
     if volID == "" {
         return fmt.Errorf("volume %q not found", name)
+    }
+    if status == "creating" {
+        return fmt.Errorf("volume %q is being created, retry shortly", name)
     }
 
     // Check existing attachments
@@ -1312,14 +1509,25 @@ func (s *Store) AttachVolume(userID, name, sandboxID, mount string, readOnly boo
 Orphan cleanup on startup (fixes crash between Destroy and DetachAll):
 ```go
 func (s *Store) DetachOrphanedVolumes() (int64, error) {
-    // Use LEFT JOIN instead of NOT IN for better query planning.
-    // NOT IN does a full table scan of sandboxes for every attachment row.
-    // LEFT JOIN + IS NULL lets SQLite use the index on sandboxes.id.
+    // Detach volumes for sandboxes that are:
+    //   1. Destroyed or missing from the sandboxes table
+    //   2. Marked "running" but not in the engine's VM map (dead FC process)
+    //
+    // Case 2 is critical: if the Firecracker process crashes (OOM, kill -9)
+    // but the daemon stays alive, the sandbox row says "running" but the
+    // volume is not actually in use. Without this, the volume is permanently
+    // locked. The startup recovery in main.go updates sandbox statuses
+    // before this runs (recoverVMs marks dead-process sandboxes as "stopped"
+    // or "unknown"), so by the time DetachOrphanedVolumes runs, case 2
+    // sandboxes have status != 'running'.
+    //
+    // Ordering guarantee: recoverVMs() MUST run before DetachOrphanedVolumes().
     res, err := s.db.Exec(`DELETE FROM volume_attachments
         WHERE sandbox_id IN (
             SELECT va.sandbox_id FROM volume_attachments va
-            LEFT JOIN sandboxes s ON va.sandbox_id = s.id AND s.status != 'destroyed'
-            WHERE s.id IS NULL
+            LEFT JOIN sandboxes s ON va.sandbox_id = s.id
+            WHERE s.id IS NULL                          -- sandbox row deleted
+               OR s.status IN ('destroyed', 'unknown')  -- dead sandbox
         )`)
     if err != nil {
         return 0, err
@@ -1418,37 +1626,44 @@ for _, vol := range req.Volumes {
     existing, err := store.GetVolume(userID, vol.Name)
     if err != nil && vol.AutoCreate && vol.SizeMB > 0 {
         // Auto-create: use the store's UNIQUE(user_id, name) constraint
-        // as the coordination primitive, NOT filesystem O_EXCL.
+        // as the coordination primitive. Insert a store record with
+        // status='creating' FIRST, then create the file. This serializes
+        // concurrent creates AND prevents concurrent attach to a volume
+        // whose file doesn't exist yet.
         //
-        // Why: O_EXCL wins the file race, but the loser then calls
-        // store.GetVolume() which may return "not found" because the
-        // winner is still running mkfs.ext4 (~200ms) and hasn't
-        // committed store.CreateVolume yet. The loser gets a 500.
-        //
-        // Correct approach: insert the store record FIRST (name reservation),
-        // then create the file. The store's unique constraint serializes
-        // concurrent creates. Losers see "duplicate" and re-fetch.
+        // AttachVolume rejects volumes with status='creating' — so a
+        // concurrent request that races past GetVolume but hits
+        // AttachVolume will see "volume is being created" instead of
+        // attaching to a nonexistent file.
         volDir := filepath.Join(dataDir, "volumes", userID)
         os.MkdirAll(volDir, 0700)
         volPath := filepath.Join(volDir, vol.Name+".ext4")
 
         storeVol := store.Volume{ID: generateID(), UserID: userID,
-            Name: vol.Name, SizeMB: vol.SizeMB, FilePath: volPath}
+            Name: vol.Name, SizeMB: vol.SizeMB, FilePath: volPath,
+            Status: "creating"}  // ← prevents concurrent attach
         createErr := store.CreateVolume(storeVol)
         if createErr != nil {
             // UNIQUE constraint violation — another request won the race.
-            // The winner has committed the store record, so GetVolume
-            // will always succeed (no timing window).
+            // Wait briefly for the winner to finish creating, then re-fetch.
+            time.Sleep(500 * time.Millisecond)
             existing, err = store.GetVolume(userID, vol.Name)
             if err != nil {
                 return fmt.Errorf("volume %q: race recovery failed: %w", vol.Name, err)
             }
+            if existing.Status == "creating" {
+                // Winner is still running mkfs — wait a bit more or fail
+                return fmt.Errorf("volume %q is being created by another request, retry", vol.Name)
+            }
         } else {
             // We won the race. Create the file.
             if err := createVolume(volPath, vol.SizeMB); err != nil {
-                store.DeleteVolume(userID, vol.Name) // remove store record
+                store.DeleteVolumeByID(storeVol.ID) // force-delete, skip attachment check
                 return fmt.Errorf("create volume %q: %w", vol.Name, err)
             }
+            // Mark as ready — now attachable
+            store.UpdateVolumeStatus(userID, vol.Name, "ready")
+            storeVol.Status = "ready"
             existing = &storeVol
         }
     } else if err != nil {
@@ -1993,7 +2208,24 @@ func extractLayer(layer v1.Layer, targetDir string) error {
     // Rename is O(1) on the same filesystem (stageDir and targetDir are
     // both under the same MkdirTemp parent). For a 12-layer image this
     // eliminates 12 cp processes and avoids re-reading every file.
-    mergeDir(stageDir, targetDir) // Walk stageDir, Rename files into targetDir
+    // Merge staged files into target. MUST walk individual files, NOT
+    // directory-level renames. os.Rename("staging/usr/lib/python3/",
+    // "target/usr/lib/python3/") replaces the ENTIRE directory, deleting
+    // all files from previous layers. File-level walk preserves lower
+    // layer content and only overwrites specific files.
+    mergeDir(stageDir, targetDir)
+    // mergeDir implementation:
+    // filepath.WalkDir(stageDir, func(path, d, err) {
+    //     relPath := strings.TrimPrefix(path, stageDir)
+    //     targetPath := filepath.Join(targetDir, relPath)
+    //     if d.IsDir() {
+    //         os.MkdirAll(targetPath, d.Mode())  // ensure dir exists, don't replace
+    //     } else {
+    //         os.MkdirAll(filepath.Dir(targetPath), 0755)
+    //         os.Remove(targetPath)               // remove old file if exists
+    //         os.Rename(path, targetPath)          // O(1) on same FS
+    //     }
+    // })
 
     return nil
 }
