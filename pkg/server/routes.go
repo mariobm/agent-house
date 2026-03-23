@@ -37,17 +37,19 @@ func (s *Server) saveVMState(sandboxID, engineID string) {
 		return
 	}
 	s.store.SaveFirecrackerState(sandboxID, store.FirecrackerState{
-		RootfsPath:  strOrEmpty(state, "rootfs_path"),
-		SnapMemPath: strOrEmpty(state, "snap_mem_path"),
-		SnapVMPath:  strOrEmpty(state, "snap_vm_path"),
-		VsockCID:    intOrZero(state, "vsock_cid"),
-		TapDevice:   strOrEmpty(state, "tap_device"),
-		GuestIP:     strOrEmpty(state, "guest_ip"),
-		GuestMAC:    strOrEmpty(state, "guest_mac"),
-		VcpuCount:   floatOrZero(state, "vcpu_count"),
-		MemSizeMib:  intOrZero(state, "mem_size_mib"),
-		SocketPath:  strOrEmpty(state, "socket_path"),
-		VsockPath:   strOrEmpty(state, "vsock_path"),
+		RootfsPath:      strOrEmpty(state, "rootfs_path"),
+		SnapMemPath:     strOrEmpty(state, "snap_mem_path"),
+		SnapVMPath:      strOrEmpty(state, "snap_vm_path"),
+		VsockCID:        intOrZero(state, "vsock_cid"),
+		TapDevice:       strOrEmpty(state, "tap_device"),
+		GuestIP:         strOrEmpty(state, "guest_ip"),
+		GuestMAC:        strOrEmpty(state, "guest_mac"),
+		VcpuCount:       floatOrZero(state, "vcpu_count"),
+		MemSizeMib:      intOrZero(state, "mem_size_mib"),
+		SocketPath:      strOrEmpty(state, "socket_path"),
+		VsockPath:       strOrEmpty(state, "vsock_path"),
+		AgentToken:      strOrEmpty(state, "agent_token"),
+		HasBaseSnapshot: boolOrFalse(state, "has_base_snapshot"),
 	})
 }
 
@@ -80,6 +82,18 @@ func floatOrZero(m map[string]interface{}, k string) float64 {
 		return float64(v)
 	}
 	return 0
+}
+
+func boolOrFalse(m map[string]interface{}, k string) bool {
+	switch v := m[k].(type) {
+	case bool:
+		return v
+	case int:
+		return v != 0
+	case float64:
+		return v != 0
+	}
+	return false
 }
 
 func (s *Server) routes() {

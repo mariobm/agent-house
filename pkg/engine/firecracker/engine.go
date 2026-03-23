@@ -742,6 +742,7 @@ func (e *Engine) VMState(id string) map[string]interface{} {
 		"socket_path":       vm.SocketPath,
 		"vsock_path":        vm.VsockPath,
 		"has_base_snapshot": vm.hasBaseSnapshot,
+		"agent_token":       vm.Token,
 	}
 }
 
@@ -755,11 +756,14 @@ func (e *Engine) RestoreVM(id, name, status string, state map[string]interface{}
 	userID := stateStr(state, "user_id")
 	subnetIndex := int(stateInt64(state, "subnet_index"))
 
+	token := stateStr(state, "agent_token")
+
 	vm := &VM{
 		ID:          id,
 		Name:        name,
 		UserID:      userID,
 		Status:      status,
+		Token:       token,
 		RootfsPath:  stateStr(state, "rootfs_path"),
 		SocketPath:  stateStr(state, "socket_path"),
 		VsockPath:   stateStr(state, "vsock_path"),
@@ -775,7 +779,11 @@ func (e *Engine) RestoreVM(id, name, status string, state map[string]interface{}
 	}
 
 	if status == "running" {
-		vm.Agent = agent.NewTCPClient(vm.GuestIP)
+		if token != "" {
+			vm.Agent = agent.NewTCPClientWithAuth(vm.GuestIP, token)
+		} else {
+			vm.Agent = agent.NewTCPClient(vm.GuestIP)
+		}
 	}
 
 	// Reserve the IP in the user's pool

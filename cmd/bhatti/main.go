@@ -166,19 +166,21 @@ func recoverVMs(st *store.Store, provider engine.VMStateProvider) {
 		}
 
 		state := map[string]interface{}{
-			"rootfs_path":   fcState.RootfsPath,
-			"snap_mem_path": fcState.SnapMemPath,
-			"snap_vm_path":  fcState.SnapVMPath,
-			"vsock_cid":     fcState.VsockCID,
-			"tap_device":    fcState.TapDevice,
-			"guest_ip":      fcState.GuestIP,
-			"guest_mac":     fcState.GuestMAC,
-			"vcpu_count":    fcState.VcpuCount,
-			"mem_size_mib":  fcState.MemSizeMib,
-			"socket_path":   fcState.SocketPath,
-			"vsock_path":    fcState.VsockPath,
-			"user_id":       sb.CreatedBy,
-			"subnet_index":  subnetIndex,
+			"rootfs_path":       fcState.RootfsPath,
+			"snap_mem_path":     fcState.SnapMemPath,
+			"snap_vm_path":      fcState.SnapVMPath,
+			"vsock_cid":         fcState.VsockCID,
+			"tap_device":        fcState.TapDevice,
+			"guest_ip":          fcState.GuestIP,
+			"guest_mac":         fcState.GuestMAC,
+			"vcpu_count":        fcState.VcpuCount,
+			"mem_size_mib":      fcState.MemSizeMib,
+			"socket_path":       fcState.SocketPath,
+			"vsock_path":        fcState.VsockPath,
+			"user_id":           sb.CreatedBy,
+			"subnet_index":      subnetIndex,
+			"agent_token":       fcState.AgentToken,
+			"has_base_snapshot": fcState.HasBaseSnapshot,
 		}
 
 		if sb.Status == "stopped" && fcState.SnapMemPath != "" {
