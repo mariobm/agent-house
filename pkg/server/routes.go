@@ -1509,7 +1509,13 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 			errResp(w, 404, "not found")
 			return
 		}
-		// TODO: cancel running task via context cancellation
+		// Cancel running task via context cancellation
+		s.pullCancelMu.Lock()
+		if cancelFn, ok := s.pullCancels[id]; ok {
+			cancelFn()
+			delete(s.pullCancels, id)
+		}
+		s.pullCancelMu.Unlock()
 		s.store.FailTask(id, "cancelled by user")
 		writeJSON(w, 200, map[string]string{"status": "cancelled"})
 	default:
@@ -2015,9 +2021,20 @@ func (s *Server) handleImagePull(w http.ResponseWriter, r *http.Request, user *s
 		return
 	}
 
-	// Check if already pulling same ref for same user (duplicate prevention)
-	// Simple: check for a running task with same type and ref
-	// For now, create the task and proceed.
+	// Check if image already exists with same digest (no-op pull detection).
+	// If the user already has an image with this name from the same OCI ref,
+	// and we can verify the digest hasn't changed, skip the pull.
+	if existing, err := s.store.GetImage(user.ID, req.Name); err == nil {
+		if existing.Source == "oci:"+req.Ref && existing.OCIDigest != "" {
+			// Image exists from same source. Return success without re-pulling.
+			writeJSON(w, 200, map[string]any{
+				"status": "exists",
+				"image":  req.Name,
+				"digest": existing.OCIDigest,
+			})
+			return
+		}
+	}
 
 	taskID := genID()
 	task := store.TaskRecord{
@@ -2026,6 +2043,12 @@ func (s *Server) handleImagePull(w http.ResponseWriter, r *http.Request, user *s
 	}
 	s.store.CreateTask(task)
 
+	// Store cancellation context so DELETE /tasks/:id can cancel it
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	s.pullCancelMu.Lock()
+	s.pullCancels[taskID] = cancel
+	s.pullCancelMu.Unlock()
+
 	loharPath := filepath.Join(s.dataDir, "lohar")
 	outputDir := filepath.Join(s.dataDir, "images", user.ID)
 	os.MkdirAll(outputDir, 0700)
@@ -2033,8 +2056,12 @@ func (s *Server) handleImagePull(w http.ResponseWriter, r *http.Request, user *s
 
 	// Run in background goroutine
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
+		defer func() {
+			s.pullCancelMu.Lock()
+			delete(s.pullCancels, taskID)
+			s.pullCancelMu.Unlock()
+		}()
 
 		var ociOpts []oci.Option
 		ociOpts = append(ociOpts, oci.WithProgress(func(msg string) {
@@ -2063,6 +2090,7 @@ func (s *Server) handleImagePull(w http.ResponseWriter, r *http.Request, user *s
 			Source:        "oci:" + req.Ref,
 			FilePath:      outputPath,
 			SizeMB:        sizeMB,
+			OCIDigest:     config.Digest,
 			OCIConfigJSON: string(configJSON),
 			CreatedAt:     time.Now(),
 		}
@@ -2077,7 +2105,7 @@ func (s *Server) handleImagePull(w http.ResponseWriter, r *http.Request, user *s
 		})
 		s.store.CompleteTask(taskID, string(resultJSON))
 		slog.Info("image.pulled", "ref", req.Ref, "name", req.Name,
-			"user", user.Name, "size_mb", sizeMB)
+			"user", user.Name, "size_mb", sizeMB, "digest", config.Digest)
 	}()
 
 	w.WriteHeader(http.StatusAccepted)

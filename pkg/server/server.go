@@ -53,6 +53,10 @@ type Server struct {
 	startTime       time.Time
 	lastActivity sync.Map // engineID → time.Time — host-side activity cache
 
+	// Task cancellation for async operations (image pull)
+	pullCancelMu sync.Mutex
+	pullCancels  map[string]context.CancelFunc // taskID → cancel
+
 	// Request counters for /metrics
 	requestTotal  atomic.Int64
 	requestErrors atomic.Int64
@@ -74,12 +78,13 @@ func New(eng engine.Engine, st *store.Store, dataDir ...string) *Server {
 		dir = dataDir[0]
 	}
 	s := &Server{
-		engine:    eng,
-		store:     st,
-		dataDir:   dir,
-		mux:       http.NewServeMux(),
-		limiter:   newRateLimiter(),
-		startTime: time.Now(),
+		engine:      eng,
+		store:       st,
+		dataDir:     dir,
+		mux:         http.NewServeMux(),
+		limiter:     newRateLimiter(),
+		startTime:   time.Now(),
+		pullCancels: make(map[string]context.CancelFunc),
 	}
 	s.routes()
 	s.startTaskCleanup()

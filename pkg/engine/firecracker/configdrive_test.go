@@ -170,34 +170,47 @@ func TestConfigDriveFileInjection(t *testing.T) {
 	eng := testEngine(t)
 	ctx := context.Background()
 
-	// We need to create a VM manually with files in the config drive.
-	// The current Create() flow doesn't expose file injection through SandboxSpec
-	// (that comes via secrets resolution). So we'll test at the config drive level
-	// by creating a VM, then verifying the config drive content.
+	// Test file injection via SandboxSpec.Files — the config drive is
+	// unmounted after boot (security), so we verify injected files are
+	// written to the guest filesystem, not by reading the config drive.
+	spec := testSpec("file-test")
+	spec.Files = map[string]engine.FileSpec{
+		"/home/lohar/.env": {
+			Content: []byte("KEY=injected-value"),
+			Mode:    "0600",
+		},
+	}
 
-	// For now, test that the config drive is readable inside the VM
-	info, err := eng.Create(ctx, testSpec("file-test"))
+	info, err := eng.Create(ctx, spec)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	// Config drive should be mounted at /run/bhatti/config
-	r, _ := execWithTimeout(t, eng, info.ID, []string{"cat", "/run/bhatti/config/config.json"})
+	// Verify the injected file exists with correct content
+	r, _ := execWithTimeout(t, eng, info.ID, []string{"cat", "/home/lohar/.env"})
 	if r.ExitCode != 0 {
-		t.Fatalf("config.json not readable: exit=%d stderr=%q", r.ExitCode, r.Stderr)
+		t.Fatalf("injected file not readable: exit=%d stderr=%q", r.ExitCode, r.Stderr)
 	}
-	if !strings.Contains(r.Stdout, "file-test") {
-		t.Errorf("config.json missing hostname: %s", r.Stdout)
+	if !strings.Contains(r.Stdout, "KEY=injected-value") {
+		t.Fatalf("injected file content wrong: %q", r.Stdout)
 	}
-	if !strings.Contains(r.Stdout, "token") {
-		t.Errorf("config.json missing token: %s", r.Stdout)
-	}
-	t.Logf("✓ config drive readable, contains expected fields")
+	t.Log("✓ file injected via config drive")
 
-	// Verify the config drive token is actually being used for auth
-	// (we can't read the token from inside since it's the auth token,
-	// but we already tested auth in TestAuthRequired)
+	// Verify file permissions
+	r, _ = execWithTimeout(t, eng, info.ID, []string{"stat", "-c", "%a", "/home/lohar/.env"})
+	if strings.TrimSpace(r.Stdout) != "600" {
+		t.Errorf("file mode = %q, want 600", strings.TrimSpace(r.Stdout))
+	}
+	t.Log("✓ injected file has correct mode (0600)")
+
+	// Verify config drive is unmounted (security: token + env plaintext)
+	r, _ = execWithTimeout(t, eng, info.ID, []string{"ls", "/run/bhatti/config"})
+	if r.ExitCode == 0 {
+		t.Error("config drive should be unmounted after boot")
+	} else {
+		t.Log("✓ config drive unmounted after boot (security)")
+	}
 }
 
 func TestVolumePersistsAcrossReboot(t *testing.T) {
@@ -373,8 +386,8 @@ func TestVolumeOwnership(t *testing.T) {
 		t.Log("✓ volume owned by lohar (1000:1000)")
 	}
 
-	// lohar user should be able to write (run as uid 1000)
-	r, _ = execWithTimeout(t, eng, info.ID, []string{"su", "-s", "/bin/sh", "lohar", "-c", "echo user-write > /workspace/test && cat /workspace/test"})
+	// exec already runs as uid 1000 (lohar) — verify we can write
+	r, _ = execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "echo user-write > /workspace/test && cat /workspace/test"})
 	if strings.TrimSpace(r.Stdout) != "user-write" {
 		t.Errorf("lohar user write failed: exit=%d out=%q err=%q", r.ExitCode, r.Stdout, r.Stderr)
 	} else {
@@ -421,36 +434,49 @@ func TestAuthSurvivesResume(t *testing.T) {
 	}
 }
 
-func TestConfigDriveFileWrite(t *testing.T) {
+func TestConfigDriveMultipleFiles(t *testing.T) {
 	eng := testEngine(t)
 	ctx := context.Background()
 
-	// Manually create a VM with files in the config drive by building
-	// a spec with env that writes to a known path via the config.
-	// Since Create() doesn't expose files directly through SandboxSpec yet,
-	// we test the file writing by creating a config drive manually,
-	// but for now we verify the mechanism works by checking that the
-	// config drive JSON is parseable and contains the right structure.
+	// Verify multiple files can be injected with different modes.
+	// The config drive is unmounted after boot, but injected files
+	// are written to the guest filesystem by lohar before unmount.
+	spec := testSpec("multifile")
+	spec.Files = map[string]engine.FileSpec{
+		"/home/lohar/a.txt": {Content: []byte("file-a"), Mode: "0644"},
+		"/home/lohar/b.txt": {Content: []byte("file-b"), Mode: "0600"},
+		"/opt/custom/c.sh":  {Content: []byte("#!/bin/sh\necho hello"), Mode: "0755"},
+	}
 
-	info, err := eng.Create(ctx, testSpec("filedrive"))
+	info, err := eng.Create(ctx, spec)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	// Read config.json and verify its structure
-	r, _ := execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "cat /run/bhatti/config/config.json | python3 -m json.tool"})
-	if r.ExitCode != 0 {
-		t.Fatalf("config.json not valid JSON: %s", r.Stderr)
-	}
-
-	// Verify all expected fields exist
-	for _, field := range []string{"sandbox_id", "hostname", "token", "env", "files", "volumes", "dns", "user"} {
-		if !strings.Contains(r.Stdout, `"`+field+`"`) {
-			t.Errorf("config.json missing field %q", field)
+	// Verify all files
+	for path, expected := range map[string]string{
+		"/home/lohar/a.txt": "file-a",
+		"/home/lohar/b.txt": "file-b",
+		"/opt/custom/c.sh":  "#!/bin/sh\necho hello",
+	} {
+		r, _ := execWithTimeout(t, eng, info.ID, []string{"cat", path})
+		if r.ExitCode != 0 {
+			t.Errorf("%s: not readable (exit=%d stderr=%q)", path, r.ExitCode, r.Stderr)
+			continue
+		}
+		if strings.TrimSpace(r.Stdout) != strings.TrimSpace(expected) {
+			t.Errorf("%s: got %q, want %q", path, r.Stdout, expected)
 		}
 	}
-	t.Log("✓ config.json has valid structure with all fields")
+	t.Log("✓ multiple files injected with correct content")
+
+	// Verify config drive is unmounted
+	r, _ := execWithTimeout(t, eng, info.ID, []string{"mountpoint", "-q", "/run/bhatti/config"})
+	if r.ExitCode == 0 {
+		t.Error("config drive should be unmounted after boot")
+	}
+	t.Log("✓ config drive unmounted (security)")
 }
 
 // Helper to suppress unused import warning

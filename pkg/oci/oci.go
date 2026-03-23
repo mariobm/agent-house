@@ -23,6 +23,7 @@ type Config struct {
 	Cmd        []string          `json:"cmd,omitempty"`
 	User       string            `json:"user,omitempty"`
 	TotalSize  int64             `json:"total_size"` // flattened size in bytes
+	Digest     string            `json:"digest"`     // OCI manifest digest (sha256:...)
 }
 
 // Option configures PullAndConvert behavior.
@@ -99,12 +100,21 @@ func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts
 		return nil, fmt.Errorf("image %q: %w", ref, err)
 	}
 
+	// Extract manifest digest for no-op pull detection
+	digest, err := img.Digest()
+	if err != nil {
+		slog.Warn("failed to get image digest", "ref", ref, "error", err)
+	}
+
 	// 3. Extract OCI config
 	cfgFile, err := img.ConfigFile()
 	if err != nil {
 		return nil, fmt.Errorf("config %q: %w", ref, err)
 	}
 	config := extractConfig(cfgFile)
+	if digest.String() != "" {
+		config.Digest = digest.String()
+	}
 
 	// 4. Flatten layers to temp directory
 	o.progress("flattening layers")
