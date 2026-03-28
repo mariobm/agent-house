@@ -390,7 +390,10 @@ var createCmd = &cobra.Command{
 
 		envMap := parseEnvFlag(env)
 		req := map[string]any{
-			"name": name, "cpus": cpus, "memory_mb": memory,
+			"name": name, "cpus": cpus,
+		}
+		if memory > 0 {
+			req["memory_mb"] = memory
 		}
 		if image != "" {
 			req["image"] = image
@@ -448,7 +451,7 @@ func init() {
 	createCmd.Flags().String("name", "", "Sandbox name")
 	createCmd.Flags().String("image", "", "Rootfs image name")
 	createCmd.Flags().Float64("cpus", 1, "Number of vCPUs")
-	createCmd.Flags().Int("memory", 512, "Memory in MB")
+	createCmd.Flags().Int("memory", 0, "Memory in MB (0 = server default: 2048)")
 	createCmd.Flags().Int("disk-size", 0, "Rootfs disk size in MB (0 = use image size)")
 	createCmd.Flags().String("env", "", "Environment variables (K=V,K=V)")
 	createCmd.Flags().String("init", "", "Init script")

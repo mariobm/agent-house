@@ -305,7 +305,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	}
 	memMB := int64(spec.MemoryMB)
 	if memMB < 128 {
-		memMB = 512
+		memMB = 2048
 	}
 	mac := generateMAC()
 

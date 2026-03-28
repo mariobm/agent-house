@@ -239,7 +239,7 @@ func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {
 			t.CPUs = 1
 		}
 		if t.MemoryMB == 0 {
-			t.MemoryMB = 512
+			t.MemoryMB = 2048
 		}
 		t.CreatedAt = time.Now()
 		if err := s.store.CreateTemplate(t); err != nil {
@@ -449,7 +449,7 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 				spec.CPUs = 1
 			}
 			if spec.MemoryMB == 0 {
-				spec.MemoryMB = 512
+				spec.MemoryMB = 2048
 			}
 			if spec.Name == "" {
 				spec.Name = "sandbox-" + genID()[:6]
