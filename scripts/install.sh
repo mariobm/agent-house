@@ -1,42 +1,46 @@
 #!/bin/bash
-# scripts/install.sh — Install bhatti from source on a Linux host with KVM.
+# scripts/install.sh — Install bhatti on a Linux host with KVM.
 #
-# Prerequisites: git, KVM (/dev/kvm)
-# The script installs Go and Firecracker if not present.
+# Downloads pre-built binaries and rootfs from GitHub Releases.
+# No Go, no debootstrap, no compilation required.
 #
-# Usage (from repo root):
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/sahil-shubham/bhatti/main/scripts/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/sahil-shubham/bhatti/main/scripts/install.sh | sudo bash -s -- --tier browser
+#
+# Or from a local clone:
 #   sudo ./scripts/install.sh
-#   sudo ./scripts/install.sh --systemd
-#   sudo ./scripts/install.sh --systemd --tier browser
 #   sudo ./scripts/install.sh --systemd --tier docker
 #
+# Flags:
+#   --tier <minimal|browser|docker>   Rootfs tier (default: minimal)
+#   --systemd                         Install and start systemd service
+#   --version <tag>                   Release version (default: latest)
+#   --from-source                     Build from source instead of downloading
+#
 # Tiers:
-#   minimal  (default) — bare Ubuntu + lohar. ~200MB.
+#   minimal  — bare Ubuntu + lohar. ~200MB.
 #   browser  — minimal + headless Chromium + Playwright. ~600MB.
 #   docker   — minimal + Docker Engine. ~550MB.
 #
 # Supports aarch64 and x86_64.
 set -euo pipefail
 
+GITHUB_REPO="sahil-shubham/bhatti"
 FC_VERSION="1.14.0"
-KERNEL_VERSION="6.1.155"
-FC_CI_VERSION="v1.15"
 DATA_DIR="/var/lib/bhatti"
 INSTALL_SYSTEMD=false
 TIER="minimal"
+VERSION="latest"
+FROM_SOURCE=false
 
 # Parse flags
-for arg in "$@"; do
-    case "$arg" in
-        --systemd) INSTALL_SYSTEMD=true ;;
-        --tier)    ;; # value parsed below
-        minimal|browser|docker) TIER="$arg" ;;
-    esac
-done
-# Handle --tier <value> form
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --tier) TIER="${2:-minimal}"; shift 2 ;;
+        --systemd)     INSTALL_SYSTEMD=true; shift ;;
+        --tier)        TIER="${2:?--tier requires a value}"; shift 2 ;;
+        --version)     VERSION="${2:?--version requires a value}"; shift 2 ;;
+        --from-source) FROM_SOURCE=true; shift ;;
         *) shift ;;
     esac
 done
@@ -66,44 +70,34 @@ if [[ ! -e /dev/kvm ]]; then
     fi
 fi
 
-for cmd in curl mktemp; do
+for cmd in curl; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "error: $cmd is required but not installed" >&2
         exit 1
     fi
 done
 
-# Find repo root (script is at scripts/install.sh)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+case "$TIER" in
+    minimal|browser|docker) ;;
+    *) echo "error: unknown tier '$TIER' (use minimal, browser, or docker)" >&2; exit 1 ;;
+esac
 
-if [[ ! -f "$REPO_ROOT/go.mod" ]]; then
-    echo "error: cannot find repo root (expected go.mod at $REPO_ROOT)" >&2
-    exit 1
+# Resolve version tag
+if [[ "$VERSION" == "latest" ]]; then
+    VERSION=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | grep '"tag_name"' | sed 's/.*"tag_name": "\(.*\)".*/\1/')
+    if [[ -z "$VERSION" ]]; then
+        echo "error: could not resolve latest release version" >&2
+        exit 1
+    fi
 fi
+RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}"
 
-GO_VERSION=$(grep '^go ' "$REPO_ROOT/go.mod" | awk '{print $2}')
-
-echo "==> Installing bhatti on $(hostname) ($HOST_ARCH)"
-echo "    repo: $REPO_ROOT"
+echo "==> Installing bhatti ${VERSION} on $(hostname) ($HOST_ARCH)"
 echo "    tier: $TIER"
 
 # --- Directories ---
 
 mkdir -p "$DATA_DIR"/{images,sandboxes,volumes,snapshots}
-
-# --- Go (install if missing) ---
-
-if ! command -v go &>/dev/null; then
-    echo "==> Installing Go ${GO_VERSION}..."
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" \
-        | tar -C /usr/local -xz
-    export PATH="/usr/local/go/bin:$PATH"
-    echo "  installed $(go version)"
-else
-    echo "==> Go already installed: $(go version)"
-fi
-export PATH="/usr/local/go/bin:$PATH"
 
 # --- Firecracker ---
 
@@ -122,24 +116,41 @@ else
     echo "==> Firecracker already installed: $(firecracker --version 2>&1 | head -1)"
 fi
 
-# --- Build bhatti + lohar from source ---
+# --- bhatti + lohar binaries ---
 
-echo "==> Building bhatti and lohar from source..."
-cd "$REPO_ROOT"
-GOOS=linux GOARCH=$GO_ARCH go build -ldflags="-s -w" -o /usr/local/bin/bhatti ./cmd/bhatti/
-GOOS=linux GOARCH=$GO_ARCH CGO_ENABLED=0 go build -ldflags="-s -w" -o "$DATA_DIR/lohar" ./cmd/lohar/
+if [[ "$FROM_SOURCE" == "true" ]]; then
+    echo "==> Building from source..."
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+    if [[ ! -f "$REPO_ROOT/go.mod" ]]; then
+        echo "error: --from-source requires running from the repo" >&2
+        exit 1
+    fi
+    export PATH="/usr/local/go/bin:$PATH"
+    if ! command -v go &>/dev/null; then
+        GO_VERSION=$(grep '^go ' "$REPO_ROOT/go.mod" | awk '{print $2}')
+        echo "==> Installing Go ${GO_VERSION}..."
+        curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" \
+            | tar -C /usr/local -xz
+    fi
+    cd "$REPO_ROOT"
+    GOOS=linux GOARCH=$GO_ARCH go build -ldflags="-s -w" -o /usr/local/bin/bhatti ./cmd/bhatti/
+    GOOS=linux GOARCH=$GO_ARCH CGO_ENABLED=0 go build -ldflags="-s -w" -o "$DATA_DIR/lohar" ./cmd/lohar/
+else
+    echo "==> Downloading bhatti ${VERSION}..."
+    curl -fsSL "${RELEASE_URL}/bhatti-linux-${DEB_ARCH}" -o /usr/local/bin/bhatti
+    curl -fsSL "${RELEASE_URL}/lohar-linux-${DEB_ARCH}" -o "$DATA_DIR/lohar"
+fi
 chmod +x /usr/local/bin/bhatti "$DATA_DIR/lohar"
 echo "  bhatti: $(ls -lh /usr/local/bin/bhatti | awk '{print $5}')"
 echo "  lohar:  $(ls -lh "$DATA_DIR/lohar" | awk '{print $5}')"
 
 # --- Kernel ---
 
-KERNEL_PATH="$DATA_DIR/images/vmlinux-${GO_ARCH}"
+KERNEL_PATH="$DATA_DIR/images/vmlinux-${DEB_ARCH}"
 if [[ ! -f "$KERNEL_PATH" ]]; then
-    echo "==> Downloading kernel ${KERNEL_VERSION} (Firecracker CI ${FC_CI_VERSION}, ${FC_ARCH})..."
-    curl -fsSL \
-        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/${FC_CI_VERSION}/${FC_ARCH}/vmlinux-${KERNEL_VERSION}" \
-        -o "$KERNEL_PATH"
+    echo "==> Downloading kernel (${FC_ARCH})..."
+    curl -fsSL "${RELEASE_URL}/vmlinux-6.1.155-${FC_ARCH}" -o "$KERNEL_PATH"
     echo "  saved to $KERNEL_PATH ($(ls -lh "$KERNEL_PATH" | awk '{print $5}'))"
 else
     echo "==> Kernel already present: $KERNEL_PATH"
@@ -149,11 +160,22 @@ fi
 
 ROOTFS_PATH="$DATA_DIR/images/rootfs-${TIER}-${DEB_ARCH}.ext4"
 if [[ ! -f "$ROOTFS_PATH" ]]; then
-    echo "==> Building ${TIER} rootfs (this may take several minutes)..."
-    if ! command -v debootstrap &>/dev/null; then
-        apt-get update -qq && apt-get install -y -qq debootstrap
+    if [[ "$FROM_SOURCE" == "true" ]]; then
+        echo "==> Building ${TIER} rootfs from source..."
+        if ! command -v debootstrap &>/dev/null; then
+            apt-get update -qq && apt-get install -y -qq debootstrap
+        fi
+        IMG="$ROOTFS_PATH" "$REPO_ROOT/scripts/build-tier.sh" "$TIER" "$DEB_ARCH" "$DATA_DIR/lohar"
+    else
+        if ! command -v zstd &>/dev/null; then
+            echo "==> Installing zstd..."
+            apt-get update -qq && apt-get install -y -qq zstd
+        fi
+        echo "==> Downloading ${TIER} rootfs (${DEB_ARCH})..."
+        curl -fsSL "${RELEASE_URL}/rootfs-${TIER}-${DEB_ARCH}.ext4.zst" \
+            | zstd -d -o "$ROOTFS_PATH"
+        echo "  saved to $ROOTFS_PATH ($(ls -lh "$ROOTFS_PATH" | awk '{print $5}'))"
     fi
-    IMG="$ROOTFS_PATH" "$REPO_ROOT/scripts/build-tier.sh" "$TIER" "$DEB_ARCH" "$DATA_DIR/lohar"
 else
     echo "==> Rootfs already present: $ROOTFS_PATH"
     # Update lohar inside existing rootfs
@@ -220,11 +242,35 @@ else
     echo "  warning: admin user may already exist, skipping"
 fi
 
-# --- Systemd (optional) ---
+# --- Systemd ---
 
 if [[ "$INSTALL_SYSTEMD" == "true" ]]; then
     echo "==> Installing systemd service..."
-    cp "$REPO_ROOT/deploy/bhatti.service" /etc/systemd/system/bhatti.service
+
+    # Download service file if not in a repo checkout
+    if [[ "$FROM_SOURCE" == "true" && -f "$REPO_ROOT/deploy/bhatti.service" ]]; then
+        cp "$REPO_ROOT/deploy/bhatti.service" /etc/systemd/system/bhatti.service
+    else
+        cat > /etc/systemd/system/bhatti.service << 'UNIT'
+[Unit]
+Description=Bhatti Sandbox Infrastructure
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bhatti serve
+WorkingDirectory=/var/lib/bhatti
+Environment=HOME=/root
+Restart=always
+RestartSec=5
+ExecStopPost=/bin/sh -c 'ip -o link show type tun | grep tap | cut -d: -f2 | xargs -r -n1 ip link del'
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    fi
+
     systemctl daemon-reload
     systemctl enable bhatti
     systemctl restart bhatti
@@ -249,7 +295,7 @@ fi
 
 echo ""
 echo "============================================"
-echo "  bhatti installed on $(hostname) ($HOST_ARCH)"
+echo "  bhatti ${VERSION} installed on $(hostname) ($HOST_ARCH)"
 echo "  tier: $TIER"
 echo ""
 if [[ -n "${ADMIN_KEY:-}" ]]; then
