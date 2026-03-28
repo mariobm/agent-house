@@ -129,7 +129,7 @@ scripts/config --enable CONFIG_BRIDGE
 scripts/config --enable CONFIG_VETH
 scripts/config --enable CONFIG_OVERLAY_FS
 scripts/config --enable CONFIG_NF_CONNTRACK
-scripts/config --enable CONFIG_NETFILTER_XT_CONNTRACK
+scripts/config --enable CONFIG_NETFILTER_XT_MATCH_CONNTRACK
 
 # ── Docker security tables ──
 # Required by Docker's default iptables rules for container isolation.
@@ -154,7 +154,7 @@ flipped to `=y`. The `scripts/config --enable` call handles both cases.
 ```bash
 # Run on agni-01 to audit the base config before building:
 curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155.config" \
-  | grep -E 'BRIDGE|VETH|OVERLAY_FS|NF_CONNTRACK|IP_NF_RAW|IP6_NF_RAW|IP_NF_SECURITY|IP6_NF_SECURITY|NETFILTER_XT_CONNTRACK|NET_CLS_CGROUP|NETFILTER_XT_MARK'
+  | grep -E 'BRIDGE|VETH|OVERLAY_FS|NF_CONNTRACK|IP_NF_RAW|IP6_NF_RAW|IP_NF_SECURITY|IP6_NF_SECURITY|NETFILTER_XT_MATCH_CONNTRACK|NET_CLS_CGROUP|NETFILTER_XT_MARK'
 ```
 
 ### 1.3 What we deliberately skip
@@ -223,7 +223,7 @@ curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/${FC_CI_VERSIO
 # Audit: show current state of our flags before modification
 echo "==> Current state of bhatti flags in CI config:"
 for flag in IP_NF_RAW IP6_NF_RAW BRIDGE VETH OVERLAY_FS NF_CONNTRACK \
-    NETFILTER_XT_CONNTRACK IP_NF_SECURITY IP6_NF_SECURITY \
+    NETFILTER_XT_MATCH_CONNTRACK IP_NF_SECURITY IP6_NF_SECURITY \
     NET_CLS_CGROUP NETFILTER_XT_MARK; do
     grep "CONFIG_${flag}[= ]" .config 2>/dev/null || echo "# CONFIG_${flag} is not set"
 done
@@ -240,7 +240,7 @@ scripts/config --enable CONFIG_BRIDGE
 scripts/config --enable CONFIG_VETH
 scripts/config --enable CONFIG_OVERLAY_FS
 scripts/config --enable CONFIG_NF_CONNTRACK
-scripts/config --enable CONFIG_NETFILTER_XT_CONNTRACK
+scripts/config --enable CONFIG_NETFILTER_XT_MATCH_CONNTRACK
 
 # Docker security tables
 scripts/config --enable CONFIG_IP_NF_SECURITY
@@ -256,7 +256,7 @@ make $CROSS olddefconfig
 # Post-build verification: ensure critical flags survived olddefconfig
 echo "==> Verifying critical flags in final config..."
 MISSING=0
-for flag in IP_NF_RAW IP6_NF_RAW BRIDGE VETH OVERLAY_FS NF_CONNTRACK NETFILTER_XT_CONNTRACK; do
+for flag in IP_NF_RAW IP6_NF_RAW BRIDGE VETH OVERLAY_FS NF_CONNTRACK NETFILTER_XT_MATCH_CONNTRACK; do
     if ! grep -q "CONFIG_${flag}=y" .config; then
         echo "FATAL: CONFIG_${flag} not set to =y after olddefconfig" >&2
         MISSING=1
