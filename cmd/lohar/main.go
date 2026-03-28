@@ -3,15 +3,18 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
@@ -42,6 +45,22 @@ func main() {
 	mustMount("devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666")
 	mustMount("tmpfs", "/tmp", "tmpfs", 0, "")
 	mustMount("tmpfs", "/run", "tmpfs", 0, "")
+
+	// /dev/shm — required by Chromium (shared memory), Docker containers,
+	// and any process using shm_open(3). Harmless when unused.
+	os.MkdirAll("/dev/shm", 0755)
+	mustMount("tmpfs", "/dev/shm", "tmpfs", 0, "")
+
+	// cgroups v2 — required by Docker for resource isolation.
+	// Mount unconditionally: zero overhead when unused, avoids
+	// tier-specific logic in lohar.
+	os.MkdirAll("/sys/fs/cgroup", 0755)
+	if err := syscall.Mount("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "lohar: mount cgroup2: %v\n", err)
+	}
+	// Enable cgroup controllers for Docker.
+	os.WriteFile("/sys/fs/cgroup/cgroup.subtree_control",
+		[]byte("+cpu +memory +io +pids"), 0644)
 
 	bringUpInterface("lo")
 
@@ -75,11 +94,6 @@ func main() {
 	setupNetworking()
 	installSignalHandlers()
 
-	// Init script runs as a TTY session (can be attached to via session ID "init")
-	if cfg != nil && cfg.Init != "" {
-		go runInitSession(cfg.Init, cfg.User)
-	}
-
 	// Listen on vsock (works for cold boot, broken after snapshot/restore).
 	lnControl, err := listenVsock(proto.VsockPortControl)
 	if err != nil {
@@ -112,6 +126,31 @@ func main() {
 	}
 
 	fmt.Fprintln(os.Stderr, "lohar: ready")
+
+	// Run boot profile if present. Runs AFTER listeners so the VM is
+	// reachable via bhatti exec even if the boot profile hangs.
+	// 30-second hard timeout — if dockerd or chromium can't start in 30s,
+	// something is broken. Don't block forever.
+	if _, err := os.Stat("/etc/bhatti/init.sh"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cmd := exec.CommandContext(ctx, "/bin/sh", "/etc/bhatti/init.sh")
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		cmd.Env = buildEnv(nil)
+		if err := cmd.Run(); err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				fmt.Fprintf(os.Stderr, "lohar: boot profile timed out after 30s\n")
+			} else {
+				fmt.Fprintf(os.Stderr, "lohar: boot profile failed: %v\n", err)
+			}
+		}
+		cancel()
+	}
+
+	// Init script runs as a TTY session (can be attached to via session ID "init")
+	if cfg != nil && cfg.Init != "" {
+		go runInitSession(cfg.Init, cfg.User)
+	}
 
 	// PID 1 must never exit.
 	select {}

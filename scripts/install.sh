@@ -13,8 +13,7 @@
 # Supports aarch64 and x86_64.
 set -euo pipefail
 
-FC_VERSION="1.6.0"
-FC_MAJOR_MINOR="1.6"
+FC_VERSION="1.14.0"
 DATA_DIR="/var/lib/bhatti"
 INSTALL_SYSTEMD=false
 
@@ -117,12 +116,13 @@ echo "  lohar:  $(ls -lh "$DATA_DIR/lohar" | awk '{print $5}')"
 
 # --- Kernel ---
 
-KERNEL_VERSION="6.1.58"
+KERNEL_VERSION="6.1.155"
+FC_CI_VERSION="v1.15"
 KERNEL_PATH="$DATA_DIR/images/vmlinux-${GO_ARCH}"
 if [[ ! -f "$KERNEL_PATH" ]]; then
-    echo "==> Downloading kernel ${KERNEL_VERSION} (Firecracker CI, ${FC_ARCH})..."
+    echo "==> Downloading kernel ${KERNEL_VERSION} (Firecracker CI ${FC_CI_VERSION}, ${FC_ARCH})..."
     curl -fsSL \
-        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v${FC_MAJOR_MINOR}/${FC_ARCH}/vmlinux-${KERNEL_VERSION}" \
+        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/${FC_CI_VERSION}/${FC_ARCH}/vmlinux-${KERNEL_VERSION}" \
         -o "$KERNEL_PATH"
     echo "  saved to $KERNEL_PATH ($(ls -lh "$KERNEL_PATH" | awk '{print $5}'))"
 else

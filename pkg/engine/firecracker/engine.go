@@ -1030,7 +1030,7 @@ func (e *Engine) Shell(ctx context.Context, id string) (engine.TerminalConn, err
 	ag := vm.Agent
 	vm.stateMu.Unlock()
 
-	return ag.Shell(ctx, []string{"/bin/zsh", "-li"}, map[string]string{
+	return ag.Shell(ctx, []string{"/bin/bash", "-li"}, map[string]string{
 		"TERM": "xterm-256color",
 	}, 24, 80)
 }
