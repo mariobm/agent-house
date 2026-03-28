@@ -6,21 +6,38 @@
 #
 # Usage (from repo root):
 #   sudo ./scripts/install.sh
-#
-# For systemd service (optional):
 #   sudo ./scripts/install.sh --systemd
+#   sudo ./scripts/install.sh --systemd --tier browser
+#   sudo ./scripts/install.sh --systemd --tier docker
+#
+# Tiers:
+#   minimal  (default) — bare Ubuntu + lohar. ~200MB.
+#   browser  — minimal + headless Chromium + Playwright. ~600MB.
+#   docker   — minimal + Docker Engine. ~550MB.
 #
 # Supports aarch64 and x86_64.
 set -euo pipefail
 
 FC_VERSION="1.14.0"
+KERNEL_VERSION="6.1.155"
+FC_CI_VERSION="v1.15"
 DATA_DIR="/var/lib/bhatti"
 INSTALL_SYSTEMD=false
+TIER="minimal"
 
 # Parse flags
 for arg in "$@"; do
     case "$arg" in
         --systemd) INSTALL_SYSTEMD=true ;;
+        --tier)    ;; # value parsed below
+        minimal|browser|docker) TIER="$arg" ;;
+    esac
+done
+# Handle --tier <value> form
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --tier) TIER="${2:-minimal}"; shift 2 ;;
+        *) shift ;;
     esac
 done
 
@@ -69,10 +86,11 @@ GO_VERSION=$(grep '^go ' "$REPO_ROOT/go.mod" | awk '{print $2}')
 
 echo "==> Installing bhatti on $(hostname) ($HOST_ARCH)"
 echo "    repo: $REPO_ROOT"
+echo "    tier: $TIER"
 
 # --- Directories ---
 
-mkdir -p "$DATA_DIR"/{images,sandboxes}
+mkdir -p "$DATA_DIR"/{images,sandboxes,volumes,snapshots}
 
 # --- Go (install if missing) ---
 
@@ -109,15 +127,13 @@ fi
 echo "==> Building bhatti and lohar from source..."
 cd "$REPO_ROOT"
 GOOS=linux GOARCH=$GO_ARCH go build -ldflags="-s -w" -o /usr/local/bin/bhatti ./cmd/bhatti/
-GOOS=linux GOARCH=$GO_ARCH go build -ldflags="-s -w" -o "$DATA_DIR/lohar" ./cmd/lohar/
+GOOS=linux GOARCH=$GO_ARCH CGO_ENABLED=0 go build -ldflags="-s -w" -o "$DATA_DIR/lohar" ./cmd/lohar/
 chmod +x /usr/local/bin/bhatti "$DATA_DIR/lohar"
 echo "  bhatti: $(ls -lh /usr/local/bin/bhatti | awk '{print $5}')"
 echo "  lohar:  $(ls -lh "$DATA_DIR/lohar" | awk '{print $5}')"
 
 # --- Kernel ---
 
-KERNEL_VERSION="6.1.155"
-FC_CI_VERSION="v1.15"
 KERNEL_PATH="$DATA_DIR/images/vmlinux-${GO_ARCH}"
 if [[ ! -f "$KERNEL_PATH" ]]; then
     echo "==> Downloading kernel ${KERNEL_VERSION} (Firecracker CI ${FC_CI_VERSION}, ${FC_ARCH})..."
@@ -131,14 +147,13 @@ fi
 
 # --- Rootfs ---
 
-ROOTFS_PATH="$DATA_DIR/images/rootfs-base-${DEB_ARCH}.ext4"
+ROOTFS_PATH="$DATA_DIR/images/rootfs-${TIER}-${DEB_ARCH}.ext4"
 if [[ ! -f "$ROOTFS_PATH" ]]; then
-    echo "==> Building rootfs (this takes ~10 minutes on first install)..."
+    echo "==> Building ${TIER} rootfs (this may take several minutes)..."
     if ! command -v debootstrap &>/dev/null; then
         apt-get update -qq && apt-get install -y -qq debootstrap
     fi
-    SANDBOX_DIR="$REPO_ROOT/sandbox" IMG="$ROOTFS_PATH" \
-        "$REPO_ROOT/scripts/build-rootfs.sh" "$DATA_DIR/lohar"
+    IMG="$ROOTFS_PATH" "$REPO_ROOT/scripts/build-tier.sh" "$TIER" "$DEB_ARCH" "$DATA_DIR/lohar"
 else
     echo "==> Rootfs already present: $ROOTFS_PATH"
     # Update lohar inside existing rootfs
@@ -169,15 +184,11 @@ else
 fi
 
 # --- Age key (for secret encryption) ---
-# The age key is generated automatically on first secret creation.
-# If it already exists, leave it alone.
 if [[ ! -f "$DATA_DIR/age.key" ]]; then
     echo "==> Age key will be generated on first secret creation"
 fi
 
 # --- Bootstrap admin user ---
-# Create the first admin user so the API is usable immediately.
-# The API key is shown once during install.
 
 echo "==> Creating admin user..."
 ADMIN_KEY=$(bhatti user create --name admin --max-sandboxes 50 2>&1 | grep "API key:" | awk '{print $NF}')
@@ -239,8 +250,9 @@ fi
 echo ""
 echo "============================================"
 echo "  bhatti installed on $(hostname) ($HOST_ARCH)"
+echo "  tier: $TIER"
 echo ""
-if [[ -n "$ADMIN_KEY" ]]; then
+if [[ -n "${ADMIN_KEY:-}" ]]; then
     echo "  Admin API key: ${ADMIN_KEY}"
     echo "  (saved to ~/.bhatti/config.yaml)"
     echo ""
@@ -251,7 +263,6 @@ echo ""
 echo "  Manage users:"
 echo "    sudo bhatti user list"
 echo "    sudo bhatti user create --name alice"
-echo "    sudo bhatti user rotate-key alice"
 echo ""
 echo "  Then as a user:"
 echo "    bhatti create --name hello"

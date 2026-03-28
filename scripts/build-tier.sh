@@ -42,7 +42,7 @@ case "$ARCH" in
     *) echo "unsupported arch: $ARCH" >&2; exit 1 ;;
 esac
 
-IMG="dist/rootfs-${TIER}-${ARCH}.ext4"
+IMG="${IMG:-dist/rootfs-${TIER}-${ARCH}.ext4}"
 MOUNT="/mnt/bhatti-${TIER}-$$"
 
 mkdir -p dist
