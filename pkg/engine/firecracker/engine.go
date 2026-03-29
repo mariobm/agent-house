@@ -729,8 +729,10 @@ func (e *Engine) Start(ctx context.Context, id string) error {
 	// TAP device is kept alive across stop/start (not destroyed in Stop).
 	// No need to recreate it.
 
-	// New Firecracker process
-	newSocketPath := vm.SocketPath + ".resume"
+	// New Firecracker process — always use base path + ".resume" to avoid
+	// path growing on repeated stop/start cycles (SUN_LEN overflow).
+	baseSockPath := strings.TrimSuffix(vm.SocketPath, ".resume")
+	newSocketPath := baseSockPath + ".resume"
 	os.Remove(newSocketPath)
 	os.Remove(vm.VsockPath)
 
