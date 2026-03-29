@@ -253,37 +253,46 @@ func TestPerfPauseResume(t *testing.T) {
 	}
 }
 
-// TestPerfDiffSnapshot measures full vs diff snapshot with percentiles.
-// 1 full snapshot, then 7 diff snapshots.
-func TestPerfDiffSnapshot(t *testing.T) {
+// TestPerfSnapshot measures full and diff snapshot latency with percentiles.
+// 5 full snapshots (each requires a fresh VM), then 10 diff snapshots on one VM.
+func TestPerfSnapshot(t *testing.T) {
 	eng := testEngine(t)
 	ctx := context.Background()
 
-	info, err := eng.Create(ctx, testSpec("perf-snap"))
+	// --- Full snapshots: 5 fresh VMs, first stop is always full ---
+	var fullLats latencies
+	for i := 0; i < 5; i++ {
+		info, err := eng.Create(ctx, testSpec(fmt.Sprintf("perf-fsnap-%d", i)))
+		if err != nil {
+			t.Fatalf("Create (full %d): %v", i, err)
+		}
+		// Write some data so memory isn't trivially empty
+		execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "dd if=/dev/urandom of=/tmp/data bs=64K count=16 2>/dev/null"})
+
+		start := time.Now()
+		if err := eng.Stop(ctx, info.ID); err != nil {
+			t.Fatalf("Stop (full %d): %v", i, err)
+		}
+		fullLats = append(fullLats, time.Since(start))
+		eng.Destroy(ctx, info.ID)
+	}
+	fullLats.report("full snapshot (512MB VM)", t)
+
+	// --- Diff snapshots: one VM, 10 cycles ---
+	info, err := eng.Create(ctx, testSpec("perf-dsnap"))
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("Create (diff): %v", err)
 	}
 	defer eng.Destroy(ctx, info.ID)
 
 	execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "echo init > /tmp/snap"})
 
-	// First stop → full snapshot (single measurement)
-	start := time.Now()
-	if err := eng.Stop(ctx, info.ID); err != nil {
-		t.Fatalf("Stop (full): %v", err)
-	}
-	fullDur := time.Since(start)
-
-	vm, _ := eng.getVM(info.ID)
-	fullSize, _ := fileSize(vm.SnapMemPath)
-	t.Logf("⏱ full snapshot: %v (%d MB)", fullDur.Round(time.Millisecond), fullSize/(1024*1024))
-
+	// First stop is full (establishes base)
+	eng.Stop(ctx, info.ID)
 	eng.Start(ctx, info.ID)
 
-	// Diff snapshots — 7 cycles
 	var diffLats latencies
-	for i := 0; i < 7; i++ {
-		// Small write to dirty a few pages
+	for i := 0; i < 10; i++ {
 		execWithTimeout(t, eng, info.ID, []string{"sh", "-c", fmt.Sprintf("echo diff-%d > /tmp/snap", i)})
 
 		start := time.Now()
@@ -291,20 +300,13 @@ func TestPerfDiffSnapshot(t *testing.T) {
 			t.Fatalf("Stop (diff %d): %v", i, err)
 		}
 		diffLats = append(diffLats, time.Since(start))
-
 		eng.Start(ctx, info.ID)
 	}
 	diffLats.report("diff snapshot", t)
 
-	diffSize, _ := fileSize(vm.SnapMemPath)
-	if fullSize > 0 && diffSize < fullSize {
-		t.Logf("  diff is %dx smaller than full (%d MB vs %d MB)",
-			fullSize/max(diffSize, 1), diffSize/(1024*1024), fullSize/(1024*1024))
-	}
-
-	// Verify state survived
+	// Verify state survived all cycles
 	r, _ := execWithTimeout(t, eng, info.ID, []string{"cat", "/tmp/snap"})
-	if !strings.Contains(r.Stdout, "diff-6") {
+	if !strings.Contains(r.Stdout, "diff-9") {
 		t.Errorf("state lost: %q", r.Stdout)
 	}
 }
