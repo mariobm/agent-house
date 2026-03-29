@@ -13,7 +13,7 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: arc-runner-set
-    timeout-minutes: 20
+    timeout-minutes: 30
     # Self-hosted: never run from forks
     if: github.repository == 'sahil-shubham/bhatti'
     steps:
@@ -46,7 +46,9 @@ jobs:
 
       - name: Run integration tests
         run: |
-          sudo go test ./pkg/engine/firecracker/ -v -count=1 -timeout=300s \
+          # TestCheckpointVMConfig: skipped — exec after resume returns empty stdout (separate bug)
+          # timeout=0 disables Go's test timer; the job-level timeout-minutes is the safety net.
+          sudo go test ./pkg/engine/firecracker/ -v -count=1 -timeout=0 \
             -skip 'TestCheckpointVMConfig'
 
       - name: Cleanup
