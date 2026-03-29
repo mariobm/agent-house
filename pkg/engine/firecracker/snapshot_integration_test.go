@@ -217,6 +217,89 @@ func TestCheckpointDuplicateName(t *testing.T) {
 	t.Log("✓ VM not disrupted by failed checkpoint")
 }
 
+// TestNestedCheckpointAndResume verifies that checkpointing a sandbox that
+// was itself resumed from a snapshot works correctly. This catches the
+// FCPathOrigin bug: Firecracker's vm.snap records the original seed sandbox's
+// paths, so a second-level checkpoint must track that origin to create
+// symlinks at the right location during resume.
+func TestNestedCheckpointAndResume(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	// Create sandbox A and write initial data
+	info, err := eng.Create(ctx, testSpec("snap-nest-a"))
+	if err != nil {
+		t.Fatalf("Create A: %v", err)
+	}
+	execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "echo layer1 > /home/lohar/data.txt"})
+
+	// Checkpoint A → "nest-ckpt1"
+	snapDir := filepath.Join(eng.cfg.DataDir, "snapshots", "usr_test")
+	os.MkdirAll(snapDir, 0700)
+	defer os.RemoveAll(filepath.Join(snapDir, "nest-ckpt1"))
+	defer os.RemoveAll(filepath.Join(snapDir, "nest-ckpt2"))
+
+	m1Any, err := eng.Checkpoint(ctx, info.ID, "usr_test", 99, "nest-ckpt1", snapDir)
+	m1 := m1Any.(*SnapshotManifest)
+	if err != nil {
+		eng.Destroy(ctx, info.ID)
+		t.Fatalf("Checkpoint 1: %v", err)
+	}
+	eng.Destroy(ctx, info.ID)
+	t.Log("✓ checkpoint 1 created, original destroyed")
+
+	// Resume from "nest-ckpt1" → sandbox B
+	snap1Path := filepath.Join(snapDir, "nest-ckpt1")
+	infoB, err := eng.ResumeSnapshot(ctx, snap1Path, m1, "nest-b")
+	if err != nil {
+		t.Fatalf("Resume 1: %v", err)
+	}
+
+	// Verify data from checkpoint 1
+	r, _ := execWithTimeout(t, eng, infoB.ID, []string{"cat", "/home/lohar/data.txt"})
+	if !strings.Contains(r.Stdout, "layer1") {
+		t.Fatalf("checkpoint 1 data not restored: %q", r.Stdout)
+	}
+
+	// Write additional data in B
+	execWithTimeout(t, eng, infoB.ID, []string{"sh", "-c", "echo layer2 >> /home/lohar/data.txt"})
+
+	// Checkpoint B → "nest-ckpt2" (this is the nested checkpoint)
+	m2Any, err := eng.Checkpoint(ctx, infoB.ID, "usr_test", 99, "nest-ckpt2", snapDir)
+	m2 := m2Any.(*SnapshotManifest)
+	if err != nil {
+		eng.Destroy(ctx, infoB.ID)
+		t.Fatalf("Checkpoint 2 (nested): %v", err)
+	}
+	eng.Destroy(ctx, infoB.ID)
+	t.Log("✓ nested checkpoint 2 created, sandbox B destroyed")
+
+	// Verify FCPathOrigin points to the original seed sandbox, not B
+	if m2.FCPathOrigin == "" {
+		t.Fatal("FCPathOrigin should be set in nested manifest")
+	}
+	if m2.FCPathOrigin == m2.CreatedFrom {
+		t.Fatalf("FCPathOrigin (%s) should differ from CreatedFrom (%s) for nested snapshots",
+			m2.FCPathOrigin, m2.CreatedFrom)
+	}
+	t.Logf("✓ FCPathOrigin=%s (seed), CreatedFrom=%s (sandbox B)", m2.FCPathOrigin, m2.CreatedFrom)
+
+	// Resume from "nest-ckpt2" → sandbox C
+	snap2Path := filepath.Join(snapDir, "nest-ckpt2")
+	infoC, err := eng.ResumeSnapshot(ctx, snap2Path, m2, "nest-c")
+	if err != nil {
+		t.Fatalf("Resume 2 (nested): %v", err)
+	}
+	defer eng.Destroy(ctx, infoC.ID)
+
+	// Verify BOTH layers of data are present
+	r, _ = execWithTimeout(t, eng, infoC.ID, []string{"cat", "/home/lohar/data.txt"})
+	if !strings.Contains(r.Stdout, "layer1") || !strings.Contains(r.Stdout, "layer2") {
+		t.Fatalf("nested checkpoint data not fully restored: %q", r.Stdout)
+	}
+	t.Log("✓ both data layers restored from nested checkpoint")
+}
+
 // TestResumeIPConflict verifies that resuming a snapshot fails cleanly
 // when the required IP is already in use.
 func TestResumeIPConflict(t *testing.T) {

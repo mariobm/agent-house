@@ -54,3 +54,21 @@ jobs:
         run: |
           sudo pkill -f firecracker 2>/dev/null || true
           sudo rm -rf /var/lib/bhatti 2>/dev/null || true
+          # Flush iptables rules injected by setupGlobalFirewall().
+          # These use 10.0.0.0/8 which overlaps with the k8s pod/service
+          # CIDR (10.42.0.0/16, 10.43.0.0/16) and will kill pod networking
+          # if left behind.
+          IFACE=$(ip route show default | awk '/default/ {print $5}' | head -1)
+          sudo iptables -D INPUT -s 10.0.0.0/8 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+          sudo iptables -D INPUT -s 10.0.0.0/8 -m state --state NEW -j DROP 2>/dev/null || true
+          sudo iptables -D FORWARD -s 10.0.0.0/8 -d 10.0.0.0/8 -j DROP 2>/dev/null || true
+          sudo iptables -D FORWARD -s 10.0.0.0/8 ! -d 10.0.0.0/8 -j ACCEPT 2>/dev/null || true
+          sudo iptables -D FORWARD -d 10.0.0.0/8 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+          sudo iptables -t nat -D POSTROUTING -s 10.0.0.0/8 -o "$IFACE" -j MASQUERADE 2>/dev/null || true
+          # Clean up any leftover tap/bridge devices
+          for dev in $(ip -o link show type tun 2>/dev/null | awk -F: '{print $2}' | grep '^tap'); do
+            sudo ip link del "$dev" 2>/dev/null || true
+          done
+          for dev in $(ip -o link show type bridge 2>/dev/null | awk -F: '{print $2}' | grep '^brbhatti'); do
+            sudo ip link del "$dev" 2>/dev/null || true
+          done

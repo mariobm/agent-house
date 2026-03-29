@@ -84,6 +84,7 @@ type VM struct {
 	GuestIP     string
 	GuestMAC    string
 	Token       string // agent auth token
+	FCPathOrigin string // sandbox ID whose paths Firecracker has recorded internally
 	Volumes     []VolumeAttachmentInfo // populated in Create, used by checkpoint
 	Agent           *agent.AgentClient
 	Status          string // "running", "stopped"
@@ -484,7 +485,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 		VsockPath: vsockPath, RootfsPath: rootfsPath,
 		CID: cid, VcpuCount: vcpuCount, MemSizeMib: memMB,
 		TapDevice: tapName, GuestIP: guestIP, GuestMAC: mac,
-		Token: token, Volumes: volAttachments,
+		Token: token, FCPathOrigin: id, Volumes: volAttachments,
 		Agent: agentClient, Status: "running",
 		Thermal: "hot", cancel: vmCancel, cmd: fcCmd,
 	}

@@ -29,6 +29,7 @@ type SnapshotManifest struct {
 	Drives          []ManifestDrive       `json:"drives"`
 	Network         ManifestNetwork       `json:"network"`
 	AgentToken      string                `json:"agent_token"`
+	FCPathOrigin    string                `json:"fc_path_origin,omitempty"`
 }
 
 type ManifestVMConfig struct {
@@ -164,12 +165,21 @@ func (e *Engine) Checkpoint(ctx context.Context, sandboxID, userID string, subne
 	}
 
 	// Write manifest
+	// FCPathOrigin tracks which sandbox ID Firecracker has recorded in its
+	// vm.snap for block device paths. For a directly-created sandbox this is
+	// the sandbox's own ID. For a sandbox resumed from a snapshot, it's the
+	// original seed sandbox whose paths FC inherited through snapshot/load.
+	fcOrigin := vm.FCPathOrigin
+	if fcOrigin == "" {
+		fcOrigin = sandboxID // fallback for VMs created before this field existed
+	}
 	manifest := &SnapshotManifest{
-		Name:        snapName,
-		CreatedFrom: sandboxID,
-		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-		UserID:      userID,
-		SubnetIndex: subnetIndex,
+		Name:         snapName,
+		CreatedFrom:  sandboxID,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		UserID:       userID,
+		SubnetIndex:  subnetIndex,
+		FCPathOrigin: fcOrigin,
 		VMConfig: ManifestVMConfig{
 			VcpuCount:  vm.VcpuCount,
 			MemSizeMib: vm.MemSizeMib,
@@ -273,7 +283,13 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 
 	// Create TAP with the SAME name as the original. Firecracker's vm.snap
 	// records the host_dev_name. On snapshot load, it opens that exact device.
-	origTapName := "tap" + manifest.CreatedFrom[:8]
+	// Use FCPathOrigin (the sandbox whose paths FC has recorded) for the TAP
+	// name, falling back to CreatedFrom for manifests created before this field.
+	fcOrigin := manifest.FCPathOrigin
+	if fcOrigin == "" {
+		fcOrigin = manifest.CreatedFrom
+	}
+	origTapName := "tap" + fcOrigin[:8]
 	// Clean up any stale TAP with this name (from a previous failed resume)
 	destroyTapDevice(origTapName)
 	tapName = origTapName
@@ -330,7 +346,9 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 	// We must place our files at those original paths. Since the original
 	// sandbox was destroyed, those paths are free. We use the new sandbox
 	// dir but create symlinks at the old paths pointing to our copies.
-	origSandboxDir := filepath.Join(e.cfg.DataDir, "sandboxes", manifest.CreatedFrom)
+	// Use FCPathOrigin (the sandbox whose paths FC recorded in vm.snap),
+	// not CreatedFrom (which may be a different sandbox for nested snapshots).
+	origSandboxDir := filepath.Join(e.cfg.DataDir, "sandboxes", fcOrigin)
 	needCleanup := false
 	if _, err := os.Stat(origSandboxDir); os.IsNotExist(err) {
 		os.MkdirAll(origSandboxDir, 0700)
@@ -397,6 +415,7 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 		TapDevice: tapName, GuestIP: guestIP,
 		GuestMAC: manifest.Network.GuestMAC,
 		Token:   manifest.AgentToken,
+		FCPathOrigin: fcOrigin, // inherit: FC still has same internal paths
 		Agent:   agentClient,
 		Status:  "running",
 		Thermal: "hot",
