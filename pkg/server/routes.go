@@ -9,13 +9,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -1561,60 +1564,149 @@ func (s *Server) handleSandboxProxyRoute(w http.ResponseWriter, r *http.Request,
 	s.handleProxyHTTP(w, r, sb.EngineID, port, rest)
 }
 
-// handleProxyHTTP tunnels an HTTP request/response through Engine.Tunnel().
-func (s *Server) handleProxyHTTP(w http.ResponseWriter, r *http.Request, engineID string, port int, path string) {
-	tunnel, err := s.engine.Tunnel(r.Context(), engineID, port)
-	if err != nil {
-		errResp(w, 502, "tunnel failed: "+err.Error())
-		return
-	}
-	defer tunnel.Close()
+// --- Tunnel Transport ---
 
-	// Rewrite the request to target localhost:port inside the sandbox
-	outReq := r.Clone(r.Context())
-	outReq.URL.Scheme = "http"
-	outReq.URL.Host = fmt.Sprintf("localhost:%d", port)
-	outReq.URL.Path = path
-	outReq.URL.RawQuery = r.URL.RawQuery
-	outReq.RequestURI = ""
-	outReq.Host = fmt.Sprintf("localhost:%d", port)
-
-	// Write the HTTP request into the tunnel
-	if err := outReq.Write(tunnel); err != nil {
-		errResp(w, 502, "failed to write request")
-		return
-	}
-
-	// Read the HTTP response from the tunnel
-	resp, err := http.ReadResponse(bufio.NewReader(tunnel), outReq)
-	if err != nil {
-		errResp(w, 502, "bad gateway: "+err.Error())
-		return
-	}
-	defer resp.Body.Close()
-
-	// Copy response headers and body
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+// tunnelTransport wraps Engine.Tunnel() as an http.RoundTripper.
+// Each RoundTrip opens a new tunnel connection to the sandbox.
+// Used by httputil.ReverseProxy for proper streaming, hop-by-hop
+// header removal, and response flushing.
+type tunnelTransport struct {
+	engine   engine.Engine
+	engineID string
+	port     int
 }
 
-// handleProxyWS tunnels a WebSocket connection through Engine.Tunnel().
-// The browser's WS connects to bhatti; bhatti opens a tunnel into the sandbox
-// and relays the raw HTTP upgrade + subsequent WS frames bidirectionally.
-func (s *Server) handleProxyWS(w http.ResponseWriter, r *http.Request, engineID string, port int, path string) {
-	tunnel, err := s.engine.Tunnel(r.Context(), engineID, port)
+func (t *tunnelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	tunnel, err := t.engine.Tunnel(req.Context(), t.engineID, t.port)
+	if err != nil {
+		return nil, err
+	}
+
+	// Guard against context cancellation leaking the tunnel FD.
+	// If the client disconnects mid-response, ReverseProxy may cancel
+	// the context without closing resp.Body. This AfterFunc ensures
+	// the tunnel is always cleaned up.
+	stop := context.AfterFunc(req.Context(), func() {
+		tunnel.Close()
+	})
+
+	if err := req.Write(tunnel); err != nil {
+		stop()
+		tunnel.Close()
+		return nil, err
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(tunnel), req)
+	if err != nil {
+		stop()
+		tunnel.Close()
+		return nil, err
+	}
+	// Closing the body also closes the tunnel and cancels the AfterFunc.
+	resp.Body = &tunnelBody{ReadCloser: resp.Body, tunnel: tunnel, stopGuard: stop}
+	return resp, nil
+}
+
+// tunnelBody wraps the response body to close the tunnel when done.
+// Close is idempotent via sync.Once — safe if called by both
+// ReverseProxy and the context.AfterFunc guard.
+type tunnelBody struct {
+	io.ReadCloser
+	tunnel    io.Closer
+	stopGuard func() bool
+	once      sync.Once
+}
+
+func (tb *tunnelBody) Close() error {
+	var err error
+	tb.once.Do(func() {
+		tb.stopGuard()
+		tb.ReadCloser.Close()
+		err = tb.tunnel.Close()
+	})
+	return err
+}
+
+// handleProxyHTTP tunnels an HTTP request/response through Engine.Tunnel()
+// using httputil.ReverseProxy. This handles hop-by-hop header removal,
+// chunked transfer encoding, trailer forwarding, and response flushing
+// (FlushInterval: -1 flushes every chunk — required for SSE/streaming).
+func (s *Server) handleProxyHTTP(w http.ResponseWriter, r *http.Request, engineID string, port int, path string) {
+	proxy := &httputil.ReverseProxy{
+		Transport: &tunnelTransport{
+			engine:   s.engine,
+			engineID: engineID,
+			port:     port,
+		},
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "http"
+			req.URL.Host = fmt.Sprintf("localhost:%d", port)
+			req.URL.Path = path
+			req.URL.RawQuery = r.URL.RawQuery
+			req.Host = fmt.Sprintf("localhost:%d", port)
+			if clientIP, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+				req.Header.Set("X-Forwarded-For", clientIP)
+			}
+			req.Header.Set("X-Forwarded-Proto", schemeOf(r))
+			req.Header.Set("X-Forwarded-Host", r.Host)
+		},
+		FlushInterval: -1, // flush immediately (streaming/SSE)
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			errResp(w, 502, "bad gateway: "+err.Error())
+		},
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+// schemeOf returns "https" if the request came over TLS, else "http".
+func schemeOf(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// --- WebSocket Proxy ---
+
+const wsIdleTimeout = 10 * time.Minute
+
+// deadlineConn is satisfied by net.Conn (which clientConn always is)
+// and by tunnel implementations that wrap net.Conn.
+type deadlineConn interface {
+	io.Reader
+	SetReadDeadline(t time.Time) error
+}
+
+// idleCopyWithDeadline copies src → dst, resetting the read deadline
+// on src after every successful read. Returns when src hits the idle
+// timeout or either side errors/closes.
+func idleCopyWithDeadline(dst io.Writer, src deadlineConn, timeout time.Duration) {
+	buf := make([]byte, 32*1024)
+	for {
+		src.SetReadDeadline(time.Now().Add(timeout))
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, wErr := dst.Write(buf[:n]); wErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// proxyWebSocket hijacks the client connection and relays WS frames
+// through an engine tunnel. Used by both the authenticated proxy and
+// (in the future) the public proxy. Includes an idle timeout to prevent
+// FD exhaustion from abandoned connections.
+func proxyWebSocket(w http.ResponseWriter, r *http.Request, eng engine.Engine, engineID string, port int, path string) {
+	tunnel, err := eng.Tunnel(r.Context(), engineID, port)
 	if err != nil {
 		errResp(w, 502, "tunnel failed: "+err.Error())
 		return
 	}
 	defer tunnel.Close()
 
-	// Hijack the browser connection to get the raw net.Conn
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		errResp(w, 500, "server doesn't support hijacking")
@@ -1627,7 +1719,6 @@ func (s *Server) handleProxyWS(w http.ResponseWriter, r *http.Request, engineID 
 	}
 	defer clientConn.Close()
 
-	// Forward the original upgrade request into the tunnel
 	outReq := r.Clone(r.Context())
 	outReq.URL.Scheme = "http"
 	outReq.URL.Host = fmt.Sprintf("localhost:%d", port)
@@ -1637,7 +1728,6 @@ func (s *Server) handleProxyWS(w http.ResponseWriter, r *http.Request, engineID 
 	outReq.Host = fmt.Sprintf("localhost:%d", port)
 	outReq.Write(tunnel)
 
-	// Read the upgrade response from the tunnel and forward to browser
 	resp, err := http.ReadResponse(bufio.NewReader(tunnel), outReq)
 	if err != nil {
 		return
@@ -1645,14 +1735,30 @@ func (s *Server) handleProxyWS(w http.ResponseWriter, r *http.Request, engineID 
 	resp.Write(clientBuf)
 	clientBuf.Flush()
 
-	// Bidirectional relay — both sides are now speaking WebSocket frames
+	// Bidirectional relay with idle timeout.
+	// If the tunnel supports SetReadDeadline (net.Conn-backed), use
+	// deadline-based idle detection. Otherwise fall back to plain io.Copy.
 	done := make(chan struct{})
-	go func() {
-		io.Copy(tunnel, clientConn)
-		close(done)
-	}()
-	io.Copy(clientConn, tunnel)
+	tunnelDC, tunnelHasDeadline := tunnel.(deadlineConn)
+	if tunnelHasDeadline {
+		go func() {
+			idleCopyWithDeadline(tunnel, clientConn, wsIdleTimeout)
+			close(done)
+		}()
+		idleCopyWithDeadline(clientConn, tunnelDC, wsIdleTimeout)
+	} else {
+		go func() {
+			io.Copy(tunnel, clientConn)
+			close(done)
+		}()
+		io.Copy(clientConn, tunnel)
+	}
 	<-done
+}
+
+// handleProxyWS delegates to the shared proxyWebSocket function.
+func (s *Server) handleProxyWS(w http.ResponseWriter, r *http.Request, engineID string, port int, path string) {
+	proxyWebSocket(w, r, s.engine, engineID, port, path)
 }
 
 // --- File Operations ---
