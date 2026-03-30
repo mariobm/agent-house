@@ -270,7 +270,7 @@ func startDomainMode(cfg *pkg.Config, eng engine.Engine, st *store.Store, srv *s
 		os.Exit(1)
 	}
 
-	// :443 — serves both API (api.bhatti.sh) and proxy (*.deploy.bhatti.sh)
+	// :443 — serves both API (api.bhatti.sh) and proxy (*.bhatti.sh)
 	httpsServer := &http.Server{
 		Addr:              ":443",
 		Handler:           srv,

@@ -2364,47 +2364,37 @@ func validateAlias(alias string) error {
 	return nil
 }
 
-func generateAlias(sandboxName string, port int, existingCount int) string {
-	alias := strings.ToLower(sandboxName)
-	alias = regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(alias, "-")
-	alias = strings.Trim(alias, "-")
-	if alias == "" {
-		alias = "sandbox"
+// generateAlias creates a <name>-<random> alias. The random suffix prevents
+// guessing (2.1B possibilities) and collisions. Format: dev-k3m9x2.bhatti.sh
+func generateAlias(sandboxName string) string {
+	base := strings.ToLower(sandboxName)
+	base = regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(base, "-")
+	base = strings.Trim(base, "-")
+	if base == "" {
+		base = "sandbox"
 	}
-	if existingCount > 0 {
-		suffix := fmt.Sprintf("-p%d", port)
-		maxBase := 63 - len(suffix)
-		if len(alias) > maxBase {
-			alias = alias[:maxBase]
-		}
-		alias += suffix
-	} else if len(alias) > 63 {
-		alias = alias[:63]
+
+	// 6 chars of a-z0-9 = 2.1 billion possibilities
+	b := make([]byte, 4)
+	rand.Read(b)
+	suffix := hex.EncodeToString(b)[:6]
+
+	alias := base + "-" + suffix
+	if len(alias) > 63 {
+		alias = base[:63-7] + "-" + suffix // 7 = dash + 6 chars
 	}
 	return alias
 }
 
-func generateUniqueAlias(st *store.Store, sandboxID, sandboxName string, port int) (string, error) {
-	existing, _ := st.ListPublishRules(sandboxID)
-	alias := generateAlias(sandboxName, port, len(existing))
-
-	candidates := []string{alias}
-	for i := 0; i < 3; i++ {
-		b := make([]byte, 4)
-		rand.Read(b)
-		c := alias + "-" + hex.EncodeToString(b)
-		if len(c) > 63 {
-			c = c[:63]
-		}
-		candidates = append(candidates, c)
-	}
-
-	for _, candidate := range candidates {
+func generateUniqueAlias(st *store.Store, sandboxName string) (string, error) {
+	// Try up to 4 times (each attempt has a fresh random suffix)
+	for i := 0; i < 4; i++ {
+		candidate := generateAlias(sandboxName)
 		if _, err := st.GetPublishRuleByAlias(candidate); err != nil {
 			return candidate, nil // not taken
 		}
 	}
-	return "", fmt.Errorf("failed to generate unique alias after %d attempts", len(candidates))
+	return "", fmt.Errorf("failed to generate unique alias after 4 attempts")
 }
 
 func (s *Server) handleSandboxPublish(w http.ResponseWriter, r *http.Request, id, sub string) {
@@ -2457,7 +2447,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request, sandboxID
 	alias := req.Alias
 	if alias == "" {
 		var err error
-		alias, err = generateUniqueAlias(s.store, sb.ID, sb.Name, req.Port)
+		alias, err = generateUniqueAlias(s.store, sb.Name)
 		if err != nil {
 			errResp(w, 500, "alias generation failed")
 			return

@@ -63,8 +63,8 @@ type Server struct {
 	authFailures  atomic.Int64
 
 	// Public proxy (set via options)
-	proxyZone       string              // e.g. "deploy.bhatti.sh"
-	apiHost         string              // e.g. "api.bhatti.sh"
+	proxyZone       string              // e.g. "bhatti.sh"
+	apiHost         string              // e.g. "api.bhatti.sh" (must be under proxyZone)
 	publicProxyAddr string              // e.g. "host:8443" (for URL generation)
 	publicProxy     *PublicProxyHandler // nil until configured
 	resumeSem       chan struct{}       // bounds concurrent cold resumes
@@ -294,7 +294,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// API host falls through to normal auth flow.
 	if s.proxyZone != "" {
 		host := stripPort(r.Host)
-		if strings.HasSuffix(host, "."+s.proxyZone) {
+
+		// API host and localhost always fall through to auth.
+		// Check BEFORE proxy zone match because api.bhatti.sh also
+		// matches *.bhatti.sh when proxy zone is bhatti.sh.
+		if host == s.apiHost || host == "localhost" || host == "127.0.0.1" {
+			// fall through to auth
+		} else if strings.HasSuffix(host, "."+s.proxyZone) {
 			alias := strings.TrimSuffix(host, "."+s.proxyZone)
 			if s.publicProxy != nil {
 				s.publicProxy.proxyToAlias(w, r, alias, r.URL.Path)
@@ -302,12 +308,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				errResp(w, 503, "public proxy not configured")
 			}
 			return
-		}
-		if s.apiHost != "" && host != s.apiHost && host != "localhost" && host != "127.0.0.1" {
+		} else {
 			errResp(w, 404, "unknown host")
 			return
 		}
-		// host == apiHost or localhost → fall through to auth
 	}
 
 	// Normalize path before any checks to prevent path confusion attacks

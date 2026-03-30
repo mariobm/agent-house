@@ -18,12 +18,20 @@ Self-hosters shouldn't need a Cloudflare account, a tunnel daemon, or
 any external service to expose bhatti to the internet. If you have a
 domain and a public IP, bhatti should handle the rest.
 
-**Goal:** Give bhatti a subdomain zone (e.g. `deploy.bhatti.sh`), and it
+**Goal:** Give bhatti a subdomain zone (e.g. `bhatti.sh`), and it
 serves the API and public sandbox proxying directly. Published sandbox
-ports get subdomains under the zone (`my-app.deploy.bhatti.sh`). TLS
+ports get subdomains under the zone (`my-app.bhatti.sh`). TLS
 certificates are automatic. No Cloudflare tunnel, no external reverse
 proxy, no DNS-provider-specific configuration. The self-hoster's only
 job is pointing DNS at the bhatti host.
+
+**Why `*.bhatti.sh` instead of `*.deploy.bhatti.sh`?** Two-level
+wildcard certs (`*.deploy.bhatti.sh`) require paid certificates on most
+CDNs (e.g. Cloudflare Advanced Certificate). Single-level wildcards
+(`*.bhatti.sh`) are covered by free Universal SSL. The API host
+(`api.bhatti.sh`) is checked first in routing, and reserved aliases
+prevent collisions with other subdomains like `www` or `mail`. Explicit
+DNS records always take precedence over wildcard records.
 
 The killer use case is **preview environments**. Deploy an app to a
 bhatti sandbox, share the URL, and pay zero resources when nobody's
@@ -87,22 +95,25 @@ Problems:
 Bhatti takes a **subdomain zone**, not the whole domain.
 
 ```
-bhatti.sh                          → project website (NOT bhatti's concern)
-www.bhatti.sh                      → project website (NOT bhatti's concern)
-mail.bhatti.sh                     → email (NOT bhatti's concern)
+bhatti.sh                          → project website (explicit A record, NOT bhatti's concern)
+www.bhatti.sh                      → project website (explicit A record, NOT bhatti's concern)
+mail.bhatti.sh                     → email (explicit A record, NOT bhatti's concern)
 api.bhatti.sh                      → authenticated API (managed by bhatti)
-my-app.deploy.bhatti.sh            → public proxy to sandbox port (NEW)
-dashboard.deploy.bhatti.sh         → public proxy to different sandbox (NEW)
+my-app.bhatti.sh                   → public proxy to sandbox port (NEW)
+dashboard.bhatti.sh                → public proxy to different sandbox (NEW)
 ```
 
 The config gives bhatti two things:
 1. **API host** — where the authenticated API is served (e.g. `api.bhatti.sh`)
-2. **Proxy zone** — the subdomain zone for published sandbox ports (e.g. `deploy.bhatti.sh`)
+2. **Proxy zone** — the parent domain for published sandbox ports (e.g. `bhatti.sh`)
 
 The self-hoster's responsibilities are limited to DNS:
 1. Point `api.bhatti.sh` at the bhatti host's public IP
-2. Point `*.deploy.bhatti.sh` at the bhatti host's public IP
+2. Point `*.bhatti.sh` at the bhatti host's public IP
 3. That's it
+
+Explicit DNS records (www, mail, etc.) take precedence over the wildcard
+and continue working as before.
 
 ---
 

@@ -1476,7 +1476,7 @@ func setupDomainMode(t *testing.T) (*Server, *httptest.Server) {
 
 	eng := newMockEngine()
 	srv := New(eng, st, dir,
-		WithProxyZone("deploy.test.sh"),
+		WithProxyZone("test.sh"),
 		WithAPIHost("api.test.sh"),
 	)
 	pub := NewPublicProxyHandler(eng, st, srv.ResumeSem())
@@ -1529,7 +1529,7 @@ func TestHostBasedRouting(t *testing.T) {
 		},
 	}
 	req, _ := http.NewRequest("GET", ts.URL+"/", nil)
-	req.Host = "my-app.deploy.test.sh"
+	req.Host = "my-app.test.sh"
 	proxyResp, err := shortClient.Do(req)
 	if err != nil {
 		// Timeout is expected (mock pipe blocks). That proves routing
@@ -1598,14 +1598,14 @@ func TestHostPolicyAllowsPublishedAlias(t *testing.T) {
 	})
 	resp.Body.Close()
 
-	if err := srv.HostPolicy(context.Background(), "hp-test.deploy.test.sh"); err != nil {
+	if err := srv.HostPolicy(context.Background(), "hp-test.test.sh"); err != nil {
 		t.Fatalf("HostPolicy should allow published alias: %v", err)
 	}
 }
 
 func TestHostPolicyRejectsUnknown(t *testing.T) {
 	srv, _ := setupDomainMode(t)
-	if err := srv.HostPolicy(context.Background(), "nonexistent.deploy.test.sh"); err == nil {
+	if err := srv.HostPolicy(context.Background(), "nonexistent.test.sh"); err == nil {
 		t.Fatal("HostPolicy should reject unknown alias")
 	}
 	if err := srv.HostPolicy(context.Background(), "evil.example.com"); err == nil {

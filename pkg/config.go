@@ -35,7 +35,7 @@ type Config struct {
 // DomainConfig configures domain mode with host-based routing and TLS.
 type DomainConfig struct {
 	APIHost   string `yaml:"api_host"`   // e.g. "api.bhatti.sh"
-	ProxyZone string `yaml:"proxy_zone"` // e.g. "deploy.bhatti.sh"
+	ProxyZone string `yaml:"proxy_zone"` // e.g. "bhatti.sh" — published apps get <alias>.bhatti.sh
 	ACMEEmail string `yaml:"acme_email"` // for per-alias autocert (fallback)
 	TLSCert   string `yaml:"tls_cert"`   // wildcard cert path (recommended)
 	TLSKey    string `yaml:"tls_key"`    // wildcard key path
