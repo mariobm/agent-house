@@ -4,6 +4,7 @@ package firecracker
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,17 +64,37 @@ func setupFullStack(t *testing.T) (*httptest.Server, string) {
 	ts := httptest.NewServer(srv)
 	t.Cleanup(func() { srv.Close(); ts.Close() })
 
-	// Start a python HTTP server inside the VM. Requires python3 in rootfs.
-	// The minimal rootfs may not have python3 — tests that need it check
-	// and skip. See TestProxyHTTPGet, TestProxyHTTP404.
-	result, _ := eng.Exec(ctx, info.ID, []string{"which", "python3"})
-	if result.ExitCode != 0 {
-		t.Log("WARN: python3 not in rootfs, HTTP content proxy tests will skip")
+	// Start an HTTP server inside the VM. We inject a static Go binary via
+	// FileWrite so there's no dependency on python3/socat in the rootfs.
+	// The binary is pre-built alongside the test binary and passed via
+	// TEST_HTTPD_BIN env var.
+	httpdBin := os.Getenv("TEST_HTTPD_BIN")
+	if httpdBin == "" {
+		t.Log("WARN: TEST_HTTPD_BIN not set, HTTP content proxy tests will skip")
 		return ts, info.ID
 	}
-	execWithTimeout(t, eng, info.ID, []string{"sh", "-c",
-		"cd /tmp && echo proxy-content > index.html && python3 -m http.server 8888 </dev/null >/dev/null 2>&1 &"})
-	time.Sleep(2 * time.Second)
+	httpdData, err := os.ReadFile(httpdBin)
+	if err != nil {
+		t.Fatalf("read httpd binary: %v", err)
+	}
+
+	// Write test content
+	eng.FileWrite(ctx, info.ID, "/tmp/index.html", "0644", 13, bytes.NewReader([]byte("proxy-content")))
+
+	// Inject and start the HTTP server. setsid escapes lohar's process
+	// group kill so the server survives after exec returns.
+	eng.FileWrite(ctx, info.ID, "/tmp/httpd", "0755", int64(len(httpdData)), bytes.NewReader(httpdData))
+	execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "setsid /tmp/httpd /tmp </dev/null >/dev/null 2>&1 &"})
+
+	// Poll until the server is ready
+	for i := 0; i < 30; i++ {
+		time.Sleep(100 * time.Millisecond)
+		result, err := eng.Exec(ctx, info.ID, []string{"curl", "-sf", "http://localhost:8888/index.html"})
+		if err == nil && result.ExitCode == 0 {
+			t.Logf("test HTTP server ready after %dms", (i+1)*100)
+			break
+		}
+	}
 
 	return ts, info.ID
 }
@@ -94,7 +116,7 @@ func TestProxyHTTPGet(t *testing.T) {
 	resp := doProxyReq(t, ts, "GET", "/sandboxes/"+sbID+"/proxy/8888/index.html")
 	defer resp.Body.Close()
 	if resp.StatusCode == 502 {
-		t.Skip("python3 not available in rootfs — skipping HTTP content proxy test")
+		t.Skip("TEST_HTTPD_BIN not set — skipping HTTP content proxy test")
 	}
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -125,7 +147,7 @@ func TestProxyHTTP404(t *testing.T) {
 	resp := doProxyReq(t, ts, "GET", "/sandboxes/"+sbID+"/proxy/8888/nonexistent")
 	defer resp.Body.Close()
 	if resp.StatusCode == 502 {
-		t.Skip("python3 not available in rootfs — skipping HTTP 404 proxy test")
+		t.Skip("TEST_HTTPD_BIN not set — skipping HTTP 404 proxy test")
 	}
 	// Python http.server returns 404 for missing files — should be forwarded, not 502
 	if resp.StatusCode != 404 {
