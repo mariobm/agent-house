@@ -20,6 +20,9 @@ type Config struct {
 	AuthToken string `yaml:"auth_token"` // CLI: API key for remote requests
 	DataDir   string `yaml:"data_dir"`   // defaults to ~/.bhatti
 
+	// Public proxy (Phase 1: path-based, for dev/testing)
+	PublicProxyListen string `yaml:"public_proxy_listen,omitempty"` // e.g. ":8443"
+
 	// Firecracker-specific
 	FirecrackerBin    string `yaml:"firecracker_bin"`    // path to firecracker binary
 	FirecrackerKernel string `yaml:"firecracker_kernel"` // path to vmlinux

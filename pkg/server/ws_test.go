@@ -28,7 +28,7 @@ func TestWebSocketTerminal(t *testing.T) {
 	})
 
 	eng := newMockEngine()
-	srv := New(eng, st)
+	srv := New(eng, st, "")
 	ts := httptest.NewServer(srv)
 	defer func() { srv.Close(); ts.Close(); st.Close() }()
 

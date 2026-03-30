@@ -67,6 +67,14 @@ func init() {
 	rootCmd.AddCommand(setupCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(completionCmd)
+
+	publishCmd.Flags().IntP("port", "p", 0, "Port to publish (required)")
+	publishCmd.MarkFlagRequired("port")
+	publishCmd.Flags().StringP("alias", "a", "", "Custom alias (auto-generated if omitted)")
+	unpublishCmd.Flags().IntP("port", "p", 0, "Port to unpublish (required)")
+	unpublishCmd.MarkFlagRequired("port")
+	rootCmd.AddCommand(publishCmd)
+	rootCmd.AddCommand(unpublishCmd)
 }
 
 // runCLI is called from main() for any subcommand other than "serve".
@@ -1617,6 +1625,67 @@ var versionCmd = &cobra.Command{
 		} else {
 			fmt.Printf("bhatti %s\n", version)
 			fmt.Printf("api: %s\n", apiURL)
+		}
+	},
+}
+
+// --- publish / unpublish ---
+
+var publishCmd = &cobra.Command{
+	Use:               "publish <sandbox> --port <port> [--alias <alias>]",
+	Short:             "Publish a sandbox port with a public URL",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeSandboxNames,
+	Run: func(cmd *cobra.Command, args []string) {
+		port, _ := cmd.Flags().GetInt("port")
+		alias, _ := cmd.Flags().GetString("alias")
+
+		body := map[string]interface{}{"port": port}
+		if alias != "" {
+			body["alias"] = alias
+		}
+		id, err := resolveID(args[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		var result map[string]interface{}
+		if err := apiJSON("POST", fmt.Sprintf("/sandboxes/%s/publish", id), body, &result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if isJSON(cmd) {
+			outputJSON(result)
+		} else {
+			fmt.Printf("Published: %v\n", result["url"])
+		}
+	},
+}
+
+var unpublishCmd = &cobra.Command{
+	Use:               "unpublish <sandbox> --port <port>",
+	Short:             "Unpublish a sandbox port",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeSandboxNames,
+	Run: func(cmd *cobra.Command, args []string) {
+		port, _ := cmd.Flags().GetInt("port")
+		id, err := resolveID(args[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		resp, err := apiRequest("DELETE", fmt.Sprintf("/sandboxes/%s/publish/%d", id, port), nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Status)
+			os.Exit(1)
+		}
+		if !isJSON(cmd) {
+			fmt.Printf("Unpublished port %d\n", port)
 		}
 	},
 }

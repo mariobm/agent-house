@@ -58,7 +58,7 @@ func setupFullStack(t *testing.T) (*httptest.Server, string) {
 	})
 
 	// Start server
-	srv := server.New(eng, st)
+	srv := server.New(eng, st, "")
 	ts := httptest.NewServer(srv)
 	t.Cleanup(func() { srv.Close(); ts.Close() })
 

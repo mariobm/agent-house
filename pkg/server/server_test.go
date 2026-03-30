@@ -1288,3 +1288,169 @@ func TestClassifyRequest(t *testing.T) {
 		}
 	}
 }
+
+// ==========================================================================
+// Publish / Unpublish
+// ==========================================================================
+
+func TestPublishHTTP(t *testing.T) {
+	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "pub"))
+
+	resp := doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/publish", map[string]interface{}{
+		"port":  3000,
+		"alias": "test-app",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	var result map[string]interface{}
+	decodeJSON(t, resp, &result)
+	if result["alias"] != "test-app" {
+		t.Errorf("alias: %v", result["alias"])
+	}
+	if result["port"].(float64) != 3000 {
+		t.Errorf("port: %v", result["port"])
+	}
+}
+
+func TestPublishAutoAlias(t *testing.T) {
+	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "pub"))
+
+	resp := doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/publish", map[string]interface{}{
+		"port": 3000,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	var result map[string]interface{}
+	decodeJSON(t, resp, &result)
+	if result["alias"] == nil || result["alias"] == "" {
+		t.Fatal("expected auto-generated alias")
+	}
+}
+
+func TestPublishDuplicateAlias(t *testing.T) {
+	_, ts := setup(t)
+	sb1 := createSandbox(t, ts, uniqueName(t, "pub1"))
+	sb2 := createSandbox(t, ts, uniqueName(t, "pub2"))
+
+	doReq(t, ts, "POST", "/sandboxes/"+sb1.ID+"/publish", map[string]interface{}{
+		"port": 3000, "alias": "dup-alias",
+	})
+	resp := doReq(t, ts, "POST", "/sandboxes/"+sb2.ID+"/publish", map[string]interface{}{
+		"port": 3000, "alias": "dup-alias",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != 409 {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
+	}
+}
+
+func TestPublishDuplicatePort(t *testing.T) {
+	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "pub"))
+
+	doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/publish", map[string]interface{}{
+		"port": 3000, "alias": "first",
+	})
+	resp := doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/publish", map[string]interface{}{
+		"port": 3000, "alias": "second",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != 409 {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
+	}
+}
+
+func TestUnpublishHTTP(t *testing.T) {
+	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "pub"))
+
+	doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/publish", map[string]interface{}{
+		"port": 3000, "alias": "to-delete",
+	})
+	resp := doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID+"/publish/3000", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+}
+
+func TestListPublishHTTP(t *testing.T) {
+	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "pub"))
+
+	doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/publish", map[string]interface{}{"port": 3000, "alias": "a1"})
+	doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/publish", map[string]interface{}{"port": 3001, "alias": "a2"})
+
+	resp := doReq(t, ts, "GET", "/sandboxes/"+sb.ID+"/publish", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var rules []map[string]interface{}
+	decodeJSON(t, resp, &rules)
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d", len(rules))
+	}
+}
+
+func TestDestroyCleanupPublish(t *testing.T) {
+	srv, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "pub"))
+
+	doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/publish", map[string]interface{}{"port": 3000, "alias": "cleanup"})
+
+	// Destroy (bypass cleanup registered by createSandbox)
+	resp := doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil)
+	resp.Body.Close()
+
+	rules, _ := srv.store.ListPublishRules(sb.ID)
+	if len(rules) != 0 {
+		t.Fatalf("expected 0 rules after destroy, got %d", len(rules))
+	}
+}
+
+func TestAliasValidation(t *testing.T) {
+	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "pub"))
+
+	tests := []struct {
+		alias string
+		want  int
+	}{
+		{"UPPERCASE", 400},
+		{"-leading-dash", 400},
+		{"has spaces", 400},
+		{"api", 400},     // reserved
+		{"www", 400},     // reserved
+		{"valid-alias", 201},
+	}
+
+	for _, tt := range tests {
+		resp := doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/publish", map[string]interface{}{
+			"port": 3000 + len(tt.alias), "alias": tt.alias,
+		})
+		resp.Body.Close()
+		if resp.StatusCode != tt.want {
+			t.Errorf("alias %q: got %d, want %d", tt.alias, resp.StatusCode, tt.want)
+		}
+	}
+}
+
+func TestPublishNonexistentSandbox(t *testing.T) {
+	_, ts := setup(t)
+	resp := doReq(t, ts, "POST", "/sandboxes/nonexistent/publish", map[string]interface{}{
+		"port": 3000, "alias": "nope",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}

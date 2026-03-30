@@ -61,6 +61,13 @@ type Server struct {
 	requestTotal  atomic.Int64
 	requestErrors atomic.Int64
 	authFailures  atomic.Int64
+
+	// Public proxy (set via options)
+	proxyZone       string              // e.g. "deploy.bhatti.sh"
+	apiHost         string              // e.g. "api.bhatti.sh"
+	publicProxyAddr string              // e.g. "host:8443" (for URL generation)
+	publicProxy     *PublicProxyHandler // nil until configured
+	resumeSem       chan struct{}       // bounds concurrent cold resumes
 }
 
 // touchActivity records that a sandbox was accessed via the API.
@@ -70,26 +77,47 @@ func (s *Server) touchActivity(engineID string) {
 	s.lastActivity.Store(engineID, time.Now())
 }
 
+// ServerOption configures the server.
+type ServerOption func(*Server)
+
+// WithProxyZone sets the subdomain zone for published sandbox ports.
+func WithProxyZone(zone string) ServerOption {
+	return func(s *Server) { s.proxyZone = zone }
+}
+
+// WithAPIHost sets the hostname for the authenticated API.
+func WithAPIHost(host string) ServerOption {
+	return func(s *Server) { s.apiHost = host }
+}
+
+// WithPublicProxyAddr sets the address used for generating public URLs.
+func WithPublicProxyAddr(addr string) ServerOption {
+	return func(s *Server) { s.publicProxyAddr = addr }
+}
+
 // New creates a new API server. dataDir is the path to the data directory
 // containing age.key for secret encryption.
-func New(eng engine.Engine, st *store.Store, dataDir ...string) *Server {
-	dir := ""
-	if len(dataDir) > 0 {
-		dir = dataDir[0]
-	}
+func New(eng engine.Engine, st *store.Store, dataDir string, opts ...ServerOption) *Server {
 	s := &Server{
 		engine:      eng,
 		store:       st,
-		dataDir:     dir,
+		dataDir:     dataDir,
 		mux:         http.NewServeMux(),
 		limiter:     newRateLimiter(),
 		startTime:   time.Now(),
 		pullCancels: make(map[string]context.CancelFunc),
+		resumeSem:   make(chan struct{}, 10),
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.routes()
 	s.startTaskCleanup()
 	return s
 }
+
+// ResumeSem returns the resume semaphore for sharing with PublicProxyHandler.
+func (s *Server) ResumeSem() chan struct{} { return s.resumeSem }
 
 // startTaskCleanup runs a background goroutine that deletes completed/failed
 // tasks older than 24 hours. Never deletes running tasks.

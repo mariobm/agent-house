@@ -124,8 +124,19 @@ func runDaemon() {
 		}
 	}
 
+	// v0.4: Clean orphaned publish rules
+	if n, err := st.CleanupOrphanedPublishRules(); err != nil {
+		slog.Warn("orphaned publish rule cleanup failed", "error", err)
+	} else if n > 0 {
+		slog.Info("cleaned up orphaned publish rules", "count", n)
+	}
+
 	// Start server
-	srv := server.New(eng, st, cfg.DataDir)
+	var srvOpts []server.ServerOption
+	if cfg.PublicProxyListen != "" {
+		srvOpts = append(srvOpts, server.WithPublicProxyAddr(cfg.PublicProxyListen))
+	}
+	srv := server.New(eng, st, cfg.DataDir, srvOpts...)
 
 	// Resolve the port for display
 	port := cfg.Listen
@@ -148,6 +159,24 @@ func runDaemon() {
 			os.Exit(1)
 		}
 	}()
+
+	// Start public proxy listener (path-based, for dev/testing)
+	if cfg.PublicProxyListen != "" {
+		pubHandler := server.NewPublicProxyHandler(eng, st, srv.ResumeSem())
+		pubServer := &http.Server{
+			Addr:         cfg.PublicProxyListen,
+			Handler:      http.HandlerFunc(pubHandler.ServeHTTPPathBased),
+			ReadTimeout:  30 * time.Second,
+			WriteTimeout: 60 * time.Second,
+			IdleTimeout:  120 * time.Second,
+		}
+		go func() {
+			slog.Info("public proxy listening", "addr", cfg.PublicProxyListen)
+			if err := pubServer.ListenAndServe(); err != http.ErrServerClosed {
+				slog.Error("public proxy failed", "error", err)
+			}
+		}()
+	}
 
 	// Wait for SIGTERM/SIGINT
 	sigCh := make(chan os.Signal, 1)
