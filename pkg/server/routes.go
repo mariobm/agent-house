@@ -877,6 +877,12 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+const (
+	wsPingInterval = 30 * time.Second
+	wsPongTimeout  = 90 * time.Second // 3 missed pings = dead
+	wsWriteTimeout = 10 * time.Second
+)
+
 func (s *Server) handleSandboxWS(w http.ResponseWriter, r *http.Request, id string) {
 	sb := s.getUserSandbox(w, r, id)
 	if sb == nil {
@@ -890,58 +896,112 @@ func (s *Server) handleSandboxWS(w http.ResponseWriter, r *http.Request, id stri
 	}
 	defer conn.Close()
 
+	// Pong resets the read deadline. If no pong arrives within
+	// wsPongTimeout, ReadMessage returns a deadline error and the
+	// handler cleans up.
+	conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+		return nil
+	})
+
 	if err := s.ensureHot(r.Context(), sb.EngineID); err != nil {
+		conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 		conn.WriteMessage(websocket.TextMessage, []byte("wake sandbox: "+err.Error()))
 		return
 	}
-	term, err := s.engine.Shell(r.Context(), sb.EngineID)
+	// Use context.Background — r.Context() is tied to the HTTP request
+	// and may be canceled after the WebSocket upgrade completes.
+	term, err := s.engine.Shell(context.Background(), sb.EngineID)
 	if err != nil {
+		conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 		conn.WriteMessage(websocket.TextMessage, []byte("shell error: "+err.Error()))
 		return
 	}
+	// N.B. defer order matters: conn.Close() (from earlier defer) runs
+	// after term.Close(). term.Close() unblocks the term→WS goroutine's
+	// Read(); conn.Close() unblocks the WS→term goroutine's ReadMessage().
 	defer term.Close()
+
+	// Serialize all WebSocket writes through a mutex. gorilla allows
+	// one concurrent reader + one concurrent writer, but we have
+	// multiple write sources: terminal data, ping ticker, and close frame.
+	var wsMu sync.Mutex
+	wsWrite := func(msgType int, data []byte) error {
+		wsMu.Lock()
+		defer wsMu.Unlock()
+		conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+		return conn.WriteMessage(msgType, data)
+	}
+
+	// done signals all goroutines to exit.
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	closeDone := func() { closeOnce.Do(func() { close(done) }) }
+
+	// Ping ticker — keeps the connection alive through proxies.
+	go func() {
+		ticker := time.NewTicker(wsPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := wsWrite(websocket.PingMessage, nil); err != nil {
+					closeDone()
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
 
 	// Terminal → WebSocket
 	go func() {
+		defer closeDone()
 		buf := make([]byte, 4096)
 		for {
 			n, err := term.Read(buf)
 			if err != nil {
-				conn.WriteMessage(websocket.CloseMessage, nil)
+				wsWrite(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 				return
 			}
-			if err := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+			if err := wsWrite(websocket.BinaryMessage, buf[:n]); err != nil {
 				return
 			}
 		}
 	}()
 
 	// WebSocket → Terminal
-	for {
-		msgType, msg, err := conn.ReadMessage()
-		if err != nil {
-			return
-		}
-
-		// Handle resize messages (JSON: {"type":"resize","rows":N,"cols":N})
-		if msgType == websocket.TextMessage {
-			var resize struct {
-				Type string `json:"type"`
-				Rows int    `json:"rows"`
-				Cols int    `json:"cols"`
+	go func() {
+		defer closeDone()
+		for {
+			msgType, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
 			}
-			if json.Unmarshal(msg, &resize) == nil && resize.Type == "resize" {
-				if err := term.Resize(resize.Rows, resize.Cols); err != nil {
-					slog.Debug("terminal resize failed", "error", err)
+
+			// Handle resize messages (JSON: {"type":"resize","rows":N,"cols":N})
+			if msgType == websocket.TextMessage {
+				var resize struct {
+					Type string `json:"type"`
+					Rows int    `json:"rows"`
+					Cols int    `json:"cols"`
 				}
-				continue
+				if json.Unmarshal(msg, &resize) == nil && resize.Type == "resize" {
+					term.Resize(resize.Rows, resize.Cols)
+					continue
+				}
+			}
+
+			if _, err := term.Write(msg); err != nil {
+				return
 			}
 		}
+	}()
 
-		if _, err := term.Write(msg); err != nil {
-			return
-		}
-	}
+	<-done
 }
 
 // --- Secrets ---

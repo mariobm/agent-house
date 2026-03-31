@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -720,6 +721,51 @@ var shellCmd = &cobra.Command{
 		}
 		defer conn.Close()
 
+		const (
+			pongTimeout  = 90 * time.Second
+			writeTimeout = 10 * time.Second
+		)
+
+		// Ping/pong keepalives. The server sends pings; we respond
+		// with pongs and reset our read deadline on each ping.
+		conn.SetReadDeadline(time.Now().Add(pongTimeout))
+		conn.SetPongHandler(func(string) error {
+			conn.SetReadDeadline(time.Now().Add(pongTimeout))
+			return nil
+		})
+
+		// Serialize all WebSocket writes. gorilla allows one concurrent
+		// reader + one concurrent writer, but we have three write sources:
+		// stdin, SIGWINCH resize, and PingHandler pong replies.
+		var wsMu sync.Mutex
+		wsWrite := func(msgType int, data []byte) error {
+			wsMu.Lock()
+			defer wsMu.Unlock()
+			conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			return conn.WriteMessage(msgType, data)
+		}
+		wsWriteJSON := func(v any) error {
+			wsMu.Lock()
+			defer wsMu.Unlock()
+			conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			return conn.WriteJSON(v)
+		}
+
+		// Custom PingHandler: reset read deadline + send pong under lock.
+		conn.SetPingHandler(func(appData string) error {
+			conn.SetReadDeadline(time.Now().Add(pongTimeout))
+			wsMu.Lock()
+			defer wsMu.Unlock()
+			conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			err := conn.WriteMessage(websocket.PongMessage, []byte(appData))
+			if err != nil {
+				// Pong write failed — connection is dead. Close so
+				// ReadMessage returns immediately.
+				conn.Close()
+			}
+			return err
+		})
+
 		// Raw terminal mode
 		oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 		if err != nil {
@@ -729,7 +775,7 @@ var shellCmd = &cobra.Command{
 
 		// Initial size
 		w, h, _ := term.GetSize(int(os.Stdin.Fd()))
-		conn.WriteJSON(map[string]any{"type": "resize", "rows": h, "cols": w})
+		wsWriteJSON(map[string]any{"type": "resize", "rows": h, "cols": w})
 
 		// SIGWINCH → resize
 		sigwinch := make(chan os.Signal, 1)
@@ -737,11 +783,13 @@ var shellCmd = &cobra.Command{
 		go func() {
 			for range sigwinch {
 				w, h, _ := term.GetSize(int(os.Stdin.Fd()))
-				conn.WriteJSON(map[string]any{
+				wsWriteJSON(map[string]any{
 					"type": "resize", "rows": h, "cols": w,
 				})
 			}
 		}()
+
+		var userDetached atomic.Bool
 
 		// WebSocket → stdout
 		done := make(chan struct{})
@@ -767,17 +815,29 @@ var shellCmd = &cobra.Command{
 				}
 				for i := 0; i < n; i++ {
 					if buf[i] == 0x1c { // Ctrl+backslash
+						// Send bytes before the escape character.
+						if i > 0 {
+							wsWrite(websocket.BinaryMessage, buf[:i])
+						}
+						userDetached.Store(true)
 						term.Restore(int(os.Stdin.Fd()), oldState)
 						fmt.Fprintf(os.Stderr, "\r\ndetached\r\n")
 						conn.Close()
 						return
 					}
 				}
-				conn.WriteMessage(websocket.BinaryMessage, buf[:n])
+				wsWrite(websocket.BinaryMessage, buf[:n])
 			}
 		}()
 
 		<-done
+		// Restore terminal before printing (defer may not have run yet
+		// if we got here via the reader goroutine closing done).
+		term.Restore(int(os.Stdin.Fd()), oldState)
+		if !userDetached.Load() {
+			fmt.Fprintf(os.Stderr, "\r\nconnection lost\r\n")
+			fmt.Fprintf(os.Stderr, "session may still be running — reconnect with: bhatti shell %s\r\n", args[0])
+		}
 		return nil
 	},
 }
