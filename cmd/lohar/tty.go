@@ -108,10 +108,14 @@ func handleTTYSession(conn net.Conn, req proto.ExecRequest) {
 		for {
 			n, err := master.Read(buf)
 			if n > 0 {
-				sess.Scrollback.Write(buf[:n])
 				sess.mu.Lock()
+				sess.Scrollback.Write(buf[:n])
 				if sess.Attached != nil {
-					proto.WriteFrame(sess.Attached, proto.STDOUT, buf[:n])
+					if werr := proto.WriteFrame(sess.Attached, proto.STDOUT, buf[:n]); werr != nil {
+						// Connection dead — close it so readHostInput
+						// gets a read error and does the canonical detach.
+						sess.Attached.Close()
+					}
 				}
 				sess.mu.Unlock()
 			}
@@ -174,12 +178,15 @@ func handleSessionAttach(conn net.Conn, sessionID string, ifDetached bool) {
 	sess.mu.Unlock()
 	proto.SendJSON(conn, proto.SESSION_INFO, info)
 
-	// Replay scrollback
+	// Replay scrollback (under lock — PTY reader writes concurrently)
+	sess.mu.Lock()
+	var scrollback []byte
 	if sess.Scrollback != nil {
-		scrollback := sess.Scrollback.Bytes()
-		if len(scrollback) > 0 {
-			proto.WriteFrame(conn, proto.STDOUT, scrollback)
-		}
+		scrollback = sess.Scrollback.Bytes()
+	}
+	sess.mu.Unlock()
+	if len(scrollback) > 0 {
+		proto.WriteFrame(conn, proto.STDOUT, scrollback)
 	}
 
 	// If process already exited, send exit and clean up
@@ -205,6 +212,7 @@ func readHostInput(conn net.Conn, sess *Session) {
 		msgType, payload, err := proto.ReadFrame(conn)
 		if err != nil {
 			// Host disconnected — detach, don't kill
+			fmt.Fprintf(os.Stderr, "lohar: session %s: host disconnected: %v\n", sess.ID, err)
 			sess.mu.Lock()
 			sess.Attached = nil
 			sess.mu.Unlock()
@@ -337,10 +345,12 @@ func runInitSession(script, user string) {
 		for {
 			n, err := master.Read(buf)
 			if n > 0 {
-				sess.Scrollback.Write(buf[:n])
 				sess.mu.Lock()
+				sess.Scrollback.Write(buf[:n])
 				if sess.Attached != nil {
-					proto.WriteFrame(sess.Attached, proto.STDOUT, buf[:n])
+					if werr := proto.WriteFrame(sess.Attached, proto.STDOUT, buf[:n]); werr != nil {
+						sess.Attached.Close()
+					}
 				}
 				sess.mu.Unlock()
 			}

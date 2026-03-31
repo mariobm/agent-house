@@ -95,6 +95,9 @@ func (s *Session) startIdleTimer() {
 	if s.MaxIdle <= 0 {
 		return // 0 = run forever
 	}
+	if s.idleTimer != nil {
+		return // already ticking
+	}
 	s.idleTimer = time.AfterFunc(s.MaxIdle, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()

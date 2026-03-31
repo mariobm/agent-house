@@ -13,6 +13,7 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -67,6 +68,7 @@ func init() {
 	rootCmd.AddCommand(snapshotCmd)
 	rootCmd.AddCommand(userCmd)
 	rootCmd.AddCommand(setupCmd)
+	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(completionCmd)
 
@@ -177,13 +179,13 @@ func checkServerVersion(resp *http.Response) {
 	// Hard warning: CLI is below the server's minimum required version.
 	if minCLI != "" && compareVersions(version, minCLI) < 0 {
 		fmt.Fprintf(os.Stderr, "⚠ CLI version %s is below server minimum %s — please update:\n", version, minCLI)
-		fmt.Fprintf(os.Stderr, "  curl -fsSL bhatti.sh/install | bash\n\n")
+		fmt.Fprintf(os.Stderr, "  bhatti update\n\n")
 		return
 	}
 
 	// Soft notice: newer server version available.
 	if serverVer != "" && serverVer != "dev" && compareVersions(version, serverVer) < 0 {
-		fmt.Fprintf(os.Stderr, "Update available: %s → %s (curl -fsSL bhatti.sh/install | bash)\n", version, serverVer)
+		fmt.Fprintf(os.Stderr, "Update available: %s → %s (bhatti update)\n", version, serverVer)
 	}
 }
 
@@ -1793,6 +1795,29 @@ func init() {
 	snapshotCmd.AddCommand(snapshotListCmd)
 	snapshotCmd.AddCommand(snapshotResumeCmd)
 	snapshotCmd.AddCommand(snapshotDeleteCmd)
+}
+
+// --- update ---
+
+var updateCmd = &cobra.Command{
+	Use:   "update",
+	Short: "Update bhatti CLI to the latest version",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Printf("Current version: %s\n", version)
+
+		// Find a shell to run the installer
+		shellBin := "/bin/sh"
+		if _, err := os.Stat("/bin/bash"); err == nil {
+			shellBin = "/bin/bash"
+		}
+
+		fmt.Println("Downloading latest version...")
+		install := exec.Command(shellBin, "-c", "curl -fsSL bhatti.sh/install | bash")
+		install.Stdout = os.Stdout
+		install.Stderr = os.Stderr
+		install.Env = append(os.Environ(), "BHATTI_MODE=cli")
+		return install.Run()
+	},
 }
 
 // --- version ---
