@@ -49,6 +49,7 @@ type Server struct {
 	mux          *http.ServeMux
 	limiter      *rateLimiter
 	stopThermal     context.CancelFunc
+	thermalDone     chan struct{}       // closed when thermal goroutine exits
 	stopTaskCleanup context.CancelFunc
 	startTime       time.Time
 	lastActivity sync.Map // engineID → time.Time — host-side activity cache
@@ -180,9 +181,17 @@ func (s *Server) startTaskCleanup() {
 }
 
 // Close stops background goroutines (thermal manager, task cleanup).
+// It waits for the thermal manager to finish its current cycle before
+// returning, preventing races between a mid-cycle Stop() and SnapshotAll().
 func (s *Server) Close() {
 	if s.stopThermal != nil {
 		s.stopThermal()
+		// Wait for the thermal goroutine to finish its current cycle.
+		// Without this, SnapshotAll() can race with a mid-cycle thermal
+		// Stop(), causing double-stop or missed saveVMState.
+		if s.thermalDone != nil {
+			<-s.thermalDone
+		}
 	}
 	if s.stopTaskCleanup != nil {
 		s.stopTaskCleanup()
@@ -191,9 +200,11 @@ func (s *Server) Close() {
 
 // SnapshotAll stops every hot or warm sandbox so it has a snapshot on disk.
 // Called during graceful shutdown so that recoverVMs can restore them on
-// the next startup. Each VM is stopped sequentially (pause + snapshot +
-// kill FC process). Errors are logged but never fatal — a failed snapshot
-// is better than blocking shutdown forever.
+// the next startup.
+//
+// Sandboxes are snapshotted in parallel (bounded to 10 concurrent) to avoid
+// a 25-minute sequential shutdown with 50 VMs. On failure, the VM is left
+// as-is and marked in the store so recovery can detect it.
 func (s *Server) SnapshotAll() {
 	slog.Info("snapshotting all running VMs before shutdown")
 	sandboxes, err := s.store.ListAllSandboxes()
@@ -202,31 +213,57 @@ func (s *Server) SnapshotAll() {
 		return
 	}
 
-	snapped := 0
+	// Collect running sandboxes
+	var running []store.Sandbox
 	for _, sb := range sandboxes {
-		if sb.Status != "running" {
-			continue
+		if sb.Status == "running" {
+			running = append(running, sb)
 		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := s.engine.Stop(ctx, sb.EngineID); err != nil {
-			cancel()
-			slog.Warn("snapshot-all: stop failed",
-				"sandbox", sb.Name, "id", sb.ID, "error", err)
-			continue
-		}
-		cancel()
-
-		s.saveVMState(sb.ID, sb.EngineID)
-		s.store.UpdateSandboxStatus(sb.ID, "stopped")
-		snapped++
-		slog.Info("snapshot-all: stopped",
-			"sandbox", sb.Name, "id", sb.ID)
+	}
+	if len(running) == 0 {
+		slog.Info("snapshot-all: no running VMs")
+		return
 	}
 
-	if snapped > 0 {
-		slog.Info("snapshot-all complete", "count", snapped)
+	slog.Info("snapshot-all: starting", "count", len(running))
+
+	// Parallel with bounded concurrency. 10 concurrent snapshots means
+	// 50 VMs finish in ~5 batches × 30s = 2.5min instead of 25min.
+	const maxParallel = 10
+	sem := make(chan struct{}, maxParallel)
+	var snapped, failed atomic.Int32
+	var wg sync.WaitGroup
+
+	for _, sb := range running {
+		wg.Add(1)
+		go func(sb store.Sandbox) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			if err := s.engine.Stop(ctx, sb.EngineID); err != nil {
+				failed.Add(1)
+				slog.Error("snapshot-all: stop failed",
+					"sandbox", sb.Name, "id", sb.ID, "error", err)
+				return
+			}
+
+			s.saveVMState(sb.ID, sb.EngineID)
+			s.store.UpdateSandboxStatus(sb.ID, "stopped")
+			snapped.Add(1)
+			slog.Info("snapshot-all: stopped",
+				"sandbox", sb.Name, "id", sb.ID)
+		}(sb)
 	}
+	wg.Wait()
+
+	slog.Info("snapshot-all complete",
+		"snapshotted", snapped.Load(),
+		"failed", failed.Load(),
+		"total", len(running))
 }
 
 // StartThermalManager starts the background goroutine that transitions idle
@@ -245,8 +282,10 @@ func (s *Server) StartThermalManager(cfg ThermalConfig) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	s.stopThermal = cancel
+	s.thermalDone = make(chan struct{})
 
 	go func() {
+		defer close(s.thermalDone)
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -303,10 +342,17 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 		}
 
 		if thermal == "warm" && idle > cfg.ColdTimeout {
-			if err := s.engine.Stop(context.Background(), sb.EngineID); err != nil {
-				slog.Warn("thermal snapshot failed", "sandbox", sb.Name, "error", err)
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := s.engine.Stop(stopCtx, sb.EngineID); err != nil {
+				stopCancel()
+				// Stop() may have paused but failed to snapshot. The VM is
+				// stuck — mark it so we don't retry every 10s forever.
+				slog.Error("thermal snapshot failed — marking unknown",
+					"sandbox", sb.Name, "id", sb.ID, "error", err)
+				s.store.UpdateSandboxStatus(sb.ID, "unknown")
 				continue
 			}
+			stopCancel()
 			s.saveVMState(sb.ID, sb.EngineID)
 			slog.Info("thermal transition", "sandbox", sb.Name, "from", "warm", "to", "cold", "idle", idle.Round(time.Second))
 		}

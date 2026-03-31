@@ -350,8 +350,17 @@ func recoverVMs(st *store.Store, provider engine.VMStateProvider) {
 		}
 
 		fcState, err := st.LoadFirecrackerState(sb.ID)
-		if err != nil || fcState.RootfsPath == "" {
-			continue // Not a Firecracker sandbox
+		if err != nil {
+			continue // Not a Firecracker sandbox (no FC state row)
+		}
+		if fcState.RootfsPath == "" {
+			// Has an FC state row but no rootfs — corrupted or partially created.
+			// Mark as unknown so the user can see something went wrong.
+			if sb.Status == "running" || sb.Status == "stopped" {
+				st.UpdateSandboxStatus(sb.ID, "unknown")
+				slog.Warn("sandbox has no rootfs path", "name", sb.Name, "id", sb.ID)
+			}
+			continue
 		}
 
 		// Look up user's subnet index for network recovery
@@ -380,24 +389,30 @@ func recoverVMs(st *store.Store, provider engine.VMStateProvider) {
 			"has_base_snapshot": fcState.HasBaseSnapshot,
 		}
 
-		if sb.Status == "stopped" && fcState.SnapMemPath != "" {
-			if _, err := os.Stat(fcState.SnapMemPath); err == nil {
-				provider.RestoreVM(sb.EngineID, sb.Name, "stopped", state)
-				recovered++
-				slog.Info("recovered sandbox", "name", sb.Name, "id", sb.ID, "status", "stopped")
-			} else {
-				st.UpdateSandboxStatus(sb.ID, "unknown")
-				slog.Warn("snapshot missing", "name", sb.Name, "id", sb.ID)
-			}
+		// Verify all critical snapshot files exist and are non-empty.
+		// Checking only SnapMemPath misses corrupt/truncated vm.snap or rootfs.
+		snapshotOK := fcState.SnapMemPath != "" && fcState.SnapVMPath != "" &&
+			fileExistsAndNonEmpty(fcState.SnapMemPath) &&
+			fileExistsAndNonEmpty(fcState.SnapVMPath) &&
+			fileExistsAndNonEmpty(fcState.RootfsPath)
+
+		if sb.Status == "stopped" && snapshotOK {
+			provider.RestoreVM(sb.EngineID, sb.Name, "stopped", state)
+			recovered++
+			slog.Info("recovered sandbox", "name", sb.Name, "id", sb.ID, "status", "stopped")
+		} else if sb.Status == "stopped" {
+			st.UpdateSandboxStatus(sb.ID, "unknown")
+			slog.Warn("snapshot files missing or corrupt", "name", sb.Name, "id", sb.ID,
+				"mem", fcState.SnapMemPath, "vm", fcState.SnapVMPath, "rootfs", fcState.RootfsPath)
 		} else if sb.Status == "running" {
-			if fcState.SnapMemPath != "" {
+			if snapshotOK {
 				st.UpdateSandboxStatus(sb.ID, "stopped")
 				provider.RestoreVM(sb.EngineID, sb.Name, "stopped", state)
 				recovered++
 				slog.Info("recovered sandbox", "name", sb.Name, "id", sb.ID, "status", "stopped (was running)")
 			} else {
 				st.UpdateSandboxStatus(sb.ID, "unknown")
-				slog.Warn("sandbox was running with no snapshot", "name", sb.Name, "id", sb.ID)
+				slog.Warn("sandbox was running with no valid snapshot", "name", sb.Name, "id", sb.ID)
 			}
 		}
 	}
@@ -438,6 +453,16 @@ func reconcileOrphanedVolumeFiles(dataDir string, st *store.Store) {
 			}
 		}
 	}
+}
+
+// fileExistsAndNonEmpty returns true if the path exists and has size > 0.
+// Used by recovery to detect truncated/corrupt snapshot files.
+func fileExistsAndNonEmpty(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return fi.Size() > 0
 }
 
 // getLanIP returns the first non-loopback IPv4 address, or "" if none found.

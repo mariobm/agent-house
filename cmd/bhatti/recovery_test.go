@@ -45,12 +45,15 @@ func createTestSandbox(t *testing.T, st *store.Store, id, name, engineID, status
 	})
 }
 
-func saveTestFCState(t *testing.T, st *store.Store, id string, snapMemPath string) {
+// saveTestFCState saves Firecracker state with the given snapshot paths.
+// snapMemPath, snapVMPath, and rootfsPath should be real files on disk
+// (or empty/nonexistent to test missing-file paths).
+func saveTestFCState(t *testing.T, st *store.Store, id string, snapMemPath, snapVMPath, rootfsPath string) {
 	t.Helper()
 	st.SaveFirecrackerState(id, store.FirecrackerState{
-		RootfsPath:  "/var/lib/bhatti/sandboxes/test/rootfs.ext4",
+		RootfsPath:  rootfsPath,
 		SnapMemPath: snapMemPath,
-		SnapVMPath:  "/var/lib/bhatti/sandboxes/test/vm.snap",
+		SnapVMPath:  snapVMPath,
 		VsockCID:    10,
 		TapDevice:   "tap12345678",
 		GuestIP:     "192.168.137.2",
@@ -62,15 +65,26 @@ func saveTestFCState(t *testing.T, st *store.Store, id string, snapMemPath strin
 	})
 }
 
+// createTestSnapshotFiles creates all three files needed for a valid snapshot.
+func createTestSnapshotFiles(t *testing.T, dir, prefix string) (memPath, vmPath, rootfsPath string) {
+	t.Helper()
+	memPath = filepath.Join(dir, prefix+"-mem.snap")
+	vmPath = filepath.Join(dir, prefix+"-vm.snap")
+	rootfsPath = filepath.Join(dir, prefix+"-rootfs.ext4")
+	os.WriteFile(memPath, []byte("fake-mem"), 0644)
+	os.WriteFile(vmPath, []byte("fake-vm"), 0644)
+	os.WriteFile(rootfsPath, []byte("fake-rootfs"), 0644)
+	return
+}
+
 func TestRecoverStoppedWithSnapshot(t *testing.T) {
 	st, dir := setupRecoveryTest(t)
 	mock := &mockVMStateProvider{}
 
-	// Create a stopped sandbox with a snapshot file that exists
+	// Create a stopped sandbox with all snapshot files present
 	createTestSandbox(t, st, "sb1", "stopped-vm", "eng1", "stopped")
-	snapPath := filepath.Join(dir, "mem.snap")
-	os.WriteFile(snapPath, []byte("fake"), 0644)
-	saveTestFCState(t, st, "sb1", snapPath)
+	memPath, vmPath, rootfsPath := createTestSnapshotFiles(t, dir, "sb1")
+	saveTestFCState(t, st, "sb1", memPath, vmPath, rootfsPath)
 
 	recoverVMs(st, mock)
 
@@ -91,9 +105,9 @@ func TestRecoverStoppedMissingSnapshot(t *testing.T) {
 	st, _ := setupRecoveryTest(t)
 	mock := &mockVMStateProvider{}
 
-	// Stopped sandbox but snapshot file doesn't exist
+	// Stopped sandbox but snapshot files don't exist
 	createTestSandbox(t, st, "sb2", "missing-snap", "eng2", "stopped")
-	saveTestFCState(t, st, "sb2", "/nonexistent/mem.snap")
+	saveTestFCState(t, st, "sb2", "/nonexistent/mem.snap", "/nonexistent/vm.snap", "/nonexistent/rootfs.ext4")
 
 	recoverVMs(st, mock)
 
@@ -114,9 +128,8 @@ func TestRecoverRunningWithSnapshot(t *testing.T) {
 
 	// Was "running" when daemon died — has a snapshot from thermal cold
 	createTestSandbox(t, st, "sb3", "was-running", "eng3", "running")
-	snapPath := filepath.Join(dir, "mem.snap")
-	os.WriteFile(snapPath, []byte("fake"), 0644)
-	saveTestFCState(t, st, "sb3", snapPath)
+	memPath, vmPath, rootfsPath := createTestSnapshotFiles(t, dir, "sb3")
+	saveTestFCState(t, st, "sb3", memPath, vmPath, rootfsPath)
 
 	recoverVMs(st, mock)
 
@@ -140,7 +153,7 @@ func TestRecoverRunningNoSnapshot(t *testing.T) {
 
 	// Was "running" with no snapshot — unrecoverable
 	createTestSandbox(t, st, "sb4", "no-snap", "eng4", "running")
-	saveTestFCState(t, st, "sb4", "") // empty snap path
+	saveTestFCState(t, st, "sb4", "", "", "") // empty snap paths
 
 	recoverVMs(st, mock)
 
@@ -174,9 +187,8 @@ func TestRecoverSkipsDestroyed(t *testing.T) {
 
 	// Destroyed sandbox — should be skipped entirely
 	createTestSandbox(t, st, "sb6", "dead-vm", "eng6", "destroyed")
-	snapPath := filepath.Join(dir, "mem.snap")
-	os.WriteFile(snapPath, []byte("fake"), 0644)
-	saveTestFCState(t, st, "sb6", snapPath)
+	memPath, vmPath, rootfsPath := createTestSnapshotFiles(t, dir, "sb6")
+	saveTestFCState(t, st, "sb6", memPath, vmPath, rootfsPath)
 
 	recoverVMs(st, mock)
 
@@ -190,19 +202,17 @@ func TestRecoverMultipleSandboxes(t *testing.T) {
 	mock := &mockVMStateProvider{}
 
 	// Mix of recoverable and non-recoverable
-	snap1 := filepath.Join(dir, "snap1.mem")
-	snap2 := filepath.Join(dir, "snap2.mem")
-	os.WriteFile(snap1, []byte("fake"), 0644)
-	os.WriteFile(snap2, []byte("fake"), 0644)
+	mem1, vm1, rootfs1 := createTestSnapshotFiles(t, dir, "a")
+	mem2, vm2, rootfs2 := createTestSnapshotFiles(t, dir, "b")
 
 	createTestSandbox(t, st, "sb-a", "vm-a", "eng-a", "stopped")
-	saveTestFCState(t, st, "sb-a", snap1)
+	saveTestFCState(t, st, "sb-a", mem1, vm1, rootfs1)
 
 	createTestSandbox(t, st, "sb-b", "vm-b", "eng-b", "running")
-	saveTestFCState(t, st, "sb-b", snap2)
+	saveTestFCState(t, st, "sb-b", mem2, vm2, rootfs2)
 
 	createTestSandbox(t, st, "sb-c", "vm-c", "eng-c", "running")
-	saveTestFCState(t, st, "sb-c", "") // no snapshot
+	saveTestFCState(t, st, "sb-c", "", "", "") // no snapshot
 
 	createTestSandbox(t, st, "sb-d", "vm-d", "dock-d", "running")
 	// no FC state
@@ -229,9 +239,8 @@ func TestRecoverStateTypeCoercion(t *testing.T) {
 	mock := &mockVMStateProvider{}
 
 	createTestSandbox(t, st, "sb-tc", "type-test", "eng-tc", "stopped")
-	snapPath := filepath.Join(dir, "mem.snap")
-	os.WriteFile(snapPath, []byte("fake"), 0644)
-	saveTestFCState(t, st, "sb-tc", snapPath)
+	memPath, vmPath, rootfsPath := createTestSnapshotFiles(t, dir, "tc")
+	saveTestFCState(t, st, "sb-tc", memPath, vmPath, rootfsPath)
 
 	recoverVMs(st, mock)
 
@@ -251,5 +260,56 @@ func TestRecoverStateTypeCoercion(t *testing.T) {
 	}
 	if _, ok := state["guest_ip"]; !ok {
 		t.Error("guest_ip missing from state")
+	}
+}
+
+// TestRecoverPartialSnapshotFiles verifies that a sandbox with
+// mem.snap present but vm.snap missing is NOT recovered.
+func TestRecoverPartialSnapshotFiles(t *testing.T) {
+	st, dir := setupRecoveryTest(t)
+	mock := &mockVMStateProvider{}
+
+	createTestSandbox(t, st, "sb-partial", "partial-snap", "eng-partial", "stopped")
+	memPath := filepath.Join(dir, "partial-mem.snap")
+	rootfsPath := filepath.Join(dir, "partial-rootfs.ext4")
+	os.WriteFile(memPath, []byte("fake-mem"), 0644)
+	os.WriteFile(rootfsPath, []byte("fake-rootfs"), 0644)
+	// vm.snap intentionally missing
+	saveTestFCState(t, st, "sb-partial", memPath, "/nonexistent/vm.snap", rootfsPath)
+
+	recoverVMs(st, mock)
+
+	if len(mock.restored) != 0 {
+		t.Fatalf("expected 0 restored for partial snapshot, got %d", len(mock.restored))
+	}
+	sb, _ := st.GetSandboxByID("sb-partial")
+	if sb.Status != "unknown" {
+		t.Errorf("status: %q, want 'unknown'", sb.Status)
+	}
+}
+
+// TestRecoverEmptySnapshotFile verifies that a zero-length snapshot
+// file (truncated by crash) is treated as missing.
+func TestRecoverEmptySnapshotFile(t *testing.T) {
+	st, dir := setupRecoveryTest(t)
+	mock := &mockVMStateProvider{}
+
+	createTestSandbox(t, st, "sb-empty", "empty-snap", "eng-empty", "stopped")
+	memPath := filepath.Join(dir, "empty-mem.snap")
+	vmPath := filepath.Join(dir, "empty-vm.snap")
+	rootfsPath := filepath.Join(dir, "empty-rootfs.ext4")
+	os.WriteFile(memPath, []byte("fake-mem"), 0644)
+	os.WriteFile(vmPath, []byte{}, 0644) // zero-length = truncated
+	os.WriteFile(rootfsPath, []byte("fake-rootfs"), 0644)
+	saveTestFCState(t, st, "sb-empty", memPath, vmPath, rootfsPath)
+
+	recoverVMs(st, mock)
+
+	if len(mock.restored) != 0 {
+		t.Fatalf("expected 0 restored for empty snapshot, got %d", len(mock.restored))
+	}
+	sb, _ := st.GetSandboxByID("sb-empty")
+	if sb.Status != "unknown" {
+		t.Errorf("status: %q, want 'unknown'", sb.Status)
 	}
 }

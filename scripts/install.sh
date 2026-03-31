@@ -216,20 +216,28 @@ echo "==> Creating admin user..."
 ADMIN_KEY=$(bhatti user create --name admin --max-sandboxes 50 2>&1 | grep "API key:" | awk '{print $NF}')
 
 if [[ -n "$ADMIN_KEY" ]]; then
-    # Write CLI config for the user who ran sudo
-    SUDO_USER_HOME=""
+    # Write CLI config for the user who ran sudo.
+    # Use getent to reliably resolve the home directory (handles NFS,
+    # LDAP, non-standard homes). Fallback to eval if getent unavailable.
     if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-        SUDO_USER_HOME=$(eval echo "~$SUDO_USER")
-    fi
+        SUDO_USER_HOME=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+        SUDO_USER_GROUP=$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")
+        if [[ -z "$SUDO_USER_HOME" ]]; then
+            SUDO_USER_HOME=$(eval echo "~$SUDO_USER" 2>/dev/null)
+        fi
 
-    if [[ -n "$SUDO_USER_HOME" ]]; then
-        USER_CFG_DIR="$SUDO_USER_HOME/.bhatti"
-        mkdir -p "$USER_CFG_DIR"
-        cat > "$USER_CFG_DIR/config.yaml" << EOF
+        if [[ -n "$SUDO_USER_HOME" && -d "$SUDO_USER_HOME" ]]; then
+            USER_CFG_DIR="$SUDO_USER_HOME/.bhatti"
+            mkdir -p "$USER_CFG_DIR"
+            cat > "$USER_CFG_DIR/config.yaml" << EOF
 auth_token: ${ADMIN_KEY}
 listen: :8080
 EOF
-        chown -R "$SUDO_USER:$SUDO_USER" "$USER_CFG_DIR"
+            chown -R "$SUDO_USER:$SUDO_USER_GROUP" "$USER_CFG_DIR"
+        else
+            echo "  note: home directory for $SUDO_USER not found, skipping user config"
+            echo "  run 'bhatti setup' as $SUDO_USER to configure the CLI"
+        fi
     fi
 
     # Also for root
@@ -263,7 +271,8 @@ WorkingDirectory=/var/lib/bhatti
 Environment=HOME=/root
 Restart=always
 RestartSec=5
-ExecStopPost=/bin/sh -c 'ip -o link show type tun | grep tap | cut -d: -f2 | xargs -r -n1 ip link del'
+KillMode=process
+TimeoutStopSec=120
 LimitNOFILE=65536
 
 [Install]
