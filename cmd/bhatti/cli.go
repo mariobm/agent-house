@@ -351,8 +351,49 @@ func parseEnvFlag(s string) map[string]string {
 
 // --- Completions ---
 
+// addToCompletionCache appends a sandbox name to the local cache file.
+// Best-effort — errors are silently ignored.
+func addToCompletionCache(name string) {
+	if name == "" {
+		return
+	}
+	path := completionCachePath()
+	data, _ := os.ReadFile(path)
+	existing := strings.TrimSpace(string(data))
+	if existing == "" {
+		os.WriteFile(path, []byte(name), 0600)
+		return
+	}
+	for _, n := range strings.Split(existing, "\n") {
+		if n == name {
+			return // already present
+		}
+	}
+	os.WriteFile(path, []byte(existing+"\n"+name), 0600)
+}
+
+// removeFromCompletionCache removes a sandbox name from the local cache file.
+// Best-effort — errors are silently ignored.
+func removeFromCompletionCache(name string) {
+	if name == "" {
+		return
+	}
+	path := completionCachePath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var kept []string
+	for _, n := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if n != name && n != "" {
+			kept = append(kept, n)
+		}
+	}
+	os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0600)
+}
+
 // completeSandboxNames reads sandbox names from a local cache file.
-// The cache is written by `bhatti list` on every successful call.
+// The cache is updated by create, destroy, and list commands.
 // Never hits the network — instant, works offline.
 func completeSandboxNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) > 0 {
@@ -446,6 +487,7 @@ var createCmd = &cobra.Command{
 		if err := apiJSON("POST", "/sandboxes", req, &sb); err != nil {
 			return err
 		}
+		addToCompletionCache(sb.Name)
 		if isJSON(cmd) {
 			outputJSON(sb)
 		} else {
@@ -491,8 +533,7 @@ var listCmd = &cobra.Command{
 		for _, sb := range sandboxes {
 			names = append(names, sb.Name)
 		}
-		path := completionCachePath()
-		os.WriteFile(path, []byte(strings.Join(names, "\n")), 0600)
+		os.WriteFile(completionCachePath(), []byte(strings.Join(names, "\n")), 0600)
 
 		if isJSON(cmd) {
 			outputJSON(sandboxes)
@@ -525,6 +566,7 @@ var destroyCmd = &cobra.Command{
 		if err := apiJSON("DELETE", "/sandboxes/"+id, nil, nil); err != nil {
 			return err
 		}
+		removeFromCompletionCache(args[0])
 		if isJSON(cmd) {
 			outputJSON(map[string]string{"status": "destroyed"})
 		} else {

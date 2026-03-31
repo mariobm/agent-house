@@ -556,6 +556,12 @@ func (s *Store) GetSandboxByID(id string) (*Sandbox, error) {
 	return scanSandbox(row)
 }
 
+// GetSandboxByEngineID looks up a sandbox by its engine-assigned ID.
+func (s *Store) GetSandboxByEngineID(engineID string) (*Sandbox, error) {
+	row := s.db.QueryRow(`SELECT `+sandboxCols+` FROM sandboxes WHERE engine_id = ?`, engineID)
+	return scanSandbox(row)
+}
+
 // ListSandboxes returns sandboxes for a user.
 func (s *Store) ListSandboxes(userID string) ([]Sandbox, error) {
 	rows, err := s.db.Query(`SELECT `+sandboxCols+` FROM sandboxes WHERE created_by = ? ORDER BY created_at DESC`, userID)

@@ -94,6 +94,12 @@ func runDaemon() {
 		recoverVMs(st, provider)
 	}
 
+	// Clean up orphaned TAP devices AFTER recovery so that restored VMs'
+	// TAPs are preserved. Before this point, all TAPs look like orphans.
+	if cleaner, ok := eng.(interface{ CleanupOrphanedTaps() }); ok {
+		cleaner.CleanupOrphanedTaps()
+	}
+
 	// v0.3: Detach volumes orphaned by crashed sandboxes.
 	// MUST run after recoverVMs (which marks dead-process sandboxes as stopped/unknown).
 	if n, err := st.DetachOrphanedPersistentVolumes(); err != nil {
@@ -146,6 +152,12 @@ func runDaemon() {
 	}
 	srv := server.New(eng, st, cfg.DataDir, srvOpts...)
 
+	// Start thermal manager to transition idle VMs: hot → warm → cold
+	srv.StartThermalManager(server.ThermalConfig{
+		WarmTimeout: 30 * time.Second,  // hot → warm after 30s idle
+		ColdTimeout: 30 * time.Minute,  // warm → cold after 30min idle
+	})
+
 	var servers []*http.Server
 	if cfg.Domain != nil {
 		servers = startDomainMode(cfg, eng, st, srv)
@@ -159,15 +171,20 @@ func runDaemon() {
 	sig := <-sigCh
 	slog.Info("shutting down", "signal", sig)
 
-	// Drain HTTP connections (5s timeout)
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Drain HTTP connections (30s timeout for safety)
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutCancel()
 	for _, s := range servers {
 		s.Shutdown(shutCtx)
 	}
 
-	// Stop background goroutines (port scanner, thermal manager)
+	// Stop background goroutines (thermal manager, task cleanup)
 	srv.Close()
+
+	// Snapshot all running VMs before killing the engine.
+	// This ensures every hot/warm sandbox has a snapshot on disk
+	// so recoverVMs can restore them on the next startup.
+	srv.SnapshotAll()
 
 	// Stop engine (kill VMs, clean TAPs)
 	if shutdowner, ok := eng.(interface{ Shutdown() }); ok {

@@ -127,11 +127,25 @@ func New(cfg Config) (*Engine, error) {
 		return nil, fmt.Errorf("setup firewall: %w", err)
 	}
 
-	// Clean up orphaned TAP devices from previous crashes.
-	// At this point no VMs are loaded yet, so all TAPs are orphans.
-	cleanupOrphanedTapDevices(nil)
+	// NOTE: Do NOT clean up TAP devices here. recoverVMs hasn't run yet,
+	// so we can't distinguish orphaned TAPs from ones needed by snapshotted
+	// VMs. Call CleanupOrphanedTaps() after recovery instead.
 
 	return eng, nil
+}
+
+// CleanupOrphanedTaps removes TAP devices that don't belong to any known VM.
+// Must be called AFTER recoverVMs so that restored VMs' TAPs are preserved.
+func (e *Engine) CleanupOrphanedTaps() {
+	e.mu.RLock()
+	known := make(map[string]bool, len(e.vms))
+	for _, vm := range e.vms {
+		if vm.TapDevice != "" {
+			known[vm.TapDevice] = true
+		}
+	}
+	e.mu.RUnlock()
+	cleanupOrphanedTapDevices(known)
 }
 
 // Shutdown stops all running VMs and cleans up all TAP devices.
@@ -144,9 +158,16 @@ func (e *Engine) Shutdown() {
 	}
 	e.mu.RUnlock()
 
+	// Kill any VMs still running (not already stopped by SnapshotAll).
+	// VMs that were snapshotted are status="stopped" with cmd=nil — skip them.
+	hasStoppedVMs := false
 	for _, id := range ids {
 		vm, err := e.getVM(id)
 		if err != nil {
+			continue
+		}
+		if vm.Status == "stopped" {
+			hasStoppedVMs = true
 			continue
 		}
 		if vm.Status == "running" && vm.cmd != nil {
@@ -155,8 +176,14 @@ func (e *Engine) Shutdown() {
 		}
 	}
 
-	cleanupAllTapDevices()
-	cleanupAllUserBridges()
+	// Only clean up TAP devices and bridges if no VMs were snapshotted.
+	// Stopped VMs need their TAP alive for cold resume on next startup.
+	// If some VMs failed to snapshot, their TAPs may linger — that's fine,
+	// CleanupOrphanedTaps() on the next startup will remove them.
+	if !hasStoppedVMs {
+		cleanupAllTapDevices()
+		cleanupAllUserBridges()
+	}
 }
 
 func (e *Engine) getVM(id string) (*VM, error) {
@@ -885,11 +912,17 @@ func (e *Engine) RestoreVM(id, name, status string, state map[string]interface{}
 
 	token := stateStr(state, "agent_token")
 
+	thermal := ""
+	if status == "stopped" {
+		thermal = "cold" // has snapshot on disk, can be resumed
+	}
+
 	vm := &VM{
 		ID:          id,
 		Name:        name,
 		UserID:      userID,
 		Status:      status,
+		Thermal:     thermal,
 		Token:       token,
 		RootfsPath:  stateStr(state, "rootfs_path"),
 		SocketPath:  stateStr(state, "socket_path"),

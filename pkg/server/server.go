@@ -189,6 +189,46 @@ func (s *Server) Close() {
 	}
 }
 
+// SnapshotAll stops every hot or warm sandbox so it has a snapshot on disk.
+// Called during graceful shutdown so that recoverVMs can restore them on
+// the next startup. Each VM is stopped sequentially (pause + snapshot +
+// kill FC process). Errors are logged but never fatal — a failed snapshot
+// is better than blocking shutdown forever.
+func (s *Server) SnapshotAll() {
+	slog.Info("snapshotting all running VMs before shutdown")
+	sandboxes, err := s.store.ListAllSandboxes()
+	if err != nil {
+		slog.Warn("snapshot-all: list sandboxes", "error", err)
+		return
+	}
+
+	snapped := 0
+	for _, sb := range sandboxes {
+		if sb.Status != "running" {
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := s.engine.Stop(ctx, sb.EngineID); err != nil {
+			cancel()
+			slog.Warn("snapshot-all: stop failed",
+				"sandbox", sb.Name, "id", sb.ID, "error", err)
+			continue
+		}
+		cancel()
+
+		s.saveVMState(sb.ID, sb.EngineID)
+		s.store.UpdateSandboxStatus(sb.ID, "stopped")
+		snapped++
+		slog.Info("snapshot-all: stopped",
+			"sandbox", sb.Name, "id", sb.ID)
+	}
+
+	if snapped > 0 {
+		slog.Info("snapshot-all complete", "count", snapped)
+	}
+}
+
 // StartThermalManager starts the background goroutine that transitions idle
 // sandboxes through thermal states: hot → warm → cold.
 func (s *Server) StartThermalManager(cfg ThermalConfig) {
@@ -283,7 +323,24 @@ func (s *Server) ensureHot(ctx context.Context, engineID string) error {
 	if !ok {
 		return nil
 	}
-	return te.EnsureHot(ctx, engineID)
+
+	// Check thermal state before wake so we can detect cold→hot transitions.
+	wasCold := te.ThermalState(engineID) == "cold"
+
+	if err := te.EnsureHot(ctx, engineID); err != nil {
+		return err
+	}
+
+	// After cold resume the store still says "stopped" — update it and
+	// persist the new VM state (snapshot paths, socket, etc.).
+	if wasCold {
+		if sb, err := s.store.GetSandboxByEngineID(engineID); err == nil {
+			s.store.UpdateSandboxStatus(sb.ID, "running")
+			s.saveVMState(sb.ID, engineID)
+		}
+	}
+
+	return nil
 }
 
 

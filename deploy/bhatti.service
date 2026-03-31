@@ -9,7 +9,8 @@ WorkingDirectory=/var/lib/bhatti
 Environment=HOME=/root
 Restart=always
 RestartSec=5
-ExecStopPost=/bin/sh -c 'ip -o link show type tun | grep tap | cut -d: -f2 | xargs -r -n1 ip link del'
+KillMode=process
+TimeoutStopSec=120
 LimitNOFILE=65536
 
 [Install]
