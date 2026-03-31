@@ -390,6 +390,16 @@ func (s *Server) ensureHot(ctx context.Context, engineID string) error {
 }
 
 
+// ServerVersion is set by the main package at startup from the build-time
+// version string. Advertised to CLI clients via the X-Bhatti-Version header
+// so they can detect when an update is available (push, not pull).
+var ServerVersion = "dev"
+
+// MinCLIVersion is the minimum CLI version the server requires. CLI clients
+// older than this receive an X-Bhatti-Min-CLI header and should warn the user.
+// Bump this when making breaking API changes that old CLIs can't handle.
+var MinCLIVersion = ""
+
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Domain mode: route by Host header BEFORE auth.
@@ -415,6 +425,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			errResp(w, 404, "unknown host")
 			return
 		}
+	}
+
+	// Advertise server version on every API response so CLI clients can
+	// detect when an update is available (push, not pull).
+	w.Header().Set("X-Bhatti-Version", ServerVersion)
+	if MinCLIVersion != "" {
+		w.Header().Set("X-Bhatti-Min-CLI", MinCLIVersion)
 	}
 
 	// Normalize path before any checks to prevent path confusion attacks

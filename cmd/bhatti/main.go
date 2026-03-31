@@ -27,6 +27,9 @@ import (
 var version = "dev"
 
 func main() {
+	// Propagate build-time version to server package for X-Bhatti-Version header.
+	server.ServerVersion = version
+
 	// Register the serve command here (not in cli.go) because it imports
 	// the engine packages which have Linux build tags.
 	rootCmd.AddCommand(&cobra.Command{

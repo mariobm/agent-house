@@ -1111,4 +1111,31 @@ func TestCLIVersion(t *testing.T) {
 	t.Logf("✓ version: %s", strings.TrimSpace(stdout))
 }
 
+// TestCompareVersions tests the semver comparison used for CLI update checks.
+// Does not require a running server.
+func TestCompareVersions(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"0.4.0", "0.4.0", 0},
+		{"0.3.9", "0.4.0", -1},
+		{"0.4.1", "0.4.0", 1},
+		{"v0.4.0", "0.4.0", 0},
+		{"0.4.0", "v0.4.0", 0},
+		{"1.0.0", "0.99.99", 1},
+		{"0.3.0", "0.4.0", -1},
+		{"0.4.0", "0.4.1", -1},
+		{"v1.2.3", "v1.2.4", -1},
+		{"0.4", "0.4.0", 0},   // missing patch = 0
+		{"0.4", "0.4.1", -1},
+	}
+	for _, tt := range tests {
+		got := compareVersions(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("compareVersions(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
 

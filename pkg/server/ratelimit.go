@@ -8,16 +8,25 @@ import (
 )
 
 // rateLimiter implements per-user token bucket rate limiting.
-// Different operation classes have different limits.
+// Each user has their own mutex and bucket set, so rate limit checks
+// for different users never contend. The global mutex is only held
+// briefly during user lookup/creation.
+//
+// Entries are evicted when the map exceeds maxRateLimitEntries to
+// prevent unbounded growth from deleted users.
 type rateLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*userBuckets
 }
 
+const maxRateLimitEntries = 10_000
+
 type userBuckets struct {
-	create *tokenBucket // sandbox creation: 10/min
-	exec   *tokenBucket // exec, file ops: 120/min
-	read   *tokenBucket // list, get, ports: 600/min
+	mu         sync.Mutex  // per-user lock — no global contention
+	create     *tokenBucket // sandbox creation: 10/min
+	exec       *tokenBucket // exec, file ops: 120/min
+	read       *tokenBucket // list, get, ports: 600/min
+	lastAccess time.Time
 }
 
 type tokenBucket struct {
@@ -58,6 +67,9 @@ func newRateLimiter() *rateLimiter {
 	}
 }
 
+// getUserBuckets returns the bucket set for a user, creating one if needed.
+// The global lock is held only for map lookup/insertion. Evicts the oldest
+// entry if the map exceeds maxRateLimitEntries.
 func (rl *rateLimiter) getUserBuckets(userID string) *userBuckets {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -65,22 +77,41 @@ func (rl *rateLimiter) getUserBuckets(userID string) *userBuckets {
 	if ub, ok := rl.buckets[userID]; ok {
 		return ub
 	}
+
+	// Evict oldest entry if at capacity
+	if len(rl.buckets) >= maxRateLimitEntries {
+		var oldestKey string
+		var oldestTime time.Time
+		for k, v := range rl.buckets {
+			if oldestKey == "" || v.lastAccess.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = v.lastAccess
+			}
+		}
+		if oldestKey != "" {
+			delete(rl.buckets, oldestKey)
+		}
+	}
+
 	ub := &userBuckets{
-		create: newTokenBucket(10, 10),   // 10/min, burst of 10
-		exec:   newTokenBucket(30, 120),  // 120/min, burst of 30
-		read:   newTokenBucket(60, 600),  // 600/min, burst of 60
+		create:     newTokenBucket(10, 10),   // 10/min, burst of 10
+		exec:       newTokenBucket(30, 120),  // 120/min, burst of 30
+		read:       newTokenBucket(60, 600),  // 600/min, burst of 60
+		lastAccess: time.Now(),
 	}
 	rl.buckets[userID] = ub
 	return ub
 }
 
 // Allow checks if a request is allowed under rate limits.
+// Uses per-user locking — user A's rate limit check never blocks user B.
 func (rl *rateLimiter) Allow(userID string, r *http.Request) bool {
 	ub := rl.getUserBuckets(userID)
-
 	class := classifyRequest(r)
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
+
+	ub.mu.Lock()
+	defer ub.mu.Unlock()
+	ub.lastAccess = time.Now()
 
 	switch class {
 	case "create":

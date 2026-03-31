@@ -137,6 +137,10 @@ func apiJSON(method, path string, body any, result any) error {
 		return err
 	}
 	defer resp.Body.Close()
+
+	// Check server version headers — push-based update notification.
+	checkServerVersion(resp)
+
 	if resp.StatusCode >= 400 {
 		var errBody struct {
 			Error string `json:"error"`
@@ -148,6 +152,63 @@ func apiJSON(method, path string, body any, result any) error {
 		return json.NewDecoder(resp.Body).Decode(result)
 	}
 	return nil
+}
+
+// versionChecked prevents duplicate update messages within a single
+// CLI invocation (resolveID + actual command = 2 API calls).
+var versionChecked bool
+
+// checkServerVersion reads the X-Bhatti-Version and X-Bhatti-Min-CLI
+// headers from the server response. If the CLI is outdated, it prints
+// a one-time warning to stderr. This is the push mechanism — the server
+// tells the CLI it's outdated through headers already present on every
+// response, with zero extra latency.
+func checkServerVersion(resp *http.Response) {
+	if versionChecked || version == "dev" {
+		return
+	}
+	versionChecked = true
+
+	minCLI := resp.Header.Get("X-Bhatti-Min-CLI")
+	serverVer := resp.Header.Get("X-Bhatti-Version")
+
+	// Hard warning: CLI is below the server's minimum required version.
+	if minCLI != "" && compareVersions(version, minCLI) < 0 {
+		fmt.Fprintf(os.Stderr, "⚠ CLI version %s is below server minimum %s — please update:\n", version, minCLI)
+		fmt.Fprintf(os.Stderr, "  curl -fsSL https://bhatti.sh/install.sh | bash\n\n")
+		return
+	}
+
+	// Soft notice: newer server version available.
+	if serverVer != "" && serverVer != "dev" && compareVersions(version, serverVer) < 0 {
+		fmt.Fprintf(os.Stderr, "Update available: %s → %s (curl -fsSL https://bhatti.sh/install.sh | bash)\n", version, serverVer)
+	}
+}
+
+// compareVersions compares two semver strings (with optional 'v' prefix).
+// Returns -1 if a < b, 0 if equal, 1 if a > b.
+// Only handles numeric major.minor.patch — no pre-release suffixes.
+func compareVersions(a, b string) int {
+	a = strings.TrimPrefix(a, "v")
+	b = strings.TrimPrefix(b, "v")
+	ap := strings.SplitN(a, ".", 3)
+	bp := strings.SplitN(b, ".", 3)
+	for i := 0; i < 3; i++ {
+		var ai, bi int
+		if i < len(ap) {
+			fmt.Sscanf(ap[i], "%d", &ai)
+		}
+		if i < len(bp) {
+			fmt.Sscanf(bp[i], "%d", &bi)
+		}
+		if ai < bi {
+			return -1
+		}
+		if ai > bi {
+			return 1
+		}
+	}
+	return 0
 }
 
 // --- Output helpers ---

@@ -1612,3 +1612,46 @@ func TestHostPolicyRejectsUnknown(t *testing.T) {
 		t.Fatal("HostPolicy should reject unknown host")
 	}
 }
+
+func TestVersionHeadersPresent(t *testing.T) {
+	oldVer := ServerVersion
+	oldMin := MinCLIVersion
+	ServerVersion = "0.5.0"
+	MinCLIVersion = "0.4.0"
+	t.Cleanup(func() {
+		ServerVersion = oldVer
+		MinCLIVersion = oldMin
+	})
+
+	_, ts := setup(t)
+
+	// Authenticated request should get version headers
+	resp := doReq(t, ts, "GET", "/sandboxes", nil)
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("X-Bhatti-Version"); got != "0.5.0" {
+		t.Errorf("X-Bhatti-Version = %q, want %q", got, "0.5.0")
+	}
+	if got := resp.Header.Get("X-Bhatti-Min-CLI"); got != "0.4.0" {
+		t.Errorf("X-Bhatti-Min-CLI = %q, want %q", got, "0.4.0")
+	}
+}
+
+func TestVersionHeaderOnHealth(t *testing.T) {
+	oldVer := ServerVersion
+	ServerVersion = "0.5.0"
+	t.Cleanup(func() { ServerVersion = oldVer })
+
+	_, ts := setup(t)
+
+	// Health endpoint is unauthenticated but should still get version header
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("X-Bhatti-Version"); got != "0.5.0" {
+		t.Errorf("X-Bhatti-Version on /health = %q, want %q", got, "0.5.0")
+	}
+}
