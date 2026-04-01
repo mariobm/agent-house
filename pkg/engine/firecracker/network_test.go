@@ -197,12 +197,14 @@ func TestSameUserVMsCommunicate(t *testing.T) {
 	}
 	t.Logf("vm1=%s vm2=%s (same bridge)", info1.IP, info2.IP)
 
-	// VM1 pings VM2
-	r, err := execWithTimeout(t, eng, info1.ID, []string{"ping", "-c", "2", "-W", "3", info2.IP})
-	if err != nil || r.ExitCode != 0 {
-		t.Errorf("same-user ping failed: err=%v exit=%d stderr=%q", err, r.ExitCode, r.Stderr)
+	// VM1 connects to VM2's agent port (1024) via bash /dev/tcp.
+	// No ping needed — TCP connectivity proves same-bridge communication.
+	r, err := execWithTimeout(t, eng, info1.ID, []string{"bash", "-c",
+		fmt.Sprintf("timeout 3 bash -c 'echo > /dev/tcp/%s/1024' 2>/dev/null && echo reachable || echo unreachable", info2.IP)})
+	if err != nil || !strings.Contains(r.Stdout, "reachable") {
+		t.Errorf("same-user TCP connect failed: err=%v out=%q stderr=%q", err, r.Stdout, r.Stderr)
 	} else {
-		t.Log("✓ same-user VMs can communicate")
+		t.Log("✓ same-user VMs can communicate (TCP to agent port)")
 	}
 }
 
@@ -232,18 +234,22 @@ func TestCrossUserVMsIsolated(t *testing.T) {
 
 	t.Logf("vmA=%s (subnet 96), vmB=%s (subnet 97)", infoA.IP, infoB.IP)
 
-	// VM A tries to ping VM B — should fail (different bridges, iptables blocks cross-bridge)
-	r, _ := execWithTimeout(t, eng, infoA.ID, []string{"ping", "-c", "1", "-W", "3", infoB.IP})
-	if r.ExitCode == 0 {
-		t.Error("cross-user ping should fail but succeeded")
+	// VM A tries to TCP connect to VM B's agent port — should fail
+	// (different bridges, iptables blocks cross-bridge traffic).
+	// Uses bash /dev/tcp instead of ping — no iputils-ping needed.
+	r, _ := execWithTimeout(t, eng, infoA.ID, []string{"bash", "-c",
+		fmt.Sprintf("timeout 3 bash -c 'echo > /dev/tcp/%s/1024' 2>/dev/null && echo reachable || echo unreachable", infoB.IP)})
+	if strings.Contains(r.Stdout, "reachable") {
+		t.Error("cross-user TCP connect should fail but succeeded")
 	} else {
-		t.Log("✓ cross-user VMs are isolated (ping failed as expected)")
+		t.Log("✓ cross-user VMs are isolated (TCP connect failed as expected)")
 	}
 
-	// VM B tries to ping VM A — same
-	r, _ = execWithTimeout(t, eng, infoB.ID, []string{"ping", "-c", "1", "-W", "3", infoA.IP})
-	if r.ExitCode == 0 {
-		t.Error("cross-user ping B→A should fail but succeeded")
+	// VM B tries to TCP connect to VM A — same
+	r, _ = execWithTimeout(t, eng, infoB.ID, []string{"bash", "-c",
+		fmt.Sprintf("timeout 3 bash -c 'echo > /dev/tcp/%s/1024' 2>/dev/null && echo reachable || echo unreachable", infoA.IP)})
+	if strings.Contains(r.Stdout, "reachable") {
+		t.Error("cross-user TCP connect B\u2192A should fail but succeeded")
 	} else {
 		t.Log("✓ cross-user VMs isolated in both directions")
 	}

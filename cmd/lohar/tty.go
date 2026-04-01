@@ -120,17 +120,30 @@ func handleTTYSession(conn net.Conn, req proto.ExecRequest) {
 				sess.mu.Unlock()
 			}
 			if err != nil {
-				// PTY closed — process exited
+				// PTY closed — process exited.
+				// Keep the session in the registry so clients can reattach
+				// to retrieve scrollback. The session is removed when:
+				//   1. A client attaches and we send the exit frame (handleSessionAttach)
+				//   2. The reap timer fires (30s after exit, no reattach)
 				exitCode := exitCodeFromErr(cmd.Wait())
 				sess.mu.Lock()
 				sess.ExitCode = &exitCode
 				if sess.Attached != nil {
 					exit := proto.ExitPayload(int32(exitCode))
 					proto.WriteFrame(sess.Attached, proto.EXIT, exit[:])
+					// Client is attached and got the exit — clean up now
+					sess.mu.Unlock()
+					master.Close()
+					removeSession(sess.ID)
+					return
 				}
 				sess.mu.Unlock()
 				master.Close()
-				removeSession(sess.ID)
+				// No client attached — keep session for 30s so scrollback
+				// can be retrieved via reattach.
+				time.AfterFunc(30*time.Second, func() {
+					removeSession(sess.ID)
+				})
 				return
 			}
 		}

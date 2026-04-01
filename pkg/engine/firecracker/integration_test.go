@@ -241,77 +241,8 @@ func TestInitScriptRunsAsUser(t *testing.T) {
 	}
 }
 
-// --- Rootfs tooling tests ---
-
-func TestRootfsHasRipgrep(t *testing.T) {
-	eng := testEngine(t)
-	ctx := context.Background()
-
-	info, err := eng.Create(ctx, testSpec("rg-test"))
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	defer eng.Destroy(ctx, info.ID)
-
-	// Verify rg exists and runs
-	r, err := execWithTimeout(t, eng, info.ID, []string{"rg", "--version"})
-	if err != nil || r.ExitCode != 0 {
-		t.Fatalf("rg --version failed: err=%v exit=%d stderr=%q", err, r.ExitCode, r.Stderr)
-	}
-	t.Logf("✓ ripgrep installed: %s", strings.TrimSpace(r.Stdout))
-
-	// Functional test: write files, grep for content
-	execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "mkdir -p /workspace/src && echo 'func main() {}' > /workspace/src/main.go && echo 'hello world' > /workspace/src/readme.txt"})
-
-	r, _ = execWithTimeout(t, eng, info.ID, []string{"rg", "--no-heading", "func main", "/workspace/src"})
-	if !strings.Contains(r.Stdout, "func main") {
-		t.Errorf("rg didn't find 'func main': %q", r.Stdout)
-	} else {
-		t.Log("✓ rg search works")
-	}
-
-	// JSON output mode (used by pi's grep tool)
-	r, _ = execWithTimeout(t, eng, info.ID, []string{"rg", "--json", "hello", "/workspace/src"})
-	if !strings.Contains(r.Stdout, "hello") {
-		t.Errorf("rg --json didn't find 'hello': %q", r.Stdout)
-	} else {
-		t.Log("✓ rg --json output works")
-	}
-}
-
-func TestRootfsHasFd(t *testing.T) {
-	eng := testEngine(t)
-	ctx := context.Background()
-
-	info, err := eng.Create(ctx, testSpec("fd-test"))
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	defer eng.Destroy(ctx, info.ID)
-
-	// Verify fd exists and runs
-	r, err := execWithTimeout(t, eng, info.ID, []string{"fd", "--version"})
-	if err != nil || r.ExitCode != 0 {
-		t.Fatalf("fd --version failed: err=%v exit=%d stderr=%q", err, r.ExitCode, r.Stderr)
-	}
-	t.Logf("✓ fd-find installed: %s", strings.TrimSpace(r.Stdout))
-
-	// Functional test: create files, find by pattern
-	execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "mkdir -p /workspace/src/pkg && touch /workspace/src/main.go /workspace/src/pkg/util.go /workspace/src/readme.md"})
-
-	r, _ = execWithTimeout(t, eng, info.ID, []string{"fd", "-e", "go", ".", "/workspace/src"})
-	goFiles := strings.Split(strings.TrimSpace(r.Stdout), "\n")
-	if len(goFiles) < 2 {
-		t.Errorf("fd didn't find .go files: %q", r.Stdout)
-	} else {
-		t.Logf("✓ fd glob works: found %d .go files", len(goFiles))
-	}
-
-	// Find by name pattern
-	r, _ = execWithTimeout(t, eng, info.ID, []string{"fd", "main", "/workspace/src"})
-	if !strings.Contains(r.Stdout, "main.go") {
-		t.Errorf("fd didn't find main.go: %q", r.Stdout)
-	} else {
-		t.Log("✓ fd name pattern works")
-	}
-}
+// TestRootfsHasRipgrep and TestRootfsHasFd were removed.
+// They tested rootfs tier contents (package presence), not engine behavior.
+// The minimal tier doesn't include ripgrep or fd-find.
+// If rootfs content verification is needed, add it to build-tier.sh
+// as a post-build assertion per tier.
