@@ -584,10 +584,12 @@ var listCmd = &cobra.Command{
 		defer printTiming()
 
 		var sandboxes []struct {
-			ID     string `json:"id"`
-			Name   string `json:"name"`
-			Status string `json:"status"`
-			IP     string `json:"ip"`
+			ID      string   `json:"id"`
+			Name    string   `json:"name"`
+			Status  string   `json:"status"`
+			Thermal string   `json:"thermal"`
+			IP      string   `json:"ip"`
+			URLs    []string `json:"urls"`
 		}
 		if err := apiJSON("GET", "/sandboxes", nil, &sandboxes); err != nil {
 			return err
@@ -603,9 +605,34 @@ var listCmd = &cobra.Command{
 		if isJSON(cmd) {
 			outputJSON(sandboxes)
 		} else {
-			fmt.Printf("%-20s %-20s %-10s %-16s\n", "ID", "NAME", "STATUS", "IP")
+			// Show URL column only if any sandbox has published URLs
+			hasURLs := false
 			for _, sb := range sandboxes {
-				fmt.Printf("%-20s %-20s %-10s %-16s\n", sb.ID, sb.Name, sb.Status, sb.IP)
+				if len(sb.URLs) > 0 {
+					hasURLs = true
+					break
+				}
+			}
+
+			if hasURLs {
+				fmt.Printf("%-20s %-20s %-10s %-8s %-16s %s\n", "ID", "NAME", "STATUS", "THERMAL", "IP", "URL")
+			} else {
+				fmt.Printf("%-20s %-20s %-10s %-8s %-16s\n", "ID", "NAME", "STATUS", "THERMAL", "IP")
+			}
+			for _, sb := range sandboxes {
+				thermal := sb.Thermal
+				if thermal == "" {
+					thermal = "-"
+				}
+				if hasURLs {
+					url := ""
+					if len(sb.URLs) > 0 {
+						url = sb.URLs[0]
+					}
+					fmt.Printf("%-20s %-20s %-10s %-8s %-16s %s\n", sb.ID, sb.Name, sb.Status, thermal, sb.IP, url)
+				} else {
+					fmt.Printf("%-20s %-20s %-10s %-8s %-16s\n", sb.ID, sb.Name, sb.Status, thermal, sb.IP)
+				}
 			}
 		}
 		return nil

@@ -312,7 +312,36 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 		if list == nil {
 			list = []store.Sandbox{}
 		}
-		writeJSON(w, 200, list)
+
+		// Enrich with thermal state + published URLs
+		type enrichedSandbox struct {
+			store.Sandbox
+			Thermal string   `json:"thermal,omitempty"`
+			URLs    []string `json:"urls,omitempty"`
+		}
+
+		// Thermal state (read-only, no VM interaction)
+		te, hasThermal := s.engine.(ThermalEngine)
+
+		// Published URLs (single query for all user's rules)
+		rules, _ := s.store.ListUserPublishRules(user.ID)
+		urlsByID := make(map[string][]string)
+		for _, r := range rules {
+			url := publishedURL(r.Alias, s.proxyZone, s.publicProxyAddr)
+			urlsByID[r.SandboxID] = append(urlsByID[r.SandboxID], url)
+		}
+
+		enriched := make([]enrichedSandbox, len(list))
+		for i, sb := range list {
+			enriched[i] = enrichedSandbox{Sandbox: sb}
+			if hasThermal && sb.Status == "running" {
+				enriched[i].Thermal = te.ThermalState(sb.EngineID)
+			}
+			if urls, ok := urlsByID[sb.ID]; ok {
+				enriched[i].URLs = urls
+			}
+		}
+		writeJSON(w, 200, enriched)
 	case http.MethodPost:
 		var req createSandboxReq
 		if err := readJSON(r, &req); err != nil {

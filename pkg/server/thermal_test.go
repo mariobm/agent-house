@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -195,5 +196,82 @@ func TestThermalPauseSetsLastActivity(t *testing.T) {
 	pauseTime := ts.(time.Time)
 	if time.Since(pauseTime) > 5*time.Second {
 		t.Fatalf("lastActivity should be ~now after pause, got %v ago", time.Since(pauseTime))
+	}
+}
+
+// --- List enrichment tests ---
+
+func TestListEnrichedThermal(t *testing.T) {
+	srv, ts := setup(t)
+	eng := srv.engine.(*mockEngine)
+
+	// Create a sandbox via API
+	sb := createSandbox(t, ts, uniqueName(t, "thermal-list"))
+
+	// Set thermal state in engine
+	eng.mu.Lock()
+	eng.thermal[sb.EngineID] = "warm"
+	eng.mu.Unlock()
+
+	// List sandboxes
+	resp := doReq(t, ts, "GET", "/sandboxes", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result []struct {
+		ID      string `json:"id"`
+		Thermal string `json:"thermal"`
+	}
+	decodeJSON(t, resp, &result)
+
+	found := false
+	for _, s := range result {
+		if s.ID == sb.ID {
+			if s.Thermal != "warm" {
+				t.Fatalf("expected thermal=warm, got %q", s.Thermal)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("sandbox not found in list response")
+	}
+}
+
+func TestListEnrichedURLs(t *testing.T) {
+	_, ts := setup(t)
+
+	// Create a sandbox + publish a port
+	sb := createSandbox(t, ts, uniqueName(t, "url-list"))
+	resp := doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/publish",
+		map[string]any{"port": 3000, "alias": "test-url-list"})
+	if resp.StatusCode != 201 {
+		body, _ := json.Marshal(resp.Body)
+		t.Fatalf("publish: expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	// List sandboxes
+	resp = doReq(t, ts, "GET", "/sandboxes", nil)
+	var result []struct {
+		ID   string   `json:"id"`
+		URLs []string `json:"urls"`
+	}
+	decodeJSON(t, resp, &result)
+
+	found := false
+	for _, s := range result {
+		if s.ID == sb.ID {
+			if len(s.URLs) == 0 {
+				t.Fatal("expected URLs in list response, got none")
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("sandbox not found in list response")
 	}
 }

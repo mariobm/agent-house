@@ -1390,6 +1390,26 @@ func (s *Store) ListPublishRules(sandboxID string) ([]PublishRule, error) {
 	return rules, rows.Err()
 }
 
+// ListUserPublishRules returns all publish rules for sandboxes owned by a user.
+func (s *Store) ListUserPublishRules(userID string) ([]PublishRule, error) {
+	rows, err := s.db.Query(
+		`SELECT id, sandbox_id, user_id, port, alias, created_at
+		 FROM publish_rules WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rules []PublishRule
+	for rows.Next() {
+		var r PublishRule
+		if err := rows.Scan(&r.ID, &r.SandboxID, &r.UserID, &r.Port, &r.Alias, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		rules = append(rules, r)
+	}
+	return rules, rows.Err()
+}
+
 // DeletePublishRule removes a publish rule scoped to user + sandbox + port.
 func (s *Store) DeletePublishRule(userID, sandboxID string, port int) error {
 	res, err := s.db.Exec(
