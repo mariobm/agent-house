@@ -234,6 +234,14 @@ func TestCrossUserVMsIsolated(t *testing.T) {
 
 	t.Logf("vmA=%s (subnet 96), vmB=%s (subnet 97)", infoA.IP, infoB.IP)
 
+	// Debug: dump iptables FORWARD chain to diagnose CI isolation failures
+	if out, err := exec.Command("iptables", "-L", "FORWARD", "-n", "--line-numbers").CombinedOutput(); err == nil {
+		t.Logf("FORWARD chain:\n%s", string(out))
+	}
+	if out, err := exec.Command("iptables", "-S", "FORWARD").CombinedOutput(); err == nil {
+		t.Logf("FORWARD rules:\n%s", string(out))
+	}
+
 	// VM A tries to TCP connect to VM B's agent port — should fail
 	// (different bridges, iptables blocks cross-bridge traffic).
 	// Uses bash /dev/tcp instead of ping — no iputils-ping needed.
