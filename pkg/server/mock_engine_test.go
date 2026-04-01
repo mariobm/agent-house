@@ -22,9 +22,10 @@ type mockEngine struct {
 	nextID    atomic.Int64
 
 	// Configurable per-test
-	ExecResult    engine.ExecResult
-	CreateErr     error
-	ExecErr       error
+	ExecResult     engine.ExecResult
+	CreateErr      error
+	ExecErr        error
+	StopErr        error
 	ActivityResult *proto.ActivityInfo
 	ActivityErr    error
 }
@@ -75,11 +76,15 @@ func (m *mockEngine) Destroy(_ context.Context, id string) error {
 func (m *mockEngine) Stop(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.StopErr != nil {
+		return m.StopErr
+	}
 	sb, ok := m.sandboxes[id]
 	if !ok {
 		return fmt.Errorf("sandbox %q not found", id)
 	}
 	sb.Status = "stopped"
+	m.thermal[id] = "cold"
 	return nil
 }
 

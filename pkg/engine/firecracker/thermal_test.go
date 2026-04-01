@@ -346,4 +346,190 @@ func TestExecOnColdVMFails(t *testing.T) {
 	}
 }
 
+// --- Issue #4: Snapshot recovery tests ---
+// These test real Firecracker behavior that mocks can't verify:
+// - Does Stop() work on an already-paused (warm) VM?
+// - Does context threading actually prevent the old 10s timeout?
+// - Is the VM recoverable after a failed snapshot?
+
+func TestStopWarmVM(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("stop-warm"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	// Write state
+	execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "echo warm-data > /tmp/data"})
+
+	// Go warm (pause vCPUs)
+	if err := eng.Pause(ctx, info.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if eng.ThermalState(info.ID) != "warm" {
+		t.Fatalf("expected warm, got %s", eng.ThermalState(info.ID))
+	}
+
+	// Now Stop from warm — this is the warm→cold thermal path.
+	// Stop must not fail trying to double-Pause.
+	if err := eng.Stop(ctx, info.ID); err != nil {
+		t.Fatalf("Stop from warm: %v", err)
+	}
+	if eng.ThermalState(info.ID) != "cold" {
+		t.Fatalf("expected cold after stop, got %s", eng.ThermalState(info.ID))
+	}
+
+	// Resume and verify data survived
+	if err := eng.Start(ctx, info.ID); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	r, _ := execWithTimeout(t, eng, info.ID, []string{"cat", "/tmp/data"})
+	if strings.TrimSpace(r.Stdout) != "warm-data" {
+		t.Fatalf("data lost after warm→cold→hot: %q", r.Stdout)
+	}
+	t.Log("✓ Stop from warm state works, data preserved")
+}
+
+func TestStopRespectsContext(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("stop-ctx"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	// Call Stop with an already-expired context.
+	// The snapshot should fail with context deadline exceeded,
+	// NOT hang for 10s (the old hardcoded client timeout).
+	shortCtx, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+	time.Sleep(5 * time.Millisecond) // ensure deadline has passed
+	defer cancel()
+
+	start := time.Now()
+	err = eng.Stop(shortCtx, info.ID)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		// On very fast systems the pause+snapshot might complete
+		// before context check. That's OK — just verify it's cold.
+		t.Logf("Stop succeeded despite expired context (fast system), took %v", elapsed)
+		if eng.ThermalState(info.ID) != "cold" {
+			t.Fatal("expected cold after successful Stop")
+		}
+		// Resume for cleanup
+		eng.Start(ctx, info.ID)
+		return
+	}
+
+	t.Logf("Stop failed as expected in %v: %v", elapsed, err)
+
+	// Key assertion: it should fail fast (context expired), not after 10s.
+	if elapsed > 5*time.Second {
+		t.Fatalf("Stop took %v — context was not threaded through (old 10s client timeout still active?)", elapsed)
+	}
+
+	// VM should still be alive and usable — Stop() failed before
+	// killing the process.
+	if eng.ThermalState(info.ID) == "cold" {
+		t.Fatal("VM should not be cold — Stop() failed")
+	}
+
+	// EnsureHot should bring it back to working state
+	if err := eng.EnsureHot(ctx, info.ID); err != nil {
+		t.Fatalf("EnsureHot after failed Stop: %v", err)
+	}
+	r, _ := execWithTimeout(t, eng, info.ID, []string{"echo", "alive"})
+	if !strings.Contains(r.Stdout, "alive") {
+		t.Fatalf("exec after failed Stop: %q", r.Stdout)
+	}
+	t.Log("✓ Stop respects context, VM recoverable after timeout")
+}
+
+func TestStopSucceedsWithAdequateTimeout(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("stop-ok"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "echo data > /tmp/check"})
+
+	// Stop with 60-second timeout (same as the fixed thermal cycle).
+	stopCtx, stopCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer stopCancel()
+
+	start := time.Now()
+	if err := eng.Stop(stopCtx, info.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	t.Logf("Stop took %v", time.Since(start))
+
+	// Resume and verify
+	if err := eng.Start(ctx, info.ID); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	r, _ := execWithTimeout(t, eng, info.ID, []string{"cat", "/tmp/check"})
+	if strings.TrimSpace(r.Stdout) != "data" {
+		t.Fatalf("data lost: %q", r.Stdout)
+	}
+	t.Log("✓ Stop with adequate timeout works")
+}
+
+func TestVMRecoverableAfterSnapshotFailure(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("recover"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	// Write data, go warm
+	execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "echo important > /tmp/state"})
+	if err := eng.Pause(ctx, info.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	// Simulate the issue: Stop with a timeout too short for Full snapshot.
+	shortCtx, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
+	err = eng.Stop(shortCtx, info.ID)
+	cancel()
+
+	if err == nil {
+		// On fast NVMe, even 1ms might succeed. If Stop succeeded,
+		// the test is moot — just resume and verify data.
+		t.Log("Stop succeeded even with short timeout (fast disk), resuming")
+		eng.Start(ctx, info.ID)
+		r, _ := execWithTimeout(t, eng, info.ID, []string{"cat", "/tmp/state"})
+		if strings.TrimSpace(r.Stdout) != "important" {
+			t.Fatalf("data lost: %q", r.Stdout)
+		}
+		return
+	}
+	t.Logf("Stop failed as expected: %v", err)
+
+	// The VM should still be alive (FC process running, vCPUs paused).
+	// EnsureHot should resume it.
+	if err := eng.EnsureHot(ctx, info.ID); err != nil {
+		t.Fatalf("EnsureHot after failed snapshot: %v", err)
+	}
+
+	// Data should still be there
+	r, _ := execWithTimeout(t, eng, info.ID, []string{"cat", "/tmp/state"})
+	if strings.TrimSpace(r.Stdout) != "important" {
+		t.Fatalf("data lost after failed snapshot + recovery: %q", r.Stdout)
+	}
+	t.Log("✓ VM recoverable after snapshot failure, data preserved")
+}
+
 // Performance benchmarks moved to perf_test.go

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -273,5 +274,174 @@ func TestListEnrichedURLs(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("sandbox not found in list response")
+	}
+}
+
+// --- Snapshot failure retry tests (issue #4) ---
+
+// findSandbox finds a sandbox by engine ID in the store.
+func findSandbox(t *testing.T, srv *Server, engineID string) *store.Sandbox {
+	t.Helper()
+	sandboxes, err := srv.store.ListAllSandboxes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range sandboxes {
+		if s.EngineID == engineID {
+			return &s
+		}
+	}
+	t.Fatalf("sandbox with engineID %q not found", engineID)
+	return nil
+}
+
+func TestSnapshotFailureRetries(t *testing.T) {
+	srv, _ := setup(t)
+	eng := srv.engine.(*mockEngine)
+	cfg := ThermalConfig{WarmTimeout: time.Hour, ColdTimeout: 50 * time.Millisecond}
+
+	eid := createRunningBox(t, srv, eng, "retry-box")
+
+	// Set to warm, past cold timeout
+	eng.mu.Lock()
+	eng.thermal[eid] = "warm"
+	eng.StopErr = fmt.Errorf("create Full snapshot: context deadline exceeded")
+	eng.mu.Unlock()
+	srv.lastActivity.Store(eid, time.Now().Add(-time.Minute))
+
+	te := srv.engine.(ThermalEngine)
+
+	// First failure — should NOT mark unknown
+	srv.runThermalCycle(te, cfg)
+	sb := findSandbox(t, srv, eid)
+	if sb.Status == "unknown" {
+		t.Fatal("should not mark unknown on first failure")
+	}
+	v, ok := srv.snapshotFailures.Load(eid)
+	if !ok || v.(int) != 1 {
+		t.Fatalf("expected failure count 1, got %v (ok=%v)", v, ok)
+	}
+
+	// Second failure — still not unknown
+	srv.lastActivity.Store(eid, time.Now().Add(-time.Minute))
+	srv.runThermalCycle(te, cfg)
+	sb = findSandbox(t, srv, eid)
+	if sb.Status == "unknown" {
+		t.Fatal("should not mark unknown on second failure")
+	}
+	v, _ = srv.snapshotFailures.Load(eid)
+	if v.(int) != 2 {
+		t.Fatalf("expected failure count 2, got %v", v)
+	}
+
+	// Third failure — NOW mark unknown
+	srv.lastActivity.Store(eid, time.Now().Add(-time.Minute))
+	srv.runThermalCycle(te, cfg)
+	sb = findSandbox(t, srv, eid)
+	if sb.Status != "unknown" {
+		t.Fatalf("expected unknown after 3 failures, got %q", sb.Status)
+	}
+	// Counter should be cleared after escalation
+	if _, ok := srv.snapshotFailures.Load(eid); ok {
+		t.Fatal("failure counter should be cleared after marking unknown")
+	}
+}
+
+func TestSnapshotFailureCounterResetOnActivity(t *testing.T) {
+	srv, _ := setup(t)
+	eng := srv.engine.(*mockEngine)
+	cfg := ThermalConfig{WarmTimeout: time.Hour, ColdTimeout: 50 * time.Millisecond}
+
+	eid := createRunningBox(t, srv, eng, "reset-box")
+
+	eng.mu.Lock()
+	eng.thermal[eid] = "warm"
+	eng.StopErr = fmt.Errorf("snapshot timeout")
+	eng.mu.Unlock()
+
+	te := srv.engine.(ThermalEngine)
+
+	// Two failures
+	srv.lastActivity.Store(eid, time.Now().Add(-time.Minute))
+	srv.runThermalCycle(te, cfg)
+	srv.lastActivity.Store(eid, time.Now().Add(-time.Minute))
+	srv.runThermalCycle(te, cfg)
+
+	v, _ := srv.snapshotFailures.Load(eid)
+	if v.(int) != 2 {
+		t.Fatalf("expected 2, got %v", v)
+	}
+
+	// Simulate user activity (touchActivity resets counter)
+	srv.touchActivity(eid)
+
+	if _, ok := srv.snapshotFailures.Load(eid); ok {
+		t.Fatal("failure counter should be cleared after user activity")
+	}
+}
+
+func TestSnapshotSuccessClearsCounter(t *testing.T) {
+	srv, _ := setup(t)
+	eng := srv.engine.(*mockEngine)
+	cfg := ThermalConfig{WarmTimeout: time.Hour, ColdTimeout: 50 * time.Millisecond}
+
+	eid := createRunningBox(t, srv, eng, "clear-box")
+
+	// Fail once
+	eng.mu.Lock()
+	eng.thermal[eid] = "warm"
+	eng.StopErr = fmt.Errorf("transient error")
+	eng.mu.Unlock()
+	srv.lastActivity.Store(eid, time.Now().Add(-time.Minute))
+
+	te := srv.engine.(ThermalEngine)
+	srv.runThermalCycle(te, cfg)
+
+	v, _ := srv.snapshotFailures.Load(eid)
+	if v.(int) != 1 {
+		t.Fatalf("expected 1, got %v", v)
+	}
+
+	// Clear error, retry succeeds
+	eng.mu.Lock()
+	eng.StopErr = nil
+	eng.mu.Unlock()
+	srv.lastActivity.Store(eid, time.Now().Add(-time.Minute))
+	srv.runThermalCycle(te, cfg)
+
+	// Counter should be cleared on success
+	if _, ok := srv.snapshotFailures.Load(eid); ok {
+		t.Fatal("failure counter should be cleared after successful stop")
+	}
+	// Sandbox should be stopped
+	sb := findSandbox(t, srv, eid)
+	if sb.Status != "stopped" {
+		t.Fatalf("expected stopped after successful retry, got %q", sb.Status)
+	}
+}
+
+func TestEnsureHotRecoverFromUnknown(t *testing.T) {
+	srv, _ := setup(t)
+	eng := srv.engine.(*mockEngine)
+
+	eid := createRunningBox(t, srv, eng, "recover-box")
+
+	// Simulate: VM is warm in engine, but store says unknown
+	eng.mu.Lock()
+	eng.thermal[eid] = "warm"
+	eng.mu.Unlock()
+
+	sb := findSandbox(t, srv, eid)
+	srv.store.UpdateSandboxStatus(sb.ID, "unknown")
+
+	// ensureHot should recover it
+	if err := srv.ensureHot(context.Background(), eid); err != nil {
+		t.Fatalf("ensureHot failed: %v", err)
+	}
+
+	// Store should be back to running
+	sb = findSandbox(t, srv, eid)
+	if sb.Status != "running" {
+		t.Fatalf("expected running after recovery, got %q", sb.Status)
 	}
 }

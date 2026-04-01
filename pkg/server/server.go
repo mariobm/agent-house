@@ -52,7 +52,8 @@ type Server struct {
 	thermalDone     chan struct{}       // closed when thermal goroutine exits
 	stopTaskCleanup context.CancelFunc
 	startTime       time.Time
-	lastActivity sync.Map // engineID → time.Time — host-side activity cache
+	lastActivity     sync.Map // engineID → time.Time — host-side activity cache
+	snapshotFailures sync.Map // engineID → int — consecutive snapshot failure count
 
 	// Task cancellation for async operations (image pull)
 	pullCancelMu sync.Mutex
@@ -76,6 +77,7 @@ type Server struct {
 // avoiding a TCP connection per sandbox per thermal cycle.
 func (s *Server) touchActivity(engineID string) {
 	s.lastActivity.Store(engineID, time.Now())
+	s.snapshotFailures.Delete(engineID) // reset retry counter on user activity
 }
 
 // ServerOption configures the server.
@@ -241,7 +243,7 @@ func (s *Server) SnapshotAll() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
 			if err := s.engine.Stop(ctx, sb.EngineID); err != nil {
@@ -322,15 +324,37 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 			}
 			idle := time.Since(ts.(time.Time))
 			if idle > cfg.ColdTimeout {
-				stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if err := s.engine.Stop(stopCtx, sb.EngineID); err != nil {
-					stopCancel()
-					slog.Error("thermal snapshot failed — marking unknown",
-						"sandbox", sb.Name, "id", sb.ID, "error", err)
-					s.store.UpdateSandboxStatus(sb.ID, "unknown")
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 60*time.Second)
+				err := s.engine.Stop(stopCtx, sb.EngineID)
+				stopCancel()
+
+				if err != nil {
+					// Track consecutive failures. The VM is still warm
+					// (alive, vCPUs paused) — retry on next cycle.
+					// Only mark unknown after 3 consecutive failures.
+					count := 0
+					if v, ok := s.snapshotFailures.Load(sb.EngineID); ok {
+						count = v.(int)
+					}
+					count++
+					s.snapshotFailures.Store(sb.EngineID, count)
+
+					if count >= 3 {
+						slog.Error("thermal snapshot failed 3 times — marking unknown",
+							"sandbox", sb.Name, "id", sb.ID, "error", err,
+							"attempts", count)
+						s.store.UpdateSandboxStatus(sb.ID, "unknown")
+						s.snapshotFailures.Delete(sb.EngineID)
+					} else {
+						slog.Warn("thermal snapshot failed — will retry",
+							"sandbox", sb.Name, "id", sb.ID, "error", err,
+							"attempt", count, "max_attempts", 3)
+					}
 					continue
 				}
-				stopCancel()
+
+				// Success — clear failure counter
+				s.snapshotFailures.Delete(sb.EngineID)
 				s.store.StopSandbox(sb.ID)
 				s.saveVMState(sb.ID, sb.EngineID)
 				slog.Info("thermal transition", "sandbox", sb.Name,
@@ -387,17 +411,17 @@ func (s *Server) ensureHot(ctx context.Context, engineID string) error {
 		return nil
 	}
 
-	// Check thermal state before wake so we can detect cold→hot transitions.
-	wasCold := te.ThermalState(engineID) == "cold"
-
 	if err := te.EnsureHot(ctx, engineID); err != nil {
 		return err
 	}
 
-	// After cold resume the store still says "stopped" — update it and
-	// persist the new VM state (snapshot paths, socket, etc.).
-	if wasCold {
-		if sb, err := s.store.GetSandboxByEngineID(engineID); err == nil {
+	// After a successful wake, update store status if it was stale.
+	// This handles: cold→hot (store said "stopped"),
+	// and unknown→hot (store said "unknown" but VM was still alive).
+	if sb, err := s.store.GetSandboxByEngineID(engineID); err == nil {
+		if sb.Status != "running" {
+			slog.Info("sandbox recovered",
+				"sandbox", sb.Name, "from_status", sb.Status)
 			s.store.UpdateSandboxStatus(sb.ID, "running")
 			s.saveVMState(sb.ID, engineID)
 		}

@@ -439,37 +439,37 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 		"console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/lohar quiet loglevel=0 ip=%s::%s:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:",
 		guestIP, userNet.GatewayIP)
 
-	if err = fcPut(client, "/boot-source", fmt.Sprintf(
+	if err = fcPut(ctx, client, "/boot-source", fmt.Sprintf(
 		`{"kernel_image_path":%q,"boot_args":%q}`,
 		e.cfg.KernelPath, bootArgs)); err != nil {
 		return info, fmt.Errorf("set boot-source: %w", err)
 	}
 
-	if err = fcPut(client, "/drives/rootfs", fmt.Sprintf(
+	if err = fcPut(ctx, client, "/drives/rootfs", fmt.Sprintf(
 		`{"drive_id":"rootfs","path_on_host":%q,"is_root_device":true,"is_read_only":false}`,
 		rootfsPath)); err != nil {
 		return info, fmt.Errorf("set drive: %w", err)
 	}
 
 	// track_dirty_pages enables diff snapshots (only dirty pages are written).
-	if err = fcPut(client, "/machine-config", fmt.Sprintf(
+	if err = fcPut(ctx, client, "/machine-config", fmt.Sprintf(
 		`{"vcpu_count":%d,"mem_size_mib":%d,"track_dirty_pages":true}`, vcpuCount, memMB)); err != nil {
 		return info, fmt.Errorf("set machine-config: %w", err)
 	}
 
-	if err = fcPut(client, "/vsock", fmt.Sprintf(
+	if err = fcPut(ctx, client, "/vsock", fmt.Sprintf(
 		`{"guest_cid":%d,"uds_path":%q}`, cid, vsockPath)); err != nil {
 		return info, fmt.Errorf("set vsock: %w", err)
 	}
 
-	if err = fcPut(client, "/network-interfaces/eth0", fmt.Sprintf(
+	if err = fcPut(ctx, client, "/network-interfaces/eth0", fmt.Sprintf(
 		`{"iface_id":"eth0","guest_mac":%q,"host_dev_name":%q}`,
 		mac, tapName)); err != nil {
 		return info, fmt.Errorf("set network: %w", err)
 	}
 
 	// 6b. Attach config drive as /dev/vdb
-	if err = fcPut(client, "/drives/config", fmt.Sprintf(
+	if err = fcPut(ctx, client, "/drives/config", fmt.Sprintf(
 		`{"drive_id":"config","path_on_host":%q,"is_root_device":false,"is_read_only":true}`,
 		configDrivePath)); err != nil {
 		return info, fmt.Errorf("set config drive: %w", err)
@@ -477,7 +477,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 
 	// 6c. Attach persistent volume drives
 	for _, vol := range spec.ResolvedVolumes {
-		if err = fcPut(client, fmt.Sprintf("/drives/%s", vol.DriveID), fmt.Sprintf(
+		if err = fcPut(ctx, client, fmt.Sprintf("/drives/%s", vol.DriveID), fmt.Sprintf(
 			`{"drive_id":%q,"path_on_host":%q,"is_root_device":false,"is_read_only":%v}`,
 			vol.DriveID, vol.FilePath, vol.ReadOnly)); err != nil {
 			return info, fmt.Errorf("set persistent volume drive %s: %w", vol.DriveID, err)
@@ -488,7 +488,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	for i, vs := range spec.NewVolumes {
 		volPath := filepath.Join(sandboxDir, fmt.Sprintf("vol-%s.ext4", vs.Name))
 		driveID := fmt.Sprintf("ephvol%d", i)
-		if err = fcPut(client, fmt.Sprintf("/drives/%s", driveID), fmt.Sprintf(
+		if err = fcPut(ctx, client, fmt.Sprintf("/drives/%s", driveID), fmt.Sprintf(
 			`{"drive_id":%q,"path_on_host":%q,"is_root_device":false,"is_read_only":false}`,
 			driveID, volPath)); err != nil {
 			return info, fmt.Errorf("set volume drive %d: %w", i, err)
@@ -496,7 +496,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	}
 
 	// 7. Boot
-	if err = fcPut(client, "/actions", `{"action_type":"InstanceStart"}`); err != nil {
+	if err = fcPut(ctx, client, "/actions", `{"action_type":"InstanceStart"}`); err != nil {
 		return info, fmt.Errorf("start instance: %w", err)
 	}
 
@@ -552,7 +552,9 @@ func (e *Engine) SaveImage(ctx context.Context, sandboxID, destPath string) erro
 	wasPaused := vm.Thermal == "warm"
 	if vm.Thermal == "hot" {
 		client := fcAPIClient(vm.SocketPath)
-		if err := fcPatch(client, "/vm", `{"state":"Paused"}`); err != nil {
+		pauseCtx, pauseCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer pauseCancel()
+		if err := fcPatch(pauseCtx, client, "/vm", `{"state":"Paused"}`); err != nil {
 			return fmt.Errorf("pause for save: %w", err)
 		}
 		vm.Thermal = "warm"
@@ -562,7 +564,9 @@ func (e *Engine) SaveImage(ctx context.Context, sandboxID, destPath string) erro
 	if err := copyRootfs(vm.RootfsPath, destPath); err != nil {
 		if !wasPaused {
 			client := fcAPIClient(vm.SocketPath)
-			fcPatch(client, "/vm", `{"state":"Resumed"}`)
+			resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			fcPatch(resumeCtx, client, "/vm", `{"state":"Resumed"}`)
+			resumeCancel()
 			vm.Thermal = "hot"
 		}
 		return fmt.Errorf("copy rootfs: %w", err)
@@ -570,7 +574,9 @@ func (e *Engine) SaveImage(ctx context.Context, sandboxID, destPath string) erro
 
 	if !wasPaused {
 		client := fcAPIClient(vm.SocketPath)
-		if err := fcPatch(client, "/vm", `{"state":"Resumed"}`); err != nil {
+		resumeCtx, resumeCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer resumeCancel()
+		if err := fcPatch(resumeCtx, client, "/vm", `{"state":"Resumed"}`); err != nil {
 			return fmt.Errorf("resume after save: %w", err)
 		}
 		vm.Thermal = "hot"
@@ -596,9 +602,15 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 
 	client := fcAPIClient(vm.SocketPath)
 
-	// Pause VM
-	if err := fcPatch(client, "/vm", `{"state":"Paused"}`); err != nil {
-		return fmt.Errorf("pause: %w", err)
+	// Skip Pause if already paused (warm→cold path).
+	// Firecracker may reject Pause on an already-paused VM.
+	// SaveImage already uses this pattern (see wasPaused above).
+	if vm.Thermal != "warm" {
+		pauseCtx, pauseCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer pauseCancel()
+		if err := fcPatch(pauseCtx, client, "/vm", `{"state":"Paused"}`); err != nil {
+			return fmt.Errorf("pause: %w", err)
+		}
 	}
 
 	// Create snapshot — use Diff if we have a base, Full otherwise.
@@ -619,7 +631,10 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 		}
 	}
 
-	if err := fcPut(client, "/snapshot/create", fmt.Sprintf(
+	// Snapshot timeout comes from the caller's ctx (60s from thermal cycle,
+	// or whatever the caller passes). Previously the hardcoded 10s
+	// http.Client.Timeout was the only timeout and caused issue #4.
+	if err := fcPut(ctx, client, "/snapshot/create", fmt.Sprintf(
 		`{"snapshot_type":%q,"snapshot_path":%q,"mem_file_path":%q}`,
 		snapshotType, vm.SnapVMPath, vm.SnapMemPath)); err != nil {
 		return fmt.Errorf("create %s snapshot: %w", snapshotType, err)
@@ -661,7 +676,7 @@ func (e *Engine) Pause(ctx context.Context, id string) error {
 		return fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
 	client := fcAPIClient(vm.SocketPath)
-	if err := fcPatch(client, "/vm", `{"state":"Paused"}`); err != nil {
+	if err := fcPatch(ctx, client, "/vm", `{"state":"Paused"}`); err != nil {
 		return fmt.Errorf("pause: %w", err)
 	}
 	vm.Thermal = "warm"
@@ -682,7 +697,7 @@ func (e *Engine) Resume(ctx context.Context, id string) error {
 		return fmt.Errorf("sandbox %q is not warm (thermal=%s)", id, vm.Thermal)
 	}
 	client := fcAPIClient(vm.SocketPath)
-	if err := fcPatch(client, "/vm", `{"state":"Resumed"}`); err != nil {
+	if err := fcPatch(ctx, client, "/vm", `{"state":"Resumed"}`); err != nil {
 		return fmt.Errorf("resume: %w", err)
 	}
 	vm.Thermal = "hot"
@@ -782,7 +797,7 @@ func (e *Engine) Start(ctx context.Context, id string) error {
 
 	// enable_diff_snapshots re-enables dirty page tracking after restore,
 	// allowing subsequent Diff snapshots on the restored VM.
-	if err := fcPut(client, "/snapshot/load", fmt.Sprintf(
+	if err := fcPut(ctx, client, "/snapshot/load", fmt.Sprintf(
 		`{"snapshot_path":%q,"mem_backend":{"backend_path":%q,"backend_type":"File"},"resume_vm":true,"enable_diff_snapshots":true}`,
 		vm.SnapVMPath, vm.SnapMemPath)); err != nil {
 		fcCmd.Process.Kill()
@@ -1330,18 +1345,21 @@ func copyRootfs(src, dst string) error {
 // fcAPIClient returns an HTTP client that talks to Firecracker's API over a Unix socket.
 func fcAPIClient(socketPath string) *http.Client {
 	return &http.Client{
-		Timeout: 10 * time.Second,
+		// No Timeout — each call site uses context.WithTimeout.
+		// This avoids the old 10s global timeout silently racing with
+		// per-call context deadlines (see issue #4).
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return net.DialTimeout("unix", socketPath, 5*time.Second)
+				d := net.Dialer{Timeout: 5 * time.Second}
+				return d.DialContext(ctx, "unix", socketPath)
 			},
 			DisableKeepAlives: true, // one request per connection, avoids stale socket issues
 		},
 	}
 }
 
-func fcPut(client *http.Client, path, body string) error {
-	req, _ := http.NewRequest("PUT", "http://localhost"+path, strings.NewReader(body))
+func fcPut(ctx context.Context, client *http.Client, path, body string) error {
+	req, _ := http.NewRequestWithContext(ctx, "PUT", "http://localhost"+path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1355,8 +1373,8 @@ func fcPut(client *http.Client, path, body string) error {
 	return nil
 }
 
-func fcPatch(client *http.Client, path, body string) error {
-	req, _ := http.NewRequest("PATCH", "http://localhost"+path, strings.NewReader(body))
+func fcPatch(ctx context.Context, client *http.Client, path, body string) error {
+	req, _ := http.NewRequestWithContext(ctx, "PATCH", "http://localhost"+path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
