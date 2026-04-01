@@ -32,13 +32,15 @@ func main() {
 
 	// Register the serve command here (not in cli.go) because it imports
 	// the engine packages which have Linux build tags.
-	rootCmd.AddCommand(&cobra.Command{
-		Use:   "serve",
-		Short: "Start the bhatti daemon",
+	serveCmd := &cobra.Command{
+		Use:     "serve",
+		Short:   "Start the bhatti daemon",
+		GroupID: "admin",
 		Run: func(cmd *cobra.Command, args []string) {
 			runDaemon()
 		},
-	})
+	}
+	rootCmd.AddCommand(serveCmd)
 
 	runCLI()
 }

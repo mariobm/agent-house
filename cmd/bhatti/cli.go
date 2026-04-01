@@ -39,8 +39,17 @@ var (
 // The serve command is added in main() since it's defined alongside
 // the daemon code in main.go.
 var rootCmd = &cobra.Command{
-	Use:          "bhatti",
-	Short:        "Firecracker microVM orchestrator",
+	Use:   "bhatti",
+	Short: "Firecracker microVM orchestrator",
+	Long: `bhatti creates isolated Linux VMs in seconds. Each sandbox has its own
+kernel, filesystem, and network. Paused sandboxes resume in under 3ms.
+
+Quick start:
+  bhatti setup                         # configure endpoint + API key
+  bhatti create --name dev             # create a sandbox
+  bhatti exec dev -- echo hello        # run a command
+  bhatti shell dev                     # interactive shell (Ctrl+\ to detach)
+  bhatti destroy dev                   # clean up`,
 	SilenceUsage: true,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadConfig(cmd)
@@ -53,6 +62,33 @@ func init() {
 	rootCmd.PersistentFlags().String("data-dir", "", "Data directory containing state.db (for user commands)")
 	rootCmd.PersistentFlags().Bool("json", false, "Output as JSON")
 	rootCmd.PersistentFlags().Bool("timing", false, "Show request timing breakdown")
+
+	// Command groups
+	rootCmd.AddGroup(
+		&cobra.Group{ID: "core", Title: "Core:"},
+		&cobra.Group{ID: "resource", Title: "Resources:"},
+		&cobra.Group{ID: "admin", Title: "Setup & Admin:"},
+	)
+
+	createCmd.GroupID = "core"
+	listCmd.GroupID = "core"
+	destroyCmd.GroupID = "core"
+	execCmd.GroupID = "core"
+	shellCmd.GroupID = "core"
+
+	imageCmd.GroupID = "resource"
+	volumeCmd.GroupID = "resource"
+	secretCmd.GroupID = "resource"
+	snapshotCmd.GroupID = "resource"
+	publishCmd.GroupID = "resource"
+	unpublishCmd.GroupID = "resource"
+
+	setupCmd.GroupID = "admin"
+	userCmd.GroupID = "admin"
+	updateCmd.GroupID = "admin"
+
+	// inspect, ps, file, version, completion have no GroupID →
+	// fall into "Additional Commands"
 
 	rootCmd.AddCommand(createCmd)
 	rootCmd.AddCommand(listCmd)
@@ -489,6 +525,22 @@ func completionCachePath() string {
 var createCmd = &cobra.Command{
 	Use:   "create [flags]",
 	Short: "Create a new sandbox",
+	Long: `Create a new sandbox VM. Each sandbox is an isolated Linux environment
+with its own kernel, filesystem, and network.`,
+	Example: `  # Basic sandbox
+  bhatti create --name dev
+
+  # Custom resources
+  bhatti create --name ml --cpus 4 --memory 4096
+
+  # With environment variables and init script
+  bhatti create --name api --env API_KEY=sk-abc --init "npm install"
+
+  # From a custom image
+  bhatti create --name py --image python-3.12
+
+  # With a persistent volume
+  bhatti create --name work --volume workspace:/workspace`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()
@@ -579,6 +631,9 @@ var listCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List sandboxes",
+	Example: `  bhatti list
+  bhatti ls            # alias
+  bhatti ls --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()
@@ -645,6 +700,10 @@ var destroyCmd = &cobra.Command{
 	Use:               "destroy <id|name>",
 	Aliases:           []string{"rm"},
 	Short:             "Destroy a sandbox",
+	Long: `Permanently destroy a sandbox and all its data. This cannot be undone.
+Persistent volumes are detached but not deleted.`,
+	Example: `  bhatti destroy dev
+  bhatti rm dev        # alias`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -671,8 +730,14 @@ var destroyCmd = &cobra.Command{
 // --- exec ---
 
 var execCmd = &cobra.Command{
-	Use:               "exec <id|name> -- CMD...",
+	Use:               "exec <id|name> [--] <command...>",
 	Short:             "Execute a command in a sandbox",
+	Long: `Execute a command inside a sandbox. The exit code is forwarded.
+Sleeping sandboxes wake automatically.`,
+	Example: `  bhatti exec dev -- echo hello
+  bhatti exec dev echo hello           # -- is optional
+  bhatti exec dev -- sudo apt-get install -y ripgrep
+  bhatti exec dev --timeout 60 -- long-running-script.sh`,
 	Args:              cobra.MinimumNArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -730,6 +795,10 @@ var shellCmd = &cobra.Command{
 	Use:               "shell <id|name>",
 	Aliases:           []string{"sh"},
 	Short:             "Open an interactive shell",
+	Long: `Open an interactive terminal inside the sandbox. Ctrl+\ to detach —
+the shell keeps running. Reconnect with 'bhatti shell' again.`,
+	Example: `  bhatti shell dev
+  bhatti sh dev        # alias`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -908,6 +977,8 @@ var shellCmd = &cobra.Command{
 var psCmd = &cobra.Command{
 	Use:               "ps <id|name>",
 	Short:             "List sessions in a sandbox",
+	Example: `  bhatti ps dev
+  bhatti ps dev --json`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -945,7 +1016,10 @@ var psCmd = &cobra.Command{
 
 var fileCmd = &cobra.Command{
 	Use:   "file <read|write|ls> <id|name> <path>",
-	Short: "File operations",
+	Short: "Read, write, and list files in a sandbox",
+	Example: `  bhatti file read dev /workspace/app.js
+  echo 'hello' | bhatti file write dev /workspace/greeting.txt
+  bhatti file ls dev /workspace/`,
 }
 
 var fileReadCmd = &cobra.Command{
@@ -1062,7 +1136,12 @@ func init() {
 
 var secretCmd = &cobra.Command{
 	Use:   "secret <set|list|delete>",
-	Short: "Manage secrets",
+	Short: "Manage encrypted secrets",
+	Long: `Secrets are encrypted at rest (age) and scoped to your API key.
+They can be referenced in templates and injected into sandboxes at boot.`,
+	Example: `  bhatti secret set API_KEY sk-abc123
+  bhatti secret list
+  bhatti secret delete API_KEY`,
 }
 
 var secretSetCmd = &cobra.Command{
@@ -1133,7 +1212,13 @@ func init() {
 
 var userCmd = &cobra.Command{
 	Use:   "user <create|list|delete|rotate-key>",
-	Short: "Manage users (local, requires DB access)",
+	Short: "Manage users (requires DB access)",
+	Long: `User management operates directly on the local SQLite database.
+Run on the server, not remotely.`,
+	Example: `  sudo bhatti user create --name alice --max-sandboxes 10
+  sudo bhatti user list
+  sudo bhatti user rotate-key alice
+  sudo bhatti user delete alice`,
 }
 
 var userCreateCmd = &cobra.Command{
@@ -1359,7 +1444,10 @@ func sha256HexCLI(s string) string {
 
 var setupCmd = &cobra.Command{
 	Use:   "setup",
-	Short: "Configure CLI (endpoint + API key)",
+	Short: "Configure CLI endpoint and API key",
+	Long: `Interactive setup for remote CLI users. Prompts for the API endpoint
+and API key, saves to ~/.bhatti/config.yaml, and tests the connection.`,
+	Example: `  bhatti setup`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Printf("API endpoint [%s]: ", apiURL)
 		var endpoint string
@@ -1411,6 +1499,20 @@ var setupCmd = &cobra.Command{
 			return nil
 		}
 		fmt.Printf("✓ authenticated (%d sandboxes)\n", len(sandboxes))
+
+		// Suggest shell completions
+		shell := os.Getenv("SHELL")
+		switch {
+		case strings.HasSuffix(shell, "/zsh"):
+			fmt.Println("\nEnable completions:")
+			fmt.Println("  echo 'source <(bhatti completion zsh)' >> ~/.zshrc")
+		case strings.HasSuffix(shell, "/bash"):
+			fmt.Println("\nEnable completions:")
+			fmt.Println("  echo 'source <(bhatti completion bash)' >> ~/.bashrc")
+		case strings.HasSuffix(shell, "/fish"):
+			fmt.Println("\nEnable completions:")
+			fmt.Println("  bhatti completion fish > ~/.config/fish/completions/bhatti.fish")
+		}
 		return nil
 	},
 }
@@ -1420,11 +1522,19 @@ var setupCmd = &cobra.Command{
 var volumeCmd = &cobra.Command{
 	Use:   "volume <create|list|delete|resize>",
 	Short: "Manage persistent volumes",
+	Long: `Persistent volumes are ext4 filesystems that survive sandbox destruction.
+Attach them with '--volume name:/mount' on create.`,
+	Example: `  bhatti volume create --name workspace --size 5120
+  bhatti create --name dev --volume workspace:/workspace
+  bhatti volume resize workspace --size 10240
+  bhatti volume list`,
 }
 
 var volumeCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a persistent volume",
+	Example: `  bhatti volume create --name workspace --size 5120
+  bhatti volume create --name data --size 20480`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()
@@ -1536,8 +1646,18 @@ func init() {
 // --- image ---
 
 var imageCmd = &cobra.Command{
-	Use:   "image <list|delete>",
+	Use:   "image <list|pull|save|delete>",
 	Short: "Manage rootfs images",
+	Long: `Images are ext4 filesystem snapshots used as sandbox root filesystems.
+Pull public images from registries with 'image pull'.`,
+	Example: `  # Pull a public image
+  bhatti image pull python:3.12
+
+  # Save a running sandbox as an image
+  bhatti image save dev --name my-custom-env
+
+  # List images
+  bhatti image list`,
 }
 
 var imageListCmd = &cobra.Command{
@@ -1592,7 +1712,12 @@ var imageDeleteCmd = &cobra.Command{
 
 var imagePullCmd = &cobra.Command{
 	Use:   "pull <ref>",
-	Short: "Pull an OCI/Docker image (async)",
+	Short: "Pull an OCI/Docker image from a public registry",
+	Long: `Pull a public image from any OCI-compatible registry. The server pulls
+the image and converts it to an ext4 rootfs for 'bhatti create --image'.`,
+	Example: `  bhatti image pull python:3.12
+  bhatti image pull ubuntu:24.04 --name ubuntu
+  bhatti image pull node:22-slim --name node-22`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
@@ -1663,6 +1788,7 @@ var imagePullCmd = &cobra.Command{
 var imageSaveCmd = &cobra.Command{
 	Use:               "save <sandbox-id|name>",
 	Short:             "Save a sandbox's rootfs as an image",
+	Example: `  bhatti image save dev --name my-custom-env`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -1712,6 +1838,11 @@ func init() {
 var snapshotCmd = &cobra.Command{
 	Use:   "snapshot <create|list|resume|delete>",
 	Short: "Manage named VM snapshots",
+	Long: `Snapshots capture the entire VM state: memory, CPU, disk. Resume
+produces an exact continuation — processes running, files open.`,
+	Example: `  bhatti snapshot create dev --name dev-ready
+  bhatti snapshot resume dev-ready --name dev-2
+  bhatti snapshot list`,
 }
 
 var snapshotCreateCmd = &cobra.Command{
@@ -1863,6 +1994,8 @@ var updateCmd = &cobra.Command{
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version and API endpoint",
+	Example: `  bhatti version
+  bhatti version --json`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if isJSON(cmd) {
 			outputJSON(map[string]string{
@@ -1879,8 +2012,10 @@ var versionCmd = &cobra.Command{
 // --- publish / unpublish ---
 
 var publishCmd = &cobra.Command{
-	Use:               "publish <sandbox> --port <port> [--alias <alias>]",
+	Use:               "publish <sandbox> -p <port> [-a <alias>]",
 	Short:             "Publish a sandbox port with a public URL",
+	Example: `  bhatti publish dev -p 3000
+  bhatti publish dev -p 3000 -a my-app`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -1910,8 +2045,9 @@ var publishCmd = &cobra.Command{
 }
 
 var unpublishCmd = &cobra.Command{
-	Use:               "unpublish <sandbox> --port <port>",
+	Use:               "unpublish <sandbox> -p <port>",
 	Short:             "Unpublish a sandbox port",
+	Example: `  bhatti unpublish dev -p 3000`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	Run: func(cmd *cobra.Command, args []string) {
