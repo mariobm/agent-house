@@ -14,6 +14,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
 // Config holds extracted OCI image configuration metadata.
@@ -193,4 +194,61 @@ func splitEnv(s string) (string, string, bool) {
 		}
 	}
 	return "", "", false
+}
+
+// ImportFromTarball converts a 'docker save' tarball to an ext4 rootfs.
+// The tarball is read using go-containerregistry's tarball package, then
+// processed through the same pipeline as PullAndConvert: extract layers,
+// inject lohar agent, create ext4 image.
+func ImportFromTarball(ctx context.Context, tarballPath, outputPath, loharPath string) (*Config, error) {
+	img, err := tarball.ImageFromPath(tarballPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("read tarball: %w", err)
+	}
+
+	cfgFile, err := img.ConfigFile()
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	config := extractConfig(cfgFile)
+
+	tmpDir, err := os.MkdirTemp("", "bhatti-import-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	layers, err := img.Layers()
+	if err != nil {
+		return nil, fmt.Errorf("layers: %w", err)
+	}
+
+	for i, layer := range layers {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if err := extractLayer(layer, tmpDir); err != nil {
+			return nil, fmt.Errorf("extract layer %d: %w", i, err)
+		}
+	}
+
+	if err := injectLohar(tmpDir, loharPath); err != nil {
+		return nil, fmt.Errorf("inject lohar: %w", err)
+	}
+
+	if warnings := validateImage(tmpDir); len(warnings) > 0 {
+		for _, w := range warnings {
+			slog.Warn("import image warning", "issue", w)
+		}
+	}
+
+	if err := createExt4FromDir(tmpDir, outputPath); err != nil {
+		return nil, fmt.Errorf("create ext4: %w", err)
+	}
+
+	if fi, err := os.Stat(outputPath); err == nil {
+		config.TotalSize = fi.Size()
+	}
+
+	return config, nil
 }

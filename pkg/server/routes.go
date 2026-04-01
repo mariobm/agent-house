@@ -1585,6 +1585,12 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sub-route: POST /images/import
+	if path == "import" {
+		s.handleImageImport(w, r, user)
+		return
+	}
+
 	name := path
 
 	switch r.Method {
@@ -2417,6 +2423,74 @@ func (s *Server) handleImagePull(w http.ResponseWriter, r *http.Request, user *s
 
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"task_id": taskID, "status": "running"})
+}
+
+// --- Import Image (tarball → ext4) ---
+
+func (s *Server) handleImageImport(w http.ResponseWriter, r *http.Request, user *store.User) {
+	if r.Method != http.MethodPost {
+		errResp(w, 405, "method not allowed")
+		return
+	}
+
+	name := r.URL.Query().Get("name")
+	if name == "" || !isValidName(name) {
+		errResp(w, 400, "valid name required")
+		return
+	}
+
+	if _, err := s.store.GetImage(user.ID, name); err == nil {
+		errResp(w, 409, fmt.Sprintf("image %q already exists \u2014 delete first", name))
+		return
+	}
+
+	// Write streamed tarball to temp file (don't hold multi-GB in memory)
+	tmpFile, err := os.CreateTemp("", "bhatti-import-*.tar")
+	if err != nil {
+		errRespInternal(w, r, "create temp file", err)
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+
+	limited := io.LimitReader(r.Body, 10<<30) // 10GB cap
+	if _, err := io.Copy(tmpFile, limited); err != nil {
+		tmpFile.Close()
+		errRespInternal(w, r, "receive tarball", err)
+		return
+	}
+	tmpFile.Close()
+
+	loharPath := filepath.Join(s.dataDir, "lohar")
+	outputDir := filepath.Join(s.dataDir, "images", user.ID)
+	os.MkdirAll(outputDir, 0700)
+	outputPath := filepath.Join(outputDir, name+".ext4")
+
+	config, err := oci.ImportFromTarball(r.Context(), tmpFile.Name(), outputPath, loharPath)
+	if err != nil {
+		os.Remove(outputPath)
+		errResp(w, 400, "import failed: "+err.Error())
+		return
+	}
+
+	configJSON, _ := json.Marshal(config)
+	sizeMB := int(config.TotalSize / 1024 / 1024)
+
+	img := store.ImageRecord{
+		ID: genID(), UserID: user.ID, Name: name,
+		Source:        "import:" + name,
+		FilePath:      outputPath,
+		SizeMB:        sizeMB,
+		OCIConfigJSON: string(configJSON),
+		CreatedAt:     time.Now(),
+	}
+	if err := s.store.CreateImage(img); err != nil {
+		os.Remove(outputPath)
+		errRespInternal(w, r, "store image", err)
+		return
+	}
+
+	slog.Info("image.imported", "name", name, "user", user.Name, "size_mb", sizeMB)
+	writeJSON(w, 201, map[string]any{"name": name, "size_mb": sizeMB})
 }
 
 // --- Save Image (sandbox rootfs → image) ---
