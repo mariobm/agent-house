@@ -234,12 +234,25 @@ func TestCrossUserVMsIsolated(t *testing.T) {
 
 	t.Logf("vmA=%s (subnet 96), vmB=%s (subnet 97)", infoA.IP, infoB.IP)
 
-	// Debug: dump iptables FORWARD chain to diagnose CI isolation failures
-	if out, err := exec.Command("iptables", "-L", "FORWARD", "-n", "--line-numbers").CombinedOutput(); err == nil {
-		t.Logf("FORWARD chain:\n%s", string(out))
+	// Debug: dump iptables state to diagnose CI isolation failures
+	if out, err := exec.Command("iptables", "-L", "FORWARD", "-nvx", "--line-numbers").CombinedOutput(); err == nil {
+		t.Logf("FORWARD chain (with counters):\n%s", string(out))
 	}
-	if out, err := exec.Command("iptables", "-S", "FORWARD").CombinedOutput(); err == nil {
-		t.Logf("FORWARD rules:\n%s", string(out))
+	// Also check if nft has any separate rules
+	if out, err := exec.Command("nft", "list", "tables").CombinedOutput(); err == nil {
+		t.Logf("nft tables: %s", string(out))
+	}
+	// Check ip_forward
+	if out, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward"); err == nil {
+		t.Logf("ip_forward: %s", strings.TrimSpace(string(out)))
+	}
+	// Check bridge-nf-call-iptables
+	if out, err := os.ReadFile("/proc/sys/net/bridge/bridge-nf-call-iptables"); err == nil {
+		t.Logf("bridge-nf-call-iptables: %s", strings.TrimSpace(string(out)))
+	}
+	// Test host-side routing: can the HOST reach both bridge gateways?
+	if out, err := exec.Command("ip", "route", "show").CombinedOutput(); err == nil {
+		t.Logf("routing table:\n%s", string(out))
 	}
 
 	// VM A tries to TCP connect to VM B's agent port — should fail
