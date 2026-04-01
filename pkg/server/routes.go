@@ -1906,7 +1906,7 @@ func idleCopyWithDeadline(dst io.Writer, src deadlineConn, timeout time.Duration
 // through an engine tunnel. Used by both the authenticated proxy and
 // (in the future) the public proxy. Includes an idle timeout to prevent
 // FD exhaustion from abandoned connections.
-func proxyWebSocket(w http.ResponseWriter, r *http.Request, eng engine.Engine, engineID string, port int, path string) {
+func proxyWebSocket(w http.ResponseWriter, r *http.Request, eng engine.Engine, engineID string, port int, path string, onActivity func()) {
 	tunnel, err := eng.Tunnel(r.Context(), engineID, port)
 	if err != nil {
 		errResp(w, 502, "tunnel failed: "+err.Error())
@@ -1942,6 +1942,27 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, eng engine.Engine, e
 	resp.Write(clientBuf)
 	clientBuf.Flush()
 
+	// Keep the sandbox marked as active while the relay runs.
+	// Without this, long-lived WebSocket connections (CDP, HMR, etc.)
+	// are invisible to the thermal manager after the initial ensureHot.
+	var stopActivity func()
+	if onActivity != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		stopActivity = cancel
+		go func() {
+			tick := time.NewTicker(10 * time.Second)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+					onActivity()
+				}
+			}
+		}()
+	}
+
 	// Bidirectional relay with idle timeout.
 	// If the tunnel supports SetReadDeadline (net.Conn-backed), use
 	// deadline-based idle detection. Otherwise fall back to plain io.Copy.
@@ -1961,11 +1982,17 @@ func proxyWebSocket(w http.ResponseWriter, r *http.Request, eng engine.Engine, e
 		io.Copy(clientConn, tunnel)
 	}
 	<-done
+
+	if stopActivity != nil {
+		stopActivity()
+	}
 }
 
 // handleProxyWS delegates to the shared proxyWebSocket function.
 func (s *Server) handleProxyWS(w http.ResponseWriter, r *http.Request, engineID string, port int, path string) {
-	proxyWebSocket(w, r, s.engine, engineID, port, path)
+	proxyWebSocket(w, r, s.engine, engineID, port, path, func() {
+		s.touchActivity(engineID)
+	})
 }
 
 // --- File Operations ---

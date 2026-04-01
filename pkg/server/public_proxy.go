@@ -31,6 +31,7 @@ type PublicProxyHandler struct {
 	resumeSem   chan struct{}
 	resumeGroup singleflight.Group // coalesces concurrent resumes per sandbox
 	routeCache  *routeCache        // in-memory alias → route mapping
+	onActivity  func(engineID string) // called by WS proxy to signal thermal manager
 
 	// Observability
 	requestsTotal   atomic.Int64
@@ -42,13 +43,14 @@ type PublicProxyHandler struct {
 }
 
 // NewPublicProxyHandler creates a new public proxy handler.
-func NewPublicProxyHandler(eng engine.Engine, st *store.Store, resumeSem chan struct{}) *PublicProxyHandler {
+func NewPublicProxyHandler(eng engine.Engine, st *store.Store, resumeSem chan struct{}, onActivity func(engineID string)) *PublicProxyHandler {
 	return &PublicProxyHandler{
 		engine:     eng,
 		store:      st,
 		limiter:    newPublicRateLimiter(),
 		resumeSem:  resumeSem,
 		routeCache: newRouteCache(),
+		onActivity: onActivity,
 	}
 }
 
@@ -280,7 +282,12 @@ func (h *PublicProxyHandler) proxyToAlias(w http.ResponseWriter, r *http.Request
 	// WebSocket
 	if websocket.IsWebSocketUpgrade(r) {
 		h.webSocketActive.Add(1)
-		proxyWebSocket(w, r, h.engine, route.engineID, route.port, path)
+		var activityFn func()
+		if h.onActivity != nil {
+			eid := route.engineID
+			activityFn = func() { h.onActivity(eid) }
+		}
+		proxyWebSocket(w, r, h.engine, route.engineID, route.port, path, activityFn)
 		h.webSocketActive.Add(-1)
 		h.logRequest(alias, r.Method, path, 101, time.Since(start), wasCold, cached)
 		return

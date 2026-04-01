@@ -226,7 +226,9 @@ func startPlainMode(cfg *pkg.Config, eng engine.Engine, st *store.Store, srv *se
 
 	// Optional path-based public proxy (dev/testing)
 	if cfg.PublicProxyListen != "" {
-		pubHandler := server.NewPublicProxyHandler(eng, st, srv.ResumeSem())
+		pubHandler := server.NewPublicProxyHandler(eng, st, srv.ResumeSem(), func(engineID string) {
+			srv.TouchActivity(engineID)
+		})
 		pubServer := &http.Server{
 			Addr:         cfg.PublicProxyListen,
 			Handler:      http.HandlerFunc(pubHandler.ServeHTTPPathBased),
@@ -258,7 +260,9 @@ func startDomainMode(cfg *pkg.Config, eng engine.Engine, st *store.Store, srv *s
 	var servers []*http.Server
 
 	// Create public proxy handler and attach to server for host-based routing
-	pubHandler := server.NewPublicProxyHandler(eng, st, srv.ResumeSem())
+	pubHandler := server.NewPublicProxyHandler(eng, st, srv.ResumeSem(), func(engineID string) {
+		srv.TouchActivity(engineID)
+	})
 	srv.SetPublicProxy(pubHandler)
 
 	// TLS config

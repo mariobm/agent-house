@@ -80,6 +80,12 @@ func (s *Server) touchActivity(engineID string) {
 	s.snapshotFailures.Delete(engineID) // reset retry counter on user activity
 }
 
+// TouchActivity is the exported version of touchActivity for use by
+// PublicProxyHandler's WebSocket activity callback (wired in main.go).
+func (s *Server) TouchActivity(engineID string) {
+	s.touchActivity(engineID)
+}
+
 // ServerOption configures the server.
 type ServerOption func(*Server)
 

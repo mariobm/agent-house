@@ -1479,7 +1479,7 @@ func setupDomainMode(t *testing.T) (*Server, *httptest.Server) {
 		WithProxyZone("test.sh"),
 		WithAPIHost("api.test.sh"),
 	)
-	pub := NewPublicProxyHandler(eng, st, srv.ResumeSem())
+	pub := NewPublicProxyHandler(eng, st, srv.ResumeSem(), nil)
 	srv.SetPublicProxy(pub)
 
 	ts := httptest.NewServer(srv)

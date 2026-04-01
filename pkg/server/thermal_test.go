@@ -445,3 +445,71 @@ func TestEnsureHotRecoverFromUnknown(t *testing.T) {
 		t.Fatalf("expected running after recovery, got %q", sb.Status)
 	}
 }
+
+// --- Proxy WebSocket activity tests ---
+
+func TestProxyWSKeepsActivityAlive(t *testing.T) {
+	srv, _ := setup(t)
+	eng := srv.engine.(*mockEngine)
+	cfg := ThermalConfig{
+		WarmTimeout: 50 * time.Millisecond,
+		ColdTimeout: time.Hour,
+	}
+
+	eid := createRunningBox(t, srv, eng, "ws-proxy-box")
+
+	// Simulate what proxyWebSocket's activity goroutine does:
+	// periodic touchActivity every 10ms (fast for test)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				srv.touchActivity(eid)
+			}
+		}
+	}()
+
+	// Agent reports idle + no sessions — without the activity goroutine,
+	// the thermal cycle would pause this sandbox
+	eng.mu.Lock()
+	eng.ActivityResult = &proto.ActivityInfo{
+		LastActivityUnix: time.Now().Add(-time.Hour).Unix(),
+		AttachedSessions: 0,
+	}
+	eng.mu.Unlock()
+
+	// Run several thermal cycles
+	te := srv.engine.(ThermalEngine)
+	for i := 0; i < 5; i++ {
+		time.Sleep(20 * time.Millisecond)
+		srv.runThermalCycle(te, cfg)
+	}
+
+	// Should still be hot — activity goroutine kept it alive
+	eng.mu.Lock()
+	state := eng.thermal[eid]
+	eng.mu.Unlock()
+	if state != "hot" {
+		t.Fatalf("expected hot (activity goroutine running), got %q", state)
+	}
+
+	// Stop the activity goroutine (simulates WS disconnect)
+	cancel()
+	time.Sleep(60 * time.Millisecond) // let WarmTimeout expire
+
+	// Now thermal cycle should pause it
+	srv.runThermalCycle(te, cfg)
+
+	eng.mu.Lock()
+	state = eng.thermal[eid]
+	eng.mu.Unlock()
+	if state != "warm" {
+		t.Fatalf("expected warm after activity stopped, got %q", state)
+	}
+}
