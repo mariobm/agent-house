@@ -294,6 +294,7 @@ type createSandboxReq struct {
 	Init       string               `json:"init,omitempty"`
 	NewVolumes []engine.VolumeSpec  `json:"new_volumes,omitempty"`
 	Volumes    []engine.VolumeMount `json:"volumes,omitempty"`
+	KeepHot    bool                 `json:"keep_hot,omitempty"`
 
 	// v0.3: persistent volumes
 	PersistentVolumes []engine.PersistentVolume `json:"persistent_volumes,omitempty"`
@@ -640,6 +641,7 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			EngineMeta: json.RawMessage("{}"),
 			CreatedBy:  user.ID,
 			CreatedAt:  time.Now(),
+			KeepHot:    req.KeepHot,
 		}
 		if err := s.store.CreateSandbox(sb); err != nil {
 			s.engine.Destroy(r.Context(), info.EngineID)
@@ -757,6 +759,28 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 		slog.Info("sandbox.destroyed", "sandbox_id", sb.ID, "name", sb.Name, "user", user.Name)
 		writeJSON(w, 200, map[string]string{"status": "destroyed"})
+	case http.MethodPatch:
+		sb, err := s.store.GetSandbox(user.ID, id)
+		if err != nil {
+			errResp(w, 404, "not found")
+			return
+		}
+		var req struct {
+			KeepHot *bool `json:"keep_hot"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			errResp(w, 400, "invalid json: "+err.Error())
+			return
+		}
+		if req.KeepHot != nil {
+			if err := s.store.UpdateSandboxKeepHot(sb.ID, *req.KeepHot); err != nil {
+				errRespInternal(w, r, "update keep_hot failed", err)
+				return
+			}
+			sb.KeepHot = *req.KeepHot
+			slog.Info("sandbox.updated", "sandbox_id", sb.ID, "name", sb.Name, "keep_hot", sb.KeepHot, "user", user.Name)
+		}
+		writeJSON(w, 200, sb)
 	default:
 		errResp(w, 405, "method not allowed")
 	}

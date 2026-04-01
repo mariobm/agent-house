@@ -120,6 +120,7 @@ type Sandbox struct {
 	CreatedBy  string          `json:"created_by"`
 	CreatedAt  time.Time       `json:"created_at"`
 	StoppedAt  *time.Time      `json:"stopped_at,omitempty"`
+	KeepHot    bool            `json:"keep_hot"`
 }
 
 // SecretRecord tracks an encrypted secret.
@@ -233,6 +234,7 @@ ALTER TABLE sandboxes ADD COLUMN has_base_snapshot INTEGER DEFAULT 0;
 ALTER TABLE users ADD COLUMN max_volume_storage_mb INTEGER NOT NULL DEFAULT 20480;
 ALTER TABLE users ADD COLUMN max_images INTEGER NOT NULL DEFAULT 10;
 ALTER TABLE users ADD COLUMN max_snapshots INTEGER NOT NULL DEFAULT 5;
+ALTER TABLE sandboxes ADD COLUMN keep_hot INTEGER NOT NULL DEFAULT 0;
 `
 
 // New opens (or creates) the SQLite database and runs migrations.
@@ -531,15 +533,19 @@ func scanTemplate(s scanner) (*Template, error) {
 
 // --- Sandboxes ---
 
-const sandboxCols = `id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at, stopped_at`
+const sandboxCols = `id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at, stopped_at, keep_hot`
 
 func (s *Store) CreateSandbox(sb Sandbox) error {
 	if sb.EngineMeta == nil {
 		sb.EngineMeta = json.RawMessage("{}")
 	}
+	keepHot := 0
+	if sb.KeepHot {
+		keepHot = 1
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO sandboxes (id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sb.ID, sb.Name, sb.TemplateID, sb.EngineID, sb.Status, sb.IP, string(sb.EngineMeta), sb.CreatedBy, sb.CreatedAt,
+		`INSERT INTO sandboxes (id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at, keep_hot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sb.ID, sb.Name, sb.TemplateID, sb.EngineID, sb.Status, sb.IP, string(sb.EngineMeta), sb.CreatedBy, sb.CreatedAt, keepHot,
 	)
 	return err
 }
@@ -615,6 +621,16 @@ func (s *Store) UpdateSandboxEngine(id, engineID, ip string) error {
 	return err
 }
 
+// UpdateSandboxKeepHot sets or clears the keep_hot flag for a sandbox.
+func (s *Store) UpdateSandboxKeepHot(id string, keepHot bool) error {
+	v := 0
+	if keepHot {
+		v = 1
+	}
+	_, err := s.db.Exec(`UPDATE sandboxes SET keep_hot = ? WHERE id = ?`, v, id)
+	return err
+}
+
 func (s *Store) StopSandbox(id string) error {
 	now := time.Now()
 	_, err := s.db.Exec(`UPDATE sandboxes SET status = 'stopped', stopped_at = ? WHERE id = ?`, now, id)
@@ -651,7 +667,8 @@ func scanSandbox(s scanner) (*Sandbox, error) {
 	var sb Sandbox
 	var metaJSON string
 	var stoppedAt sql.NullTime
-	err := s.Scan(&sb.ID, &sb.Name, &sb.TemplateID, &sb.EngineID, &sb.Status, &sb.IP, &metaJSON, &sb.CreatedBy, &sb.CreatedAt, &stoppedAt)
+	var keepHot int
+	err := s.Scan(&sb.ID, &sb.Name, &sb.TemplateID, &sb.EngineID, &sb.Status, &sb.IP, &metaJSON, &sb.CreatedBy, &sb.CreatedAt, &stoppedAt, &keepHot)
 	if err != nil {
 		return nil, err
 	}
@@ -659,6 +676,7 @@ func scanSandbox(s scanner) (*Sandbox, error) {
 	if stoppedAt.Valid {
 		sb.StoppedAt = &stoppedAt.Time
 	}
+	sb.KeepHot = keepHot != 0
 	return &sb, nil
 }
 

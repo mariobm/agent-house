@@ -70,6 +70,26 @@ Note the lock discipline: read state under lock, release, then call Resume/Start
 
 The server layer also touches a host-side activity cache when calling `ensureHot()`, recording that this sandbox was recently accessed.
 
+## keep_hot: Opting Out of Thermal Management
+
+Sandboxes with `keep_hot: true` are skipped entirely by the thermal cycle. The VM stays hot regardless of idle time. This is for autonomous agents that maintain persistent external connections (WebSocket to Slack, Discord gateway, etc.) that would die if the VM's vCPUs were paused.
+
+```bash
+# At creation time
+bhatti create --name agent --init "hermes gateway" --keep-hot
+
+# Toggle on an existing sandbox
+bhatti edit agent --keep-hot
+bhatti edit agent --allow-cold
+```
+
+```
+PATCH /sandboxes/:id
+{"keep_hot": true}
+```
+
+The flag is stored in SQLite and checked before any thermal evaluation. Hot VMs with `keep_hot` consume their allocated memory and CPU continuously.
+
 ## The Thermal Cycle
 
 A background goroutine ticks every 10 seconds and evaluates each sandbox:

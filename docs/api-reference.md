@@ -33,11 +33,14 @@ POST /sandboxes
   "memory_mb": 1024,
   "env": {"API_KEY": "sk-..."},
   "init": "cd /workspace && npm install",
+  "keep_hot": false,
   "new_volumes": [{"name": "work", "size_mb": 256, "mount": "/workspace"}]
 }
 ```
 
 All fields optional. Defaults: 1 CPU, 512MB RAM, auto-generated name.
+
+`keep_hot` prevents the thermal manager from pausing or snapshotting this sandbox. Use for autonomous agents that maintain persistent external connections (e.g. Slack WebSocket). Can be toggled on existing sandboxes via PATCH.
 
 **Template-based creation:**
 
@@ -74,6 +77,18 @@ Response: array of sandbox objects.
 ```
 GET /sandboxes/:id
 ```
+
+### Update
+
+```
+PATCH /sandboxes/:id
+```
+
+```json
+{"keep_hot": true}
+```
+
+Toggles mutable sandbox properties. Currently supports `keep_hot` only. Returns the updated sandbox object.
 
 ### Destroy
 

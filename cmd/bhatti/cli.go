@@ -71,6 +71,7 @@ func init() {
 	)
 
 	createCmd.GroupID = "core"
+	editCmd.GroupID = "core"
 	listCmd.GroupID = "core"
 	destroyCmd.GroupID = "core"
 	execCmd.GroupID = "core"
@@ -91,6 +92,7 @@ func init() {
 	// fall into "Additional Commands"
 
 	rootCmd.AddCommand(createCmd)
+	rootCmd.AddCommand(editCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(destroyCmd)
 	rootCmd.AddCommand(execCmd)
@@ -540,7 +542,10 @@ with its own kernel, filesystem, and network.`,
   bhatti create --name py --image python-3.12
 
   # With a persistent volume
-  bhatti create --name work --volume workspace:/workspace`,
+  bhatti create --name work --volume workspace:/workspace
+
+  # Autonomous agent (stays hot, never paused)
+  bhatti create --name agent --init "hermes gateway" --keep-hot`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()
@@ -552,6 +557,7 @@ with its own kernel, filesystem, and network.`,
 		diskSize, _ := cmd.Flags().GetInt("disk-size")
 		env, _ := cmd.Flags().GetString("env")
 		initScript, _ := cmd.Flags().GetString("init")
+		keepHot, _ := cmd.Flags().GetBool("keep-hot")
 		volFlags, _ := cmd.Flags().GetStringSlice("volume")
 
 		envMap := parseEnvFlag(env)
@@ -572,6 +578,9 @@ with its own kernel, filesystem, and network.`,
 		}
 		if initScript != "" {
 			req["init"] = initScript
+		}
+		if keepHot {
+			req["keep_hot"] = true
 		}
 
 		// Parse --volume flags: name:mount[:ro]
@@ -622,7 +631,67 @@ func init() {
 	createCmd.Flags().Int("disk-size", 0, "Rootfs disk size in MB (0 = use image size)")
 	createCmd.Flags().String("env", "", "Environment variables (K=V,K=V)")
 	createCmd.Flags().String("init", "", "Init script")
+	createCmd.Flags().Bool("keep-hot", false, "Prevent thermal transitions (for autonomous agents)")
 	createCmd.Flags().StringSlice("volume", nil, "Persistent volume (name:mount[:ro])")
+
+	editCmd.Flags().Bool("keep-hot", false, "Prevent thermal transitions (for autonomous agents)")
+	editCmd.Flags().Bool("allow-cold", false, "Re-enable thermal transitions")
+}
+
+// --- edit ---
+
+var editCmd = &cobra.Command{
+	Use:   "edit <sandbox> [flags]",
+	Short: "Update sandbox settings",
+	Long: `Update mutable settings on an existing sandbox. Currently supports
+toggling keep_hot to control thermal management.`,
+	Example: `  # Prevent a sandbox from being paused/snapshotted
+  bhatti edit my-agent --keep-hot
+
+  # Re-enable thermal transitions
+  bhatti edit my-agent --allow-cold`,
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeSandboxNames,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, err := resolveID(args[0])
+		if err != nil {
+			return err
+		}
+
+		req := map[string]any{}
+		keepHot, _ := cmd.Flags().GetBool("keep-hot")
+		allowCold, _ := cmd.Flags().GetBool("allow-cold")
+		if keepHot && allowCold {
+			return fmt.Errorf("cannot use --keep-hot and --allow-cold together")
+		}
+		if keepHot {
+			req["keep_hot"] = true
+		}
+		if allowCold {
+			req["keep_hot"] = false
+		}
+
+		if len(req) == 0 {
+			return fmt.Errorf("nothing to update — use --keep-hot or --allow-cold")
+		}
+
+		var sb map[string]any
+		if err := apiJSON("PATCH", "/sandboxes/"+id, req, &sb); err != nil {
+			return err
+		}
+		if isJSON(cmd) {
+			outputJSON(sb)
+		} else {
+			fmt.Printf("Updated %s\n", args[0])
+			if keepHot {
+				fmt.Println("  keep_hot: true (thermal transitions disabled)")
+			}
+			if allowCold {
+				fmt.Println("  keep_hot: false (thermal transitions re-enabled)")
+			}
+		}
+		return nil
+	},
 }
 
 // --- list ---

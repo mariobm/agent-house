@@ -311,6 +311,13 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 			continue
 		}
 
+		// Sandboxes with keep_hot skip thermal management entirely.
+		// Used for autonomous agents that maintain persistent external
+		// connections (e.g. Slack WebSocket) that would die if paused.
+		if sb.KeepHot {
+			continue
+		}
+
 		thermal := te.ThermalState(sb.EngineID)
 
 		// --- Warm → Cold: host-side timing only, no agent query ---
