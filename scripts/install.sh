@@ -161,9 +161,11 @@ install_firecracker() {
         | tar xz -C "$tmpdir"
     mv "$tmpdir/release-v${FC_VERSION}-${FC_ARCH}/firecracker-v${FC_VERSION}-${FC_ARCH}" \
         /usr/local/bin/firecracker
-    chmod +x /usr/local/bin/firecracker
+    mv "$tmpdir/release-v${FC_VERSION}-${FC_ARCH}/jailer-v${FC_VERSION}-${FC_ARCH}" \
+        /usr/local/bin/jailer
+    chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer
     rm -rf "$tmpdir"
-    success "Firecracker ${FC_VERSION}"
+    success "Firecracker ${FC_VERSION} + jailer"
 }
 
 install_lohar() {
@@ -205,6 +207,13 @@ install_rootfs() {
     success "rootfs ${tier} ($(du -h "$rootfs_path" | cut -f1))"
 }
 
+setup_jail_user() {
+    if ! id -u bhatti-vm >/dev/null 2>&1; then
+        useradd -r -s /usr/sbin/nologin -u 10000 bhatti-vm 2>/dev/null || true
+        success "Created bhatti-vm user (uid 10000)"
+    fi
+}
+
 generate_config() {
     local tier="$1"
     cat > "$DATA_DIR/config.yaml" << EOF
@@ -212,6 +221,9 @@ engine: firecracker
 listen: :8080
 data_dir: ${DATA_DIR}
 firecracker_bin: /usr/local/bin/firecracker
+firecracker_jailer: /usr/local/bin/jailer
+jail_uid: 10000
+jail_gid: 10000
 firecracker_kernel: ${DATA_DIR}/images/vmlinux-${ARCH}
 firecracker_rootfs: ${DATA_DIR}/images/rootfs-${tier}-${ARCH}.ext4
 EOF
@@ -341,6 +353,7 @@ do_server_install() {
     install_lohar
     install_kernel
     install_rootfs "$tier"
+    setup_jail_user
     generate_config "$tier"
     create_admin_user
     write_systemd_unit
@@ -434,6 +447,7 @@ do_server_update() {
     install_lohar
     install_kernel
     install_rootfs "$tier"
+    setup_jail_user
     write_systemd_unit
     # config.yaml and admin user are PRESERVED
 

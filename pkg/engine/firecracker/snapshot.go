@@ -108,14 +108,37 @@ func (e *Engine) Checkpoint(ctx context.Context, sandboxID, userID string, subne
 	}
 
 	// Create Firecracker snapshot (mem.snap + vm.snap)
-	memPath := filepath.Join(tmpDir, "mem.snap")
-	vmPath := filepath.Join(tmpDir, "vm.snap")
+	// In jailed mode, FC writes inside its chroot — use relative paths
+	// then move files to tmpDir after.
+	var snapVMRef, snapMemRef string
+	if e.cfg.jailed() && vm.jailRoot != "" {
+		snapVMRef = "/checkpoint-vm.snap"
+		snapMemRef = "/checkpoint-mem.snap"
+	} else {
+		snapVMRef = filepath.Join(tmpDir, "vm.snap")
+		snapMemRef = filepath.Join(tmpDir, "mem.snap")
+	}
 	if err := fcPut(ctx, client, "/snapshot/create", fmt.Sprintf(
 		`{"snapshot_type":"Full","snapshot_path":%q,"mem_file_path":%q}`,
-		vmPath, memPath)); err != nil {
+		snapVMRef, snapMemRef)); err != nil {
 		os.RemoveAll(tmpDir)
 		resumeOnError()
 		return nil, fmt.Errorf("create FC snapshot: %w", err)
+	}
+	// Move snapshot files from chroot to tmpDir
+	if e.cfg.jailed() && vm.jailRoot != "" {
+		for _, pair := range [][2]string{
+			{filepath.Join(vm.jailRoot, "checkpoint-vm.snap"), filepath.Join(tmpDir, "vm.snap")},
+			{filepath.Join(vm.jailRoot, "checkpoint-mem.snap"), filepath.Join(tmpDir, "mem.snap")},
+		} {
+			if err := os.Rename(pair[0], pair[1]); err != nil {
+				if err := copyBlock(pair[0], pair[1]); err != nil {
+					os.RemoveAll(tmpDir)
+					resumeOnError()
+					return nil, fmt.Errorf("move checkpoint artifact: %w", err)
+				}
+			}
+		}
 	}
 
 	// Build drive list and file copy list
@@ -394,21 +417,21 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 
 	vm := &VM{
 		ID: id, Name: name, UserID: manifest.UserID,
-		SocketPath: socketPath, VsockPath: vsockPath,
+		SocketPath: apiSocket, VsockPath: vsockPath,
 		RootfsPath: filepath.Join(sandboxDir, "rootfs.ext4"),
 		CID: cid, VcpuCount: manifest.VMConfig.VcpuCount,
 		MemSizeMib: manifest.VMConfig.MemSizeMib,
 		TapDevice: tapName, GuestIP: guestIP,
 		GuestMAC: manifest.Network.GuestMAC,
 		Token:   manifest.AgentToken,
-		FCPathOrigin: fcOrigin, // inherit: FC still has same internal paths
+		FCPathOrigin: fcOrigin,
 		Agent:   agentClient,
 		Status:  "running",
 		Thermal: "hot",
 		cancel:  vmCancel,
 		cmd:     fcCmd,
 		stderrBuf: stderrBuf,
-		hasBaseSnapshot: true, // resumed VMs can do diff snapshots
+		jailRoot: fcProc.jailRoot,
 	}
 
 	e.mu.Lock()

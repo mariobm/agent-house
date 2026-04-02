@@ -95,6 +95,29 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
+	// Pre-upgrade check: refuse to start if jailer is configured but
+	// bare-mode sandboxes exist (their snapshots have absolute paths
+	// that don't work inside a chroot).
+	if cfg.FirecrackerJailer != "" {
+		if sandboxes, err := st.ListAllSandboxes(); err == nil {
+			for _, sb := range sandboxes {
+				if sb.Status == "destroyed" {
+					continue
+				}
+				if sb.Status == "running" || sb.Status == "stopped" {
+					slog.Error("jailer is configured but bare-mode sandboxes exist",
+						"sandbox", sb.Name, "id", sb.ID, "status", sb.Status)
+					fmt.Fprintf(os.Stderr, "\nERROR: jailer is configured but bare-mode sandboxes exist.\n"+
+						"Destroy all sandboxes and snapshots before enabling the jailer:\n\n"+
+						"  bhatti list --json | jq -r '.[].id' | xargs -I{} bhatti destroy {} --yes\n"+
+						"  bhatti snapshot list --json | jq -r '.[].name' | xargs -I{} bhatti snapshot delete {} --yes\n\n"+
+						"Then restart bhatti. Volumes and images are safe.\n")
+					os.Exit(1)
+				}
+			}
+		}
+	}
+
 	// Recover Firecracker VMs from store if applicable
 	if provider, ok := eng.(engine.VMStateProvider); ok {
 		recoverVMs(st, provider)

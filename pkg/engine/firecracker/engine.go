@@ -119,6 +119,7 @@ type VM struct {
 	restoreFailed   bool   // set on restore failure, blocks retries until --force
 	restoreError    string // the error message for user display
 	stderrBuf       *ringBuffer // last 64KB of FC stderr
+	jailRoot        string      // chroot root dir (empty if bare mode)
 	cancel          context.CancelFunc
 	cmd             *exec.Cmd
 }
@@ -592,14 +593,14 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 
 	vm := &VM{
 		ID: id, Name: name, UserID: spec.UserID,
-		SocketPath: socketPath,
+		SocketPath: apiSocket,
 		VsockPath: vsockPath, RootfsPath: rootfsPath,
 		CID: cid, VcpuCount: vcpuCount, MemSizeMib: memMB,
 		TapDevice: tapName, GuestIP: guestIP, GuestMAC: mac,
 		Token: token, FCPathOrigin: id, Volumes: volAttachments,
 		Agent: agentClient, Status: "running",
 		Thermal: "hot", cancel: vmCancel, cmd: fcCmd,
-		stderrBuf: stderrBuf,
+		stderrBuf: stderrBuf, jailRoot: fcProc.jailRoot,
 	}
 
 	e.mu.Lock()
@@ -710,28 +711,48 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 		}
 	}
 
-	// Always take Full snapshots. Diff snapshots are disabled —
-	// track_dirty_pages is false, and Full eliminates the corruption
-	// class that caused the rory incident.
-	vm.SnapMemPath = filepath.Join(filepath.Dir(vm.RootfsPath), "mem.snap")
-	vm.SnapVMPath = filepath.Join(filepath.Dir(vm.RootfsPath), "vm.snap")
+	// Always take Full snapshots.
+	sandboxDir := filepath.Dir(vm.RootfsPath)
+	vm.SnapMemPath = filepath.Join(sandboxDir, "mem.snap")
+	vm.SnapVMPath = filepath.Join(sandboxDir, "vm.snap")
+
+	// In jailed mode, FC can only write inside its chroot. Pass
+	// chroot-relative paths to /snapshot/create, then move the files
+	// to the sandbox dir after FC exits.
+	var snapVMRef, snapMemRef string
+	if e.cfg.jailed() && vm.jailRoot != "" {
+		snapVMRef = "/vm.snap"
+		snapMemRef = "/mem.snap"
+	} else {
+		snapVMRef = vm.SnapVMPath
+		snapMemRef = vm.SnapMemPath
+	}
 
 	snapshotType := "Full"
-
-	// Snapshot timeout comes from the caller's ctx (60s from thermal cycle,
-	// or whatever the caller passes). Previously the hardcoded 10s
-	// http.Client.Timeout was the only timeout and caused issue #4.
 	if err := fcPut(ctx, client, "/snapshot/create", fmt.Sprintf(
 		`{"snapshot_type":%q,"snapshot_path":%q,"mem_file_path":%q}`,
-		snapshotType, vm.SnapVMPath, vm.SnapMemPath)); err != nil {
+		snapshotType, snapVMRef, snapMemRef)); err != nil {
 		return fmt.Errorf("create %s snapshot: %w", snapshotType, err)
+	}
+
+	// In jailed mode, move snapshot files from chroot to sandbox dir.
+	if e.cfg.jailed() && vm.jailRoot != "" {
+		for _, name := range []string{"vm.snap", "mem.snap"} {
+			src := filepath.Join(vm.jailRoot, name)
+			dst := filepath.Join(sandboxDir, name)
+			os.Remove(dst)
+			if err := os.Rename(src, dst); err != nil {
+				// Cross-device? Copy instead.
+				if err := copyBlock(src, dst); err != nil {
+					slog.Error("move snapshot from chroot", "file", name, "error", err)
+				}
+			}
+		}
 	}
 
 	// Lightweight sanity check on snapshot artifacts.
 	if err := verifySnapshotArtifacts(vm.SnapVMPath, vm.SnapMemPath, vm.MemSizeMib, snapshotType); err != nil {
 		slog.Error("snapshot sanity check failed", "sandbox", id, "error", err, "type", snapshotType)
-		// Don't fail the Stop — a potentially-bad snapshot is better than
-		// no snapshot. The error is logged for investigation.
 	}
 
 	// hasBaseSnapshot no longer used — all snapshots are Full.
@@ -1019,10 +1040,11 @@ func (e *Engine) startVM(ctx context.Context, id string, force bool) error {
 		os.RemoveAll(symlinkDir)
 	}
 
-	vm.SocketPath = newSocketPath
+	vm.SocketPath = apiSocket
 	vm.cmd = fcProc.cmd
 	vm.cancel = fcProc.cancel
 	vm.stderrBuf = fcProc.stderrBuf
+	vm.jailRoot = fcProc.jailRoot
 	vm.Status = "running"
 	vm.Thermal = "hot"
 
