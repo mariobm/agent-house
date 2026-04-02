@@ -54,6 +54,7 @@ type Server struct {
 	startTime       time.Time
 	lastActivity     sync.Map // engineID → time.Time — host-side activity cache
 	snapshotFailures sync.Map // engineID → int — consecutive snapshot failure count
+	thermalFails     sync.Map // engineID → int — consecutive Activity query failures
 
 	// Task cancellation for async operations (image pull)
 	pullCancelMu sync.Mutex
@@ -72,12 +73,31 @@ type Server struct {
 	resumeSem       chan struct{}       // bounds concurrent cold resumes
 }
 
+// maxThermalFailures is the number of consecutive Activity query failures
+// before a sandbox is force-paused. At 10-second thermal intervals this
+// means ~100 seconds of agent silence. keep_hot sandboxes are exempt.
+const maxThermalFailures = 10
+
+// incrementThermalFails bumps and returns the consecutive failure count.
+func (s *Server) incrementThermalFails(engineID string) int {
+	val, _ := s.thermalFails.LoadOrStore(engineID, 0)
+	count := val.(int) + 1
+	s.thermalFails.Store(engineID, count)
+	return count
+}
+
+// resetThermalFails clears the failure counter for an engine.
+func (s *Server) resetThermalFails(engineID string) {
+	s.thermalFails.Delete(engineID)
+}
+
 // touchActivity records that a sandbox was accessed via the API.
 // The thermal manager checks this before querying the guest agent,
 // avoiding a TCP connection per sandbox per thermal cycle.
 func (s *Server) touchActivity(engineID string) {
 	s.lastActivity.Store(engineID, time.Now())
 	s.snapshotFailures.Delete(engineID) // reset retry counter on user activity
+	s.resetThermalFails(engineID)        // reset thermal failure counter on user activity
 }
 
 // TouchActivity is the exported version of touchActivity for use by
@@ -252,10 +272,22 @@ func (s *Server) SnapshotAll() {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			if err := s.engine.Stop(ctx, sb.EngineID); err != nil {
-				failed.Add(1)
-				slog.Error("snapshot-all: stop failed",
+			err := s.engine.Stop(ctx, sb.EngineID, engine.StopOpts{ForceFullSnapshot: true})
+			if err != nil {
+				// Retry once with a fresh context — transient failures
+				// (FC API timeout, disk hiccup) often succeed on retry.
+				slog.Warn("snapshot-all: first attempt failed, retrying",
 					"sandbox", sb.Name, "id", sb.ID, "error", err)
+				retryCtx, retryCancel := context.WithTimeout(context.Background(), 60*time.Second)
+				err = s.engine.Stop(retryCtx, sb.EngineID, engine.StopOpts{ForceFullSnapshot: true})
+				retryCancel()
+			}
+			if err != nil {
+				failed.Add(1)
+				slog.Error("snapshot-all: retry failed, leaving VM running",
+					"sandbox", sb.Name, "id", sb.ID, "error", err)
+				// Do NOT kill the FC process — an unsnapshotted live VM is
+				// better than an unrecoverable dead sandbox.
 				return
 			}
 
@@ -338,7 +370,7 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 			idle := time.Since(ts.(time.Time))
 			if idle > cfg.ColdTimeout {
 				stopCtx, stopCancel := context.WithTimeout(context.Background(), 60*time.Second)
-				err := s.engine.Stop(stopCtx, sb.EngineID)
+				err := s.engine.Stop(stopCtx, sb.EngineID, engine.StopOpts{})
 				stopCancel()
 
 				if err != nil {
@@ -394,8 +426,26 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 		activity, err := te.Activity(actCtx, sb.EngineID)
 		actCancel()
 		if err != nil {
+			count := s.incrementThermalFails(sb.EngineID)
+			slog.Warn("thermal activity query failed",
+				"sandbox", sb.Name, "error", err,
+				"consecutive_failures", count)
+			if count >= maxThermalFailures {
+				slog.Error("thermal force-pause: agent unresponsive",
+					"sandbox", sb.Name, "failures", count)
+				// Pause is a Firecracker API call — doesn't need the agent
+				if err := te.Pause(context.Background(), sb.EngineID); err != nil {
+					slog.Warn("thermal force-pause failed", "sandbox", sb.Name, "error", err)
+				} else {
+					s.lastActivity.Store(sb.EngineID, time.Now())
+					slog.Info("thermal transition", "sandbox", sb.Name,
+						"from", "hot", "to", "warm", "reason", "force-pause")
+				}
+				s.resetThermalFails(sb.EngineID)
+			}
 			continue
 		}
+		s.resetThermalFails(sb.EngineID) // success — reset counter
 
 		idle := time.Since(time.Unix(activity.LastActivityUnix, 0))
 
@@ -409,6 +459,9 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 			s.lastActivity.Store(sb.EngineID, time.Now())
 			slog.Info("thermal transition", "sandbox", sb.Name,
 				"from", "hot", "to", "warm", "idle", idle.Round(time.Second))
+		} else if activity.AttachedSessions > 0 {
+			slog.Debug("thermal skip: active sessions",
+				"sandbox", sb.Name, "sessions", activity.AttachedSessions)
 		}
 	}
 }

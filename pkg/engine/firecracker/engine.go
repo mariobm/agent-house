@@ -90,6 +90,9 @@ type VM struct {
 	Status          string // "running", "stopped"
 	Thermal         string // "hot", "warm", "cold"
 	hasBaseSnapshot bool   // true after first Full snapshot (enables Diff)
+	restoreFailed   bool   // set on restore failure, blocks retries until --force
+	restoreError    string // the error message for user display
+	stderrBuf       *ringBuffer // last 64KB of FC stderr
 	cancel          context.CancelFunc
 	cmd             *exec.Cmd
 }
@@ -416,8 +419,9 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	vmCtx, cancel := context.WithCancel(context.Background())
 	vmCancel = cancel // assign to outer var so defer can clean up
 	os.Remove(socketPath)
+	stderrBuf := newRingBuffer(64 * 1024)
 	fcCmd = exec.CommandContext(vmCtx, e.cfg.FCBinary, "--api-sock", socketPath)
-	fcCmd.Stderr = os.Stderr
+	fcCmd.Stderr = stderrBuf
 	if err = fcCmd.Start(); err != nil {
 		return info, fmt.Errorf("start firecracker: %w", err)
 	}
@@ -515,6 +519,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 		Token: token, FCPathOrigin: id, Volumes: volAttachments,
 		Agent: agentClient, Status: "running",
 		Thermal: "hot", cancel: vmCancel, cmd: fcCmd,
+		stderrBuf: stderrBuf,
 	}
 
 	e.mu.Lock()
@@ -587,7 +592,7 @@ func (e *Engine) SaveImage(ctx context.Context, sandboxID, destPath string) erro
 
 // --- Stop (Snapshot) ---
 
-func (e *Engine) Stop(ctx context.Context, id string) error {
+func (e *Engine) Stop(ctx context.Context, id string, opts engine.StopOpts) error {
 	vm, err := e.getVM(id)
 	if err != nil {
 		return err
@@ -613,14 +618,17 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 		}
 	}
 
-	// Create snapshot — use Diff if we have a base, Full otherwise.
+	// Create snapshot — use Diff if we have a base and caller allows it.
 	// Diff snapshots write only dirty pages since the last snapshot,
 	// reducing write time from ~4s (512MB full) to ~0.5s (10-50MB diff).
+	// ForceFullSnapshot is set by SnapshotAll (daemon shutdown) and
+	// user-initiated stop — correctness over speed. Diff remains valid
+	// for thermal warm→cold (VM already paused, small dirty set).
 	vm.SnapMemPath = filepath.Join(filepath.Dir(vm.RootfsPath), "mem.snap")
 	vm.SnapVMPath = filepath.Join(filepath.Dir(vm.RootfsPath), "vm.snap")
 
 	snapshotType := "Full"
-	if vm.hasBaseSnapshot {
+	if vm.hasBaseSnapshot && !opts.ForceFullSnapshot {
 		// Verify base snapshot files still exist
 		if _, err := os.Stat(vm.SnapMemPath); err != nil {
 			slog.Warn("base snapshot missing, falling back to full",
@@ -739,6 +747,13 @@ func (e *Engine) EnsureHot(ctx context.Context, id string) error {
 	}
 
 	vm.stateMu.Lock()
+	if vm.restoreFailed {
+		err := fmt.Errorf("sandbox %q snapshot is corrupt: %s \u2014 "+
+			"use 'bhatti start --force' to retry or "+
+			"destroy and recreate (volume data is safe)", id, vm.restoreError)
+		vm.stateMu.Unlock()
+		return err
+	}
 	thermal := vm.Thermal
 	vm.stateMu.Unlock()
 
@@ -756,6 +771,15 @@ func (e *Engine) EnsureHot(ctx context.Context, id string) error {
 // --- Start (Resume from snapshot, Cold → Hot) ---
 
 func (e *Engine) Start(ctx context.Context, id string) error {
+	return e.startVM(ctx, id, false)
+}
+
+// StartForce clears a restore-failed circuit breaker and retries.
+func (e *Engine) StartForce(ctx context.Context, id string) error {
+	return e.startVM(ctx, id, true)
+}
+
+func (e *Engine) startVM(ctx context.Context, id string, force bool) error {
 	vm, err := e.getVM(id)
 	if err != nil {
 		return err
@@ -763,6 +787,15 @@ func (e *Engine) Start(ctx context.Context, id string) error {
 
 	vm.stateMu.Lock()
 	defer vm.stateMu.Unlock()
+
+	if force {
+		vm.restoreFailed = false
+		vm.restoreError = ""
+	} else if vm.restoreFailed {
+		return fmt.Errorf("sandbox %q snapshot is corrupt: %s \u2014 "+
+			"use 'bhatti start --force' to retry or "+
+			"destroy and recreate (volume data is safe)", id, vm.restoreError)
+	}
 
 	if vm.SnapMemPath == "" {
 		return fmt.Errorf("sandbox %q has no snapshot to resume from", id)
@@ -779,11 +812,26 @@ func (e *Engine) Start(ctx context.Context, id string) error {
 	os.Remove(vm.VsockPath)
 
 	vmCtx, vmCancel := context.WithCancel(context.Background())
+	stderrBuf := newRingBuffer(64 * 1024)
 	fcCmd := exec.CommandContext(vmCtx, e.cfg.FCBinary, "--api-sock", newSocketPath)
-	fcCmd.Stderr = os.Stderr
+	fcCmd.Stderr = stderrBuf
 	if err := fcCmd.Start(); err != nil {
 		vmCancel()
 		return fmt.Errorf("start firecracker: %w", err)
+	}
+
+	// Cleanup on any failure after FC is started
+	restoreFailed := func(fmtStr string, args ...interface{}) error {
+		fcCmd.Process.Kill()
+		fcCmd.Wait()
+		vmCancel()
+		errMsg := fmt.Sprintf(fmtStr, args...)
+		vm.restoreFailed = true
+		vm.restoreError = errMsg
+		if stderr := stderrBuf.String(); stderr != "" {
+			return fmt.Errorf("%s\nFC stderr: %s", errMsg, stderr)
+		}
+		return fmt.Errorf("%s", errMsg)
 	}
 
 	for i := 0; i < 50; i++ {
@@ -800,14 +848,13 @@ func (e *Engine) Start(ctx context.Context, id string) error {
 	if err := fcPut(ctx, client, "/snapshot/load", fmt.Sprintf(
 		`{"snapshot_path":%q,"mem_backend":{"backend_path":%q,"backend_type":"File"},"resume_vm":true,"enable_diff_snapshots":true}`,
 		vm.SnapVMPath, vm.SnapMemPath)); err != nil {
-		fcCmd.Process.Kill()
-		vmCancel()
-		return fmt.Errorf("load snapshot: %w", err)
+		return restoreFailed("load snapshot: %v", err)
 	}
 
 	vm.SocketPath = newSocketPath
 	vm.cmd = fcCmd
 	vm.cancel = vmCancel
+	vm.stderrBuf = stderrBuf
 	vm.Status = "running"
 	vm.Thermal = "hot"
 
@@ -817,10 +864,12 @@ func (e *Engine) Start(ctx context.Context, id string) error {
 
 	// Wait for agent to be responsive after resume.
 	if err := vm.Agent.WaitReady(ctx, 30*time.Second); err != nil {
-		fcCmd.Process.Kill()
-		vmCancel()
-		return fmt.Errorf("agent not ready after resume: %w", err)
+		return restoreFailed("agent not ready after resume: %v", err)
 	}
+
+	// Restore succeeded — clear any previous failure state
+	vm.restoreFailed = false
+	vm.restoreError = ""
 
 	return nil
 }

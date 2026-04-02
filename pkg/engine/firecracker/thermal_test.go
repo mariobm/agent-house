@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sahil-shubham/bhatti/pkg/engine"
 )
 
 func TestPauseResume(t *testing.T) {
@@ -148,7 +150,7 @@ func TestEnsureHotFromCold(t *testing.T) {
 
 	// Write data, then go cold
 	execWithTimeout(t, eng, info.ID, []string{"sh", "-c", "echo cold-data > /tmp/data"})
-	eng.Stop(ctx, info.ID)
+	eng.Stop(ctx, info.ID, engine.StopOpts{})
 	if eng.ThermalState(info.ID) != "cold" {
 		t.Fatalf("expected cold")
 	}
@@ -331,7 +333,7 @@ func TestExecOnColdVMFails(t *testing.T) {
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	eng.Stop(ctx, info.ID)
+	eng.Stop(ctx, info.ID, engine.StopOpts{})
 
 	start := time.Now()
 	_, err = eng.Exec(ctx, info.ID, []string{"echo", "hello"})
@@ -375,7 +377,7 @@ func TestStopWarmVM(t *testing.T) {
 
 	// Now Stop from warm — this is the warm→cold thermal path.
 	// Stop must not fail trying to double-Pause.
-	if err := eng.Stop(ctx, info.ID); err != nil {
+	if err := eng.Stop(ctx, info.ID, engine.StopOpts{}); err != nil {
 		t.Fatalf("Stop from warm: %v", err)
 	}
 	if eng.ThermalState(info.ID) != "cold" {
@@ -411,7 +413,7 @@ func TestStopRespectsContext(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	err = eng.Stop(shortCtx, info.ID)
+	err = eng.Stop(shortCtx, info.ID, engine.StopOpts{})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -467,7 +469,7 @@ func TestStopSucceedsWithAdequateTimeout(t *testing.T) {
 	defer stopCancel()
 
 	start := time.Now()
-	if err := eng.Stop(stopCtx, info.ID); err != nil {
+	if err := eng.Stop(stopCtx, info.ID, engine.StopOpts{}); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	t.Logf("Stop took %v", time.Since(start))
@@ -502,7 +504,7 @@ func TestVMRecoverableAfterSnapshotFailure(t *testing.T) {
 	// Simulate the issue: Stop with a timeout too short for Full snapshot.
 	shortCtx, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
 	time.Sleep(5 * time.Millisecond)
-	err = eng.Stop(shortCtx, info.ID)
+	err = eng.Stop(shortCtx, info.ID, engine.StopOpts{})
 	cancel()
 
 	if err == nil {

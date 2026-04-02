@@ -313,8 +313,9 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 
 	vmCtx, cancel := context.WithCancel(context.Background())
 	vmCancel = cancel
+	stderrBuf := newRingBuffer(64 * 1024)
 	fcCmd = exec.CommandContext(vmCtx, e.cfg.FCBinary, "--api-sock", socketPath)
-	fcCmd.Stderr = os.Stderr
+	fcCmd.Stderr = stderrBuf
 	if err = fcCmd.Start(); err != nil {
 		return info, fmt.Errorf("start firecracker: %w", err)
 	}
@@ -383,6 +384,9 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 		if needCleanup {
 			os.RemoveAll(origSandboxDir)
 		}
+		if fcStderr := stderrBuf.String(); fcStderr != "" {
+			return info, fmt.Errorf("load snapshot: %w\nFC stderr: %s", err, fcStderr)
+		}
 		return info, fmt.Errorf("load snapshot: %w", err)
 	}
 
@@ -421,6 +425,7 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 		Thermal: "hot",
 		cancel:  vmCancel,
 		cmd:     fcCmd,
+		stderrBuf: stderrBuf,
 		hasBaseSnapshot: true, // resumed VMs can do diff snapshots
 	}
 
