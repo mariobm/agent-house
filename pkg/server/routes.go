@@ -750,8 +750,8 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("engine destroy failed, releasing volumes anyway",
 				"sandbox", sb.ID, "error", err)
 		}
-		s.store.DetachVolumes(id)
-		s.store.DetachAllPersistentVolumesForSandbox(id) // v0.3 persistent volumes
+		s.store.DetachVolumes(sb.ID)
+		s.store.DetachAllPersistentVolumesForSandbox(sb.ID) // v0.3 persistent volumes
 		if n, err := s.store.DeletePublishRulesForSandbox(sb.ID); err != nil {
 			slog.Warn("cleanup publish rules", "sandbox", sb.ID, "error", err)
 		} else if n > 0 {
@@ -760,7 +760,7 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 		if s.publicProxy != nil {
 			s.publicProxy.routeCache.InvalidateSandbox(sb.ID)
 		}
-		if err := s.store.DeleteSandbox(user.ID, id); err != nil {
+		if err := s.store.DeleteSandbox(user.ID, sb.ID); err != nil {
 			errRespInternal(w, r, "delete sandbox failed", err)
 			return
 		}
@@ -806,9 +806,9 @@ func (s *Server) handleSandboxStop(w http.ResponseWriter, r *http.Request, id st
 		errRespInternal(w, r, "stop sandbox failed", err)
 		return
 	}
-	s.store.StopSandbox(id)
-	s.saveVMState(id, sb.EngineID) // persist snapshot paths
-	updated, _ := s.store.GetSandboxByID(id)
+	s.store.StopSandbox(sb.ID)
+	s.saveVMState(sb.ID, sb.EngineID) // persist snapshot paths
+	updated, _ := s.store.GetSandboxByID(sb.ID)
 	writeJSON(w, 200, updated)
 }
 
