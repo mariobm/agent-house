@@ -918,6 +918,9 @@ func (e *Engine) startVM(ctx context.Context, id string, force bool) error {
 	restoreFailed := func(fmtStr string, args ...interface{}) error {
 		killFC(fcProc.cmd, 1*time.Second)
 		fcProc.cancel()
+		// Remove vsock left by the failed FC instance so the next
+		// attempt (via --force) doesn't hit "Address in use".
+		os.Remove(vm.VsockPath)
 		errMsg := fmt.Sprintf(fmtStr, args...)
 		vm.restoreFailed = true
 		vm.restoreError = errMsg
