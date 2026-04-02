@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/sahil-shubham/bhatti/pkg/agent"
@@ -204,8 +205,7 @@ func (e *Engine) Shutdown() {
 			continue
 		}
 		if vm.Status == "running" && vm.cmd != nil {
-			vm.cmd.Process.Kill()
-			vm.cmd.Wait()
+			killFC(vm.cmd, 1*time.Second)
 		}
 	}
 
@@ -290,8 +290,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	defer func() {
 		if err != nil {
 			if fcCmd != nil && fcCmd.Process != nil {
-				fcCmd.Process.Kill()
-				fcCmd.Wait()
+				killFC(fcCmd, 1*time.Second)
 			}
 			if vmCancel != nil {
 				vmCancel()
@@ -446,23 +445,13 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	}
 
 	// 5. Start Firecracker process
-	vmCtx, cancel := context.WithCancel(context.Background())
-	vmCancel = cancel // assign to outer var so defer can clean up
-	os.Remove(socketPath)
-	stderrBuf := newRingBuffer(64 * 1024)
-	fcCmd = exec.CommandContext(vmCtx, e.cfg.FCBinary, "--api-sock", socketPath)
-	fcCmd.Stderr = stderrBuf
-	if err = fcCmd.Start(); err != nil {
-		return info, fmt.Errorf("start firecracker: %w", err)
+	fcProc, err := e.startFC(socketPath)
+	if err != nil {
+		return info, err
 	}
-
-	// Wait for API socket to appear
-	for i := 0; i < 50; i++ {
-		if _, err := os.Stat(socketPath); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	fcCmd = fcProc.cmd
+	vmCancel = fcProc.cancel
+	stderrBuf := fcProc.stderrBuf
 
 	// 6. Configure via HTTP API
 	client := fcAPIClient(socketPath)
@@ -731,9 +720,8 @@ func (e *Engine) Stop(ctx context.Context, id string, opts engine.StopOpts) erro
 		vm.hasBaseSnapshot = true
 	}
 
-	// Stop VMM process
-	vm.cmd.Process.Kill()
-	vm.cmd.Wait()
+	// Stop VMM process — SIGTERM first, SIGKILL after 3s
+	killFC(vm.cmd, 3*time.Second)
 	vm.cancel()
 
 	// NOTE: We do NOT destroy the TAP device here. The snapshot contains
@@ -887,37 +875,24 @@ func (e *Engine) startVM(ctx context.Context, id string, force bool) error {
 	// path growing on repeated stop/start cycles (SUN_LEN overflow).
 	baseSockPath := strings.TrimSuffix(vm.SocketPath, ".resume")
 	newSocketPath := baseSockPath + ".resume"
-	os.Remove(newSocketPath)
 	os.Remove(vm.VsockPath)
 
-	vmCtx, vmCancel := context.WithCancel(context.Background())
-	stderrBuf := newRingBuffer(64 * 1024)
-	fcCmd := exec.CommandContext(vmCtx, e.cfg.FCBinary, "--api-sock", newSocketPath)
-	fcCmd.Stderr = stderrBuf
-	if err := fcCmd.Start(); err != nil {
-		vmCancel()
-		return fmt.Errorf("start firecracker: %w", err)
+	fcProc, err := e.startFC(newSocketPath)
+	if err != nil {
+		return err
 	}
 
 	// Cleanup on any failure after FC is started
 	restoreFailed := func(fmtStr string, args ...interface{}) error {
-		fcCmd.Process.Kill()
-		fcCmd.Wait()
-		vmCancel()
+		killFC(fcProc.cmd, 1*time.Second)
+		fcProc.cancel()
 		errMsg := fmt.Sprintf(fmtStr, args...)
 		vm.restoreFailed = true
 		vm.restoreError = errMsg
-		if stderr := stderrBuf.String(); stderr != "" {
+		if stderr := fcProc.stderrBuf.String(); stderr != "" {
 			return fmt.Errorf("%s\nFC stderr: %s", errMsg, stderr)
 		}
 		return fmt.Errorf("%s", errMsg)
-	}
-
-	for i := 0; i < 50; i++ {
-		if _, err := os.Stat(newSocketPath); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 
 	client := fcAPIClient(newSocketPath)
@@ -932,9 +907,9 @@ func (e *Engine) startVM(ctx context.Context, id string, force bool) error {
 	}
 
 	vm.SocketPath = newSocketPath
-	vm.cmd = fcCmd
-	vm.cancel = vmCancel
-	vm.stderrBuf = stderrBuf
+	vm.cmd = fcProc.cmd
+	vm.cancel = fcProc.cancel
+	vm.stderrBuf = fcProc.stderrBuf
 	vm.Status = "running"
 	vm.Thermal = "hot"
 
@@ -965,8 +940,7 @@ func (e *Engine) Destroy(ctx context.Context, id string) error {
 	vm.stateMu.Lock()
 
 	if vm.Status == "running" && vm.cmd != nil {
-		vm.cmd.Process.Kill()
-		vm.cmd.Wait()
+		killFC(vm.cmd, 1*time.Second)
 		vm.cancel()
 	}
 
@@ -1493,6 +1467,68 @@ func verifySnapshotArtifacts(vmSnapPath, memSnapPath string, memSizeMib int64, s
 	}
 
 	return nil
+}
+
+// fcProcess holds the resources for a running Firecracker process.
+type fcProcess struct {
+	cmd       *exec.Cmd
+	cancel    context.CancelFunc
+	stderrBuf *ringBuffer
+	socket    string
+}
+
+// startFC launches a new Firecracker process and waits for its API socket.
+// Consolidates ring buffer creation, socket validation, and socket wait.
+func (e *Engine) startFC(socketPath string) (*fcProcess, error) {
+	if err := validateSocketPath(socketPath); err != nil {
+		return nil, err
+	}
+	os.Remove(socketPath)
+	vmCtx, cancel := context.WithCancel(context.Background())
+	stderrBuf := newRingBuffer(64 * 1024)
+	cmd := exec.CommandContext(vmCtx, e.cfg.FCBinary, "--api-sock", socketPath)
+	cmd.Stderr = stderrBuf
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("start firecracker: %w", err)
+	}
+	// Wait for API socket to appear
+	for i := 0; i < 50; i++ {
+		if _, err := os.Stat(socketPath); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return &fcProcess{cmd: cmd, cancel: cancel, stderrBuf: stderrBuf, socket: socketPath}, nil
+}
+
+// validateSocketPath checks that a Unix socket path fits within the 108-byte
+// limit on Linux. A long DataDir could overflow silently.
+func validateSocketPath(path string) error {
+	if len(path) >= 108 {
+		return fmt.Errorf("socket path too long (%d >= 108): %s "+
+			"\u2014 use a shorter data_dir", len(path), path)
+	}
+	return nil
+}
+
+// killFC sends SIGTERM and waits up to timeout for clean exit, then SIGKILL.
+// Firecracker may or may not handle SIGTERM in bare mode — the timeout
+// ensures we don't block indefinitely before falling back to SIGKILL.
+func killFC(cmd *exec.Cmd, timeout time.Duration) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	cmd.Process.Signal(syscall.SIGTERM)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+		return
+	case <-time.After(timeout):
+		cmd.Process.Kill()
+		<-done
+	}
 }
 
 func copyRootfs(src, dst string) error {

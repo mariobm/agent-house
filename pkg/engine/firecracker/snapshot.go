@@ -233,8 +233,7 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 	defer func() {
 		if err != nil {
 			if fcCmd != nil && fcCmd.Process != nil {
-				fcCmd.Process.Kill()
-				fcCmd.Wait()
+				killFC(fcCmd, 1*time.Second)
 			}
 			if vmCancel != nil {
 				vmCancel()
@@ -298,24 +297,15 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 	cid := atomic.AddUint32(&e.nextCID, 1)
 	socketPath := filepath.Join(sandboxDir, "firecracker.sock")
 	vsockPath := filepath.Join(sandboxDir, "vsock.sock")
-	os.Remove(socketPath)
 
-	vmCtx, cancel := context.WithCancel(context.Background())
-	vmCancel = cancel
-	stderrBuf := newRingBuffer(64 * 1024)
-	fcCmd = exec.CommandContext(vmCtx, e.cfg.FCBinary, "--api-sock", socketPath)
-	fcCmd.Stderr = stderrBuf
-	if err = fcCmd.Start(); err != nil {
-		return info, fmt.Errorf("start firecracker: %w", err)
+	fcProc, startErr := e.startFC(socketPath)
+	if startErr != nil {
+		err = startErr
+		return info, err
 	}
-
-	// Wait for API socket
-	for i := 0; i < 50; i++ {
-		if _, err := os.Stat(socketPath); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	fcCmd = fcProc.cmd
+	vmCancel = fcProc.cancel
+	stderrBuf := fcProc.stderrBuf
 
 	client := fcAPIClient(socketPath)
 
