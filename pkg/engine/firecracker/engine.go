@@ -605,6 +605,18 @@ func (e *Engine) Stop(ctx context.Context, id string, opts engine.StopOpts) erro
 		return fmt.Errorf("sandbox %q is not running", id)
 	}
 
+	// Flush guest page cache before pausing. Pausing vCPUs does NOT
+	// flush dirty pages from guest RAM to the virtio-blk device.
+	if vm.Thermal == "hot" && vm.Agent != nil {
+		syncCtx, syncCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if _, err := vm.Agent.Exec(syncCtx, []string{"sync"}, nil, ""); err != nil {
+			slog.Warn("guest sync failed before snapshot",
+				"sandbox", id, "error", err)
+			// Continue — stale snapshot > no snapshot
+		}
+		syncCancel()
+	}
+
 	client := fcAPIClient(vm.SocketPath)
 
 	// Skip Pause if already paused (warm→cold path).
@@ -646,6 +658,13 @@ func (e *Engine) Stop(ctx context.Context, id string, opts engine.StopOpts) erro
 		`{"snapshot_type":%q,"snapshot_path":%q,"mem_file_path":%q}`,
 		snapshotType, vm.SnapVMPath, vm.SnapMemPath)); err != nil {
 		return fmt.Errorf("create %s snapshot: %w", snapshotType, err)
+	}
+
+	// Lightweight sanity check on snapshot artifacts.
+	if err := verifySnapshotArtifacts(vm.SnapVMPath, vm.SnapMemPath, vm.MemSizeMib, snapshotType); err != nil {
+		slog.Error("snapshot sanity check failed", "sandbox", id, "error", err, "type", snapshotType)
+		// Don't fail the Stop — a potentially-bad snapshot is better than
+		// no snapshot. The error is logged for investigation.
 	}
 
 	if !vm.hasBaseSnapshot {
@@ -999,7 +1018,9 @@ func (e *Engine) RestoreVM(id, name, status string, state map[string]interface{}
 		MemSizeMib:  stateInt64(state, "mem_size_mib"),
 		SnapMemPath:     stateStr(state, "snap_mem_path"),
 		SnapVMPath:      stateStr(state, "snap_vm_path"),
-		hasBaseSnapshot: stateBool(state, "has_base_snapshot"),
+		hasBaseSnapshot: false, // Always reset on recovery — first post-recovery
+		// snapshot will be Full, establishing a clean base. The persisted
+		// has_base_snapshot may refer to a base that was overwritten.
 	}
 
 	// Restore volume attachments (JSON round-trip through interface{})
@@ -1380,6 +1401,37 @@ func injectLoharIntoRootfs(rootfsPath, dataDir string) error {
 		return fmt.Errorf("copy lohar: %w", err)
 	}
 	return os.Chmod(dst, 0755)
+}
+
+// verifySnapshotArtifacts performs lightweight sanity checks on snapshot files.
+// Catches truncated files, zero-byte files, and corrupt vm.snap without
+// spawning a throwaway Firecracker process.
+func verifySnapshotArtifacts(vmSnapPath, memSnapPath string, memSizeMib int64, snapshotType string) error {
+	// vm.snap must be valid JSON (FC stores device state as JSON)
+	vmData, err := os.ReadFile(vmSnapPath)
+	if err != nil {
+		return fmt.Errorf("read vm.snap: %w", err)
+	}
+	if !json.Valid(vmData) {
+		return fmt.Errorf("vm.snap is not valid JSON (truncated or corrupt)")
+	}
+
+	// mem.snap size sanity
+	memInfo, err := os.Stat(memSnapPath)
+	if err != nil {
+		return fmt.Errorf("stat mem.snap: %w", err)
+	}
+	expectedFull := memSizeMib * 1024 * 1024
+	if snapshotType == "Full" && memInfo.Size() != expectedFull {
+		return fmt.Errorf("Full snapshot mem.snap size %d != expected %d (VM memory)",
+			memInfo.Size(), expectedFull)
+	}
+	if snapshotType == "Diff" && (memInfo.Size() == 0 || memInfo.Size() > expectedFull) {
+		return fmt.Errorf("Diff snapshot mem.snap size %d out of range (0, %d]",
+			memInfo.Size(), expectedFull)
+	}
+
+	return nil
 }
 
 func copyRootfs(src, dst string) error {
