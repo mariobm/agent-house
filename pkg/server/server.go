@@ -593,6 +593,12 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 	}
 }
 
+// EnsureHot is the exported version of ensureHot for use by main.go's
+// auto-wake of keep_hot sandboxes after recovery.
+func (s *Server) EnsureHot(ctx context.Context, engineID string) error {
+	return s.ensureHot(ctx, engineID)
+}
+
 // ensureHot transparently wakes a sandbox from warm or cold state.
 // Also touches the host-side activity cache so the thermal manager
 // knows this sandbox was recently accessed without querying the agent.

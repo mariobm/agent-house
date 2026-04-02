@@ -188,6 +188,32 @@ func runDaemon() {
 		servers = startPlainMode(cfg, eng, st, srv)
 	}
 
+	// Auto-wake keep_hot sandboxes after recovery. These sandboxes maintain
+	// persistent external connections that die on pause — leaving them cold
+	// after a daemon restart defeats the purpose of keep_hot.
+	go func() {
+		hotSandboxes, err := st.ListAllSandboxes()
+		if err != nil {
+			slog.Warn("auto-wake: list sandboxes", "error", err)
+			return
+		}
+		for _, sb := range hotSandboxes {
+			if !sb.KeepHot || sb.Status == "destroyed" {
+				continue
+			}
+			wakeCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			if err := srv.EnsureHot(wakeCtx, sb.EngineID); err != nil {
+				slog.Error("auto-wake failed",
+					"sandbox", sb.Name, "id", sb.ID, "error", err)
+			} else {
+				st.UpdateSandboxStatus(sb.ID, "running")
+				slog.Info("auto-wake: sandbox started",
+					"sandbox", sb.Name, "id", sb.ID)
+			}
+			cancel()
+		}
+	}()
+
 	// Wait for SIGTERM/SIGINT
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
