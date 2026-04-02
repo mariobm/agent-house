@@ -1662,6 +1662,10 @@ func (e *Engine) startFCBare(socketPath string) (*fcProcess, error) {
 func (e *Engine) startFCJailed(socketPath string, opts startFCOpts) (*fcProcess, error) {
 	chrootBase := filepath.Join(e.cfg.DataDir, "jails")
 	jailRoot := filepath.Join(chrootBase, "firecracker", opts.id, "root")
+	// Clean stale jail from previous run (e.g. stop/start cycle).
+	// The jailer's mknod for /dev/kvm and /dev/net/tun fails with
+	// EEXIST if these device nodes are left over.
+	os.RemoveAll(filepath.Join(chrootBase, "firecracker", opts.id))
 	if err := os.MkdirAll(jailRoot, 0700); err != nil {
 		return nil, fmt.Errorf("create jail root: %w", err)
 	}
