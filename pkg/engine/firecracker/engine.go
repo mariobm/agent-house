@@ -37,25 +37,12 @@ type RateLimitConfig struct {
 	DiskIOPS          int64 // ops/s (default: 10_000)
 }
 
-func (r RateLimitConfig) netBandwidth() int64 {
-	if r.NetBandwidthBytes > 0 { return r.NetBandwidthBytes }
-	if r.NetBandwidthBytes < 0 { return 0 } // disabled
-	return 12_500_000
-}
-func (r RateLimitConfig) netBurst() int64 {
-	if r.NetBurstBytes > 0 { return r.NetBurstBytes }
-	return 10_000_000
-}
-func (r RateLimitConfig) diskBandwidth() int64 {
-	if r.DiskBandwidthBytes > 0 { return r.DiskBandwidthBytes }
-	if r.DiskBandwidthBytes < 0 { return 0 }
-	return 104_857_600
-}
-func (r RateLimitConfig) diskIOPS() int64 {
-	if r.DiskIOPS > 0 { return r.DiskIOPS }
-	if r.DiskIOPS < 0 { return 0 }
-	return 10_000
-}
+// Defaults are disabled (0) — rate limiters are opt-in. Configure in
+// config.yaml when running multi-tenant or at scale.
+func (r RateLimitConfig) netBandwidth() int64  { return r.NetBandwidthBytes }
+func (r RateLimitConfig) netBurst() int64      { return r.NetBurstBytes }
+func (r RateLimitConfig) diskBandwidth() int64  { return r.DiskBandwidthBytes }
+func (r RateLimitConfig) diskIOPS() int64       { return r.DiskIOPS }
 
 // Config holds paths and settings for a Firecracker engine.
 type Config struct {
