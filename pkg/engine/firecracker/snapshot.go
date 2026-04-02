@@ -281,28 +281,17 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 		return info, fmt.Errorf("IP %s required by snapshot is in use: %w", guestIP, err)
 	}
 
-	// Create TAP with the SAME name as the original. Firecracker's vm.snap
-	// records the host_dev_name. On snapshot load, it opens that exact device.
-	// Use FCPathOrigin (the sandbox whose paths FC has recorded) for the TAP
-	// name, falling back to CreatedFrom for manifests created before this field.
+	// Create a fresh TAP with a name based on the NEW sandbox ID.
+	// network_overrides in /snapshot/load remaps the TAP name, so we
+	// no longer need to recreate the original TAP name. This eliminates
+	// races when two snapshots from the same origin are resumed concurrently.
 	fcOrigin := manifest.FCPathOrigin
 	if fcOrigin == "" {
 		fcOrigin = manifest.CreatedFrom
 	}
-	origTapName := "tap" + fcOrigin[:8]
-	// Clean up any stale TAP with this name (from a previous failed resume)
-	destroyTapDevice(origTapName)
-	tapName = origTapName
-	if err = run("ip", "tuntap", "add", tapName, "mode", "tap"); err != nil {
-		return info, fmt.Errorf("create tap %s: %w", tapName, err)
-	}
-	if err = run("ip", "link", "set", tapName, "master", userNet.BridgeName); err != nil {
-		destroyTapDevice(tapName)
-		return info, fmt.Errorf("add tap to bridge: %w", err)
-	}
-	if err = run("ip", "link", "set", tapName, "up"); err != nil {
-		destroyTapDevice(tapName)
-		return info, fmt.Errorf("bring up tap: %w", err)
+	tapName, err = createTapDevice(id, userNet.BridgeName)
+	if err != nil {
+		return info, fmt.Errorf("create tap: %w", err)
 	}
 
 	// 3. Start new Firecracker process
@@ -378,9 +367,11 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 
 	memSnapPath := filepath.Join(origSandboxDir, "mem.snap")
 	vmSnapPath := filepath.Join(origSandboxDir, "vm.snap")
+	// network_overrides remaps the TAP device to the fresh name, eliminating
+	// the need to recreate the original TAP name from FCPathOrigin.
 	if err = fcPut(ctx, client, "/snapshot/load", fmt.Sprintf(
-		`{"snapshot_path":%q,"mem_backend":{"backend_path":%q,"backend_type":"File"},"resume_vm":true,"enable_diff_snapshots":true}`,
-		vmSnapPath, memSnapPath)); err != nil {
+		`{"snapshot_path":%q,"mem_backend":{"backend_path":%q,"backend_type":"File"},"resume_vm":true,"enable_diff_snapshots":true,"network_overrides":[{"iface_id":"eth0","host_dev_name":%q}]}`,
+		vmSnapPath, memSnapPath, tapName)); err != nil {
 		if needCleanup {
 			os.RemoveAll(origSandboxDir)
 		}

@@ -27,12 +27,42 @@ import (
 	"github.com/sahil-shubham/bhatti/pkg/engine"
 )
 
+// RateLimitConfig controls per-VM resource limits.
+// Zero values mean "use defaults". Negative values disable the limiter.
+type RateLimitConfig struct {
+	NetBandwidthBytes int64 // bytes/s per direction (default: 12_500_000 = 100 Mbps)
+	NetBurstBytes     int64 // one-time burst bytes (default: 10_000_000 = 10 MB)
+	DiskBandwidthBytes int64 // bytes/s (default: 104_857_600 = 100 MB/s)
+	DiskIOPS          int64 // ops/s (default: 10_000)
+}
+
+func (r RateLimitConfig) netBandwidth() int64 {
+	if r.NetBandwidthBytes > 0 { return r.NetBandwidthBytes }
+	if r.NetBandwidthBytes < 0 { return 0 } // disabled
+	return 12_500_000
+}
+func (r RateLimitConfig) netBurst() int64 {
+	if r.NetBurstBytes > 0 { return r.NetBurstBytes }
+	return 10_000_000
+}
+func (r RateLimitConfig) diskBandwidth() int64 {
+	if r.DiskBandwidthBytes > 0 { return r.DiskBandwidthBytes }
+	if r.DiskBandwidthBytes < 0 { return 0 }
+	return 104_857_600
+}
+func (r RateLimitConfig) diskIOPS() int64 {
+	if r.DiskIOPS > 0 { return r.DiskIOPS }
+	if r.DiskIOPS < 0 { return 0 }
+	return 10_000
+}
+
 // Config holds paths and settings for a Firecracker engine.
 type Config struct {
 	DataDir    string // e.g. /var/lib/bhatti — sandboxes created under DataDir/sandboxes/
 	KernelPath string // path to vmlinux binary
 	BaseRootfs string // path to base rootfs.ext4
 	FCBinary   string // path to firecracker binary
+	RateLimits RateLimitConfig
 }
 
 // Engine manages Firecracker microVMs.
@@ -440,7 +470,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	// Boot args include ip= for kernel-level network configuration.
 	// Uses the user's bridge gateway instead of a hardcoded IP.
 	bootArgs := fmt.Sprintf(
-		"console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/lohar quiet loglevel=0 ip=%s::%s:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:",
+		"reboot=k panic=1 pci=off 8250.nr_uarts=0 init=/usr/local/bin/lohar quiet loglevel=0 ip=%s::%s:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:",
 		guestIP, userNet.GatewayIP)
 
 	if err = fcPut(ctx, client, "/boot-source", fmt.Sprintf(
@@ -449,9 +479,13 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 		return info, fmt.Errorf("set boot-source: %w", err)
 	}
 
-	if err = fcPut(ctx, client, "/drives/rootfs", fmt.Sprintf(
-		`{"drive_id":"rootfs","path_on_host":%q,"is_root_device":true,"is_read_only":false}`,
-		rootfsPath)); err != nil {
+	rootfsDrive := fmt.Sprintf(`{"drive_id":"rootfs","path_on_host":%q,"is_root_device":true,"is_read_only":false`, rootfsPath)
+	if bw := e.cfg.RateLimits.diskBandwidth(); bw > 0 {
+		iops := e.cfg.RateLimits.diskIOPS()
+		rootfsDrive += fmt.Sprintf(`,"rate_limiter":{"bandwidth":{"size":%d,"refill_time":1000},"ops":{"size":%d,"refill_time":1000}}`, bw, iops)
+	}
+	rootfsDrive += "}"
+	if err = fcPut(ctx, client, "/drives/rootfs", rootfsDrive); err != nil {
 		return info, fmt.Errorf("set drive: %w", err)
 	}
 
@@ -461,14 +495,26 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 		return info, fmt.Errorf("set machine-config: %w", err)
 	}
 
+	// Entropy device — virtio-rng so guests don't block on getrandom().
+	// 10 KB/s sustained, 8 KB initial burst for TLS handshakes / key generation.
+	if err = fcPut(ctx, client, "/entropy",
+		`{"rate_limiter":{"bandwidth":{"size":1024,"one_time_burst":8192,"refill_time":100}}}`); err != nil {
+		slog.Warn("entropy device setup failed", "error", err) // non-fatal
+	}
+
 	if err = fcPut(ctx, client, "/vsock", fmt.Sprintf(
 		`{"guest_cid":%d,"uds_path":%q}`, cid, vsockPath)); err != nil {
 		return info, fmt.Errorf("set vsock: %w", err)
 	}
 
-	if err = fcPut(ctx, client, "/network-interfaces/eth0", fmt.Sprintf(
-		`{"iface_id":"eth0","guest_mac":%q,"host_dev_name":%q}`,
-		mac, tapName)); err != nil {
+	netPayload := fmt.Sprintf(`{"iface_id":"eth0","guest_mac":%q,"host_dev_name":%q`, mac, tapName)
+	if bw := e.cfg.RateLimits.netBandwidth(); bw > 0 {
+		burst := e.cfg.RateLimits.netBurst()
+		netPayload += fmt.Sprintf(`,"rx_rate_limiter":{"bandwidth":{"size":%d,"one_time_burst":%d,"refill_time":1000}}`, bw, burst)
+		netPayload += fmt.Sprintf(`,"tx_rate_limiter":{"bandwidth":{"size":%d,"one_time_burst":%d,"refill_time":1000}}`, bw, burst)
+	}
+	netPayload += "}"
+	if err = fcPut(ctx, client, "/network-interfaces/eth0", netPayload); err != nil {
 		return info, fmt.Errorf("set network: %w", err)
 	}
 
@@ -862,11 +908,12 @@ func (e *Engine) startVM(ctx context.Context, id string, force bool) error {
 
 	client := fcAPIClient(newSocketPath)
 
-	// enable_diff_snapshots re-enables dirty page tracking after restore,
-	// allowing subsequent Diff snapshots on the restored VM.
+	// enable_diff_snapshots re-enables dirty page tracking after restore.
+	// network_overrides remaps the TAP device name so FC doesn't need the
+	// exact TAP name from when the snapshot was taken.
 	if err := fcPut(ctx, client, "/snapshot/load", fmt.Sprintf(
-		`{"snapshot_path":%q,"mem_backend":{"backend_path":%q,"backend_type":"File"},"resume_vm":true,"enable_diff_snapshots":true}`,
-		vm.SnapVMPath, vm.SnapMemPath)); err != nil {
+		`{"snapshot_path":%q,"mem_backend":{"backend_path":%q,"backend_type":"File"},"resume_vm":true,"enable_diff_snapshots":true,"network_overrides":[{"iface_id":"eth0","host_dev_name":%q}]}`,
+		vm.SnapVMPath, vm.SnapMemPath, vm.TapDevice)); err != nil {
 		return restoreFailed("load snapshot: %v", err)
 	}
 
