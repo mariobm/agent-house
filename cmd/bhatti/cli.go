@@ -2568,14 +2568,31 @@ var versionCmd = &cobra.Command{
 	Example: `  bhatti version
   bhatti version --json`,
 	Run: func(cmd *cobra.Command, args []string) {
+		serverVer := ""
+		// Quick probe to get server version from header
+		if resp, err := apiRequest("GET", "/sandboxes", nil); err == nil {
+			resp.Body.Close()
+			serverVer = resp.Header.Get("X-Bhatti-Version")
+		}
+
 		if isJSON(cmd) {
-			outputJSON(map[string]string{
+			out := map[string]string{
 				"version": version,
 				"api":     apiURL,
-			})
+			}
+			if serverVer != "" {
+				out["server_version"] = serverVer
+			}
+			outputJSON(out)
 		} else {
 			fmt.Printf("bhatti %s\n", version)
 			fmt.Printf("api: %s\n", apiURL)
+			if serverVer != "" && serverVer != "dev" {
+				fmt.Printf("server: %s\n", serverVer)
+				if version != "dev" && compareVersions(version, serverVer) < 0 {
+					fmt.Printf("\nUpdate available: %s \u2192 %s (bhatti update)\n", version, serverVer)
+				}
+			}
 		}
 	},
 }
