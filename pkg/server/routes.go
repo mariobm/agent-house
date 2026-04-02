@@ -740,8 +740,12 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 			errResp(w, 404, "not found")
 			return
 		}
+		// Kill VM first, then release volume DB locks. Destroy() calls
+		// Kill+Wait which guarantees the FC process is dead even if other
+		// cleanup fails — safe to release volumes after.
 		if err := s.engine.Destroy(r.Context(), sb.EngineID); err != nil {
-			slog.Warn("engine destroy failed", "sandbox", sb.ID, "error", err)
+			slog.Warn("engine destroy failed, releasing volumes anyway",
+				"sandbox", sb.ID, "error", err)
 		}
 		s.store.DetachVolumes(id)
 		s.store.DetachAllPersistentVolumesForSandbox(id) // v0.3 persistent volumes

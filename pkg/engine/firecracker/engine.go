@@ -467,6 +467,20 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	// 6. Configure via HTTP API
 	client := fcAPIClient(socketPath)
 
+	// FC logger and metrics must be set before any other configuration.
+	// Warning level only — Debug is guest-influenceable. Non-fatal if setup fails.
+	logPath := filepath.Join(sandboxDir, "firecracker.log")
+	if err = fcPut(ctx, client, "/logger", fmt.Sprintf(
+		`{"log_path":%q,"level":"Warning","show_level":true,"show_log_origin":true}`,
+		logPath)); err != nil {
+		slog.Warn("FC logger setup failed", "error", err)
+	}
+	metricsPath := filepath.Join(sandboxDir, "firecracker.metrics")
+	if err = fcPut(ctx, client, "/metrics", fmt.Sprintf(
+		`{"metrics_path":%q}`, metricsPath)); err != nil {
+		slog.Warn("FC metrics setup failed", "error", err)
+	}
+
 	// Boot args include ip= for kernel-level network configuration.
 	// Uses the user's bridge gateway instead of a hardcoded IP.
 	bootArgs := fmt.Sprintf(

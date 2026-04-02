@@ -557,9 +557,16 @@ func (s *Store) CreateSandbox(sb Sandbox) error {
 	return err
 }
 
-// GetSandbox returns a sandbox scoped to a user. Use GetSandboxByID for internal/unscoped access.
-func (s *Store) GetSandbox(userID, id string) (*Sandbox, error) {
-	row := s.db.QueryRow(`SELECT `+sandboxCols+` FROM sandboxes WHERE id = ? AND created_by = ?`, id, userID)
+// GetSandbox returns a sandbox scoped to a user, matching by ID first then by name.
+// Use GetSandboxByID for internal/unscoped access.
+func (s *Store) GetSandbox(userID, idOrName string) (*Sandbox, error) {
+	// Try exact ID match first (deterministic, always unique)
+	row := s.db.QueryRow(`SELECT `+sandboxCols+` FROM sandboxes WHERE id = ? AND created_by = ?`, idOrName, userID)
+	if sb, err := scanSandbox(row); err == nil {
+		return sb, nil
+	}
+	// Fall back to name match
+	row = s.db.QueryRow(`SELECT `+sandboxCols+` FROM sandboxes WHERE name = ? AND created_by = ?`, idOrName, userID)
 	return scanSandbox(row)
 }
 
