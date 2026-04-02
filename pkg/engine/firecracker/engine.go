@@ -1576,13 +1576,15 @@ func killFC(cmd *exec.Cmd, timeout time.Duration) {
 	}
 }
 
+// copyBlock copies a block device file (rootfs, volume, snapshot artifact).
+// Uses reflink for instant CoW clones on btrfs/xfs, falls back to sparse copy.
+func copyBlock(src, dst string) error {
+	return exec.Command("cp", "--reflink=auto", "--sparse=always", src, dst).Run()
+}
+
+// copyRootfs is an alias for copyBlock (kept for call-site readability).
 func copyRootfs(src, dst string) error {
-	// Try CoW clone first (instant on btrfs/xfs)
-	if err := exec.Command("cp", "--reflink=always", src, dst).Run(); err == nil {
-		return nil
-	}
-	// Fallback: preserve sparsity to avoid materializing empty blocks
-	return exec.Command("cp", "--sparse=always", src, dst).Run()
+	return copyBlock(src, dst)
 }
 
 // fcAPIClient returns an HTTP client that talks to Firecracker's API over a Unix socket.

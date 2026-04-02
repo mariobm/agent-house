@@ -155,7 +155,7 @@ func (e *Engine) Checkpoint(ctx context.Context, sandboxID, userID string, subne
 		c := c // capture
 		g.Go(func() error {
 			dst := filepath.Join(tmpDir, c.dstFile)
-			return exec.Command("cp", "--sparse=always", c.src, dst).Run()
+			return copyBlock(c.src, dst)
 		})
 	}
 	if err := g.Wait(); err != nil {
@@ -252,11 +252,12 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 		}
 	}()
 
-	// 1. Copy block devices from snapshot dir to new sandbox dir
+	// 1. Copy block devices from snapshot dir to new sandbox dir.
+	// copyBlock uses --reflink=auto for instant CoW clones on btrfs/xfs.
 	for _, drive := range manifest.Drives {
 		src := filepath.Join(snapDir, drive.SnapshotFile)
 		dst := filepath.Join(sandboxDir, drive.SnapshotFile)
-		if err = exec.Command("cp", "--sparse=always", src, dst).Run(); err != nil {
+		if err = copyBlock(src, dst); err != nil {
 			return info, fmt.Errorf("copy %s: %w", drive.SnapshotFile, err)
 		}
 	}
@@ -265,7 +266,7 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 	for _, f := range []string{"mem.snap", "vm.snap"} {
 		src := filepath.Join(snapDir, f)
 		dst := filepath.Join(sandboxDir, f)
-		if err = exec.Command("cp", "--sparse=always", src, dst).Run(); err != nil {
+		if err = copyBlock(src, dst); err != nil {
 			return info, fmt.Errorf("copy %s: %w", f, err)
 		}
 	}
