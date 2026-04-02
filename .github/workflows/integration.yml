@@ -66,6 +66,7 @@ jobs:
           sudo cp /opt/bhatti/bin/firecracker /usr/local/bin/firecracker
           sudo cp /opt/bhatti/images/vmlinux-arm64 /var/lib/bhatti/images/vmlinux-arm64
           sudo mv rootfs-minimal-arm64.ext4 /var/lib/bhatti/images/rootfs-minimal-arm64.ext4
+          # jailer and bhatti-vm user are pre-installed on the runner
 
       - name: Run integration tests
         run: |
