@@ -142,13 +142,16 @@ install_bhatti_binary() {
 install_firecracker() {
     local installed_fc
     installed_fc=$(installed_fc_version)
+    local need_download=true
 
     if [ -n "$installed_fc" ] && ! version_gt "$FC_VERSION" "$installed_fc"; then
-        success "Firecracker ${installed_fc} (up to date)"
-        return
-    fi
-
-    if [ -n "$installed_fc" ]; then
+        # FC is up to date, but jailer might be missing
+        if [ -x /usr/local/bin/jailer ]; then
+            success "Firecracker ${installed_fc} + jailer (up to date)"
+            return
+        fi
+        info "Firecracker ${installed_fc} up to date, installing missing jailer"
+    elif [ -n "$installed_fc" ]; then
         heading "Updating Firecracker ${installed_fc} → ${FC_VERSION}"
     else
         heading "Installing Firecracker ${FC_VERSION}"

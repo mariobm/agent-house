@@ -443,13 +443,25 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	// 5. Build path resolver for FC API calls
 	jp := newJailPaths(e.cfg.jailed())
 
-	// Resolve all paths FC will reference
+	// Resolve ALL paths FC will reference — must happen before startFC
+	// so the files map includes everything that needs hard-linking.
 	kernelPath := jp.resolve("kernel", e.cfg.KernelPath)
 	rootfsRef := jp.resolve("rootfs.ext4", rootfsPath)
 	configRef := jp.resolve("config.ext4", configDrivePath)
 	vsockRef := jp.chrootPath("vsock.sock", vsockPath)
 	logRef := jp.chrootPath("firecracker.log", filepath.Join(sandboxDir, "firecracker.log"))
 	metricsRef := jp.chrootPath("firecracker.metrics", filepath.Join(sandboxDir, "firecracker.metrics"))
+
+	// Pre-resolve volume paths so they're in the files map for hard-linking
+	volRefs := make(map[string]string) // driveID → resolved path
+	for _, vol := range spec.ResolvedVolumes {
+		volRefs[vol.DriveID] = jp.resolve(fmt.Sprintf("vol-%s.ext4", vol.Name), vol.FilePath)
+	}
+	ephVolRefs := make(map[string]string)
+	for _, vs := range spec.NewVolumes {
+		volPath := filepath.Join(sandboxDir, fmt.Sprintf("vol-%s.ext4", vs.Name))
+		ephVolRefs[vs.Name] = jp.resolve(fmt.Sprintf("ephvol-%s.ext4", vs.Name), volPath)
+	}
 
 	// Start Firecracker process
 	fcProc, err := e.startFC(socketPath, startFCOpts{
@@ -560,22 +572,19 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 
 	// 6c. Attach persistent volume drives
 	for _, vol := range spec.ResolvedVolumes {
-		volRef := jp.resolve(fmt.Sprintf("vol-%s.ext4", vol.Name), vol.FilePath)
 		if err = fcPut(ctx, client, fmt.Sprintf("/drives/%s", vol.DriveID), fmt.Sprintf(
 			`{"drive_id":%q,"path_on_host":%q,"is_root_device":false,"is_read_only":%v}`,
-			vol.DriveID, volRef, vol.ReadOnly)); err != nil {
+			vol.DriveID, volRefs[vol.DriveID], vol.ReadOnly)); err != nil {
 			return info, fmt.Errorf("set persistent volume drive %s: %w", vol.DriveID, err)
 		}
 	}
 
 	// 6d. Attach legacy ephemeral volume drives
 	for i, vs := range spec.NewVolumes {
-		volPath := filepath.Join(sandboxDir, fmt.Sprintf("vol-%s.ext4", vs.Name))
-		ephVolRef := jp.resolve(fmt.Sprintf("ephvol-%s.ext4", vs.Name), volPath)
 		driveID := fmt.Sprintf("ephvol%d", i)
 		if err = fcPut(ctx, client, fmt.Sprintf("/drives/%s", driveID), fmt.Sprintf(
 			`{"drive_id":%q,"path_on_host":%q,"is_root_device":false,"is_read_only":false}`,
-			driveID, ephVolRef)); err != nil {
+			driveID, ephVolRefs[vs.Name])); err != nil {
 			return info, fmt.Errorf("set volume drive %d: %w", i, err)
 		}
 	}
