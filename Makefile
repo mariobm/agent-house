@@ -1,4 +1,4 @@
-.PHONY: build test clean release docs
+.PHONY: build test clean release
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 
@@ -12,14 +12,6 @@ lohar:
 
 test:
 	go test ./... -count=1 -timeout 120s
-
-# Generate API + CLI reference docs (always fresh from code)
-docs:
-	go run scripts/gen-openapi.go > docs/openapi.yaml
-	go run scripts/gen-cli-docs.go > web/cli-docs.html
-	@# Inline the OpenAPI spec (as JSON) into the Scalar HTML page
-	@scripts/inline-spec.sh
-	@echo "Generated docs/openapi.yaml + web/{api-docs.html,cli-docs.html}"
 
 # Cross-compile for all platforms
 release:
