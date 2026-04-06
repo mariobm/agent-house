@@ -12,54 +12,6 @@ import (
 
 	"github.com/sahil-shubham/bhatti/pkg/engine"
 )
-
-// These tests require root + Firecracker + kernel + rootfs on the Pi.
-// Run: sudo go test -v -count=1 -timeout=120s ./pkg/engine/firecracker/
-
-func skipIfNotRoot(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("must run as root")
-	}
-}
-
-func testEngine(t *testing.T) *Engine {
-	t.Helper()
-	skipIfNotRoot(t)
-
-	// Auto-detect architecture for image paths
-	arch := "arm64"
-	if out, _ := os.ReadFile("/proc/cpuinfo"); strings.Contains(string(out), "GenuineIntel") || strings.Contains(string(out), "AuthenticAMD") {
-		arch = "amd64"
-	}
-
-	eng, err := New(Config{
-		DataDir:    "/var/lib/bhatti",
-		KernelPath: fmt.Sprintf("/var/lib/bhatti/images/vmlinux-%s", arch),
-		BaseRootfs: fmt.Sprintf("/var/lib/bhatti/images/rootfs-minimal-%s.ext4", arch),
-		FCBinary:   "/usr/local/bin/firecracker",
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	return eng
-}
-
-func testSpec(name string) engine.SandboxSpec {
-	return engine.SandboxSpec{
-		Name: name, CPUs: 1, MemoryMB: 512,
-		UserID: "usr_test", SubnetIndex: 99, // test user on isolated subnet
-	}
-}
-
-// execWithTimeout wraps eng.Exec with a 15-second timeout to prevent tests
-// from hanging if a command blocks (e.g. ping after VM resume).
-func execWithTimeout(t *testing.T, eng *Engine, id string, cmd []string) (engine.ExecResult, error) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return eng.Exec(ctx, id, cmd)
-}
-
 func TestCreateExecDestroy(t *testing.T) {
 	eng := testEngine(t)
 	ctx := context.Background()
