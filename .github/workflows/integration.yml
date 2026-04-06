@@ -70,6 +70,10 @@ jobs:
           # Create jail user inside the runner pod
           sudo useradd -r -s /usr/sbin/nologin -u 10000 bhatti-vm 2>/dev/null || true
 
+      - name: Run unit tests (recovery, IP pool)
+        run: |
+          go test ./cmd/bhatti/ -v -count=1 -timeout=120s -run 'TestRecover|TestFirecrackerState'
+
       - name: Run integration tests
         run: |
           sudo apt-get update -qq
