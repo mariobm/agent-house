@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -11,29 +10,6 @@ import (
 )
 
 // TemplateMountSpec defines a default volume mount for a template.
-type TemplateMountSpec struct {
-	VolumeName string `json:"volume_name"` // empty = "bhatti-{sandbox_name}-workspace"
-	Target     string `json:"target"`
-	ReadOnly   bool   `json:"readonly"`
-	AutoCreate bool   `json:"auto_create"` // create volume if missing
-}
-
-// Template is a sandbox blueprint.
-type Template struct {
-	ID         string              `json:"id"`
-	Name       string              `json:"name"`
-	Engine     string              `json:"engine"`
-	Image      string              `json:"image"`
-	CPUs       float64             `json:"cpus"`
-	MemoryMB   int                 `json:"memory_mb"`
-	DiskSizeMB int                 `json:"disk_size_mb"`
-	UserData   string              `json:"userdata"`
-	Secrets    []string            `json:"secrets"`
-	Labels     map[string]string   `json:"labels"`
-	Mounts     []TemplateMountSpec `json:"mounts"`
-	CreatedAt  time.Time           `json:"created_at"`
-}
-
 // Volume is a named Docker volume tracked by bhatti (legacy v0.1/v0.2).
 type Volume struct {
 	Name      string    `json:"name"`
@@ -120,14 +96,6 @@ type TaskRecord struct {
 }
 
 // Sandbox is a running or stopped sandbox instance.
-type SecretRecord struct {
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	// Encrypted value is NOT included in JSON serialization
-}
-
-// User is an authenticated API user.
 // Store wraps SQLite operations.
 type Store struct {
 	db *sql.DB
@@ -362,159 +330,8 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // CreateUser creates a new API user.
 
-func (s *Store) CreateTemplate(t Template) error {
-	secretsJSON, _ := json.Marshal(t.Secrets)
-	labelsJSON, _ := json.Marshal(t.Labels)
-	mountsJSON, _ := json.Marshal(t.Mounts)
-	if t.Mounts == nil {
-		mountsJSON = []byte("[]")
-	}
-	_, err := s.db.Exec(
-		`INSERT INTO templates (id, name, engine, image, cpus, memory_mb, disk_size_mb, userdata, secrets_json, labels_json, mounts_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Name, t.Engine, t.Image, t.CPUs, t.MemoryMB, t.DiskSizeMB, t.UserData,
-		string(secretsJSON), string(labelsJSON), string(mountsJSON), t.CreatedAt,
-	)
-	return err
-}
-
-func (s *Store) GetTemplate(id string) (*Template, error) {
-	row := s.db.QueryRow(`SELECT id, name, engine, image, cpus, memory_mb, disk_size_mb, userdata, secrets_json, labels_json, mounts_json, created_at FROM templates WHERE id = ?`, id)
-	return scanTemplate(row)
-}
-
-func (s *Store) ListTemplates() ([]Template, error) {
-	rows, err := s.db.Query(`SELECT id, name, engine, image, cpus, memory_mb, disk_size_mb, userdata, secrets_json, labels_json, mounts_json, created_at FROM templates ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Template
-	for rows.Next() {
-		t, err := scanTemplate(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *t)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) DeleteTemplate(id string) error {
-	res, err := s.db.Exec(`DELETE FROM templates WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("template %q not found", id)
-	}
-	return nil
-}
-
-// scanner is satisfied by both *sql.Row and *sql.Rows.
-type scanner interface {
-	Scan(dest ...any) error
-}
-
-func scanTemplate(s scanner) (*Template, error) {
-	var t Template
-	var secretsJSON, labelsJSON, mountsJSON string
-	err := s.Scan(&t.ID, &t.Name, &t.Engine, &t.Image, &t.CPUs, &t.MemoryMB, &t.DiskSizeMB, &t.UserData, &secretsJSON, &labelsJSON, &mountsJSON, &t.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal([]byte(secretsJSON), &t.Secrets); err != nil {
-		return nil, fmt.Errorf("unmarshal secrets: %w", err)
-	}
-	if err := json.Unmarshal([]byte(labelsJSON), &t.Labels); err != nil {
-		return nil, fmt.Errorf("unmarshal labels: %w", err)
-	}
-	if err := json.Unmarshal([]byte(mountsJSON), &t.Mounts); err != nil {
-		return nil, fmt.Errorf("unmarshal mounts: %w", err)
-	}
-	return &t, nil
-}
-
-// --- Sandboxes ---
-
-// --- Secrets ---
 
 // SetSecret creates or updates an encrypted secret for a user.
-func (s *Store) SetSecret(userID, name string, encrypted []byte) error {
-	now := time.Now()
-	_, err := s.db.Exec(
-		`INSERT INTO secrets (user_id, name, value_encrypted, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(user_id, name) DO UPDATE SET
-		     value_encrypted = excluded.value_encrypted,
-		     updated_at = excluded.updated_at`,
-		userID, name, encrypted, now, now)
-	return err
-}
-
-// GetSecretValue returns the encrypted bytes for a user's secret.
-func (s *Store) GetSecretValue(userID, name string) ([]byte, error) {
-	var encrypted []byte
-	err := s.db.QueryRow(`SELECT value_encrypted FROM secrets WHERE name = ? AND user_id = ?`, name, userID).Scan(&encrypted)
-	if err != nil {
-		return nil, fmt.Errorf("secret %q not found", name)
-	}
-	return encrypted, nil
-}
-
-// ListUserSecrets returns metadata for a user's secrets (no values).
-func (s *Store) ListUserSecrets(userID string) ([]SecretRecord, error) {
-	rows, err := s.db.Query(`SELECT name, created_at, COALESCE(updated_at, created_at) FROM secrets WHERE user_id = ? ORDER BY name`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanSecretRecords(rows)
-}
-
-// ListAllSecrets returns metadata for all secrets (no values). For admin/internal use.
-func (s *Store) ListAllSecrets() ([]SecretRecord, error) {
-	rows, err := s.db.Query(`SELECT name, created_at, COALESCE(updated_at, created_at) FROM secrets ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanSecretRecords(rows)
-}
-
-func scanSecretRecords(rows *sql.Rows) ([]SecretRecord, error) {
-	var out []SecretRecord
-	for rows.Next() {
-		var sr SecretRecord
-		var createdStr, updatedStr string
-		if err := rows.Scan(&sr.Name, &createdStr, &updatedStr); err != nil {
-			return nil, err
-		}
-		sr.CreatedAt, _ = time.Parse(time.DateTime, createdStr)
-		sr.UpdatedAt, _ = time.Parse(time.DateTime, updatedStr)
-		out = append(out, sr)
-	}
-	return out, rows.Err()
-}
-
-// GetSecret returns metadata for a user's secret (no value).
-func (s *Store) GetSecret(userID, name string) (*SecretRecord, error) {
-	var sr SecretRecord
-	var createdStr, updatedStr string
-	err := s.db.QueryRow(`SELECT name, created_at, COALESCE(updated_at, created_at) FROM secrets WHERE name = ? AND user_id = ?`, name, userID).
-		Scan(&sr.Name, &createdStr, &updatedStr)
-	if err != nil {
-		return nil, err
-	}
-	sr.CreatedAt, _ = time.Parse(time.DateTime, createdStr)
-	sr.UpdatedAt, _ = time.Parse(time.DateTime, updatedStr)
-	return &sr, nil
-}
-
-// --- Volumes ---
-
-// CreateVolume creates a named volume record. Idempotent — ignores duplicates.
 func (s *Store) CreateVolume(name string) error {
 	_, err := s.db.Exec(
 		`INSERT OR IGNORE INTO volumes (name, created_at) VALUES (?, ?)`,
@@ -612,21 +429,6 @@ func (s *Store) DetachVolumes(sandboxID string) error {
 	return err
 }
 
-func (s *Store) DeleteSecret(userID, name string) error {
-	res, err := s.db.Exec(`DELETE FROM secrets WHERE name = ? AND user_id = ?`, name, userID)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("secret %q not found", name)
-	}
-	return nil
-}
-
-// --- Firecracker-specific state persistence ---
-
-// FirecrackerState holds the VM state needed to reconnect or resume.
 // Returns error on UNIQUE violation (not idempotent — for race coordination).
 func (s *Store) CreatePersistentVolume(v PersistentVolume) error {
 	_, err := s.db.Exec(
