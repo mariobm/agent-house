@@ -43,6 +43,7 @@ type ManifestDrive struct {
 	SnapshotFile string `json:"snapshot_file"` // filename relative to snapshot dir
 	Name         string `json:"name,omitempty"`
 	ReadOnly     bool   `json:"read_only"`
+	Mount        string `json:"mount,omitempty"` // guest mount point (volumes only)
 }
 
 type ManifestNetwork struct {
@@ -167,18 +168,18 @@ func (e *Engine) Checkpoint(ctx context.Context, sandboxID, userID string, subne
 		snapFile := fmt.Sprintf("vol-%s.ext4", vol.Name)
 		drives = append(drives, ManifestDrive{
 			DriveID: vol.DriveID, Role: "volume", SnapshotFile: snapFile,
-			Name: vol.Name, ReadOnly: vol.ReadOnly,
+			Name: vol.Name, ReadOnly: vol.ReadOnly, Mount: vol.Mount,
 		})
 		copies = append(copies, copyJob{vol.FilePath, snapFile})
 	}
 
 	// Parallel copy all block devices (rootfs, config, volumes)
-	g, _ := errgroup.WithContext(ctx)
+	g, gCtx := errgroup.WithContext(ctx)
 	for _, c := range copies {
 		c := c // capture
 		g.Go(func() error {
 			dst := filepath.Join(tmpDir, c.dstFile)
-			return copyBlock(c.src, dst)
+			return copyBlockCtx(gCtx, c.src, dst)
 		})
 	}
 	if err := g.Wait(); err != nil {
@@ -299,10 +300,11 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 	if err = ensureUserBridge(userNet); err != nil {
 		return info, fmt.Errorf("setup user bridge: %w", err)
 	}
-	guestIP = manifest.Network.GuestIP
-	if err = userNet.Pool.TryAllocate(guestIP); err != nil {
-		return info, fmt.Errorf("IP %s required by snapshot is in use: %w", guestIP, err)
+	if err = userNet.Pool.TryAllocate(manifest.Network.GuestIP); err != nil {
+		return info, fmt.Errorf("IP %s required by snapshot is in use: %w",
+			manifest.Network.GuestIP, err)
 	}
+	guestIP = manifest.Network.GuestIP
 
 	// Create a fresh TAP with a name based on the NEW sandbox ID.
 	// network_overrides in /snapshot/load remaps the TAP name, so we
@@ -415,6 +417,22 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 		name = id
 	}
 
+	// Build volume attachment info from manifest so vm.Volumes is
+	// populated for startVM (jail path resolution) and VMState
+	// (persistence via saveVMState → recoverVMs round-trip).
+	var volumes []VolumeAttachmentInfo
+	for _, d := range manifest.Drives {
+		if d.Role == "volume" {
+			volumes = append(volumes, VolumeAttachmentInfo{
+				DriveID:  d.DriveID,
+				Name:     d.Name,
+				FilePath: filepath.Join(sandboxDir, d.SnapshotFile),
+				Mount:    d.Mount,
+				ReadOnly: d.ReadOnly,
+			})
+		}
+	}
+
 	vm := &VM{
 		ID: id, Name: name, UserID: manifest.UserID,
 		SocketPath: apiSocket, VsockPath: vsockPath,
@@ -425,6 +443,7 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 		GuestMAC: manifest.Network.GuestMAC,
 		Token:   manifest.AgentToken,
 		FCPathOrigin: fcOrigin,
+		Volumes: volumes,
 		Agent:   agentClient,
 		Status:  "running",
 		Thermal: "hot",

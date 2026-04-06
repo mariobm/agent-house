@@ -493,6 +493,7 @@ func (s *Server) handleSnapshotResume(w http.ResponseWriter, r *http.Request, us
 			SnapshotFile string `json:"snapshot_file"`
 			Name         string `json:"name"`
 			ReadOnly     bool   `json:"read_only"`
+			Mount        string `json:"mount"`
 		} `json:"drives"`
 		Network struct {
 			GuestMAC string `json:"guest_mac"`
@@ -551,6 +552,31 @@ func (s *Server) handleSnapshotResume(w http.ResponseWriter, r *http.Request, us
 		s.engine.Destroy(r.Context(), info.EngineID)
 		errRespInternal(w, r, "store sandbox failed", err)
 		return
+	}
+
+	// Create volume_attachments for volumes in the snapshot manifest.
+	// Without this, recoverVMs can't find volumes after daemon restart (Bug #1).
+	for _, d := range m.Drives {
+		if d.Role != "volume" || d.Name == "" {
+			continue
+		}
+		vol, err := s.store.GetPersistentVolume(user.ID, d.Name)
+		if err != nil {
+			slog.Warn("snapshot resume: volume not found in store",
+				"volume", d.Name, "sandbox", sbID)
+			continue
+		}
+		mount := d.Mount
+		if mount == "" {
+			mount = "/vol-" + d.Name
+		}
+		if err := s.store.AttachPersistentVolume(
+			user.ID, d.Name, sbID, mount, d.ReadOnly,
+		); err != nil {
+			slog.Warn("snapshot resume: attach volume failed",
+				"volume", d.Name, "sandbox", sbID, "error", err)
+		}
+		_ = vol // used for store lookup
 	}
 
 	s.saveVMState(sbID, info.EngineID)

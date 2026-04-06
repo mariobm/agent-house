@@ -404,7 +404,7 @@ func (s *Server) SnapshotAll() {
 			}
 
 			s.saveVMState(sb.ID, sb.EngineID)
-			s.store.UpdateSandboxStatus(sb.ID, "stopped")
+			s.store.StopSandbox(sb.ID)
 			snapped.Add(1)
 			slog.Info("snapshot-all: stopped",
 				"sandbox", sb.Name, "id", sb.ID)

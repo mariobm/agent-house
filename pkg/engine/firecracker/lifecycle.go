@@ -88,7 +88,7 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 			if err := os.Rename(src, dst); err != nil {
 				// Cross-device? Copy instead.
 				if err := copyBlock(src, dst); err != nil {
-					slog.Error("move snapshot from chroot", "file", name, "error", err)
+					return fmt.Errorf("move snapshot %s from chroot: %w", name, err)
 				}
 			}
 		}
@@ -96,7 +96,7 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 
 	// Lightweight sanity check on snapshot artifacts.
 	if err := verifySnapshotArtifacts(vm.SnapVMPath, vm.SnapMemPath, vm.MemSizeMib, snapshotType); err != nil {
-		slog.Error("snapshot sanity check failed", "sandbox", id, "error", err, "type", snapshotType)
+		return fmt.Errorf("snapshot sanity check failed: %w", err)
 	}
 
 	// hasBaseSnapshot no longer used — all snapshots are Full.
@@ -439,8 +439,17 @@ func (e *Engine) Destroy(ctx context.Context, id string) error {
 	}
 
 	rootfsDir := filepath.Dir(vm.RootfsPath)
+
+	// Remove from map FIRST — prevents getVM() from finding a VM
+	// whose files are being deleted. Must happen while stateMu is
+	// held so no concurrent operation is mid-flight on this VM.
+	e.mu.Lock()
+	delete(e.vms, id)
+	e.mu.Unlock()
+
 	vm.stateMu.Unlock()
 
+	// Now safe to delete files — no other goroutine can reach this VM.
 	os.RemoveAll(rootfsDir)
 
 	// Clean up jailer chroot and cgroup if jailed
@@ -448,10 +457,6 @@ func (e *Engine) Destroy(ctx context.Context, id string) error {
 		jailDir := filepath.Join(e.cfg.DataDir, "jails", "firecracker", id)
 		os.RemoveAll(jailDir)
 	}
-
-	e.mu.Lock()
-	delete(e.vms, id)
-	e.mu.Unlock()
 
 	// If this was the user's last VM, destroy their bridge
 	if userID != "" {

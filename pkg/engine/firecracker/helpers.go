@@ -30,6 +30,10 @@ func (e *Engine) SaveImage(ctx context.Context, sandboxID, destPath string) erro
 	vm.stateMu.Lock()
 	defer vm.stateMu.Unlock()
 
+	if vm.Status != "running" {
+		return fmt.Errorf("sandbox %q is stopped — start it first", sandboxID)
+	}
+
 	// Flush guest page cache before pausing — pausing vCPUs does NOT
 	// flush dirty pages from guest RAM to the virtio-blk device.
 	if vm.Thermal == "hot" && vm.Agent != nil {

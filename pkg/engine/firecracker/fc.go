@@ -222,6 +222,12 @@ func copyBlock(src, dst string) error {
 	return exec.Command("cp", "--reflink=auto", "--sparse=always", src, dst).Run()
 }
 
+// copyBlockCtx is like copyBlock but respects context cancellation.
+// Used in errgroup pipelines where remaining copies should abort on first failure.
+func copyBlockCtx(ctx context.Context, src, dst string) error {
+	return exec.CommandContext(ctx, "cp", "--reflink=auto", "--sparse=always", src, dst).Run()
+}
+
 // copyRootfs is an alias for copyBlock (kept for call-site readability).
 func copyRootfs(src, dst string) error {
 	return copyBlock(src, dst)

@@ -309,7 +309,8 @@ func (s *Store) AttachedPersistentVolumesForSandbox(sandboxID string) ([]struct 
 		`SELECT v.name, v.file_path, va.mount, va.read_only
 		 FROM volume_attachments va
 		 JOIN volumes_v2 v ON v.id = va.volume_id
-		 WHERE va.sandbox_id = ?`, sandboxID)
+		 WHERE va.sandbox_id = ?
+		 ORDER BY va.rowid`, sandboxID)
 	if err != nil {
 		return nil, err
 	}
