@@ -472,20 +472,23 @@ func TestScrollbackOverflow(t *testing.T) {
 
 	vm, _ := eng.getVM(info.ID)
 
-	// Output >64KB then a marker
+	// Use a long-running process so the session stays alive across
+	// disconnect/reattach. Previously used a command that exited, which
+	// raced with agent session cleanup — the session could be reaped
+	// before reattach.
 	sessInfo, term, err := vm.Agent.ShellSession(ctx,
-		[]string{"sh", "-c", "for i in $(seq 1 1000); do printf 'L%04d-' $i; head -c 80 /dev/urandom | base64 | head -c 80; echo; done; echo SCROLL_END"},
+		[]string{"sh", "-c", "for i in $(seq 1 1000); do printf 'L%04d-' $i; head -c 80 /dev/urandom | base64 | head -c 80; echo; done; echo SCROLL_END; sleep 3600"},
 		nil, 24, 80, 0)
 	if err != nil {
 		t.Fatalf("ShellSession: %v", err)
 	}
 
-	// Wait for output to complete
+	// Wait for output to complete (sleep 3600 keeps the process alive)
 	readTermOutput(term, 5*time.Second, "SCROLL_END")
 	term.Close()
 	time.Sleep(500 * time.Millisecond)
 
-	// Reattach — get scrollback
+	// Reattach — session is alive because sleep is still running
 	_, term2, err := vm.Agent.SessionAttach(ctx, sessInfo.SessionID, false)
 	if err != nil {
 		t.Fatalf("SessionAttach: %v", err)
