@@ -142,4 +142,3 @@ func init() {
 	snapshotDeleteCmd.Flags().BoolP("yes", "y", false, "Skip confirmation")
 	snapshotCmd.AddCommand(snapshotDeleteCmd)
 }
-

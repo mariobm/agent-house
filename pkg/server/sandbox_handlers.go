@@ -20,7 +20,7 @@ import (
 type createSandboxReq struct {
 	Name       string               `json:"name"`
 	TemplateID string               `json:"template_id,omitempty"`
-	Image      string               `json:"image,omitempty"`      // v0.3: image name
+	Image      string               `json:"image,omitempty"` // v0.3: image name
 	CPUs       float64              `json:"cpus,omitempty"`
 	MemoryMB   int                  `json:"memory_mb,omitempty"`
 	DiskSizeMB int                  `json:"disk_size_mb,omitempty"` // v0.3: resize rootfs
@@ -581,4 +581,3 @@ func (s *Server) handleSandboxStart(w http.ResponseWriter, r *http.Request, id s
 	updated, _ := s.store.GetSandboxByID(id)
 	writeJSON(w, 200, updated)
 }
-

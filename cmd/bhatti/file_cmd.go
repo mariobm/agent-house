@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-
 var fileCmd = &cobra.Command{
 	Use:   "file <read|write|ls> <id|name> <path>",
 	Short: "Read, write, and list files in a sandbox",

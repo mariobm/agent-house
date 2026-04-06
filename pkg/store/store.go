@@ -247,7 +247,6 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // CreateUser creates a new API user.
 
-
 // SetSecret creates or updates an encrypted secret for a user.
 
 // CreateImage inserts a new image record.

@@ -19,7 +19,6 @@ type SnapshotRecord struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-
 func (s *Store) CreateSnapshot(snap SnapshotRecord) error {
 	_, err := s.db.Exec(
 		`INSERT INTO snapshots (id, user_id, name, source_sandbox, mem_path, vm_path,
@@ -88,4 +87,3 @@ func (s *Store) DeleteSnapshot(userID, name string) error {
 // ==========================================================================
 // v0.3 Tasks (async operations)
 // ==========================================================================
-

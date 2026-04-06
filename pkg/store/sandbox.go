@@ -177,7 +177,6 @@ func scanSandbox(s scanner) (*Sandbox, error) {
 	return &sb, nil
 }
 
-
 type FirecrackerState struct {
 	RootfsPath      string
 	SnapMemPath     string

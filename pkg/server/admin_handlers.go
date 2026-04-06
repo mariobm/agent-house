@@ -163,7 +163,6 @@ func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-
 // --- Images (v0.3) ---
 
 func (s *Server) handleImages(w http.ResponseWriter, r *http.Request) {
@@ -359,7 +358,6 @@ type FileEngine interface {
 }
 
 // --- Sessions ---
-
 
 func (s *Server) handleSandboxCheckpoint(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
@@ -858,4 +856,3 @@ func (s *Server) decryptSecret(ciphertext []byte) ([]byte, error) {
 }
 
 // --- Publish Handlers ---
-

@@ -7,14 +7,14 @@ import (
 )
 
 type TaskRecord struct {
-	ID          string    `json:"id"`
-	UserID      string    `json:"user_id"`
-	Type        string    `json:"type"`
-	Status      string    `json:"status"` // "running", "completed", "failed"
-	Progress    string    `json:"progress"`
-	ResultJSON  string    `json:"result,omitempty"`
-	Error       string    `json:"error,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string     `json:"id"`
+	UserID      string     `json:"user_id"`
+	Type        string     `json:"type"`
+	Status      string     `json:"status"` // "running", "completed", "failed"
+	Progress    string     `json:"progress"`
+	ResultJSON  string     `json:"result,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 

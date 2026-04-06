@@ -49,7 +49,6 @@ type VolumeAttachment struct {
 	ReadOnly  bool   `json:"read_only"`
 }
 
-
 func (s *Store) CreateVolume(name string) error {
 	_, err := s.db.Exec(
 		`INSERT OR IGNORE INTO volumes (name, created_at) VALUES (?, ?)`,

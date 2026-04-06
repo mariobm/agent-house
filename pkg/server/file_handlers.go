@@ -8,7 +8,6 @@ import (
 	"github.com/sahil-shubham/bhatti/pkg/agent"
 )
 
-
 func (s *Server) handleSandboxFiles(w http.ResponseWriter, r *http.Request, id string) {
 	sb := s.getUserSandbox(w, r, id)
 	if sb == nil {

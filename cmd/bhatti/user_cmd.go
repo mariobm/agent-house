@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-
 // --- user (local commands — operate on SQLite directly) ---
 
 var userCmd = &cobra.Command{

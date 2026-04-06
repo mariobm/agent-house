@@ -11,7 +11,6 @@ import (
 	"golang.org/x/term"
 )
 
-
 // --- setup ---
 
 var setupCmd = &cobra.Command{

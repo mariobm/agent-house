@@ -109,7 +109,6 @@ func (s *Server) handleSandboxExecStream(w http.ResponseWriter, r *http.Request,
 	flusher.Flush()
 }
 
-
 func (s *Server) handleSandboxWS(w http.ResponseWriter, r *http.Request, id string) {
 	sb := s.getUserSandbox(w, r, id)
 	if sb == nil {
@@ -306,7 +305,6 @@ func (s *Server) handleSandboxWS(w http.ResponseWriter, r *http.Request, id stri
 }
 
 // --- Secrets ---
-
 
 func (s *Server) handleSandboxSessions(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {

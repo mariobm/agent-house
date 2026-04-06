@@ -87,7 +87,6 @@ func (s *Server) handleAllPorts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-
 func (s *Server) handleSandboxProxyRoute(w http.ResponseWriter, r *http.Request, sandboxID, portPath string) {
 	// Split "4321/some/path" → port=4321, rest="/some/path"
 	portStr := portPath

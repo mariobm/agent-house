@@ -9,7 +9,7 @@ import (
 type User struct {
 	ID                    string    `json:"id"`
 	Name                  string    `json:"name"`
-	APIKeyHash            string    `json:"-"`                        // never serialized
+	APIKeyHash            string    `json:"-"` // never serialized
 	MaxSandboxes          int       `json:"max_sandboxes"`
 	MaxCPUsPerSandbox     int       `json:"max_cpus_per_sandbox"`
 	MaxMemoryMBPerSandbox int       `json:"max_memory_mb_per_sandbox"`
@@ -19,7 +19,6 @@ type User struct {
 	MaxSnapshots          int       `json:"max_snapshots"`
 	CreatedAt             time.Time `json:"created_at"`
 }
-
 
 func (s *Store) CreateUser(u User) error {
 	_, err := s.db.Exec(

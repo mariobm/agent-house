@@ -199,10 +199,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // --- Templates ---
 
-
-
 // --- Ports ---
-
 
 func genID() string {
 	b := make([]byte, 8)

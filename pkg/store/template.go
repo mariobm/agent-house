@@ -29,7 +29,6 @@ type Template struct {
 	CreatedAt  time.Time           `json:"created_at"`
 }
 
-
 func (s *Store) CreateTemplate(t Template) error {
 	secretsJSON, _ := json.Marshal(t.Secrets)
 	labelsJSON, _ := json.Marshal(t.Labels)

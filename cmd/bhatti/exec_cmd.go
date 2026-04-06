@@ -24,8 +24,8 @@ func init() {
 // --- exec ---
 
 var execCmd = &cobra.Command{
-	Use:               "exec <id|name> [--] <command...>",
-	Short:             "Execute a command in a sandbox",
+	Use:   "exec <id|name> [--] <command...>",
+	Short: "Execute a command in a sandbox",
 	Long: `Execute a command inside a sandbox. The exit code is forwarded.
 Sleeping sandboxes wake automatically.`,
 	Example: `  bhatti exec dev -- echo hello
@@ -86,9 +86,9 @@ func init() {
 // --- shell ---
 
 var shellCmd = &cobra.Command{
-	Use:               "shell <id|name>",
-	Aliases:           []string{"sh"},
-	Short:             "Open an interactive shell",
+	Use:     "shell <id|name>",
+	Aliases: []string{"sh"},
+	Short:   "Open an interactive shell",
 	Long: `Open an interactive terminal inside the sandbox. Ctrl+\ to detach —
 the shell keeps running. Reconnect with 'bhatti shell' again.`,
 	Example: `  bhatti shell dev
@@ -269,8 +269,8 @@ the shell keeps running. Reconnect with 'bhatti shell' again.`,
 // --- ps ---
 
 var psCmd = &cobra.Command{
-	Use:               "ps <id|name>",
-	Short:             "List sessions in a sandbox",
+	Use:   "ps <id|name>",
+	Short: "List sessions in a sandbox",
 	Example: `  bhatti ps dev
   bhatti ps dev --json`,
 	Args:              cobra.ExactArgs(1),
