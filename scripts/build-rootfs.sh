@@ -96,7 +96,7 @@ apt-get install -y --no-install-recommends \
     zsh git curl wget ca-certificates gnupg \
     tmux vim-tiny htop jq unzip xz-utils \
     locales sudo socat iproute2 \
-    ripgrep fd-find
+    ripgrep fd-find fuse3
 
 # fd-find installs as fdfind on Ubuntu, symlink to fd
 ln -sf /usr/bin/fdfind /usr/local/bin/fd
@@ -110,6 +110,10 @@ curl -fsSL https://starship.rs/install.sh | sh -s -- -y
 # Create user
 useradd -m -s /bin/zsh -G sudo lohar
 echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# FUSE: add lohar to fuse group (if group exists), enable user_allow_other
+getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
+sed -i "s/^#[[:space:]]*user_allow_other/user_allow_other/" /etc/fuse.conf
 
 # Node.js
 NODE_VERSION=22.16.0

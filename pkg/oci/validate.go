@@ -27,10 +27,6 @@ func validateImage(rootDir string) []string {
 		warnings = append(warnings, "image has no /bin/sh — exec commands will fail")
 	}
 
-	if exists(rootDir, "usr/bin/fusermount") || exists(rootDir, "usr/bin/fusermount3") {
-		warnings = append(warnings, "image contains FUSE tools — FUSE is not supported in the Firecracker guest kernel")
-	}
-
 	hasSudo := exists(rootDir, "usr/bin/sudo") || exists(rootDir, "bin/sudo")
 	if !hasSudo {
 		warnings = append(warnings, "image does not have sudo — commands that need root will fail")

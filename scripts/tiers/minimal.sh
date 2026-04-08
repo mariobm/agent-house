@@ -9,7 +9,7 @@ set -eu
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends \
-    iproute2 ca-certificates sudo curl locales
+    iproute2 ca-certificates sudo curl locales fuse3
 
 # Locale
 sed -i "/en_US.UTF-8/s/^# //g" /etc/locale.gen
@@ -18,6 +18,10 @@ locale-gen
 # Create lohar user (bash is the default shell — comes with minbase)
 useradd -m -s /bin/bash -G sudo lohar
 echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# FUSE: add lohar to fuse group (if group exists), enable user_allow_other
+getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
+sed -i "s/^#[[:space:]]*user_allow_other/user_allow_other/" /etc/fuse.conf
 
 apt-get clean
 rm -rf /var/lib/apt/lists/*

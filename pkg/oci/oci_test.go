@@ -330,6 +330,25 @@ func TestValidateImageNoShell(t *testing.T) {
 	}
 }
 
+func TestValidateImageWithFUSE(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "usr/bin"), 0755)
+	os.WriteFile(filepath.Join(root, "usr/bin/fusermount3"), []byte("x"), 0755)
+	os.MkdirAll(filepath.Join(root, "bin"), 0755)
+	os.WriteFile(filepath.Join(root, "bin/sh"), []byte("x"), 0755)
+	os.WriteFile(filepath.Join(root, "usr/bin/sudo"), []byte("x"), 0755)
+
+	w := validateImage(root)
+	for _, msg := range w {
+		if strings.Contains(msg, "FUSE") {
+			t.Errorf("unexpected FUSE warning: %s", msg)
+		}
+	}
+	if len(w) != 0 {
+		t.Errorf("expected no warnings, got %v", w)
+	}
+}
+
 func TestValidateImageSystemd(t *testing.T) {
 	root := t.TempDir()
 	os.MkdirAll(filepath.Join(root, "lib/systemd"), 0755)

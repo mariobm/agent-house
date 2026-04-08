@@ -241,8 +241,62 @@ func TestInitScriptRunsAsUser(t *testing.T) {
 	}
 }
 
-// TestRootfsHasRipgrep and TestRootfsHasFd were removed.
-// They tested rootfs tier contents (package presence), not engine behavior.
-// The minimal tier doesn't include ripgrep or fd-find.
-// If rootfs content verification is needed, add it to build-tier.sh
-// as a post-build assertion per tier.
+// --- FUSE support ---
+
+// TestFUSERootfs verifies the rootfs has FUSE userspace plumbing:
+// fusermount3 (setuid root) and /etc/fuse.conf (user_allow_other).
+// This passes as soon as the rootfs includes fuse3 — no kernel rebuild needed.
+func TestFUSERootfs(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("fuse-rootfs"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	// fusermount3 is setuid root
+	r, _ := execWithTimeout(t, eng, info.ID, []string{"stat", "-c", "%a %U", "/usr/bin/fusermount3"})
+	if !strings.HasPrefix(strings.TrimSpace(r.Stdout), "4755 root") {
+		t.Fatalf("fusermount3 perms: %q, want 4755 root", strings.TrimSpace(r.Stdout))
+	}
+	t.Log("✓ fusermount3 is setuid root (4755)")
+
+	// user_allow_other is enabled
+	r, _ = execWithTimeout(t, eng, info.ID, []string{"grep", "-c", "^user_allow_other", "/etc/fuse.conf"})
+	if strings.TrimSpace(r.Stdout) != "1" {
+		t.Fatalf("fuse.conf: user_allow_other not enabled")
+	}
+	t.Log("✓ /etc/fuse.conf has user_allow_other")
+}
+
+// TestFUSEKernel verifies the kernel has CONFIG_FUSE_FS=y and /dev/fuse exists.
+// Skips if the CI runner's pre-staged kernel doesn't have FUSE yet — the kernel
+// is rebuilt and deployed separately from the rootfs. Once the new kernel is on
+// the runner, this test automatically starts running.
+func TestFUSEKernel(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("fuse-kernel"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	// Check if kernel has FUSE compiled in
+	r, _ := execWithTimeout(t, eng, info.ID, []string{"sh", "-c",
+		"zcat /proc/config.gz | grep CONFIG_FUSE_FS"})
+	if !strings.Contains(r.Stdout, "CONFIG_FUSE_FS=y") {
+		t.Skip("kernel does not have CONFIG_FUSE_FS=y — rebuild and deploy kernel to runner")
+	}
+	t.Log("✓ CONFIG_FUSE_FS=y in running kernel")
+
+	// /dev/fuse exists with correct major:minor
+	r, _ = execWithTimeout(t, eng, info.ID, []string{"stat", "-c", "%t:%T", "/dev/fuse"})
+	if strings.TrimSpace(r.Stdout) != "a:e5" { // major 10, minor 229
+		t.Fatalf("/dev/fuse major:minor: %q, want a:e5", strings.TrimSpace(r.Stdout))
+	}
+	t.Log("✓ /dev/fuse exists (10:229)")
+}
