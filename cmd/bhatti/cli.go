@@ -67,6 +67,7 @@ func init() {
 	startCmd.GroupID = "core"
 	execCmd.GroupID = "core"
 	shellCmd.GroupID = "core"
+	shareCmd.GroupID = "core"
 
 	imageCmd.GroupID = "resource"
 	volumeCmd.GroupID = "resource"
@@ -107,10 +108,14 @@ func init() {
 	publishCmd.Flags().IntP("port", "p", 0, "Port to publish (required)")
 	publishCmd.MarkFlagRequired("port")
 	publishCmd.Flags().StringP("alias", "a", "", "Custom alias (auto-generated if omitted)")
+	publishCmd.Flags().Bool("shell", false, "Also generate a web shell URL")
 	unpublishCmd.Flags().IntP("port", "p", 0, "Port to unpublish (required)")
 	unpublishCmd.MarkFlagRequired("port")
 	rootCmd.AddCommand(publishCmd)
 	rootCmd.AddCommand(unpublishCmd)
+
+	shareCmd.Flags().Bool("revoke", false, "Revoke shell access")
+	rootCmd.AddCommand(shareCmd)
 }
 
 // runCLI is called from main() for any subcommand other than "serve".

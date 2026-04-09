@@ -95,10 +95,23 @@ var publishCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+		shellFlag, _ := cmd.Flags().GetBool("shell")
+		if shellFlag {
+			var shellResult map[string]interface{}
+			if err := apiJSON("POST", fmt.Sprintf("/sandboxes/%s/shell-token", id), nil, &shellResult); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to generate shell token: %v\n", err)
+			} else {
+				result["shell_url"] = shellResult["url"]
+				result["shell_token"] = shellResult["token"]
+			}
+		}
 		if isJSON(cmd) {
 			outputJSON(result)
 		} else {
 			fmt.Printf("Published: %v\n", result["url"])
+			if shellURL, ok := result["shell_url"]; ok {
+				fmt.Printf("Shell:     %v\n", shellURL)
+			}
 		}
 	},
 }

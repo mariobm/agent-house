@@ -16,14 +16,15 @@ type Sandbox struct {
 	IP         string          `json:"ip"`
 	EngineMeta json.RawMessage `json:"engine_meta"`
 	CreatedBy  string          `json:"created_by"`
-	CreatedAt  time.Time       `json:"created_at"`
-	StoppedAt  *time.Time      `json:"stopped_at,omitempty"`
-	KeepHot    bool            `json:"keep_hot"`
+	CreatedAt      time.Time       `json:"created_at"`
+	StoppedAt      *time.Time      `json:"stopped_at,omitempty"`
+	KeepHot        bool            `json:"keep_hot"`
+	ShellTokenHash string          `json:"-"` // never expose in API responses
 }
 
 // SecretRecord tracks an encrypted secret.
 
-const sandboxCols = `id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at, stopped_at, keep_hot`
+const sandboxCols = `id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at, stopped_at, keep_hot, COALESCE(shell_token_hash,'')`
 
 func (s *Store) CreateSandbox(sb Sandbox) error {
 	if sb.EngineMeta == nil {
@@ -165,7 +166,7 @@ func scanSandbox(s scanner) (*Sandbox, error) {
 	var metaJSON string
 	var stoppedAt sql.NullTime
 	var keepHot int
-	err := s.Scan(&sb.ID, &sb.Name, &sb.TemplateID, &sb.EngineID, &sb.Status, &sb.IP, &metaJSON, &sb.CreatedBy, &sb.CreatedAt, &stoppedAt, &keepHot)
+	err := s.Scan(&sb.ID, &sb.Name, &sb.TemplateID, &sb.EngineID, &sb.Status, &sb.IP, &metaJSON, &sb.CreatedBy, &sb.CreatedAt, &stoppedAt, &keepHot, &sb.ShellTokenHash)
 	if err != nil {
 		return nil, err
 	}
@@ -175,6 +176,22 @@ func scanSandbox(s scanner) (*Sandbox, error) {
 	}
 	sb.KeepHot = keepHot != 0
 	return &sb, nil
+}
+
+// SetShellToken stores the SHA-256 hash of the shell token.
+func (s *Store) SetShellToken(sandboxID, hash string) error {
+	_, err := s.db.Exec(
+		`UPDATE sandboxes SET shell_token_hash = ? WHERE id = ?`,
+		hash, sandboxID)
+	return err
+}
+
+// ClearShellToken clears the shell token hash (revokes shell access).
+func (s *Store) ClearShellToken(sandboxID string) error {
+	_, err := s.db.Exec(
+		`UPDATE sandboxes SET shell_token_hash = '' WHERE id = ?`,
+		sandboxID)
+	return err
 }
 
 type FirecrackerState struct {

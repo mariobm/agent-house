@@ -1027,3 +1027,55 @@ func createTestVolume(t *testing.T, s *Store, userID, name string, sizeMB int) P
 	return v
 }
 
+func TestShellTokenRoundTrip(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateSandbox(Sandbox{
+		ID: "sb_shell", Name: "shell-test", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+
+	// Initially empty
+	sb, err := s.GetSandboxByID("sb_shell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.ShellTokenHash != "" {
+		t.Fatalf("expected empty shell_token_hash, got %q", sb.ShellTokenHash)
+	}
+
+	// Set token
+	if err := s.SetShellToken("sb_shell", "abc123hash"); err != nil {
+		t.Fatal(err)
+	}
+	sb, _ = s.GetSandboxByID("sb_shell")
+	if sb.ShellTokenHash != "abc123hash" {
+		t.Fatalf("expected abc123hash, got %q", sb.ShellTokenHash)
+	}
+
+	// Rotate (set again)
+	if err := s.SetShellToken("sb_shell", "newhash456"); err != nil {
+		t.Fatal(err)
+	}
+	sb, _ = s.GetSandboxByID("sb_shell")
+	if sb.ShellTokenHash != "newhash456" {
+		t.Fatalf("expected newhash456, got %q", sb.ShellTokenHash)
+	}
+
+	// Clear (revoke)
+	if err := s.ClearShellToken("sb_shell"); err != nil {
+		t.Fatal(err)
+	}
+	sb, _ = s.GetSandboxByID("sb_shell")
+	if sb.ShellTokenHash != "" {
+		t.Fatalf("expected empty after clear, got %q", sb.ShellTokenHash)
+	}
+
+	// Also accessible via user-scoped GetSandbox
+	s.SetShellToken("sb_shell", "scopedhash")
+	sb, _ = s.GetSandbox("usr_alice", "sb_shell")
+	if sb.ShellTokenHash != "scopedhash" {
+		t.Fatalf("expected scopedhash via GetSandbox, got %q", sb.ShellTokenHash)
+	}
+}
+

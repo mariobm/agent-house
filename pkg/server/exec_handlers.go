@@ -122,15 +122,6 @@ func (s *Server) handleSandboxWS(w http.ResponseWriter, r *http.Request, id stri
 	}
 	defer conn.Close()
 
-	// Pong resets the read deadline. If no pong arrives within
-	// wsPongTimeout, ReadMessage returns a deadline error and the
-	// handler cleans up.
-	conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
-		return nil
-	})
-
 	if err := s.ensureHot(r.Context(), sb.EngineID); err != nil {
 		conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 		conn.WriteMessage(websocket.TextMessage, []byte("wake sandbox: "+err.Error()))
@@ -223,6 +214,13 @@ func (s *Server) handleSandboxWS(w http.ResponseWriter, r *http.Request, id stri
 		}
 	}
 
+	wsRelay(conn, term)
+}
+
+// wsRelay bridges a WebSocket connection and a terminal, with
+// ping/pong keepalives and resize handling. Blocks until one side
+// closes. Caller is responsible for closing conn and term.
+func wsRelay(conn *websocket.Conn, term engine.TerminalConn) {
 	// Serialize all WebSocket writes through a mutex. gorilla allows
 	// one concurrent reader + one concurrent writer, but we have
 	// multiple write sources: terminal data, ping ticker, and close frame.
@@ -238,6 +236,13 @@ func (s *Server) handleSandboxWS(w http.ResponseWriter, r *http.Request, id stri
 	done := make(chan struct{})
 	var closeOnce sync.Once
 	closeDone := func() { closeOnce.Do(func() { close(done) }) }
+
+	// Pong resets read deadline (peer is alive)
+	conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+		return nil
+	})
 
 	// Ping ticker — keeps the connection alive through proxies.
 	go func() {

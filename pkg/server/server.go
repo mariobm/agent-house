@@ -79,6 +79,10 @@ type Server struct {
 	// Backup
 	backupBackend   backup.Backend      // nil if backup not configured
 	stopBackup      context.CancelFunc
+
+	// Web shell
+	shellSessions *shellSessionTracker
+	shellLimiter  *shellRateLimiter
 }
 
 // maxThermalFailures is the number of consecutive Activity query failures
@@ -141,14 +145,16 @@ func WithBackupBackend(b backup.Backend) ServerOption {
 // containing age.key for secret encryption.
 func New(eng engine.Engine, st *store.Store, dataDir string, opts ...ServerOption) *Server {
 	s := &Server{
-		engine:      eng,
-		store:       st,
-		dataDir:     dataDir,
-		mux:         http.NewServeMux(),
-		limiter:     newRateLimiter(),
-		startTime:   time.Now(),
-		pullCancels: make(map[string]context.CancelFunc),
-		resumeSem:   make(chan struct{}, 10),
+		engine:        eng,
+		store:         st,
+		dataDir:       dataDir,
+		mux:           http.NewServeMux(),
+		limiter:       newRateLimiter(),
+		startTime:     time.Now(),
+		pullCancels:   make(map[string]context.CancelFunc),
+		resumeSem:     make(chan struct{}, 10),
+		shellSessions: newShellSessionTracker(5),
+		shellLimiter:  newShellRateLimiter(10),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -680,6 +686,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Unauthenticated endpoints (exact match only)
 	if cleanPath == "/health" || cleanPath == "/metrics" {
 		s.mux.ServeHTTP(w, r)
+		return
+	}
+
+	// Web shell (unauthenticated — token validated on WebSocket)
+	if strings.HasPrefix(cleanPath, "/_shell/") {
+		s.handleWebShell(w, r, cleanPath)
 		return
 	}
 

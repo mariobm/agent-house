@@ -448,6 +448,8 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 			s.handleSandboxSaveImage(w, r, id)
 		case "checkpoint":
 			s.handleSandboxCheckpoint(w, r, id)
+		case "shell-token":
+			s.handleShellToken(w, r, id)
 		default:
 			errResp(w, 404, "not found")
 		}

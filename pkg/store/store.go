@@ -103,6 +103,7 @@ ALTER TABLE users ADD COLUMN max_images INTEGER NOT NULL DEFAULT 10;
 ALTER TABLE users ADD COLUMN max_snapshots INTEGER NOT NULL DEFAULT 5;
 ALTER TABLE sandboxes ADD COLUMN keep_hot INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sandboxes ADD COLUMN fc_path_origin TEXT DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN shell_token_hash TEXT DEFAULT '';
 `
 
 // New opens (or creates) the SQLite database and runs migrations.

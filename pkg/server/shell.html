@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>bhatti shell</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<style>
+  @font-face {
+    font-family: 'FiraCode Nerd Font';
+    src: url('https://cdn.jsdelivr.net/gh/ryanoasis/nerd-fonts@v3.3.0/patched-fonts/FiraCode/Regular/FiraCodeNerdFont-Regular.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+  }
+  :root {
+    --bg: #09090b;
+    --bg-elevated: #18181b;
+    --border: #27272a;
+    --fg: #fafafa;
+    --fg-muted: #a1a1aa;
+    --fg-dim: #71717a;
+    --accent: #3b82f6;
+    --success: #22c55e;
+    --warning: #eab308;
+    --destructive: #ef4444;
+    --toolbar-h: 40px;
+  }
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    height: 100%;
+    overflow: hidden;
+  }
+  #toolbar {
+    height: var(--toolbar-h);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    background: var(--bg-elevated);
+  }
+  #toolbar .name { font-weight: 600; }
+  #toolbar .dot { color: var(--fg-dim); }
+  #toolbar .status { color: var(--fg-muted); }
+  #toolbar .status.running { color: var(--success); }
+  #toolbar .status.stopped { color: var(--warning); }
+  #terminal { height: calc(100% - var(--toolbar-h)); }
+  #message {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 16px;
+    color: var(--fg-muted);
+    font-size: 14px;
+  }
+  #message.error { color: var(--destructive); }
+  #message input {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    padding: 8px 12px;
+    width: 420px;
+    max-width: 90vw;
+    font-size: 14px;
+    font-family: monospace;
+    outline: none;
+  }
+  #message input:focus { border-color: var(--accent); }
+  .xterm { padding: 4px 0 0 4px; }
+</style>
+</head>
+<body>
+
+<div id="toolbar" style="display:none">
+  <span>⚒</span>
+  <span class="name" id="sb-name"></span>
+  <span class="dot">·</span>
+  <span class="status" id="sb-status"></span>
+</div>
+
+<div id="terminal" style="display:none"></div>
+
+<div id="message">
+  <div>Connecting…</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  const MAX_RECONNECT = 3;
+  const messageEl = document.getElementById('message');
+  const toolbarEl = document.getElementById('toolbar');
+  const terminalEl = document.getElementById('terminal');
+
+  // Extract sandbox ID from path: /_shell/:id
+  const pathParts = location.pathname.replace(/\/$/, '').split('/');
+  const sandboxID = pathParts[pathParts.length - 1];
+
+  // Extract token from URL fragment
+  let token = '';
+  if (location.hash) {
+    const params = new URLSearchParams(location.hash.substring(1));
+    token = params.get('token') || '';
+  }
+
+  if (!token) {
+    showTokenInput();
+    return;
+  }
+
+  // Strip token from URL bar (cosmetic — prevents shoulder-surfing)
+  if (history.replaceState) {
+    history.replaceState(null, '', location.pathname);
+  }
+
+  let term, fitAddon, ws;
+  let reconnectAttempts = 0;
+  let reconnectTimer = null;
+
+  function showMessage(text, isError) {
+    messageEl.style.display = 'flex';
+    messageEl.className = isError ? 'error' : '';
+    messageEl.textContent = text;
+    toolbarEl.style.display = 'none';
+    terminalEl.style.display = 'none';
+  }
+
+  function showTokenInput() {
+    messageEl.style.display = 'flex';
+    messageEl.className = '';
+    messageEl.innerHTML = '<div>Paste a shell token to connect</div>';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'token';
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && input.value.trim()) {
+        token = input.value.trim();
+        messageEl.innerHTML = '<div>Connecting…</div>';
+        connect();
+      }
+    });
+    messageEl.appendChild(input);
+    input.focus();
+  }
+
+  function initTerminal() {
+    if (term) return;
+    term = new Terminal({
+      fontFamily: "'FiraCode Nerd Font', 'Fira Code', monospace",
+      fontSize: 14,
+      theme: {
+        background: '#09090b',
+        foreground: '#fafafa',
+        cursor: '#fafafa',
+        selectionBackground: '#3b82f640',
+      },
+      allowProposedApi: true,
+    });
+    fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(terminalEl);
+    fitAddon.fit();
+
+    window.addEventListener('resize', function() { fitAddon.fit(); });
+    term.onResize(function(size) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', rows: size.rows, cols: size.cols }));
+      }
+    });
+    term.onData(function(data) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const buf = new TextEncoder().encode(data);
+        ws.send(buf);
+      }
+    });
+    term.onBinary(function(data) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const buf = new Uint8Array(data.length);
+        for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i);
+        ws.send(buf);
+      }
+    });
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = proto + '//' + location.host + '/_shell/' + sandboxID + '/ws';
+    ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+
+    let authenticated = false;
+
+    ws.onopen = function() {
+      ws.send(JSON.stringify({ type: 'auth', token: token }));
+    };
+
+    ws.onmessage = function(e) {
+      if (typeof e.data === 'string') {
+        let msg;
+        try { msg = JSON.parse(e.data); } catch (_) { return; }
+
+        if (msg.type === 'error') {
+          if (msg.error === 'unauthorized') {
+            // Don't retry — token is bad or revoked.
+            showMessage('Session ended. The shell token may have been revoked or rotated.', true);
+            reconnectAttempts = MAX_RECONNECT; // prevent reconnect
+            return;
+          }
+          showMessage(msg.error, true);
+          return;
+        }
+
+        if (msg.type === 'connected') {
+          authenticated = true;
+          reconnectAttempts = 0;
+          document.getElementById('sb-name').textContent = msg.sandbox || sandboxID;
+          const statusEl = document.getElementById('sb-status');
+          statusEl.textContent = msg.status || 'connected';
+          statusEl.className = 'status ' + (msg.status || '');
+          document.title = 'bhatti · ' + (msg.sandbox || sandboxID);
+
+          messageEl.style.display = 'none';
+          toolbarEl.style.display = 'flex';
+          terminalEl.style.display = 'block';
+
+          initTerminal();
+          fitAddon.fit();
+          // Send initial resize
+          ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+          term.focus();
+          return;
+        }
+        return;
+      }
+
+      // Binary frame — terminal output
+      if (authenticated && term) {
+        term.write(new Uint8Array(e.data));
+      }
+    };
+
+    ws.onclose = function() {
+      if (reconnectAttempts >= MAX_RECONNECT) {
+        if (!messageEl.textContent.includes('token')) {
+          showMessage('Connection lost.', true);
+        }
+        return;
+      }
+      reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 8000);
+      if (term) term.write('\r\n\x1b[33mReconnecting…\x1b[0m\r\n');
+      reconnectTimer = setTimeout(connect, delay);
+    };
+
+    ws.onerror = function() {
+      // onclose will fire after onerror
+    };
+  }
+
+  connect();
+})();
+</script>
+</body>
+</html>
