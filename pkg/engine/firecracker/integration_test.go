@@ -264,7 +264,7 @@ func TestFUSERootfs(t *testing.T) {
 	t.Log("✓ fusermount3 is setuid root (4755)")
 
 	// user_allow_other is enabled
-	r, _ = execWithTimeout(t, eng, info.ID, []string{"grep", "-c", "^user_allow_other", "/etc/fuse.conf"})
+	r, _ = execWithTimeout(t, eng, info.ID, []string{"grep", "-c", "^user_allow_other$", "/etc/fuse.conf"})
 	if strings.TrimSpace(r.Stdout) != "1" {
 		t.Fatalf("fuse.conf: user_allow_other not enabled")
 	}

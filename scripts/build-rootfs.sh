@@ -113,7 +113,7 @@ echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # FUSE: add lohar to fuse group (if group exists), enable user_allow_other
 getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
-sed -i "s/^#[[:space:]]*user_allow_other/user_allow_other/" /etc/fuse.conf
+sed -i "s/^#[[:space:]]*user_allow_other$/user_allow_other/" /etc/fuse.conf
 
 # Node.js
 NODE_VERSION=22.16.0

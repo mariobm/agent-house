@@ -300,10 +300,13 @@ After the apt-get install block, add:
 ```bash
 # FUSE: allow -o allow_other (needed by rclone mount, fuse-overlayfs)
 # Safe in a single-user VM — the VM itself is the isolation boundary.
-sed -i 's/^#[[:space:]]*user_allow_other/user_allow_other/' /etc/fuse.conf
+sed -i 's/^#[[:space:]]*user_allow_other$/user_allow_other/' /etc/fuse.conf
 ```
 
-The anchored pattern (`^#[[:space:]]*`) handles both `#user_allow_other`
+The pattern is anchored on both ends (`^` and `$`) so it only matches
+the standalone `#user_allow_other` line, not comment lines like
+`# user_allow_other - Using the allow_other mount option...` that also
+appear in fuse.conf. `[[:space:]]*` handles both `#user_allow_other`
 and `# user_allow_other` (with a space). If the fuse3 package changes
 the format in a future Ubuntu release, the sed is a no-op (doesn't
 break, just doesn't uncomment). We could also write the file directly,
@@ -443,7 +446,7 @@ updated.
  
 +# FUSE: add lohar to fuse group (if group exists), enable user_allow_other
 +getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
-+sed -i "s/^#[[:space:]]*user_allow_other/user_allow_other/" /etc/fuse.conf
++sed -i "s/^#[[:space:]]*user_allow_other$/user_allow_other/" /etc/fuse.conf
 +
  apt-get clean
  rm -rf /var/lib/apt/lists/*
@@ -467,7 +470,7 @@ updated.
  useradd -m -s /bin/zsh -G sudo lohar
  echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 +getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
-+sed -i "s/^#[[:space:]]*user_allow_other/user_allow_other/" /etc/fuse.conf
++sed -i "s/^#[[:space:]]*user_allow_other$/user_allow_other/" /etc/fuse.conf
 ```
 
 ### validate.go — remove FUSE warning
