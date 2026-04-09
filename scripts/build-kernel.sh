@@ -82,10 +82,19 @@ if [ "$MISSING" -eq 1 ]; then
 fi
 
 # Build
-echo "==> Building vmlinux ($(nproc) cores)..."
-# shellcheck disable=SC2086
-make $CROSS -j"$(nproc)" vmlinux
-
-mkdir -p ../dist
-cp vmlinux "../dist/vmlinux-${KERNEL_VERSION}-${ARCH}"
+# On x86_64, Firecracker loads the vmlinux ELF directly.
+# On aarch64, Firecracker requires arch/arm64/boot/Image (PE/COFF format).
+if [ "$ARCH" = "aarch64" ]; then
+    echo "==> Building Image ($(nproc) cores)..."
+    # shellcheck disable=SC2086
+    make $CROSS -j"$(nproc)" Image
+    mkdir -p ../dist
+    cp arch/arm64/boot/Image "../dist/vmlinux-${KERNEL_VERSION}-${ARCH}"
+else
+    echo "==> Building vmlinux ($(nproc) cores)..."
+    # shellcheck disable=SC2086
+    make $CROSS -j"$(nproc)" vmlinux
+    mkdir -p ../dist
+    cp vmlinux "../dist/vmlinux-${KERNEL_VERSION}-${ARCH}"
+fi
 echo "==> Built: dist/vmlinux-${KERNEL_VERSION}-${ARCH} ($(du -h "../dist/vmlinux-${KERNEL_VERSION}-${ARCH}" | cut -f1))"
