@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -220,6 +221,40 @@ func TestShellHTMLServed(t *testing.T) {
 	}
 	if strings.Contains(csp, "unsafe-eval") {
 		t.Fatal("CSP should not contain unsafe-eval")
+	}
+	// script-src should use nonce, not unsafe-inline (style-src may have unsafe-inline)
+	for _, part := range strings.Split(csp, ";") {
+		if strings.Contains(part, "script-src") && strings.Contains(part, "unsafe-inline") {
+			t.Fatal("CSP script-src should use nonce, not unsafe-inline")
+		}
+	}
+	if !strings.Contains(csp, "'nonce-") {
+		t.Fatalf("CSP missing nonce in script-src: %s", csp)
+	}
+
+	// Verify the nonce in CSP matches the nonce in the HTML script tag
+	body, _ := io.ReadAll(resp.Body)
+	// Extract nonce from CSP: 'nonce-<base64>'
+	for _, part := range strings.Split(csp, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "script-src") {
+			idx := strings.Index(part, "'nonce-")
+			if idx < 0 {
+				t.Fatal("no nonce in script-src")
+			}
+			nonce := part[idx+7 : strings.Index(part[idx+7:], "'") + idx+7]
+			if !strings.Contains(string(body), "nonce=\""+nonce+"\"") {
+				t.Fatalf("CSP nonce %q not found in HTML script tag", nonce)
+			}
+		}
+	}
+
+	// Verify nonce changes per request (no caching)
+	resp2, _ := http.Get(ts.URL + "/_shell/" + sb.ID)
+	defer resp2.Body.Close()
+	csp2 := resp2.Header.Get("Content-Security-Policy")
+	if csp == csp2 {
+		t.Fatal("nonce should differ between requests")
 	}
 }
 

@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -51,20 +53,28 @@ func (s *Server) handleWebShell(w http.ResponseWriter, r *http.Request, cleanPat
 // serveShellHTML serves the embedded xterm.js terminal page.
 // No token validation — the security boundary is the WebSocket.
 func (s *Server) serveShellHTML(w http.ResponseWriter, r *http.Request) {
+	// Generate a per-request CSP nonce for the inline script.
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		errResp(w, 500, "internal error")
+		return
+	}
+	nonce := base64.StdEncoding.EncodeToString(nonceBytes)
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "no-store") // nonce changes per request
 	w.Header().Set("Content-Security-Policy", strings.Join([]string{
 		"default-src 'none'",
-		"script-src https://cdn.jsdelivr.net",                   // xterm.js (v5.x does not need unsafe-eval)
-		"style-src https://cdn.jsdelivr.net 'unsafe-inline'",    // xterm.css
-		"font-src https://cdn.jsdelivr.net",                     // FiraCode
-		"connect-src 'self'",                                    // WebSocket + fetch
+		"script-src https://cdn.jsdelivr.net 'nonce-" + nonce + "'", // CDN + inline
+		"style-src https://cdn.jsdelivr.net 'unsafe-inline'",       // xterm.css
+		"font-src https://cdn.jsdelivr.net",                        // FiraCode
+		"connect-src 'self'",                                       // WebSocket + fetch
 		"frame-ancestors 'none'",
 	}, "; "))
-	w.Write(shellHTML)
+	w.Write(bytes.Replace(shellHTML, []byte("{{NONCE}}"), []byte(nonce), 1))
 }
 
 // handleShellWS upgrades to WebSocket, validates token via first message,
