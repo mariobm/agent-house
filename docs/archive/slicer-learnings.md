@@ -69,14 +69,29 @@ Confirmed independently:
   `slicer vm forward vm-1 -L 2375:/var/run/docker.sock`
 - Exec: `slicer vm exec vm-1 -- cmd` with `--uid`, `--cwd`, `--shell` options
 
-## Ideas for bhatti
+## Standard Linux/Firecracker techniques worth using
 
-1. **Kernel `ip=` cmdline** — adopt immediately, solves network chicken-and-egg
-2. **TCP-over-TAP for post-snapshot** — since vsock is broken after snapshot,
-   use virtio-net (which survives) as the communication channel after restore
-3. **Config drive** — second virtio-blk drive for per-sandbox config injection
-4. **Bridge networking** — simpler than per-VM NAT, better for multi-sandbox
-5. **OCI image distribution** — long-term, replace raw ext4 copy with containerd
-6. **Agent auth token** — prevent unauthorized access to exec endpoint
-7. **Metrics agent** — guest-side resource reporting for monitoring
-8. **Shell UX** — `--uid`, `--cwd`, `--bootstrap` flags
+Slicer demonstrates several standard techniques well. These are not Slicer
+inventions — they are documented Linux, Firecracker, and cloud-init patterns.
+Listed here as a reminder of which to adopt for bhatti, with their actual origins.
+
+1. **Kernel `ip=` cmdline** for guest network config before init runs.
+   Documented in linux `Documentation/admin-guide/kernel-parameters.txt`.
+   Solves the chicken-and-egg of "agent needs network, network needs agent."
+
+2. **TCP-over-virtio-net for post-snapshot communication.** vsock breaks after
+   Firecracker snapshot/restore (upstream Firecracker behavior, see FC issue
+   tracker). virtio-net survives, so use TCP listeners on the guest as the
+   post-restore channel.
+
+3. **Config drive (second virtio-blk for per-VM config).** Standard cloud-init
+   pattern (NoCloud datasource). Available before init scripts run.
+
+4. **Bridge networking over per-VM NAT.** Standard Linux bridge networking,
+   simpler than per-VM TAP+iptables for multi-sandbox setups.
+
+5. **Agent auth token** to prevent unauthorized exec access. Standard
+   bearer-token auth pattern.
+
+6. **Shell UX flags** (`--uid`, `--cwd`, `--bootstrap`). Common Unix conventions
+   from `su`, `sudo`, `chroot`, etc.
