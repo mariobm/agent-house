@@ -100,8 +100,24 @@ detect_install_type() {
     fi
 }
 
-# Detect existing rootfs tier from filename
+# Detect existing rootfs tier from config.yaml, falling back to filename glob.
+# Reading config.yaml is authoritative — it's what the server actually uses.
+# The glob fallback handles edge cases (missing config, manual installs).
 detect_tier() {
+    # Primary: parse firecracker_rootfs from config.yaml
+    if [ -f "$DATA_DIR/config.yaml" ]; then
+        local rootfs_path
+        rootfs_path=$(grep '^firecracker_rootfs:' "$DATA_DIR/config.yaml" | awk '{print $2}' | tr -d '"' | tr -d "'")
+        if [ -n "$rootfs_path" ]; then
+            local tier
+            tier=$(basename "$rootfs_path" | sed "s/rootfs-//;s/-${ARCH}\.ext4//")
+            if [ -n "$tier" ]; then
+                echo "$tier"
+                return
+            fi
+        fi
+    fi
+    # Fallback: glob (for fresh installs where config doesn't exist yet)
     for f in "$DATA_DIR/images/rootfs-"*"-${ARCH}.ext4"; do
         [ -f "$f" ] || continue
         basename "$f" | sed "s/rootfs-//;s/-${ARCH}\.ext4//"

@@ -41,6 +41,10 @@ func main() {
 	mustMount("proc", "/proc", "proc", 0, "")
 	mustMount("sysfs", "/sys", "sysfs", 0, "")
 	mustMount("devtmpfs", "/dev", "devtmpfs", 0, "")
+	// FUSE: devtmpfs creates /dev/fuse as 0600 but FUSE clients running as
+	// uid 1000 need read-write access. chmod to 0666 (matching the kernel
+	// driver's intent — fs/fuse/inode.c registers with S_IRUGO|S_IWUGO).
+	os.Chmod("/dev/fuse", 0666)
 	os.MkdirAll("/dev/pts", 0755)
 	mustMount("devpts", "/dev/pts", "devpts", 0, "newinstance,ptmxmode=0666")
 	mustMount("tmpfs", "/tmp", "tmpfs", 0, "")
