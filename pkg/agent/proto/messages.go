@@ -11,6 +11,8 @@ type ExecRequest struct {
 	SessionID  *string           `json:"session_id,omitempty"`     // nil = create new, non-nil = attach
 	MaxIdleSec *int              `json:"max_idle_sec,omitempty"`   // nil = default (0 = forever)
 	IfDetached *bool             `json:"if_detached,omitempty"`    // attach only if session is detached
+	Detach     *bool             `json:"detach,omitempty"`         // fire-and-forget: start and return PID immediately
+	OutputFile *string           `json:"output_file,omitempty"`    // detach: redirect stdout/stderr to this file
 }
 
 // ActivityInfo reports the agent's activity state.

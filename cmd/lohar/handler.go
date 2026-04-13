@@ -93,6 +93,9 @@ func handleControlConnection(conn net.Conn) {
 			handleSessionAttach(conn, *req.SessionID, ifDetached)
 		} else if len(req.Argv) == 0 {
 			proto.WriteFrame(conn, proto.ERROR, []byte("empty argv"))
+		} else if req.Detach != nil && *req.Detach {
+			// Detached exec: fire-and-forget, returns PID immediately
+			handleDetachedExec(conn, req)
 		} else if req.TTY != nil && *req.TTY {
 			// Create new TTY session
 			handleTTYSession(conn, req)

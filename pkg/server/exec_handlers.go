@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -17,6 +18,8 @@ import (
 type execReq struct {
 	Cmd        []string `json:"cmd"`
 	TimeoutSec int      `json:"timeout_sec,omitempty"` // default 300, max 86400
+	Detach     bool     `json:"detach,omitempty"`      // fire-and-forget
+	OutputFile string   `json:"output_file,omitempty"` // detach: redirect output to this file
 }
 
 func (s *Server) handleSandboxExec(w http.ResponseWriter, r *http.Request, id string) {
@@ -49,6 +52,33 @@ func (s *Server) handleSandboxExec(w http.ResponseWriter, r *http.Request, id st
 	}
 	execCtx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
+
+	// Detached exec: fire-and-forget, returns PID immediately
+	if req.Detach {
+		de, ok := s.engine.(engine.DetachedExecEngine)
+		if !ok {
+			errResp(w, 501, "engine does not support detached exec")
+			return
+		}
+		outputFile := req.OutputFile
+		if outputFile == "" {
+			outputFile = fmt.Sprintf("/tmp/bhatti-exec-%s.log", genID()[:8])
+		}
+		// Use a short timeout — launch should be near-instant
+		detachCtx, detachCancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer detachCancel()
+		pid, outPath, err := de.ExecDetached(detachCtx, sb.EngineID, req.Cmd, outputFile)
+		if err != nil {
+			errRespInternal(w, r, "detached exec failed", err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"pid":         pid,
+			"output_file": outPath,
+			"detached":    true,
+		})
+		return
+	}
 
 	// Streaming NDJSON when requested via Accept header
 	if r.Header.Get("Accept") == "application/x-ndjson" {

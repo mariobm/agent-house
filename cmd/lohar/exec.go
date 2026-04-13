@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
@@ -16,6 +17,63 @@ import (
 type frameMsg struct {
 	msgType byte
 	payload []byte
+}
+
+// handleDetachedExec starts a command in a new session (setsid) with stdout/stderr
+// redirected to a file, then returns immediately with the child PID and output
+// file path. The process survives vsock connection close.
+func handleDetachedExec(conn net.Conn, req proto.ExecRequest) {
+	// Determine output file
+	outputFile := fmt.Sprintf("/tmp/bhatti-detach-%d.log", time.Now().UnixNano())
+	if req.OutputFile != nil && *req.OutputFile != "" {
+		outputFile = *req.OutputFile
+	}
+
+	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	cmd.Env = buildEnv(req.Env)
+	if req.Cwd != nil {
+		cmd.Dir = *req.Cwd
+	}
+	// New session — fully detached from lohar's process group.
+	// Child survives even if the vsock connection closes.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:     true,
+		Credential: &syscall.Credential{Uid: 1000, Gid: 1000},
+	}
+
+	f, err := os.OpenFile(outputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		proto.WriteFrame(conn, proto.ERROR,
+			[]byte(fmt.Sprintf("open output file: %v", err)))
+		return
+	}
+	cmd.Stdout = f
+	cmd.Stderr = f
+
+	if err := cmd.Start(); err != nil {
+		f.Close()
+		proto.WriteFrame(conn, proto.ERROR,
+			[]byte(fmt.Sprintf("start: %v", err)))
+		return
+	}
+
+	pid := cmd.Process.Pid
+	logf("detached exec: pid=%d cmd=%v output=%s", pid, req.Argv, outputFile)
+
+	// Reap in background — don't leak zombies.
+	go func() {
+		cmd.Wait()
+		f.Close()
+		logf("detached exec done: pid=%d", pid)
+	}()
+
+	// Return PID and output file path as STDOUT JSON + EXIT(0).
+	// The host-side AgentClient.ExecDetached() parses this from the
+	// STDOUT frame, so no new frame types or engine interface changes needed.
+	meta := fmt.Sprintf(`{"pid":%d,"output_file":%q}`, pid, outputFile)
+	proto.WriteFrame(conn, proto.STDOUT, []byte(meta))
+	exit := proto.ExitPayload(0)
+	proto.WriteFrame(conn, proto.EXIT, exit[:])
 }
 
 func handlePipedExec(conn net.Conn, req proto.ExecRequest) {

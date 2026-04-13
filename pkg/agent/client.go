@@ -207,6 +207,61 @@ func (c *AgentClient) Exec(ctx context.Context, argv []string, env map[string]st
 	}
 }
 
+// ExecDetached starts a command in a detached session (setsid) and returns
+// immediately with the child PID and output file path. The command survives
+// vsock connection close. Output is redirected to outputFile (or a generated
+// path if empty).
+func (c *AgentClient) ExecDetached(ctx context.Context, argv []string, env map[string]string, cwd, outputFile string) (pid int, outputPath string, err error) {
+	conn, err := c.DialControl(ctx)
+	if err != nil {
+		return 0, "", fmt.Errorf("agent connect: %w", err)
+	}
+	defer conn.Close()
+
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+
+	detach := true
+	req := proto.ExecRequest{Argv: argv, Env: env, Detach: &detach}
+	if outputFile != "" {
+		req.OutputFile = &outputFile
+	}
+	if cwd != "" {
+		req.Cwd = &cwd
+	}
+	if err := proto.SendJSON(conn, proto.EXEC_REQ, req); err != nil {
+		return 0, "", fmt.Errorf("agent send exec: %w", err)
+	}
+
+	// Read STDOUT frame (JSON metadata) + EXIT frame.
+	// handleDetachedExec sends: STDOUT({"pid":N,"output_file":"..."}) then EXIT(0)
+	var stdout bytes.Buffer
+	for {
+		msgType, payload, err := proto.ReadFrame(conn)
+		if err != nil {
+			return 0, "", fmt.Errorf("agent read: %w", err)
+		}
+		switch msgType {
+		case proto.STDOUT:
+			stdout.Write(payload)
+		case proto.EXIT:
+			var meta struct {
+				PID        int    `json:"pid"`
+				OutputFile string `json:"output_file"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &meta); err != nil {
+				return 0, "", fmt.Errorf("parse detach response: %w (raw: %s)", err, stdout.String())
+			}
+			return meta.PID, meta.OutputFile, nil
+		case proto.ERROR:
+			return 0, "", fmt.Errorf("agent: %s", payload)
+		default:
+			// Unknown frame — skip (forward compat)
+		}
+	}
+}
+
 // Shell opens an interactive TTY session and returns a TerminalConn.
 func (c *AgentClient) Shell(ctx context.Context, argv []string, env map[string]string, rows, cols uint16) (engine.TerminalConn, error) {
 	conn, err := c.DialControl(ctx)

@@ -123,6 +123,14 @@ type StreamExecEngine interface {
 	ExecStream(ctx context.Context, id string, cmd []string, onEvent func(StreamEvent)) error
 }
 
+// DetachedExecEngine is optionally implemented by engines that support
+// fire-and-forget command execution. The command runs in its own session
+// (setsid) and survives vsock connection close. Returns the PID and the
+// output file path.
+type DetachedExecEngine interface {
+	ExecDetached(ctx context.Context, id string, cmd []string, outputFile string) (pid int, outputPath string, err error)
+}
+
 // SessionAttacher is optionally implemented by engines that support
 // reconnecting to existing TTY sessions.
 //

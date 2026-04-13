@@ -30,6 +30,26 @@ func (e *Engine) Exec(ctx context.Context, id string, cmd []string) (engine.Exec
 	return ag.Exec(ctx, cmd, nil, "")
 }
 
+// ExecDetached implements engine.DetachedExecEngine. It starts a command
+// in a detached session (setsid) inside the VM and returns immediately
+// with the child PID and output file path.
+func (e *Engine) ExecDetached(ctx context.Context, id string, cmd []string, outputFile string) (int, string, error) {
+	vm, err := e.getVM(id)
+	if err != nil {
+		return 0, "", err
+	}
+
+	vm.stateMu.Lock()
+	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
+		return 0, "", fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
+	}
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	return ag.ExecDetached(ctx, cmd, nil, "", outputFile)
+}
+
 // ExecStream implements engine.StreamExecEngine. It sends STDOUT/STDERR/EXIT
 // frames as StreamEvents via the callback as they arrive from the agent.
 func (e *Engine) ExecStream(ctx context.Context, id string, cmd []string, onEvent func(engine.StreamEvent)) error {
