@@ -16,7 +16,7 @@ Use --revoke to disable shell access.`,
 	Example: `  bhatti share dev
   bhatti share dev --json
   bhatti share dev --revoke`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	Run: func(cmd *cobra.Command, args []string) {
 		revoke, _ := cmd.Flags().GetBool("revoke")

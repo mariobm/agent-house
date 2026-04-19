@@ -22,7 +22,7 @@ var fileCmd = &cobra.Command{
 var fileReadCmd = &cobra.Command{
 	Use:               "read <id|name> <path>",
 	Short:             "Read a file from a sandbox",
-	Args:              cobra.ExactArgs(2),
+	Args:              exactArgs(2),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
@@ -50,7 +50,7 @@ var fileReadCmd = &cobra.Command{
 var fileWriteCmd = &cobra.Command{
 	Use:               "write <id|name> <path>",
 	Short:             "Write a file to a sandbox (reads from stdin)",
-	Args:              cobra.ExactArgs(2),
+	Args:              exactArgs(2),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
@@ -87,7 +87,7 @@ var fileWriteCmd = &cobra.Command{
 var fileLSCmd = &cobra.Command{
 	Use:               "ls <id|name> <path>",
 	Short:             "List files in a sandbox directory",
-	Args:              cobra.ExactArgs(2),
+	Args:              exactArgs(2),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)

@@ -536,6 +536,36 @@ func completionCachePath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("bhatti-completions-%d", os.Getuid()))
 }
 
+// --- Arg validators ---
+
+// exactArgs works like cobra.ExactArgs but prints help when the wrong
+// number of args is given. With SilenceUsage on the root command, bare
+// cobra.ExactArgs only shows "accepts N arg(s), received 0" — this
+// ensures the user always sees the full help text.
+func exactArgs(n int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) != n {
+			cmd.Help()
+			fmt.Println()
+			return fmt.Errorf("accepts %d arg(s), received %d", n, len(args))
+		}
+		return nil
+	}
+}
+
+// minimumArgs works like cobra.MinimumNArgs but prints help when too
+// few args are given.
+func minimumArgs(n int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) < n {
+			cmd.Help()
+			fmt.Println()
+			return fmt.Errorf("requires at least %d arg(s), only received %d", n, len(args))
+		}
+		return nil
+	}
+}
+
 // =====================================================================
 // Commands
 // =====================================================================

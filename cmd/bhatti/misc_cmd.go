@@ -75,7 +75,7 @@ var publishCmd = &cobra.Command{
 	Short:             "Publish a sandbox port with a public URL",
 	Example: `  bhatti publish dev -p 3000
   bhatti publish dev -p 3000 -a my-app`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	Run: func(cmd *cobra.Command, args []string) {
 		port, _ := cmd.Flags().GetInt("port")
@@ -120,7 +120,7 @@ var unpublishCmd = &cobra.Command{
 	Use:               "unpublish <sandbox> -p <port>",
 	Short:             "Unpublish a sandbox port",
 	Example: `  bhatti unpublish dev -p 3000`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	Run: func(cmd *cobra.Command, args []string) {
 		port, _ := cmd.Flags().GetInt("port")
@@ -150,7 +150,7 @@ var unpublishCmd = &cobra.Command{
 var completionCmd = &cobra.Command{
 	Use:       "completion <bash|zsh|fish>",
 	Short:     "Generate shell completion script",
-	Args:      cobra.ExactArgs(1),
+	Args:      exactArgs(1),
 	ValidArgs: []string{"bash", "zsh", "fish"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		switch args[0] {

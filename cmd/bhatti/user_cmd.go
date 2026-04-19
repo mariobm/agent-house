@@ -123,7 +123,7 @@ var userListCmd = &cobra.Command{
 var userDeleteCmd = &cobra.Command{
 	Use:   "delete <name>",
 	Short: "Delete a user",
-	Args:  cobra.ExactArgs(1),
+	Args:  exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !confirmAction(cmd, fmt.Sprintf("Delete user %q?", args[0])) {
 			return nil
@@ -158,7 +158,7 @@ var userDeleteCmd = &cobra.Command{
 var userRotateKeyCmd = &cobra.Command{
 	Use:   "rotate-key <name>",
 	Short: "Rotate a user's API key",
-	Args:  cobra.ExactArgs(1),
+	Args:  exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st := openLocalStore()
 		defer st.Close()

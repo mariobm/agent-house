@@ -69,7 +69,7 @@ var imageListCmd = &cobra.Command{
 var imageDeleteCmd = &cobra.Command{
 	Use:   "delete <name>",
 	Short: "Delete an image",
-	Args:  cobra.ExactArgs(1),
+	Args:  exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()
@@ -93,7 +93,7 @@ the image and converts it to an ext4 rootfs for 'bhatti create --image'.`,
 	Example: `  bhatti image pull python:3.12
   bhatti image pull ubuntu:24.04 --name ubuntu
   bhatti image pull node:22-slim --name node-22`,
-	Args:  cobra.ExactArgs(1),
+	Args:  exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()
@@ -173,7 +173,7 @@ var imageSaveCmd = &cobra.Command{
 	Use:               "save <sandbox-id|name>",
 	Short:             "Save a sandbox's rootfs as an image",
 	Example: `  bhatti image save dev --name my-custom-env`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
@@ -368,7 +368,7 @@ var imageShareCmd = &cobra.Command{
 	Short: "Share an image with other users (requires DB access)",
 	Example: `  sudo bhatti image share spc-golden --user kowshik --user sumo
   sudo bhatti image share spc-golden --list`,
-	Args: cobra.ExactArgs(1),
+	Args: exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st := openLocalStore()
 		defer st.Close()
@@ -414,7 +414,7 @@ var imageUnshareCmd = &cobra.Command{
 	Use:   "unshare <image-name>",
 	Short: "Revoke image access from users (requires DB access)",
 	Example: `  sudo bhatti image unshare spc-golden --user sumo`,
-	Args: cobra.ExactArgs(1),
+	Args: exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st := openLocalStore()
 		defer st.Close()

@@ -140,7 +140,7 @@ toggling keep_hot to control thermal management.`,
 
   # Re-enable thermal transitions
   bhatti edit my-agent --allow-cold`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id, err := resolveID(args[0])
@@ -193,7 +193,7 @@ var stopCmd = &cobra.Command{
 'bhatti start'. Stopped sandboxes use zero CPU and memory.`,
 	Example: `  bhatti stop dev
   bhatti start dev     # resume later`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
@@ -222,7 +222,7 @@ var startCmd = &cobra.Command{
 	Short: "Resume a stopped sandbox",
 	Long:  `Resume a sandbox from its snapshot. Continues exactly where it left off.`,
 	Example: `  bhatti start dev`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
@@ -252,7 +252,7 @@ var inspectCmd = &cobra.Command{
 	Aliases: []string{"info"},
 	Example: `  bhatti inspect dev
   bhatti inspect dev --json`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
@@ -363,7 +363,7 @@ var destroyCmd = &cobra.Command{
 Persistent volumes are detached but not deleted.`,
 	Example: `  bhatti destroy dev
   bhatti rm dev        # alias`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)

@@ -21,7 +21,7 @@ produces an exact continuation — processes running, files open.`,
 var snapshotCreateCmd = &cobra.Command{
 	Use:               "create <sandbox-id|name>",
 	Short:             "Checkpoint a running sandbox",
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
@@ -85,7 +85,7 @@ var snapshotListCmd = &cobra.Command{
 var snapshotResumeCmd = &cobra.Command{
 	Use:   "resume <snapshot-name>",
 	Short: "Resume a sandbox from a snapshot",
-	Args:  cobra.ExactArgs(1),
+	Args:  exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()
@@ -116,7 +116,7 @@ var snapshotResumeCmd = &cobra.Command{
 var snapshotDeleteCmd = &cobra.Command{
 	Use:   "delete <snapshot-name>",
 	Short: "Delete a snapshot",
-	Args:  cobra.ExactArgs(1),
+	Args:  exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()

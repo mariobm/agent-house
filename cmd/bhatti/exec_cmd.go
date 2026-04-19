@@ -32,7 +32,7 @@ Sleeping sandboxes wake automatically.`,
   bhatti exec dev echo hello           # -- is optional
   bhatti exec dev -- sudo apt-get install -y ripgrep
   bhatti exec dev --timeout 60 -- long-running-script.sh`,
-	Args:              cobra.MinimumNArgs(1),
+	Args:              minimumArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
@@ -93,7 +93,7 @@ var shellCmd = &cobra.Command{
 the shell keeps running. Reconnect with 'bhatti shell' again.`,
 	Example: `  bhatti shell dev
   bhatti sh dev        # alias`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id, err := resolveID(args[0])
@@ -273,7 +273,7 @@ var psCmd = &cobra.Command{
 	Short: "List sessions in a sandbox",
 	Example: `  bhatti ps dev
   bhatti ps dev --json`,
-	Args:              cobra.ExactArgs(1),
+	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
