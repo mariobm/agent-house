@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -154,6 +155,21 @@ func main() {
 			}
 		}
 		cancel()
+	}
+
+	// Read supplementary env from /run/bhatti/env.
+	// Tier boot profiles write runtime env vars here (e.g., DISPLAY=:99
+	// for the computer tier). Merged into configEnv so every subsequent
+	// exec inherits them without requiring --env flags.
+	if data, err := os.ReadFile("/run/bhatti/env"); err == nil {
+		if configEnv == nil {
+			configEnv = make(map[string]string)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if k, v, ok := strings.Cut(line, "="); ok && k != "" {
+				configEnv[k] = v
+			}
+		}
 	}
 
 	// Init script runs as a TTY session (can be attached to via session ID "init")

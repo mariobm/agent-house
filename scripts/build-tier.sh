@@ -30,9 +30,10 @@ fi
 
 # Tier-specific defaults
 case "$TIER" in
-    minimal) SIZE_MB="${SIZE_MB:-512}" ;;
-    browser) SIZE_MB="${SIZE_MB:-2048}" ;;
-    docker)  SIZE_MB="${SIZE_MB:-2048}" ;;
+    minimal)  SIZE_MB="${SIZE_MB:-512}" ;;
+    browser)  SIZE_MB="${SIZE_MB:-2048}" ;;
+    docker)   SIZE_MB="${SIZE_MB:-2048}" ;;
+    computer) SIZE_MB="${SIZE_MB:-4096}" ;;
     *) echo "unknown tier: $TIER" >&2; exit 1 ;;
 esac
 
