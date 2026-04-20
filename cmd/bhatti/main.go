@@ -610,9 +610,11 @@ func reconcileOrphanedVolumeFiles(dataDir string, st *store.Store) {
 	}
 }
 
-// registerTierImages ensures the built-in rootfs tiers (minimal, browser, docker, computer)
-// are registered in the images table as admin images (user_id=''). This allows
-// users to specify --image browser or --image minimal on create.
+// registerTierImages discovers rootfs tier images on disk and registers them
+// as admin images (user_id='') so users can reference them with --image.
+// Tiers are discovered by globbing for rootfs-*-{arch}.ext4 in the images
+// directory — no hardcoded list. Adding a new tier only requires the file
+// to exist on disk (placed there by install.sh).
 func registerTierImages(cfg *pkg.Config, st *store.Store) {
 	// Auto-detect architecture
 	arch := "arm64"
@@ -623,24 +625,38 @@ func registerTierImages(cfg *pkg.Config, st *store.Store) {
 		}
 	}
 
-	tiers := []string{"minimal", "browser", "docker", "computer"}
-	for _, tier := range tiers {
-		path := filepath.Join(cfg.DataDir, "images", fmt.Sprintf("rootfs-%s-%s.ext4", tier, arch))
+	pattern := filepath.Join(cfg.DataDir, "images", fmt.Sprintf("rootfs-*-%s.ext4", arch))
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		slog.Warn("failed to glob tier images", "pattern", pattern, "error", err)
+		return
+	}
+
+	suffix := fmt.Sprintf("-%s.ext4", arch)
+	for _, path := range matches {
+		// Extract tier name: rootfs-browser-arm64.ext4 → browser
+		base := filepath.Base(path)
+		tier := strings.TrimPrefix(base, "rootfs-")
+		tier = strings.TrimSuffix(tier, suffix)
+		if tier == "" || tier == base {
+			continue
+		}
+
 		info, err := os.Stat(path)
-		if err != nil {
-			continue // tier not installed
+		if err != nil || info.Size() == 0 {
+			continue
 		}
 		// Check if already registered
 		if _, err := st.GetImage("", tier); err == nil {
 			continue // already exists
 		}
 		st.CreateImage(store.ImageRecord{
-			ID:       fmt.Sprintf("tier_%s_%s", tier, arch),
-			UserID:   "", // admin image, visible to all
-			Name:     tier,
-			Source:   "built-in",
-			FilePath: path,
-			SizeMB:   int(info.Size() / 1024 / 1024),
+			ID:        fmt.Sprintf("tier_%s_%s", tier, arch),
+			UserID:    "", // admin image, visible to all
+			Name:      tier,
+			Source:    "built-in",
+			FilePath:  path,
+			SizeMB:    int(info.Size() / 1024 / 1024),
 			CreatedAt: info.ModTime(),
 		})
 		slog.Info("registered tier image", "name", tier, "path", path)
