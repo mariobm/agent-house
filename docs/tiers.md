@@ -18,6 +18,23 @@ Any file matching the pattern is registered as a built-in admin image.
 There is no hardcoded tier list in the server — drop a new rootfs file and
 it appears in `bhatti image list` on next restart.
 
+## Installing additional tiers on an existing server
+
+By default, the install script only downloads the single tier configured in
+`/etc/bhatti/config.yaml`. Use `BHATTI_TIERS` to pull additional tiers:
+
+```bash
+# Install all available tiers
+curl -fsSL bhatti.sh/install | sudo BHATTI_TIERS=all bash
+
+# Install specific tiers
+curl -fsSL bhatti.sh/install | sudo BHATTI_TIERS=computer,browser bash
+```
+
+The server discovers the new rootfs files on restart and registers them
+automatically. No config changes needed — the config only controls which
+tier is the default for `bhatti create` when no `--image` is specified.
+
 ## Adding a new tier
 
 ### 1. Create the tier script
@@ -90,4 +107,5 @@ The server picks up the new rootfs automatically — no Go code changes needed.
 [ ] scripts/build-tier.sh            — SIZE_MB default in case statement
 [ ] .github/workflows/release.yml    — add to matrix.tier
 [ ] scripts/install.sh               — interactive menu + BHATTI_TIER comment
+[ ] scripts/install.sh               — add to ALL_KNOWN_TIERS in do_server_update()
 ```

@@ -14,6 +14,7 @@
 # Environment variables (for CI / non-interactive use):
 #   BHATTI_MODE=cli|server     — skip install type prompt
 #   BHATTI_TIER=minimal|browser|docker|computer — skip tier prompt (server only)
+#   BHATTI_TIERS=all|tier1,tier2,...  — install additional tiers on update (server only)
 set -euo pipefail
 
 GITHUB_REPO="sahil-shubham/bhatti"
@@ -539,13 +540,34 @@ do_server_update() {
     tier=$(detect_tier)
     current=$(installed_bhatti_version)
 
+    # Determine which tiers to install.
+    # Default: only the configured tier. BHATTI_TIERS overrides:
+    #   all            → every known tier
+    #   tier1,tier2    → specific list
+    local ALL_KNOWN_TIERS="minimal browser docker computer"
+    local tiers_to_install="$tier"
+    if [ -n "${BHATTI_TIERS:-}" ]; then
+        if [ "${BHATTI_TIERS}" = "all" ]; then
+            tiers_to_install="$ALL_KNOWN_TIERS"
+        else
+            tiers_to_install=$(echo "$BHATTI_TIERS" | tr ',' ' ')
+        fi
+        # Always include the configured tier
+        case "$tiers_to_install" in
+            *"$tier"*) ;;
+            *) tiers_to_install="$tier $tiers_to_install" ;;
+        esac
+    fi
+
     # Check if everything is already up to date
     local all_present=true
     [ -f "/usr/local/bin/bhatti" ]                          || all_present=false
     [ -f "/usr/local/bin/firecracker" ]                     || all_present=false
     [ -f "$DATA_DIR/lohar" ]                                || all_present=false
     [ -f "$DATA_DIR/images/vmlinux-${ARCH}" ]               || all_present=false
-    [ -f "$DATA_DIR/images/rootfs-${tier}-${ARCH}.ext4" ]   || all_present=false
+    for t in $tiers_to_install; do
+        [ -f "$DATA_DIR/images/rootfs-${t}-${ARCH}.ext4" ]  || all_present=false
+    done
 
     if [ -n "$current" ] && [ "v${current#v}" = "${VERSION}" ] && [ "$all_present" = true ]; then
         success "bhatti ${VERSION} (server, ${tier} tier) is already up to date"
@@ -594,7 +616,9 @@ do_server_update() {
 
     install_lohar
     install_kernel
-    install_rootfs "$tier"
+    for t in $tiers_to_install; do
+        install_rootfs "$t"
+    done
     setup_jail_user
     write_systemd_unit
 
@@ -615,7 +639,8 @@ do_server_update() {
 
     echo ""
     echo "============================================"
-    echo "  bhatti updated to ${VERSION} (${tier} tier)"
+    echo "  bhatti updated to ${VERSION}"
+    echo "  tiers: $(echo $tiers_to_install | tr ' ' ', ')"
     if [ "$was_running" = true ]; then
         echo "  systemd service: restarted"
     else
