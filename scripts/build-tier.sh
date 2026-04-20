@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build a rootfs tier image.
 # Usage: sudo ./scripts/build-tier.sh <tier> <arch> <lohar-binary>
-#   tier: minimal, browser, docker
+#   tier: minimal, browser, docker, computer
 #   arch: amd64, arm64
 #
 # Output: dist/rootfs-<tier>-<arch>.ext4

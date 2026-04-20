@@ -13,7 +13,7 @@
 #
 # Environment variables (for CI / non-interactive use):
 #   BHATTI_MODE=cli|server     — skip install type prompt
-#   BHATTI_TIER=minimal|browser|docker — skip tier prompt (server only)
+#   BHATTI_TIER=minimal|browser|docker|computer — skip tier prompt (server only)
 set -euo pipefail
 
 GITHUB_REPO="sahil-shubham/bhatti"
@@ -670,15 +670,17 @@ main() {
                             if [ -z "$tier" ]; then
                                 echo ""
                                 echo "  Rootfs tier:"
-                                echo "    1) minimal — bare Ubuntu (~200MB)"
-                                echo "    2) browser — + Chromium/Playwright (~600MB)"
-                                echo "    3) docker  — + Docker Engine (~550MB)"
+                                echo "    1) minimal  — bare Ubuntu (~200MB)"
+                                echo "    2) browser  — + Chromium/Playwright (~600MB)"
+                                echo "    3) docker   — + Docker Engine (~550MB)"
+                                echo "    4) computer — + Full desktop with KasmVNC (~1.5GB)"
                                 echo ""
                                 printf "  Choice [1]: "
                                 read -r tier_choice < /dev/tty 2>/dev/null || tier_choice="1"
                                 case "${tier_choice:-1}" in
                                     2) tier="browser" ;;
                                     3) tier="docker" ;;
+                                    4) tier="computer" ;;
                                     *) tier="minimal" ;;
                                 esac
                             fi

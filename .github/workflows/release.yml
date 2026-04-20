@@ -99,10 +99,10 @@ jobs:
     name: Build Rootfs (${{ matrix.tier }}-${{ matrix.arch }})
     needs: lohar
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       matrix:
-        tier: [minimal, browser, docker]
+        tier: [minimal, browser, docker, computer]
         arch: [amd64, arm64]
         include:
           - arch: amd64
