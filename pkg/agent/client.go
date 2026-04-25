@@ -339,16 +339,11 @@ func (c *AgentClient) Forward(ctx context.Context, port uint16) (io.ReadWriteClo
 
 // WaitReady polls the agent until it responds or the context expires.
 // Used during VM boot to wait for the agent to start listening.
-//
-// Polling starts at 10ms intervals and backs off to 100ms after 500ms.
-// The fast initial polling catches agent readiness ~50ms earlier on
-// average (kernel boot + lohar init typically completes in 500-800ms).
 func (c *AgentClient) WaitReady(ctx context.Context, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
-	start := time.Now()
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("agent not ready: %w", err)
@@ -363,18 +358,10 @@ func (c *AgentClient) WaitReady(ctx context.Context, timeout time.Duration) erro
 			return nil
 		}
 
-		// Fast polling (10ms) for the first 500ms, then back off to 100ms.
-		// Most boots complete in 500-800ms — tight polling in that window
-		// catches readiness sooner without wasting resources on slow boots.
-		interval := 10 * time.Millisecond
-		if time.Since(start) > 500*time.Millisecond {
-			interval = 100 * time.Millisecond
-		}
-
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("agent not ready: %w", ctx.Err())
-		case <-time.After(interval):
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }

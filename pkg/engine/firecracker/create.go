@@ -60,11 +60,42 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 		}
 	}()
 
-	// 1. Network: allocate IP and create TAP early.
-	// The guest kernel's ip= autoconfig polls for carrier on virtio-net.
-	// Carrier arrives when the host TAP is UP and Firecracker connects.
-	// By creating the TAP before rootfs/lohar/config work, the TAP is
-	// ready ~70ms earlier, cutting the kernel's carrier wait.
+	// 1. Copy rootfs (from resolved image path or default base)
+	baseImage := e.cfg.BaseRootfs
+	if spec.BaseImage != "" {
+		baseImage = spec.BaseImage
+	}
+	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
+	if err = copyRootfs(baseImage, rootfsPath); err != nil {
+		return info, fmt.Errorf("copy rootfs: %w", err)
+	}
+
+	// 1b. Re-inject lohar into rootfs to prevent protocol drift.
+	// Saved images / OCI images may have an older lohar that doesn't
+	// understand new config drive fields (e.g. ReadOnly). Without this,
+	// the read_only JSON key is silently ignored → data corruption.
+	if err = injectLoharIntoRootfs(rootfsPath, e.cfg.DataDir); err != nil {
+		slog.Warn("lohar injection failed", "error", err)
+		// Non-fatal — image's lohar may work, but warn loudly
+	}
+
+	// 1c. Resize rootfs if requested
+	if spec.DiskSizeMB > 0 {
+		exec.Command("e2fsck", "-f", "-y", rootfsPath).Run() // best effort
+		if err = exec.Command("truncate", "-s", fmt.Sprintf("%dM", spec.DiskSizeMB), rootfsPath).Run(); err != nil {
+			return info, fmt.Errorf("resize rootfs: %w", err)
+		}
+		if err = exec.Command("resize2fs", rootfsPath).Run(); err != nil {
+			return info, fmt.Errorf("resize2fs: %w", err)
+		}
+	}
+
+	// 2. Allocate CID and paths
+	cid := atomic.AddUint32(&e.nextCID, 1)
+	socketPath := filepath.Join(sandboxDir, "firecracker.sock")
+	vsockPath := filepath.Join(sandboxDir, "vsock.sock")
+
+	// 3. Get or create user's network, allocate IP, create TAP
 	userNet := e.getOrCreateUserNetwork(spec.UserID, spec.SubnetIndex)
 	if err = ensureUserBridge(userNet); err != nil {
 		return info, fmt.Errorf("setup user bridge: %w", err)
@@ -84,41 +115,6 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	// gets a fresh MAC, so the host sends TCP SYNs to the old MAC —
 	// which no longer exists on any TAP. WaitReady times out at 30s.
 	exec.Command("ip", "neigh", "del", guestIP, "dev", userNet.BridgeName).Run() // best-effort
-
-	// 2. Copy rootfs
-	baseImage := e.cfg.BaseRootfs
-	if spec.BaseImage != "" {
-		baseImage = spec.BaseImage
-	}
-	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
-	if err = copyRootfs(baseImage, rootfsPath); err != nil {
-		return info, fmt.Errorf("copy rootfs: %w", err)
-	}
-
-	// 2b. Re-inject lohar into rootfs to prevent protocol drift.
-	// Saved images / OCI images may have an older lohar that doesn't
-	// understand new config drive fields (e.g. ReadOnly). Without this,
-	// the read_only JSON key is silently ignored → data corruption.
-	if err = injectLoharIntoRootfs(rootfsPath, e.cfg.DataDir); err != nil {
-		slog.Warn("lohar injection failed", "error", err)
-		// Non-fatal — image's lohar may work, but warn loudly
-	}
-
-	// 2c. Resize rootfs if requested
-	if spec.DiskSizeMB > 0 {
-		exec.Command("e2fsck", "-f", "-y", rootfsPath).Run() // best effort
-		if err = exec.Command("truncate", "-s", fmt.Sprintf("%dM", spec.DiskSizeMB), rootfsPath).Run(); err != nil {
-			return info, fmt.Errorf("resize rootfs: %w", err)
-		}
-		if err = exec.Command("resize2fs", rootfsPath).Run(); err != nil {
-			return info, fmt.Errorf("resize2fs: %w", err)
-		}
-	}
-
-	// 3. Allocate CID and paths
-	cid := atomic.AddUint32(&e.nextCID, 1)
-	socketPath := filepath.Join(sandboxDir, "firecracker.sock")
-	vsockPath := filepath.Join(sandboxDir, "vsock.sock")
 
 	// 4. Compute VM config
 	vcpuCount := int64(spec.CPUs)
