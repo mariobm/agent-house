@@ -47,9 +47,19 @@ func main() {
 }
 
 func runDaemon() {
-	// Structured JSON logging for production
+	// Structured JSON logging for production.
+	// Log level configurable via BHATTI_LOG_LEVEL env var (debug, info, warn, error).
+	logLevel := slog.LevelInfo
+	switch os.Getenv("BHATTI_LOG_LEVEL") {
+	case "debug", "DEBUG":
+		logLevel = slog.LevelDebug
+	case "warn", "WARN":
+		logLevel = slog.LevelWarn
+	case "error", "ERROR":
+		logLevel = slog.LevelError
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: logLevel,
 	}))
 	slog.SetDefault(logger)
 
