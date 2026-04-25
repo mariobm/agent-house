@@ -76,10 +76,17 @@ func DefaultDataDir() string {
 	return filepath.Join(home, ".bhatti")
 }
 
-// LoadConfig reads config.yaml from one of these locations (first match wins):
-//  1. $BHATTI_CONFIG (explicit path)
-//  2. /etc/bhatti/config.yaml (server config — FHS standard)
-//  3. ~/.bhatti/config.yaml (CLI / user config)
+// LoadConfig reads config from multiple locations and layers them:
+//
+//  1. $BHATTI_CONFIG (explicit path — used alone if set)
+//  2. /etc/bhatti/config.yaml (server config — engine, listen, data_dir)
+//  3. ~/.bhatti/config.yaml (client config — api_url, auth_token)
+//
+// On a server machine, both /etc/bhatti/config.yaml and ~/.bhatti/config.yaml
+// may exist. The server config provides engine settings, the user config
+// provides client credentials. Fields from the user config only fill in
+// values that are empty after loading the server config — they never
+// override server settings.
 //
 // For migration: if /var/lib/bhatti/config.yaml exists and nothing above
 // matched, it is loaded as a deprecated fallback with a stderr warning.
@@ -93,49 +100,75 @@ func LoadConfig() (*Config, error) {
 		DataDir: dir,
 	}
 
-	// Explicit paths — each has a clear meaning.
-	candidates := []string{
-		os.Getenv("BHATTI_CONFIG"),          // explicit override
-		"/etc/bhatti/config.yaml",           // server config (FHS)
-		filepath.Join(dir, "config.yaml"),   // ~/.bhatti/config.yaml (CLI)
+	// If an explicit config is set, use it alone (no layering).
+	if envPath := os.Getenv("BHATTI_CONFIG"); envPath != "" {
+		data, err := os.ReadFile(envPath)
+		if err != nil {
+			return nil, fmt.Errorf("read config %s: %w", envPath, err)
+		}
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parse config %s: %w", envPath, err)
+		}
+		if cfg.DataDir == "" {
+			cfg.DataDir = dir
+		}
+		cfg.ConfigPath = envPath
+		return cfg, nil
 	}
 
-	var data []byte
+	// Layer 1: system config (server settings)
 	var loadedFrom string
-	for _, path := range candidates {
-		if path == "" {
+	for _, path := range []string{
+		"/etc/bhatti/config.yaml",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
 			continue
 		}
-		d, err := os.ReadFile(path)
-		if err == nil {
-			data = d
-			loadedFrom = path
-			break
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parse config %s: %w", path, err)
 		}
+		loadedFrom = path
+		break
 	}
 
 	// Migration fallback: old location inside data dir.
 	// TODO: remove after a few releases (added v1.6.0).
-	if data == nil {
+	if loadedFrom == "" {
 		const deprecated = "/var/lib/bhatti/config.yaml"
-		if d, err := os.ReadFile(deprecated); err == nil {
-			data = d
+		if data, err := os.ReadFile(deprecated); err == nil {
+			if err := yaml.Unmarshal(data, cfg); err != nil {
+				return nil, fmt.Errorf("parse config %s: %w", deprecated, err)
+			}
 			loadedFrom = deprecated
 			fmt.Fprintf(os.Stderr, "⚠ config loaded from deprecated location %s\n  move to /etc/bhatti/config.yaml\n\n", deprecated)
 		}
 	}
 
-	if data == nil {
-		return cfg, nil // no config found, use defaults
+	// Layer 2: user config (client credentials)
+	// Only fills in api_url and auth_token if they're still empty.
+	userConfig := filepath.Join(dir, "config.yaml")
+	if data, err := os.ReadFile(userConfig); err == nil {
+		var userCfg Config
+		if err := yaml.Unmarshal(data, &userCfg); err == nil {
+			if cfg.APIURL == "" && userCfg.APIURL != "" {
+				cfg.APIURL = userCfg.APIURL
+			}
+			if cfg.AuthToken == "" && userCfg.AuthToken != "" {
+				cfg.AuthToken = userCfg.AuthToken
+			}
+			if loadedFrom == "" {
+				loadedFrom = userConfig
+			}
+		}
 	}
 
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", loadedFrom, err)
-	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = dir
 	}
-	cfg.ConfigPath = loadedFrom
+	if loadedFrom != "" {
+		cfg.ConfigPath = loadedFrom
+	}
 	return cfg, nil
 }
 
