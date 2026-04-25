@@ -39,7 +39,10 @@ success() { [ "${QUIET:-}" = "1" ] && return; printf "  ${GREEN}✓${RESET} %s\n
 _step_start=0
 _total_start=0
 step_start() { _step_start=$SECONDS; }
-step_elapsed() { echo "$(( SECONDS - _step_start ))s"; }
+step_elapsed() {
+    local dt=$(( SECONDS - _step_start ))
+    if [ "$dt" -eq 0 ]; then echo "<1s"; else echo "${dt}s"; fi
+}
 
 die() {
     printf "\n${RED}error: %s${RESET}\n" "$1" >&2
@@ -70,6 +73,7 @@ trap '_err_trap $LINENO' ERR
 _cleanup() {
     rm -f /tmp/bhatti.tmp
     rm -f /usr/local/bin/bhatti.tmp.$$ 2>/dev/null || true
+    rm -f "$DATA_DIR"/images/*.zst.tmp 2>/dev/null || true
 }
 trap '_cleanup' EXIT
 
@@ -174,20 +178,48 @@ fetch_checksums() {
     CHECKSUMS=$(curl -fsSL "${RELEASE_URL}/checksums-sha256.txt" 2>/dev/null || true)
 }
 
+# Compute sha256 of a local file (empty string if file missing or no tool)
+local_sha256() {
+    local file="$1"
+    [ -f "$file" ] || { echo ""; return 0; }
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    else
+        echo ""
+    fi
+}
+
+# Get the expected checksum for a release asset name
+remote_sha256() {
+    local name="$1"
+    [ -n "$CHECKSUMS" ] || { echo ""; return 0; }
+    echo "$CHECKSUMS" | grep "$name" | awk '{print $1}'
+}
+
+# Check if a local file matches the release checksum. Returns 0 if up to date.
+is_up_to_date() {
+    local file="$1" asset_name="$2"
+    [ -f "$file" ] || return 1
+    local expected
+    expected=$(remote_sha256 "$asset_name")
+    [ -n "$expected" ] || return 1  # no checksum available, assume stale
+    local actual
+    actual=$(local_sha256 "$file")
+    [ -n "$actual" ] || return 1
+    [ "$actual" = "$expected" ]
+}
+
+# Verify a downloaded file matches the expected checksum. Dies on mismatch.
 verify_checksum() {
     local file="$1" expected_name="$2"
-    [ -n "$CHECKSUMS" ] || return 0
     local expected
-    expected=$(echo "$CHECKSUMS" | grep "$expected_name" | awk '{print $1}')
-    [ -n "$expected" ] || return 0
+    expected=$(remote_sha256 "$expected_name")
+    [ -n "$expected" ] || return 0  # no checksum available, skip
     local actual
-    if command -v sha256sum >/dev/null 2>&1; then
-        actual=$(sha256sum "$file" | awk '{print $1}')
-    elif command -v shasum >/dev/null 2>&1; then
-        actual=$(shasum -a 256 "$file" | awk '{print $1}')
-    else
-        return 0  # no tool available, skip
-    fi
+    actual=$(local_sha256 "$file")
+    [ -n "$actual" ] || return 0
     [ "$actual" = "$expected" ] || die "checksum mismatch for $expected_name" \
         "expected: $expected" \
         "got:      $actual" \
@@ -419,38 +451,64 @@ install_firecracker() {
 }
 
 install_lohar() {
+    local asset="lohar-linux-${ARCH}"
+    if is_up_to_date "$DATA_DIR/lohar" "$asset"; then
+        success "lohar (up to date)"
+        return 0
+    fi
     step_start
     heading "Installing lohar"
     check_disk_space 10 "$DATA_DIR"
-    download "${RELEASE_URL}/lohar-linux-${ARCH}" "$DATA_DIR/lohar"
-    verify_checksum "$DATA_DIR/lohar" "lohar-linux-${ARCH}"
+    download "${RELEASE_URL}/${asset}" "$DATA_DIR/lohar"
+    verify_checksum "$DATA_DIR/lohar" "$asset"
     chmod +x "$DATA_DIR/lohar"
     success "lohar ($(du -h "$DATA_DIR/lohar" | cut -f1), $(step_elapsed))"
 }
 
 install_kernel() {
+    local asset="vmlinux-${KERNEL_VERSION}-${FC_ARCH}"
+    local kernel_path="$DATA_DIR/images/vmlinux-${ARCH}"
+    if is_up_to_date "$kernel_path" "$asset"; then
+        success "kernel (up to date)"
+        return 0
+    fi
     step_start
     heading "Installing kernel"
     check_disk_space 15 "$DATA_DIR"
-    local kernel_path="$DATA_DIR/images/vmlinux-${ARCH}"
-    download_large "${RELEASE_URL}/vmlinux-${KERNEL_VERSION}-${FC_ARCH}" "$kernel_path"
-    verify_checksum "$kernel_path" "vmlinux-${KERNEL_VERSION}-${FC_ARCH}"
+    download_large "${RELEASE_URL}/${asset}" "$kernel_path"
+    verify_checksum "$kernel_path" "$asset"
     success "kernel ($(du -h "$kernel_path" | cut -f1), $(step_elapsed))"
 }
 
 install_rootfs() {
     local tier="$1"
+    local asset="rootfs-${tier}-${ARCH}.ext4.zst"
     local rootfs_path="$DATA_DIR/images/rootfs-${tier}-${ARCH}.ext4"
+    local checksum_file="$DATA_DIR/images/.rootfs-${tier}-${ARCH}.sha256"
+
+    # Skip if local rootfs matches the release checksum.
+    # We store the compressed (.zst) checksum after install because the
+    # release checksum is for the compressed file, not the decompressed one.
+    local expected
+    expected=$(remote_sha256 "$asset")
+    if [ -n "$expected" ] && [ -f "$rootfs_path" ] && [ -f "$checksum_file" ]; then
+        local stored
+        stored=$(cat "$checksum_file" 2>/dev/null || true)
+        if [ "$stored" = "$expected" ]; then
+            success "rootfs ${tier} (up to date)"
+            return 0
+        fi
+    fi
 
     step_start
     heading "Installing ${tier} rootfs"
 
-    # Disk space check: tier sizes with margin
+    # Disk space check: need room for compressed + decompressed
     case "$tier" in
-        minimal)  check_disk_space 300 "$DATA_DIR" ;;
-        browser)  check_disk_space 800 "$DATA_DIR" ;;
-        docker)   check_disk_space 700 "$DATA_DIR" ;;
-        computer) check_disk_space 2000 "$DATA_DIR" ;;
+        minimal)  check_disk_space 400 "$DATA_DIR" ;;
+        browser)  check_disk_space 1000 "$DATA_DIR" ;;
+        docker)   check_disk_space 900 "$DATA_DIR" ;;
+        computer) check_disk_space 2500 "$DATA_DIR" ;;
     esac
 
     # Install zstd if needed
@@ -463,8 +521,6 @@ install_rootfs() {
         elif command -v yum >/dev/null 2>&1; then
             yum install -y -q zstd >/dev/null || true
         fi
-
-        # Verify it actually installed — catches permission errors, broken repos, etc.
         command -v zstd >/dev/null 2>&1 \
             || die "failed to install zstd" \
                    "Try installing it manually and re-run:" \
@@ -473,14 +529,24 @@ install_rootfs() {
                    "  sudo yum install zstd       # CentOS"
     fi
 
-    download_pipe \
-        "${RELEASE_URL}/rootfs-${tier}-${ARCH}.ext4.zst" \
-        zstd -d -f -o "$rootfs_path"
+    # Download compressed file (with progress bar), verify, then decompress
+    local zst_tmp="${rootfs_path}.zst.tmp"
+    download_large "${RELEASE_URL}/${asset}" "$zst_tmp"
+    verify_checksum "$zst_tmp" "$asset"
+
+    info "Decompressing..."
+    zstd -d -q -f -o "$rootfs_path" "$zst_tmp"
+    rm -f "$zst_tmp"
 
     [ -s "$rootfs_path" ] \
         || die "rootfs decompression produced an empty file" \
                "This may indicate insufficient disk space." \
                "Available space: $(df -h "$DATA_DIR" 2>/dev/null | tail -1 | awk '{print $4}')"
+
+    # Store the compressed checksum for future skip checks
+    if [ -n "$expected" ]; then
+        echo "$expected" > "$checksum_file"
+    fi
 
     success "rootfs ${tier} ($(du -h "$rootfs_path" | cut -f1), $(step_elapsed))"
 }

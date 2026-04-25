@@ -43,6 +43,8 @@ sudo bhatti update              # Server: updates all components
 sudo bhatti update --tiers all  # Server: also pull additional tiers
 ```
 
+> **Note:** `bhatti update` updating all server components requires v1.7.3+. On older versions, re-run the install command: `curl -fsSL bhatti.sh/install | sudo bash`
+
 ## Rootfs Tiers
 
 The server install prompts you to pick a rootfs tier. Each tier is a pre-built Ubuntu 24.04 image:
