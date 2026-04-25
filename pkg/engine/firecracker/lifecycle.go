@@ -44,6 +44,26 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 
 	client := fcAPIClient(vm.SocketPath)
 
+	// Inflate balloon to reclaim guest memory before snapshot.
+	// The guest releases clean pages, reducing the amount of non-zero
+	// data in the full snapshot. On btrfs+zstd, zeroed pages compress
+	// to nearly nothing. For a 512MB VM using ~100MB, this can cut
+	// snapshot I/O from 512MB to ~200MB. deflate_on_oom ensures the
+	// guest reclaims memory when it needs it after resume.
+	// Only inflate on hot VMs (vCPUs must be running for the guest to
+	// process the balloon request).
+	if vm.Thermal == "hot" {
+		balloonCtx, balloonCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := fcPatch(balloonCtx, client, "/balloon",
+			fmt.Sprintf(`{"amount_mib":%d}`, vm.MemSizeMib/2)); err != nil {
+			slog.Debug("pre-stop balloon inflate failed", "sandbox", id, "error", err)
+		}
+		balloonCancel()
+		// Brief sleep to let the guest process the balloon request and
+		// release pages before we pause vCPUs and take the snapshot.
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	// Skip Pause if already paused (warm→cold path).
 	// Firecracker may reject Pause on an already-paused VM.
 	// SaveImage already uses this pattern (see wasPaused above).
