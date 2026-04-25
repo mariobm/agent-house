@@ -34,6 +34,13 @@ info()    { [ "${QUIET:-}" = "1" ] && return; printf "  ${DIM}%s${RESET}\n" "$*"
 heading() { [ "${QUIET:-}" = "1" ] && return; printf "\n${BOLD}==> %s${RESET}\n" "$*"; }
 success() { [ "${QUIET:-}" = "1" ] && return; printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
 
+# ── Timing ────────────────────────────────────────────
+
+_step_start=0
+_total_start=0
+step_start() { _step_start=$SECONDS; }
+step_elapsed() { echo "$(( SECONDS - _step_start ))s"; }
+
 die() {
     printf "\n${RED}error: %s${RESET}\n" "$1" >&2
     shift
@@ -111,6 +118,34 @@ download() {
     fi
 }
 
+# download_large URL DEST — same as download() but with a progress bar.
+# Use for files >50MB where multi-minute silence is bad UX.
+download_large() {
+    local url="$1" dest="$2"
+    local http_code
+
+    http_code=$(curl -SL --progress-bar -w '%{http_code}' -o "$dest" "$url") || {
+        rm -f "$dest"
+        die "download failed: $url" \
+            "curl error (network issue or invalid URL)" \
+            "Check your network connection and try again."
+    }
+
+    if [ "$http_code" -ge 400 ] 2>/dev/null; then
+        rm -f "$dest"
+        die "download failed: $url" \
+            "HTTP status: $http_code" \
+            "Check your network connection and try again."
+    fi
+
+    if [ ! -s "$dest" ]; then
+        rm -f "$dest"
+        die "download produced an empty file: $url" \
+            "This usually means the release asset is missing." \
+            "Check: $url"
+    fi
+}
+
 # download_pipe URL CMD... — stream a download into a command (e.g. tar, zstd).
 # Validates that curl succeeds and the pipeline produces output.
 download_pipe() {
@@ -129,6 +164,49 @@ download_pipe() {
             "Check your network connection and disk space."
     fi
     rm -f "$err_file"
+}
+
+# ── Checksum verification ─────────────────────────────
+
+CHECKSUMS=""
+
+fetch_checksums() {
+    CHECKSUMS=$(curl -fsSL "${RELEASE_URL}/checksums-sha256.txt" 2>/dev/null || true)
+}
+
+verify_checksum() {
+    local file="$1" expected_name="$2"
+    [ -n "$CHECKSUMS" ] || return 0
+    local expected
+    expected=$(echo "$CHECKSUMS" | grep "$expected_name" | awk '{print $1}')
+    [ -n "$expected" ] || return 0
+    local actual
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+    else
+        return 0  # no tool available, skip
+    fi
+    [ "$actual" = "$expected" ] || die "checksum mismatch for $expected_name" \
+        "expected: $expected" \
+        "got:      $actual" \
+        "The download may be corrupt. Try again."
+}
+
+# ── Disk space check ─────────────────────────────────
+
+check_disk_space() {
+    local required_mb="$1" path="$2"
+    local available_mb
+    # df -BM is Linux-only; use awk to parse portable df output
+    available_mb=$(df -Pm "$path" 2>/dev/null | tail -1 | awk '{print $4}')
+    if [ -n "$available_mb" ] && [ "$available_mb" -lt "$required_mb" ] 2>/dev/null; then
+        die "insufficient disk space" \
+            "Required: ${required_mb}MB" \
+            "Available: ${available_mb}MB on $(df -P "$path" | tail -1 | awk '{print $6}')" \
+            "Free up space and try again."
+    fi
 }
 
 # ── Version helpers ───────────────────────────────────
@@ -268,6 +346,8 @@ install_bhatti_binary() {
     fi
     chmod +x "$tmp"
 
+    verify_checksum "$tmp" "$binary"
+
     # Verify the binary actually executes (catches HTML error pages,
     # wrong-arch binaries, truncated downloads)
     if ! "$tmp" version >/dev/null 2>&1; then
@@ -339,24 +419,39 @@ install_firecracker() {
 }
 
 install_lohar() {
+    step_start
     heading "Installing lohar"
+    check_disk_space 10 "$DATA_DIR"
     download "${RELEASE_URL}/lohar-linux-${ARCH}" "$DATA_DIR/lohar"
+    verify_checksum "$DATA_DIR/lohar" "lohar-linux-${ARCH}"
     chmod +x "$DATA_DIR/lohar"
-    success "lohar ($(du -h "$DATA_DIR/lohar" | cut -f1))"
+    success "lohar ($(du -h "$DATA_DIR/lohar" | cut -f1), $(step_elapsed))"
 }
 
 install_kernel() {
+    step_start
     heading "Installing kernel"
+    check_disk_space 15 "$DATA_DIR"
     local kernel_path="$DATA_DIR/images/vmlinux-${ARCH}"
-    download "${RELEASE_URL}/vmlinux-${KERNEL_VERSION}-${FC_ARCH}" "$kernel_path"
-    success "kernel ($(du -h "$kernel_path" | cut -f1))"
+    download_large "${RELEASE_URL}/vmlinux-${KERNEL_VERSION}-${FC_ARCH}" "$kernel_path"
+    verify_checksum "$kernel_path" "vmlinux-${KERNEL_VERSION}-${FC_ARCH}"
+    success "kernel ($(du -h "$kernel_path" | cut -f1), $(step_elapsed))"
 }
 
 install_rootfs() {
     local tier="$1"
     local rootfs_path="$DATA_DIR/images/rootfs-${tier}-${ARCH}.ext4"
 
+    step_start
     heading "Installing ${tier} rootfs"
+
+    # Disk space check: tier sizes with margin
+    case "$tier" in
+        minimal)  check_disk_space 300 "$DATA_DIR" ;;
+        browser)  check_disk_space 800 "$DATA_DIR" ;;
+        docker)   check_disk_space 700 "$DATA_DIR" ;;
+        computer) check_disk_space 2000 "$DATA_DIR" ;;
+    esac
 
     # Install zstd if needed
     if ! command -v zstd >/dev/null 2>&1; then
@@ -387,7 +482,7 @@ install_rootfs() {
                "This may indicate insufficient disk space." \
                "Available space: $(df -h "$DATA_DIR" 2>/dev/null | tail -1 | awk '{print $4}')"
 
-    success "rootfs ${tier} ($(du -h "$rootfs_path" | cut -f1))"
+    success "rootfs ${tier} ($(du -h "$rootfs_path" | cut -f1), $(step_elapsed))"
 }
 
 setup_jail_user() {
@@ -515,6 +610,20 @@ do_cli_install() {
         echo ""
         echo "  Quick start:"
         echo "    bhatti setup     # configure API endpoint + key"
+        # Shell completions hint
+        local shell_name
+        shell_name=$(basename "${SHELL:-}" 2>/dev/null || true)
+        case "$shell_name" in
+            zsh)  echo ""
+                  echo "  Shell completions:"
+                  echo "    echo 'source <(bhatti completion zsh)' >> ~/.zshrc" ;;
+            bash) echo ""
+                  echo "  Shell completions:"
+                  echo "    echo 'source <(bhatti completion bash)' >> ~/.bashrc" ;;
+            fish) echo ""
+                  echo "  Shell completions:"
+                  echo "    bhatti completion fish > ~/.config/fish/completions/bhatti.fish" ;;
+        esac
     fi
 }
 
@@ -554,9 +663,16 @@ do_server_install() {
     create_admin_user
     write_systemd_unit
 
+    # Install systemd unit directly (we already have root)
+    if command -v systemctl >/dev/null 2>&1; then
+        cp "$DATA_DIR/bhatti.service" /etc/systemd/system/bhatti.service
+        systemctl daemon-reload
+    fi
+
+    local elapsed=$(( SECONDS - _total_start ))
     echo ""
     echo "============================================"
-    echo "  bhatti ${VERSION} installed"
+    echo "  bhatti ${VERSION} installed (${elapsed}s)"
     echo "  tier: ${tier}"
     echo ""
     if [ -n "${ADMIN_KEY:-}" ]; then
@@ -564,13 +680,6 @@ do_server_install() {
         echo "  (saved to ~/.bhatti/config.yaml)"
         echo ""
     fi
-    echo "  Start the daemon:"
-    echo "    cd $DATA_DIR && sudo bhatti serve"
-    echo ""
-    echo "  Run as a systemd service:"
-    echo "    sudo cp $DATA_DIR/bhatti.service /etc/systemd/system/"
-    echo "    sudo systemctl enable --now bhatti"
-    echo ""
     echo "  Manage users:"
     echo "    sudo bhatti user create --name alice"
     echo "    sudo bhatti user list"
@@ -588,7 +697,23 @@ do_server_install() {
         echo "  Other tiers available: ${other_tiers}"
         echo "  Install with: sudo bhatti update --tiers all"
     fi
+    echo ""
+    echo "  Uninstall:"
+    echo "    curl -fsSL bhatti.sh/uninstall | sudo bash"
     echo "============================================"
+
+    # Offer to start the service (interactive only)
+    if command -v systemctl >/dev/null 2>&1 && [ -t 0 ] && [ "${QUIET:-}" != "1" ]; then
+        echo ""
+        printf "  Start bhatti now? [Y/n]: "
+        read -r start_choice < /dev/tty 2>/dev/null || start_choice="y"
+        case "${start_choice:-y}" in
+            n|N|no|NO) echo "  Skipped. Start later with: sudo systemctl enable --now bhatti" ;;
+            *) systemctl enable --now bhatti && success "bhatti service started" ;;
+        esac
+    else
+        info "Start with: sudo systemctl enable --now bhatti"
+    fi
 }
 
 do_server_update() {
@@ -704,7 +829,8 @@ do_server_update() {
 
     echo ""
     echo "============================================"
-    echo "  bhatti updated to ${VERSION}"
+    local elapsed=$(( SECONDS - _total_start ))
+    echo "  bhatti updated to ${VERSION} (${elapsed}s)"
     echo "  tiers: $(echo $tiers_to_install | tr ' ' ', ')"
     # Hint about tiers not installed locally
     local missing_tiers=""
@@ -741,8 +867,10 @@ do_server_update() {
 # ── Main ──────────────────────────────────────────────
 
 main() {
+    _total_start=$SECONDS
     detect_platform
     resolve_latest_version
+    fetch_checksums
 
     local install_type
     install_type=$(detect_install_type)
@@ -793,6 +921,7 @@ main() {
                                 echo "    2) browser  — + Chromium/Playwright (~600MB)"
                                 echo "    3) docker   — + Docker Engine (~550MB)"
                                 echo "    4) computer — + Full desktop with KasmVNC (~1.5GB)"
+                                echo "    5) all      — install all tiers (~2.8GB)"
                                 echo ""
                                 printf "  Choice [1]: "
                                 read -r tier_choice < /dev/tty 2>/dev/null || tier_choice="1"
@@ -800,11 +929,19 @@ main() {
                                     2) tier="browser" ;;
                                     3) tier="docker" ;;
                                     4) tier="computer" ;;
+                                    5) tier="all" ;;
                                     *) tier="minimal" ;;
                                 esac
                             fi
 
-                            do_server_install "$tier"
+                            if [ "$tier" = "all" ]; then
+                                do_server_install "minimal"
+                                for t in browser docker computer; do
+                                    install_rootfs "$t"
+                                done
+                            else
+                                do_server_install "$tier"
+                            fi
                             ;;
                         *)
                             do_cli_install
