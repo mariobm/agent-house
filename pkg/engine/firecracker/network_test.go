@@ -439,6 +439,54 @@ func TestIPReuseAfterDestroy(t *testing.T) {
 	}
 }
 
+// TestARPCleanedOnDestroy verifies that the permanent ARP entry set during
+// Create (for fast boot) is cleaned up when the VM is destroyed, even when
+// the bridge survives (other VMs still running on it).
+func TestARPCleanedOnDestroy(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("must run as root")
+	}
+
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	// Two VMs on the same user/bridge so the bridge survives the first destroy.
+	spec1 := engine.SandboxSpec{Name: "arp-keep", CPUs: 1, MemoryMB: 512, UserID: "usr_arp", SubnetIndex: 94}
+	spec2 := engine.SandboxSpec{Name: "arp-del", CPUs: 1, MemoryMB: 512, UserID: "usr_arp", SubnetIndex: 94}
+
+	info1, err := eng.Create(ctx, spec1)
+	if err != nil {
+		t.Fatalf("Create vm1: %v", err)
+	}
+	defer eng.Destroy(ctx, info1.ID)
+
+	info2, err := eng.Create(ctx, spec2)
+	if err != nil {
+		t.Fatalf("Create vm2: %v", err)
+	}
+
+	bridge := "brbhatti-94"
+
+	// Both ARP entries should be present.
+	out, _ := exec.Command("ip", "neigh", "show", "dev", bridge).Output()
+	if !strings.Contains(string(out), info1.IP) || !strings.Contains(string(out), info2.IP) {
+		t.Fatalf("expected both IPs in ARP table, got:\n%s", out)
+	}
+	t.Logf("✓ both ARP entries present: %s, %s", info1.IP, info2.IP)
+
+	// Destroy vm2 — its ARP entry should be cleaned up.
+	eng.Destroy(ctx, info2.ID)
+
+	out, _ = exec.Command("ip", "neigh", "show", "dev", bridge).Output()
+	if strings.Contains(string(out), info2.IP) {
+		t.Errorf("destroyed VM's ARP entry should be gone, got:\n%s", out)
+	}
+	if !strings.Contains(string(out), info1.IP) {
+		t.Errorf("surviving VM's ARP entry should remain, got:\n%s", out)
+	}
+	t.Logf("✓ ARP cleaned: %s gone, %s remains", info2.IP, info1.IP)
+}
+
 func TestConcurrentCreates(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("must run as root")

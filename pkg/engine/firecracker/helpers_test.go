@@ -2,7 +2,11 @@
 
 package firecracker
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestStateStr(t *testing.T) {
 	m := map[string]interface{}{
@@ -89,5 +93,109 @@ func TestStateBool(t *testing.T) {
 	// Missing key
 	if got := stateBool(map[string]interface{}{}, "k"); got != false {
 		t.Errorf("missing: %v, want false", got)
+	}
+}
+
+// --- sha256File ---
+
+func TestSha256File(t *testing.T) {
+	dir := t.TempDir()
+
+	// Normal file — should produce a 64-char hex hash.
+	path := filepath.Join(dir, "hello.bin")
+	os.WriteFile(path, []byte("hello world"), 0644)
+	h := sha256File(path)
+	if len(h) != 64 {
+		t.Fatalf("expected 64-char hex hash, got %q (%d)", h, len(h))
+	}
+
+	// Same content → same hash (deterministic).
+	path2 := filepath.Join(dir, "hello2.bin")
+	os.WriteFile(path2, []byte("hello world"), 0644)
+	if sha256File(path2) != h {
+		t.Error("identical content should produce identical hash")
+	}
+
+	// Different content → different hash.
+	path3 := filepath.Join(dir, "other.bin")
+	os.WriteFile(path3, []byte("other"), 0644)
+	if sha256File(path3) == h {
+		t.Error("different content should produce different hash")
+	}
+}
+
+func TestSha256File_Missing(t *testing.T) {
+	if got := sha256File("/nonexistent/path"); got != "" {
+		t.Errorf("missing file should return empty, got %q", got)
+	}
+}
+
+// --- loharNeedsInjection ---
+
+func TestLoharNeedsInjection_EmptyHash(t *testing.T) {
+	// Empty cached hash means no lohar binary (dev mode) — never inject.
+	if loharNeedsInjection("/any/image.ext4", "/any/datadir", "") {
+		t.Error("empty cachedHash should return false (dev mode)")
+	}
+}
+
+func TestLoharNeedsInjection_NoStamp(t *testing.T) {
+	dir := t.TempDir()
+	image := filepath.Join(dir, "rootfs.ext4")
+	os.WriteFile(image, []byte("fake"), 0644)
+
+	// No stamp file exists → needs injection.
+	if !loharNeedsInjection(image, dir, "abc123") {
+		t.Error("missing stamp should require injection")
+	}
+}
+
+func TestLoharNeedsInjection_StampMatches(t *testing.T) {
+	dir := t.TempDir()
+	image := filepath.Join(dir, "rootfs.ext4")
+	os.WriteFile(image, []byte("fake"), 0644)
+
+	hash := "deadbeef1234567890abcdef"
+	os.WriteFile(image+".lohar-sha256", []byte(hash+"\n"), 0644)
+
+	if loharNeedsInjection(image, dir, hash) {
+		t.Error("matching stamp should skip injection")
+	}
+}
+
+func TestLoharNeedsInjection_StampMismatch(t *testing.T) {
+	dir := t.TempDir()
+	image := filepath.Join(dir, "rootfs.ext4")
+	os.WriteFile(image, []byte("fake"), 0644)
+
+	os.WriteFile(image+".lohar-sha256", []byte("old-hash\n"), 0644)
+
+	if !loharNeedsInjection(image, dir, "new-hash") {
+		t.Error("mismatched stamp should require injection")
+	}
+}
+
+// --- ensureImagesHaveCurrentLohar ---
+
+func TestEnsureImagesHaveCurrentLohar_NoLohar(t *testing.T) {
+	dir := t.TempDir()
+	// No lohar binary → return empty hash.
+	if got := ensureImagesHaveCurrentLohar(dir); got != "" {
+		t.Errorf("no lohar binary should return empty, got %q", got)
+	}
+}
+
+func TestEnsureImagesHaveCurrentLohar_NoImagesDir(t *testing.T) {
+	dir := t.TempDir()
+	// Write a lohar binary but no images/ subdir.
+	os.WriteFile(filepath.Join(dir, "lohar"), []byte("fake-lohar"), 0755)
+
+	got := ensureImagesHaveCurrentLohar(dir)
+	if got == "" {
+		t.Error("should return the lohar hash even without images/ dir")
+	}
+	// Verify it's a valid SHA-256 hex string.
+	if len(got) != 64 {
+		t.Errorf("expected 64-char hex hash, got %q (%d)", got, len(got))
 	}
 }
