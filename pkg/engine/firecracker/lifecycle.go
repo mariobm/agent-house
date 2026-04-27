@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -278,8 +279,28 @@ func (e *Engine) startVM(ctx context.Context, id string, force bool) error {
 		return fmt.Errorf("sandbox %q has no snapshot to resume from", id)
 	}
 
-	// TAP device is kept alive across stop/start (not destroyed in Stop).
-	// No need to recreate it.
+	// TAP device is normally kept alive across stop/start. But after a
+	// daemon restart (which cleans orphaned TAPs) or external deletion,
+	// the TAP may be gone. Recreate it if missing.
+	if vm.TapDevice != "" {
+		if _, err := net.InterfaceByName(vm.TapDevice); err != nil {
+			// TAP is gone — recreate it with the user's bridge.
+			e.mu.RLock()
+			userNet := e.userNetworks[vm.UserID]
+			e.mu.RUnlock()
+			if userNet != nil {
+				if err := ensureUserBridge(userNet); err != nil {
+					return fmt.Errorf("recreate bridge for resume: %w", err)
+				}
+				if _, err := createTapDevice(id, userNet.BridgeName); err != nil {
+					return fmt.Errorf("recreate tap for resume: %w", err)
+				}
+				slog.Info("recreated TAP for resume", "sandbox", vm.Name, "tap", vm.TapDevice)
+			} else {
+				slog.Warn("cannot recreate TAP: no user network", "sandbox", vm.Name, "user", vm.UserID)
+			}
+		}
+	}
 
 	// New Firecracker process — always use base path + ".resume" to avoid
 	// path growing on repeated stop/start cycles (SUN_LEN overflow).
