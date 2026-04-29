@@ -216,13 +216,12 @@ func readPID(name string) (int, error) {
 	return strconv.Atoi(strings.TrimSpace(string(data)))
 }
 
-// processAlive checks if a PID is alive.
+// processAlive checks if a PID is alive by reading /proc/<pid>/stat.
+// This works regardless of permissions (unlike kill -0 which requires
+// same UID or root).
 func processAlive(pid int) bool {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return p.Signal(syscall.Signal(0)) == nil
+	_, err := os.Stat(fmt.Sprintf("/proc/%d", pid))
+	return err == nil
 }
 
 // --- Service operations ---
@@ -284,43 +283,52 @@ func svcStart(name string) error {
 }
 
 func startDaemon(name, execStart string, svc serviceFile) error {
-	args := splitCommand(execStart)
-	if len(args) == 0 {
+	execStart = strings.TrimLeft(execStart, "-!+:@") // strip systemd exec prefixes
+	if execStart == "" {
 		return fmt.Errorf("empty ExecStart")
 	}
 
-	cmd := exec.Command(args[0], args[1:]...)
+	// Run through shell to handle $VAR expansion (e.g. $SSHD_OPTS).
+	cmd := exec.Command("/bin/sh", "-c", "exec "+execStart)
 	cmd.Dir = svc.get("Service", "WorkingDirectory")
 	cmd.Env = buildServiceEnv(svc)
+	// Setsid: create a new session so the daemon doesn't get SIGHUP
+	// when this (short-lived) systemctl shim process exits.
+	// Setpgid: new process group for clean signal handling.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Detach stdio so the daemon doesn't get broken pipes when
+	// the shim process exits.
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start %s: %w", args[0], err)
+		return fmt.Errorf("start %s: %w", execStart, err)
 	}
 
 	os.MkdirAll(pidDir, 0755)
 	os.WriteFile(pidFile(name), []byte(strconv.Itoa(cmd.Process.Pid)), 0644)
 
-	// Don't wait — the process runs as a daemon.
-	// lohar's zombie reaper handles cleanup when it exits.
-	go cmd.Wait()
+	// Release the process so it's not tied to this (short-lived) shim.
+	// PID 1 (lohar) will reap it via the zombie reaper.
+	cmd.Process.Release()
 
 	return nil
 }
 
 func startForking(name, execStart string, svc serviceFile) error {
-	args := splitCommand(execStart)
-	if len(args) == 0 {
+	execStart = strings.TrimLeft(execStart, "-!+:@")
+	if execStart == "" {
 		return fmt.Errorf("empty ExecStart")
 	}
 
-	cmd := exec.Command(args[0], args[1:]...)
+	cmd := exec.Command("/bin/sh", "-c", execStart)
 	cmd.Dir = svc.get("Service", "WorkingDirectory")
 	cmd.Env = buildServiceEnv(svc)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("start %s: %w", args[0], err)
+		return fmt.Errorf("start %s: %w", execStart, err)
 	}
 
 	// For forking services, check PIDFile from the .service
@@ -600,11 +608,12 @@ func splitCommand(s string) []string {
 }
 
 func runServiceCommand(cmdLine string, svc serviceFile) error {
-	args := splitCommand(cmdLine)
-	if len(args) == 0 {
+	cmdLine = strings.TrimLeft(cmdLine, "-!+:@")
+	if cmdLine == "" {
 		return nil
 	}
-	cmd := exec.Command(args[0], args[1:]...)
+	// Run through shell for $VAR expansion.
+	cmd := exec.Command("/bin/sh", "-c", cmdLine)
 	cmd.Env = buildServiceEnv(svc)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
