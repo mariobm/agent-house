@@ -158,6 +158,13 @@ func runSystemctl(args []string) {
 		}
 	case "daemon-reload", "daemon-reexec", "reset-failed":
 		// no-op
+	case "preset":
+		// deb-systemd-helper calls 'systemctl preset <unit>' after install.
+		// Preset reads preset policy files to decide enable/disable.
+		// We default to enable (most packages want their service enabled).
+		for _, u := range units {
+			svcEnable(normalizeName(u))
+		}
 	case "is-system-running":
 		fmt.Println("running")
 	case "list-units":

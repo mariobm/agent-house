@@ -52,4 +52,13 @@ ln -sf /usr/local/bin/lohar "$MOUNT/usr/bin/systemctl"
 # Target wants directory — deb-systemd-helper creates enable symlinks here.
 mkdir -p "$MOUNT/etc/systemd/system/multi-user.target.wants"
 
+# policy-rc.d — tells invoke-rc.d to allow all service actions.
+# Without this, package postinst scripts skip starting services with
+# "No init system and policy-rc.d missing! Defaulting to block."
+cat > "$MOUNT/usr/sbin/policy-rc.d" << 'POLICY'
+#!/bin/sh
+exit 0
+POLICY
+chmod 755 "$MOUNT/usr/sbin/policy-rc.d"
+
 echo "==> Minimal tier done."
