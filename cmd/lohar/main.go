@@ -125,10 +125,11 @@ func runAgent() {
 	setupNetworking()
 	bp("network_done")
 
-	// --- Signal handlers + zombie reaping ---
+	// --- Signal handlers + zombie reaping + syslog ---
 
 	installSignalHandlers()
 	go reapZombies()
+	go startSyslogReceiver()
 
 	// --- Listeners ---
 
@@ -261,6 +262,66 @@ func reapZombies() {
 			continue
 		}
 	}
+}
+
+// startSyslogReceiver creates /dev/log and routes syslog messages to
+// /var/log/bhatti/<tag>.log. Services like sshd, postgres, and nginx
+// write to syslog instead of stdout. Without this, their logs are lost.
+func startSyslogReceiver() {
+	os.Remove("/dev/log")
+	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: "/dev/log", Net: "unixgram"})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "lohar: syslog receiver: %v\n", err)
+		return
+	}
+	os.Chmod("/dev/log", 0666)
+	os.MkdirAll("/var/log/bhatti", 0755)
+
+	buf := make([]byte, 8192)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil || n == 0 {
+			continue
+		}
+		tag, msg := parseSyslogMessage(string(buf[:n]))
+		if tag == "" {
+			tag = "syslog"
+		}
+		logPath := filepath.Join("/var/log/bhatti", tag+".log")
+		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+			f.WriteString(msg + "\n")
+			f.Close()
+		}
+	}
+}
+
+// parseSyslogMessage extracts the tag (service name) and message from a
+// syslog datagram. Handles common formats:
+//   "<priority>Mon DD HH:MM:SS hostname tag[pid]: message"
+//   "<priority>tag: message"
+func parseSyslogMessage(raw string) (tag, msg string) {
+	s := raw
+	if len(s) > 0 && s[0] == '<' {
+		if idx := strings.IndexByte(s, '>'); idx > 0 {
+			s = s[idx+1:]
+		}
+	}
+	fields := strings.Fields(s)
+	for i, f := range fields {
+		if strings.HasSuffix(f, ":") || strings.Contains(f, "[") {
+			tag = strings.TrimRight(f, ":")
+			if idx := strings.IndexByte(tag, '['); idx > 0 {
+				tag = tag[:idx]
+			}
+			// Skip timestamp-like fields (month names, digits)
+			if len(tag) <= 3 || (tag[0] >= '0' && tag[0] <= '9') {
+				continue
+			}
+			msg = strings.TrimSpace(strings.Join(fields[i:], " "))
+			return tag, msg
+		}
+	}
+	return "syslog", strings.TrimSpace(s)
 }
 
 // --- Config drive ---

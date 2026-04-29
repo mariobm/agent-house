@@ -10,6 +10,11 @@ echo "==> Installing minimal tier packages..."
 chroot "$MOUNT" /bin/bash -c '
 set -eu
 export DEBIAN_FRONTEND=noninteractive
+
+# Enable universe repo — contains python3-pip, redis, and most dev tools.
+# Ubuntu Desktop enables this by default; our minbase rootfs does not.
+sed -i "s/ main$/ main universe/" /etc/apt/sources.list
+
 apt-get update -qq
 apt-get install -y --no-install-recommends \
     iproute2 ca-certificates sudo curl locales fuse3

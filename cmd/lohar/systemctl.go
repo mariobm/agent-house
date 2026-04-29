@@ -100,6 +100,15 @@ func runSystemctl(args []string) {
 		}
 	}
 
+	// Resolve .socket units to their associated .service.
+	// Socket activation is not supported — we start the service directly.
+	// This matches docker-systemctl-replacement's production behavior.
+	for i, u := range units {
+		if isSocketUnit(u) {
+			units[i] = resolveSocketToService(u) + ".service"
+		}
+	}
+
 	_ = quiet // TODO: suppress stdout when set
 
 	switch command {
@@ -159,7 +168,8 @@ func runSystemctl(args []string) {
 	case "enable":
 		for _, u := range units {
 			name := normalizeName(u)
-			if err := svcEnable(name); err != nil {
+			suffix := unitSuffix(u)
+			if err := svcEnableUnit(name, suffix); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to enable %s: %v\n", u, err)
 				os.Exit(1)
 			}
@@ -170,10 +180,11 @@ func runSystemctl(args []string) {
 	case "disable":
 		for _, u := range units {
 			name := normalizeName(u)
+			suffix := unitSuffix(u)
 			if nowFlag {
 				svcStop(name)
 			}
-			if err := svcDisable(name); err != nil {
+			if err := svcDisableUnit(name, suffix); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to disable %s: %v\n", u, err)
 				os.Exit(1)
 			}
@@ -269,9 +280,27 @@ func runSystemctl(args []string) {
 
 // --- Name resolution ---
 
-// normalizeName strips the .service suffix if present.
+// unitSuffix returns the suffix (.service, .socket, etc.) or defaults to .service.
+func unitSuffix(name string) string {
+	for _, s := range []string{".service", ".socket", ".target", ".timer"} {
+		if strings.HasSuffix(name, s) {
+			return s
+		}
+	}
+	return ".service"
+}
+
+// normalizeName strips known suffixes. Returns the base name.
 func normalizeName(name string) string {
-	return strings.TrimSuffix(name, ".service")
+	for _, s := range []string{".service", ".socket", ".target", ".timer"} {
+		name = strings.TrimSuffix(name, s)
+	}
+	return name
+}
+
+// isSocketUnit returns true if the original argument was a .socket unit.
+func isSocketUnit(name string) bool {
+	return strings.HasSuffix(name, ".socket")
 }
 
 // isTarget returns true if the name refers to a .target unit.
@@ -279,9 +308,55 @@ func isTarget(name string) bool {
 	return strings.HasSuffix(name, ".target") || alwaysActiveTargets[name]
 }
 
+// resolveSocketToService finds the .service associated with a .socket unit.
+// Checks the Service= directive in the .socket file, falls back to name match.
+func resolveSocketToService(name string) string {
+	base := normalizeName(name)
+	// Look for the .socket file and check Service= directive.
+	for _, dir := range serviceDirs {
+		path := filepath.Join(dir, base+".socket")
+		if _, err := os.Stat(path); err == nil {
+			svc := parseServiceFile(path)
+			if s := svc.get("Socket", "Service"); s != "" {
+				return normalizeName(s)
+			}
+		}
+	}
+	// Default: ssh.socket -> ssh.service
+	return base
+}
+
+// resolveTemplateName handles @ template units.
+// postgresql@16-main -> finds postgresql@.service, instance=16-main
+func resolveTemplateName(name string) (templateFile string, instance string) {
+	idx := strings.Index(name, "@")
+	if idx < 0 {
+		return "", ""
+	}
+	prefix := name[:idx]
+	instance = name[idx+1:]
+	// Look for the template file: prefix@.service
+	for _, dir := range serviceDirs {
+		path := filepath.Join(dir, prefix+"@.service")
+		if _, err := os.Stat(path); err == nil {
+			return path, instance
+		}
+	}
+	return "", instance
+}
+
+// expandTemplateSpecifiers replaces %i and %I in service file values.
+func expandTemplateSpecifiers(value, instance string) string {
+	value = strings.ReplaceAll(value, "%i", instance)
+	// %I replaces - with /
+	value = strings.ReplaceAll(value, "%I", strings.ReplaceAll(instance, "-", "/"))
+	return value
+}
+
 // findServiceFile locates the .service file for a unit.
-// Also resolves aliases (e.g. sshd -> ssh via Alias=sshd.service).
+// Handles: direct name, aliases, socket->service resolution, @ templates.
 func findServiceFile(name string) string {
+	// Direct match.
 	for _, dir := range serviceDirs {
 		path := filepath.Join(dir, name+".service")
 		if target, err := os.Readlink(path); err == nil {
@@ -293,7 +368,13 @@ func findServiceFile(name string) string {
 			return path
 		}
 	}
-	// Check aliases.
+	// Template match: postgresql@16-main -> postgresql@.service
+	if strings.Contains(name, "@") {
+		if tmplPath, _ := resolveTemplateName(name); tmplPath != "" {
+			return tmplPath
+		}
+	}
+	// Alias match.
 	for _, dir := range serviceDirs {
 		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
@@ -303,7 +384,7 @@ func findServiceFile(name string) string {
 			path := filepath.Join(dir, e.Name())
 			svc := parseServiceFile(path)
 			for _, alias := range svc.getAll("Install", "Alias") {
-				if strings.TrimSuffix(alias, ".service") == name {
+				if normalizeName(alias) == name {
 					return path
 				}
 			}
@@ -312,12 +393,30 @@ func findServiceFile(name string) string {
 	return ""
 }
 
+// findUnitFile locates any unit file (.service, .socket, .target).
+func findUnitFile(name string, suffix string) string {
+	for _, dir := range serviceDirs {
+		path := filepath.Join(dir, name+suffix)
+		if target, err := os.Readlink(path); err == nil {
+			if target == "/dev/null" {
+				return ""
+			}
+		}
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
 // isMasked checks if a unit is masked (symlinked to /dev/null).
 func isMasked(name string) bool {
-	for _, dir := range serviceDirs {
-		path := filepath.Join(dir, name+".service")
-		if target, err := os.Readlink(path); err == nil && target == "/dev/null" {
-			return true
+	for _, suffix := range []string{".service", ".socket"} {
+		for _, dir := range serviceDirs {
+			path := filepath.Join(dir, name+suffix)
+			if target, err := os.Readlink(path); err == nil && target == "/dev/null" {
+				return true
+			}
 		}
 	}
 	return false
@@ -355,10 +454,23 @@ func svcStart(name string) error {
 
 	path := findServiceFile(name)
 	if path == "" {
-		return fmt.Errorf("unit %s.service not found or masked", name)
+		fmt.Fprintf(os.Stderr, "Unit %s.service not found.\n", name)
+		os.Exit(5) // systemd convention: unit not found
+		return nil
 	}
 
 	svc := parseServiceFile(path)
+
+	// Template specifier expansion: %i and %I for @ units.
+	if strings.Contains(name, "@") {
+		if _, instance := resolveTemplateName(name); instance != "" {
+			for section := range svc.sections {
+				for i, kv := range svc.sections[section] {
+					svc.sections[section][i].value = expandTemplateSpecifiers(kv.value, instance)
+				}
+			}
+		}
+	}
 
 	// RuntimeDirectory
 	if rd := svc.get("Service", "RuntimeDirectory"); rd != "" {
@@ -521,10 +633,23 @@ func svcReload(name string) error {
 	return syscall.Kill(pid, syscall.SIGHUP)
 }
 
+// svcEnable enables a .service unit (convenience wrapper).
 func svcEnable(name string) error {
-	path := findServiceFile(name)
+	return svcEnableUnit(name, ".service")
+}
+
+// svcEnableUnit enables a unit with the given suffix (.service, .socket, etc.).
+func svcEnableUnit(name, suffix string) error {
+	// Find the unit file.
+	var path string
+	if suffix == ".service" {
+		path = findServiceFile(name)
+	} else {
+		path = findUnitFile(name, suffix)
+	}
 	if path == "" {
-		return fmt.Errorf("unit %s.service not found", name)
+		// Not found — not an error for enable (package may not have the unit yet).
+		return nil
 	}
 
 	svc := parseServiceFile(path)
@@ -536,7 +661,7 @@ func svcEnable(name string) error {
 	wantsDir := filepath.Join("/etc/systemd/system", wantedBy+".wants")
 	os.MkdirAll(wantsDir, 0755)
 
-	link := filepath.Join(wantsDir, name+".service")
+	link := filepath.Join(wantsDir, name+suffix)
 	os.Remove(link)
 	if err := os.Symlink(path, link); err != nil {
 		return err
@@ -545,8 +670,9 @@ func svcEnable(name string) error {
 	return nil
 }
 
-func svcDisable(name string) error {
-	pattern := "/etc/systemd/system/*.wants/" + name + ".service"
+// svcDisableUnit disables a unit with the given suffix.
+func svcDisableUnit(name, suffix string) error {
+	pattern := "/etc/systemd/system/*.wants/" + name + suffix
 	matches, _ := filepath.Glob(pattern)
 	for _, m := range matches {
 		os.Remove(m)
@@ -568,9 +694,15 @@ func svcIsActive(name string) bool {
 }
 
 func svcIsEnabled(name string) bool {
-	pattern := "/etc/systemd/system/*.wants/" + name + ".service"
-	matches, _ := filepath.Glob(pattern)
-	return len(matches) > 0
+	// Check both .service and .socket symlinks.
+	for _, suffix := range []string{".service", ".socket"} {
+		pattern := "/etc/systemd/system/*.wants/" + name + suffix
+		matches, _ := filepath.Glob(pattern)
+		if len(matches) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func svcMask(name string) error {

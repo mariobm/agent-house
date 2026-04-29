@@ -236,7 +236,7 @@ func TestSvcEnableDisable(t *testing.T) {
 		t.Error("should be enabled after enable")
 	}
 
-	if err := svcDisable("test"); err != nil {
+	if err := svcDisableUnit("test", ".service"); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 
