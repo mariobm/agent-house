@@ -100,12 +100,21 @@ func runSystemctl(args []string) {
 		}
 	}
 
-	// Resolve .socket units to their associated .service.
-	// Socket activation is not supported — we start the service directly.
-	// This matches docker-systemctl-replacement's production behavior.
-	for i, u := range units {
-		if isSocketUnit(u) {
-			units[i] = resolveSocketToService(u) + ".service"
+	// Resolve .socket units to their associated .service for RUNTIME commands
+	// (start/stop/restart/is-active/reload/kill). Socket activation is not
+	// supported — we start the service directly.
+	// Do NOT resolve for LIFECYCLE commands (enable/disable/is-enabled/preset/mask)
+	// because those must create symlinks for the actual .socket file.
+	runtimeCommands := map[string]bool{
+		"start": true, "stop": true, "restart": true, "try-restart": true,
+		"reload": true, "reload-or-restart": true, "is-active": true,
+		"status": true, "kill": true,
+	}
+	if runtimeCommands[command] {
+		for i, u := range units {
+			if isSocketUnit(u) {
+				units[i] = resolveSocketToService(u) + ".service"
+			}
 		}
 	}
 
@@ -261,7 +270,7 @@ func runSystemctl(args []string) {
 		// no-op
 	case "preset":
 		for _, u := range units {
-			svcEnable(normalizeName(u))
+			svcEnableUnit(normalizeName(u), unitSuffix(u))
 		}
 	case "is-system-running":
 		fmt.Println("running")
@@ -653,20 +662,33 @@ func svcEnableUnit(name, suffix string) error {
 	}
 
 	svc := parseServiceFile(path)
+
+	// WantedBy: create symlink in <target>.wants/
 	wantedBy := svc.get("Install", "WantedBy")
 	if wantedBy == "" {
 		wantedBy = "multi-user.target"
 	}
-
 	wantsDir := filepath.Join("/etc/systemd/system", wantedBy+".wants")
 	os.MkdirAll(wantsDir, 0755)
-
 	link := filepath.Join(wantsDir, name+suffix)
 	os.Remove(link)
 	if err := os.Symlink(path, link); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "Created symlink %s → %s.\n", link, path)
+
+	// RequiredBy: create symlink in <unit>.requires/
+	// e.g. ssh.socket has RequiredBy=ssh.service → creates
+	// ssh.service.requires/ssh.socket
+	for _, reqBy := range svc.getAll("Install", "RequiredBy") {
+		reqDir := filepath.Join("/etc/systemd/system", reqBy+".requires")
+		os.MkdirAll(reqDir, 0755)
+		reqLink := filepath.Join(reqDir, name+suffix)
+		os.Remove(reqLink)
+		os.Symlink(path, reqLink)
+		fmt.Fprintf(os.Stderr, "Created symlink %s → %s.\n", reqLink, path)
+	}
+
 	return nil
 }
 
