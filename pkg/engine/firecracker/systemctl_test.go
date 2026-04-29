@@ -12,6 +12,11 @@ import (
 // These tests run on real Firecracker VMs on the Pi cluster.
 // They require the systemctl shim to be baked into the rootfs
 // (/usr/bin/systemctl -> /usr/local/bin/lohar).
+//
+// Privilege model: lohar exec runs as uid 1000 (lohar user).
+// Package installs and service management need root — use sudo,
+// same as on any Linux server. Read-only queries (is-active,
+// status, show) work as uid 1000.
 
 func TestSystemctlBasicCommands(t *testing.T) {
 	eng := testEngine(t)
@@ -23,13 +28,12 @@ func TestSystemctlBasicCommands(t *testing.T) {
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	// is-system-running
+	// Read-only commands — no sudo needed.
 	assertExecOutput(t, eng, info.ID, "systemctl is-system-running", "running")
 
-	// daemon-reload (no-op, must succeed)
 	execOrFail(t, eng, info.ID, "systemctl daemon-reload")
 
-	// is-active for well-known targets (invoke-rc.d checks these)
+	// invoke-rc.d checks these targets to determine runlevel.
 	assertExecOutput(t, eng, info.ID, "systemctl is-active sysinit.target", "active")
 	assertExecOutput(t, eng, info.ID, "systemctl is-active multi-user.target", "active")
 }
@@ -46,36 +50,36 @@ func TestSystemctlInstallOpenssh(t *testing.T) {
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	execOrFail(t, eng, info.ID, "apt-get update -qq")
-	execOrFail(t, eng, info.ID, "apt-get install -y --no-install-recommends openssh-server")
+	// Package install needs root — sudo, like any Linux server.
+	execOrFail(t, eng, info.ID, "sudo apt-get update -qq")
+	execOrFail(t, eng, info.ID, "sudo apt-get install -y --no-install-recommends openssh-server")
 
-	// Service should have been started during install (invoke-rc.d + our shim).
+	// invoke-rc.d runs as root during install, so it calls our shim as root.
+	// Service may or may not be started depending on invoke-rc.d's checks.
 	// If not started during install, start manually.
 	r := execCmd(t, eng, info.ID, "systemctl is-active ssh")
 	if strings.TrimSpace(r.Stdout) != "active" {
-		execOrFail(t, eng, info.ID, "systemctl start ssh")
+		execOrFail(t, eng, info.ID, "sudo systemctl start ssh")
 	}
+
+	// Read-only checks — no sudo needed.
 	assertExecOutput(t, eng, info.ID, "systemctl is-active ssh", "active")
 
-	// sshd listening on port 22
 	r = execCmd(t, eng, info.ID, "ss -tln")
 	if !strings.Contains(r.Stdout, ":22") {
 		t.Fatalf("sshd not listening on port 22: %s", r.Stdout)
 	}
 
-	// is-enabled
 	assertExecOutput(t, eng, info.ID, "systemctl is-enabled ssh", "enabled")
 
-	// stop
-	execOrFail(t, eng, info.ID, "systemctl stop ssh")
+	// Service management needs root.
+	execOrFail(t, eng, info.ID, "sudo systemctl stop ssh")
 	assertExecOutput(t, eng, info.ID, "systemctl is-active ssh", "inactive")
 
-	// start
-	execOrFail(t, eng, info.ID, "systemctl start ssh")
+	execOrFail(t, eng, info.ID, "sudo systemctl start ssh")
 	assertExecOutput(t, eng, info.ID, "systemctl is-active ssh", "active")
 
-	// restart
-	execOrFail(t, eng, info.ID, "systemctl restart ssh")
+	execOrFail(t, eng, info.ID, "sudo systemctl restart ssh")
 	assertExecOutput(t, eng, info.ID, "systemctl is-active ssh", "active")
 }
 
@@ -91,22 +95,20 @@ func TestSystemctlServiceSurvivesSnapshot(t *testing.T) {
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	execOrFail(t, eng, info.ID, "apt-get update -qq")
-	execOrFail(t, eng, info.ID, "apt-get install -y --no-install-recommends openssh-server")
-	execOrFail(t, eng, info.ID, "systemctl start ssh")
+	execOrFail(t, eng, info.ID, "sudo apt-get update -qq")
+	execOrFail(t, eng, info.ID, "sudo apt-get install -y --no-install-recommends openssh-server")
+	execOrFail(t, eng, info.ID, "sudo systemctl start ssh")
 	assertExecOutput(t, eng, info.ID, "systemctl is-active ssh", "active")
 
-	// Stop (snapshot)
 	if err := eng.Stop(ctx, info.ID); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
-	// Start (restore from snapshot)
 	if err := eng.Start(ctx, info.ID); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
-	// Service should still be running — lohar restarts enabled services on boot.
+	// lohar restarts enabled services on boot.
 	assertExecOutput(t, eng, info.ID, "systemctl is-active ssh", "active")
 	r := execCmd(t, eng, info.ID, "ss -tln")
 	if !strings.Contains(r.Stdout, ":22") {
@@ -126,22 +128,20 @@ func TestSystemctlShow(t *testing.T) {
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	execOrFail(t, eng, info.ID, "apt-get update -qq")
-	execOrFail(t, eng, info.ID, "apt-get install -y --no-install-recommends openssh-server")
+	execOrFail(t, eng, info.ID, "sudo apt-get update -qq")
+	execOrFail(t, eng, info.ID, "sudo apt-get install -y --no-install-recommends openssh-server")
 
-	// LoadState for installed service
+	// show is read-only — no sudo needed.
 	r := execCmd(t, eng, info.ID, "systemctl -p LoadState show ssh")
 	if !strings.Contains(r.Stdout, "LoadState=loaded") {
 		t.Errorf("LoadState: %s", r.Stdout)
 	}
 
-	// LoadState for nonexistent
 	r = execCmd(t, eng, info.ID, "systemctl -p LoadState show nonexistent")
 	if !strings.Contains(r.Stdout, "not-found") {
 		t.Errorf("nonexistent LoadState: %s", r.Stdout)
 	}
 
-	// SourcePath
 	r = execCmd(t, eng, info.ID, "systemctl show --value --property SourcePath ssh")
 	if !strings.Contains(r.Stdout, "ssh.service") {
 		t.Errorf("SourcePath: %s", r.Stdout)
@@ -160,19 +160,15 @@ func TestSystemctlJournalctl(t *testing.T) {
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	execOrFail(t, eng, info.ID, "apt-get update -qq")
-	execOrFail(t, eng, info.ID, "apt-get install -y --no-install-recommends openssh-server")
-	execOrFail(t, eng, info.ID, "systemctl start ssh")
+	execOrFail(t, eng, info.ID, "sudo apt-get update -qq")
+	execOrFail(t, eng, info.ID, "sudo apt-get install -y --no-install-recommends openssh-server")
+	execOrFail(t, eng, info.ID, "sudo systemctl start ssh")
 
-	// Give sshd a moment to write output
 	time.Sleep(1 * time.Second)
 
-	// journalctl -u ssh should return something (even if empty, shouldn't error)
+	// journalctl reads log files — no sudo needed.
 	r := execCmd(t, eng, info.ID, "journalctl -u ssh -n 5")
-	// We don't check content — sshd might not write to stdout. But the
-	// command must succeed (exit 0) and not crash.
 	if r.ExitCode != 0 {
-		// Exit code 1 is OK if no logs yet.
 		t.Logf("journalctl exit=%d stdout=%q stderr=%q", r.ExitCode, r.Stdout, r.Stderr)
 	}
 }
@@ -189,9 +185,9 @@ func TestSystemctlThermalCycles(t *testing.T) {
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	execOrFail(t, eng, info.ID, "apt-get update -qq")
-	execOrFail(t, eng, info.ID, "apt-get install -y --no-install-recommends openssh-server")
-	execOrFail(t, eng, info.ID, "systemctl start ssh")
+	execOrFail(t, eng, info.ID, "sudo apt-get update -qq")
+	execOrFail(t, eng, info.ID, "sudo apt-get install -y --no-install-recommends openssh-server")
+	execOrFail(t, eng, info.ID, "sudo systemctl start ssh")
 
 	for i := 0; i < 3; i++ {
 		if err := eng.Stop(ctx, info.ID); err != nil {
