@@ -31,6 +31,15 @@ echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
 sed -i "s/^#[[:space:]]*user_allow_other$/user_allow_other/" /etc/fuse.conf
 
+# Pin the systemd daemon package so apt never installs it.
+# Without this, "apt-get install openssh-server" pulls in libpam-systemd
+# (recommended) -> systemd (required), which installs a real /bin/systemctl
+# that overrides our shim, and systemd-resolved overwrites /etc/resolv.conf.
+# Server packages only Recommend libpam-systemd, never Depend on it,
+# so this pin does not break any server package installs.
+mkdir -p /etc/apt/preferences.d
+printf "Package: systemd systemd-sysv systemd-resolved\nPin: release *\nPin-Priority: -1\n" > /etc/apt/preferences.d/no-systemd-daemon
+
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 '
