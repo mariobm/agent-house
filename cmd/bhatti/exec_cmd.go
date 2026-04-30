@@ -415,9 +415,11 @@ var portsCmd = &cobra.Command{
 			if len(ports) == 0 {
 				fmt.Println("No listening ports detected.")
 			} else {
-				fmt.Printf("%-8s %s\n", "PORT", "PROXY")
+				fmt.Printf("%-8s %s\n", "PORT", "URL")
 				for _, p := range ports {
-					fmt.Printf("%-8d %s\n", p.Port, p.Proxy)
+					// Prepend apiURL so the proxy path is a clickable URL
+					fullURL := strings.TrimRight(apiURL, "/") + p.Proxy
+					fmt.Printf("%-8d %s\n", p.Port, fullURL)
 				}
 			}
 		}

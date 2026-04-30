@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -52,7 +53,16 @@ Use --revoke to disable shell access.`,
 		if isJSON(cmd) {
 			outputJSON(result)
 		} else {
-			fmt.Printf("Shell: %v\n", result["url"])
+			shellURL, _ := result["url"].(string)
+			token, _ := result["token"].(string)
+
+			// If server returned a broken URL (no domain configured),
+			// reconstruct from apiURL which the CLI already knows.
+			if strings.Contains(shellURL, ":///_shell") || shellURL == "" {
+				base := strings.TrimRight(apiURL, "/")
+				shellURL = fmt.Sprintf("%s/_shell/%s#token=%s", base, id, token)
+			}
+			fmt.Printf("Shell: %s\n", shellURL)
 		}
 	},
 }

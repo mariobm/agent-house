@@ -227,9 +227,18 @@ var publishCmd = &cobra.Command{
 		if isJSON(cmd) {
 			outputJSON(result)
 		} else {
-			fmt.Printf("Published: %v\n", result["url"])
-			if shellURL, ok := result["shell_url"]; ok {
-				fmt.Printf("Shell:     %v\n", shellURL)
+			url, _ := result["url"].(string)
+			if strings.Contains(url, "no public proxy configured") {
+				fmt.Fprintf(os.Stderr, "Publishing requires a custom domain.\n")
+				fmt.Fprintf(os.Stderr, "  Setup: https://bhatti.sh/docs/managing/custom-domain\n\n")
+				fmt.Fprintf(os.Stderr, "In the meantime, use the proxy URL directly:\n")
+				port, _ := cmd.Flags().GetInt("port")
+				fmt.Fprintf(os.Stderr, "  %s/sandboxes/%s/proxy/%d/\n", strings.TrimRight(apiURL, "/"), id, port)
+			} else {
+				fmt.Printf("Published: %s\n", url)
+				if shellURL, ok := result["shell_url"]; ok {
+					fmt.Printf("Shell:     %v\n", shellURL)
+				}
 			}
 		}
 	},
