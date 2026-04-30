@@ -83,7 +83,7 @@ ip=192.168.137.2::192.168.137.1:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:
 
 This tells the kernel to configure `eth0` with the given IP, gateway, netmask, and DNS *before init runs*. By the time lohar starts as PID 1, the network is already up.
 
-This approach was learned from [SlicerVM](archive/slicer-learnings.md), which uses the same technique. It solves the chicken-and-egg problem: if the agent configures networking, how does the host talk to the agent to tell it what IP to use?
+This is a standard Linux kernel feature (`Documentation/admin-guide/kernel-parameters.txt`). It solves the chicken-and-egg problem: if the agent configures networking, how does the host talk to the agent to tell it what IP to use?
 
 Alternatives considered:
 - **DHCP**: adds a DHCP server on the bridge, adds a DHCP client in the guest, adds latency, adds a failure mode. Rejected.

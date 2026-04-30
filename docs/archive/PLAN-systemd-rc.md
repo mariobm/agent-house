@@ -106,9 +106,10 @@ systemctl implementation reads `.service` files directly, manages
 processes via PID files, and exits. lohar (PID 1) handles zombie
 reaping for everything.
 
-Reference implementation: `narwhal-cloud/systemctl` (Go, ~400
-lines, built for Docker containers without systemd). We'll build
-our own, tailored to bhatti's needs.
+The systemctl shim is a common pattern in container runtimes that
+need package compatibility without full systemd (e.g. Docker
+containers, Firecracker microVMs). Our implementation is tailored
+to bhatti's snapshot/restore lifecycle.
 
 ---
 

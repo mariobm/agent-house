@@ -1069,7 +1069,7 @@ a fuller service set than we'd need.
 |--------|-------|---------------|-----------|------------------|
 | **Firecracker CI** | systemd | N/A (test rootfs) | ~310ms total (79ms kernel + 231ms userspace) | Yes (FC native) |
 | **Kata Containers** | Dual-mode (`getpid()==1` check) | PID 1 or systemd service | ~500ms (published) | No |
-| **SlicerVM** (OpenFaaS) | systemd | `slicer-agent.service` | Not published | Pause only (no snapshot) |
+| **OpenFaaS/faasd** | systemd | Agent as systemd service | Not published | Pause only (no snapshot) |
 | **smolvm** | Agent IS PID 1 | PID 1 (via libkrun init.c) | <200ms (published) | No |
 | **Sprites** (fly.io) | Custom init | Built-in service manager | Not published | Filesystem only (no memory) |
 | **AWS Lambda** | Custom init | Runtime Interface | ~100-200ms (kernel to handler) | Yes (SnapStart) |
@@ -1164,10 +1164,10 @@ If PID 1: do init duties (mounts, cgroups). If not: skip them, just
 run the agent. This has been in production for 5+ years across major
 cloud providers.
 
-SlicerVM (the system we studied in `slicer-learnings.md`) uses systemd
-as PID 1 with their agent as a systemd service. Their OCI images are
-named `slicer-systemd-arm64`. They chose systemd deliberately for a
-Firecracker product.
+Some Firecracker-based products use systemd as PID 1 with their
+agent as a systemd service. This is a deliberate choice for
+package compatibility at the cost of boot time and snapshot
+complexity.
 
 #### Memory: +30-80 MB resident
 

@@ -8,7 +8,7 @@ Key architectural decisions with context, alternatives considered, and rationale
 
 **Context:** Firecracker exposes vsock (virtio socket) as the primary host↔guest communication channel. It works perfectly during normal operation. After snapshot/restore, it breaks — the guest kernel's vsock state is stale, and connections complete the host-side handshake but never reach the guest agent.
 
-**Discovery:** This was found during Part 5 (the first Firecracker engine implementation). Exec worked fine on a fresh VM but silently hung after restore. Debugging showed the `CONNECT/OK` handshake succeeded (Firecracker's proxy handled it) but the agent never received the connection. Tested with kernel 5.10 and 6.1, Firecracker 1.6.0. Research into SlicerVM (a production Firecracker orchestrator by OpenFaaS) confirmed they had the same issue — their suspend/restore was unshipped as of v0.1.108.
+**Discovery:** This was found during Part 5 (the first Firecracker engine implementation). Exec worked fine on a fresh VM but silently hung after restore. Debugging showed the `CONNECT/OK` handshake succeeded (Firecracker's proxy handled it) but the agent never received the connection. Tested with kernel 5.10 and 6.1, Firecracker 1.6.0. Other Firecracker orchestrators have encountered the same issue — vsock state after snapshot restore is a known limitation (see Firecracker issue tracker).
 
 **Alternatives:**
 - **Wait for Firecracker to fix it.** FC PR #5688 ("minimize local port collisions after snapshot restore") shipped in 1.15.0 but doesn't fully resolve the issue. Timeline unknown.
@@ -44,7 +44,7 @@ func fcPut(client *http.Client, path, body string) error {
 
 ## 3. Lohar as PID 1 (no systemd)
 
-**Context:** The rootfs is Ubuntu 24.04, which ships with systemd. The conventional approach is to let systemd start as PID 1 and run the agent as a systemd service (this is what SlicerVM does with `slicer-agent.service`).
+**Context:** The rootfs is Ubuntu 24.04, which ships with systemd. The conventional approach is to let systemd start as PID 1 and run the agent as a systemd service.
 
 **Decision:** Lohar *is* PID 1. The kernel boots directly into it via `init=/usr/local/bin/lohar`. No systemd, no initramfs, no init scripts.
 
@@ -180,4 +180,4 @@ The `Agent` pointer is safe to use after release because it's only replaced duri
 
 **Why kernel `ip=`:** The guest network must be up before lohar starts, because the host polls lohar via TCP to detect readiness. If lohar configures networking, the host can't reach lohar to tell it what IP to use. The kernel `ip=` parameter is processed during early boot — the interface is configured before init runs. Zero DHCP, zero latency, zero failure modes.
 
-This technique was learned from [SlicerVM's architecture](archive/slicer-learnings.md).
+The kernel `ip=` parameter is documented in `Documentation/admin-guide/kernel-parameters.txt` and is widely used in Firecracker deployments.
