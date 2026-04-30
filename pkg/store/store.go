@@ -104,6 +104,10 @@ ALTER TABLE users ADD COLUMN max_snapshots INTEGER NOT NULL DEFAULT 5;
 ALTER TABLE sandboxes ADD COLUMN keep_hot INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sandboxes ADD COLUMN fc_path_origin TEXT DEFAULT '';
 ALTER TABLE sandboxes ADD COLUMN shell_token_hash TEXT DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN cpus REAL NOT NULL DEFAULT 1;
+ALTER TABLE sandboxes ADD COLUMN memory_mb INTEGER NOT NULL DEFAULT 1024;
+ALTER TABLE sandboxes ADD COLUMN disk_size_mb INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sandboxes ADD COLUMN image TEXT NOT NULL DEFAULT 'minimal';
 `
 
 // New opens (or creates) the SQLite database and runs migrations.

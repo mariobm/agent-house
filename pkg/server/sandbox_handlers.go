@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -33,6 +35,17 @@ type createSandboxReq struct {
 
 	// v0.3: persistent volumes
 	PersistentVolumes []engine.PersistentVolume `json:"persistent_volumes,omitempty"`
+
+	// B15: secrets and files on create
+	Secrets []string       `json:"secrets,omitempty"` // secret names to resolve from store
+	Files   []createFileReq `json:"files,omitempty"`   // files to inject via config drive
+}
+
+// createFileReq describes a file to inject at sandbox creation.
+type createFileReq struct {
+	GuestPath string `json:"guest_path"`
+	Content   string `json:"content"`          // base64-encoded
+	Mode      string `json:"mode,omitempty"`   // default "0644"
 }
 
 func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
@@ -207,13 +220,56 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			// --- Direct creation (no template) ---
+			env := req.Env
+			if env == nil {
+				env = make(map[string]string)
+			}
+
+			// B15: Resolve secrets from store (same logic as template path)
+			for _, secretName := range req.Secrets {
+				ciphertext, err := s.store.GetSecretValue(user.ID, secretName)
+				if err != nil {
+					errResp(w, 400, fmt.Sprintf("secret %q not found", secretName))
+					return
+				}
+				plaintext, err := s.decryptSecret(ciphertext)
+				if err != nil {
+					errResp(w, 500, fmt.Sprintf("decrypt secret %q failed", secretName))
+					return
+				}
+				env[secretName] = string(plaintext)
+			}
+
+			// B15: Resolve files from request
+			var files map[string]engine.FileSpec
+			if len(req.Files) > 0 {
+				files = make(map[string]engine.FileSpec, len(req.Files))
+				for _, f := range req.Files {
+					if f.GuestPath == "" {
+						errResp(w, 400, "file guest_path required")
+						return
+					}
+					content, err := base64.StdEncoding.DecodeString(f.Content)
+					if err != nil {
+						errResp(w, 400, fmt.Sprintf("file %q: invalid base64 content", f.GuestPath))
+						return
+					}
+					mode := f.Mode
+					if mode == "" {
+						mode = "0644"
+					}
+					files[f.GuestPath] = engine.FileSpec{Content: content, Mode: mode}
+				}
+			}
+
 			spec = engine.SandboxSpec{
 				Name:              req.Name,
 				CPUs:              req.CPUs,
 				MemoryMB:          req.MemoryMB,
 				DiskSizeMB:        req.DiskSizeMB,
-				Env:               req.Env,
+				Env:               env,
 				Init:              req.Init,
+				Files:             files,
 				NewVolumes:        req.NewVolumes,
 				Volumes:           req.Volumes,
 				PersistentVolumes: req.PersistentVolumes,
@@ -381,6 +437,12 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Resolve image name for storage
+		imageName := spec.Image
+		if imageName == "" {
+			imageName = "minimal"
+		}
+
 		sb := store.Sandbox{
 			ID:         sbID,
 			Name:       spec.Name,
@@ -392,6 +454,10 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			CreatedBy:  user.ID,
 			CreatedAt:  time.Now(),
 			KeepHot:    req.KeepHot,
+			CPUs:       spec.CPUs,
+			MemoryMB:   spec.MemoryMB,
+			DiskSizeMB: spec.DiskSizeMB,
+			Image:      imageName,
 		}
 		if err := s.store.CreateSandbox(sb); err != nil {
 			// UNIQUE constraint violation → name race. Another concurrent
@@ -634,8 +700,28 @@ func (s *Server) handleSandboxStart(w http.ResponseWriter, r *http.Request, id s
 	if sb == nil {
 		return
 	}
-	if err := s.engine.Start(r.Context(), sb.EngineID); err != nil {
-		errRespInternal(w, r, "start sandbox failed", err)
+
+	// B7: read optional force param
+	var startReq struct {
+		Force bool `json:"force"`
+	}
+	readJSON(r, &startReq) // ignore error — body may be empty
+
+	var startErr error
+	type forceStarter interface {
+		StartForce(ctx context.Context, id string) error
+	}
+	if startReq.Force {
+		if fs, ok := s.engine.(forceStarter); ok {
+			startErr = fs.StartForce(r.Context(), sb.EngineID)
+		} else {
+			startErr = s.engine.Start(r.Context(), sb.EngineID)
+		}
+	} else {
+		startErr = s.engine.Start(r.Context(), sb.EngineID)
+	}
+	if startErr != nil {
+		errRespInternal(w, r, "start sandbox failed", startErr)
 		return
 	}
 	// Refresh from engine — IP may have changed after restart

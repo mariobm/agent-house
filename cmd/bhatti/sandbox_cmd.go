@@ -1,12 +1,17 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 )
+
+func base64Encode(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
+}
 
 var createCmd = &cobra.Command{
 	Use:   "create [flags]",
@@ -42,7 +47,10 @@ with its own kernel, filesystem, and network.`,
 		env, _ := cmd.Flags().GetString("env")
 		initScript, _ := cmd.Flags().GetString("init")
 		keepHot, _ := cmd.Flags().GetBool("keep-hot")
+		hugepages, _ := cmd.Flags().GetBool("hugepages")
 		volFlags, _ := cmd.Flags().GetStringSlice("volume")
+		secretFlags, _ := cmd.Flags().GetStringSlice("secret")
+		fileFlags, _ := cmd.Flags().GetStringSlice("file")
 
 		tmpl, _ := cmd.Flags().GetString("template")
 
@@ -70,6 +78,34 @@ with its own kernel, filesystem, and network.`,
 		}
 		if keepHot {
 			req["keep_hot"] = true
+		}
+		if hugepages {
+			req["hugepages"] = true
+		}
+
+		// Parse --secret flags
+		if len(secretFlags) > 0 {
+			req["secrets"] = secretFlags
+		}
+
+		// Parse --file flags: local_path:guest_path
+		if len(fileFlags) > 0 {
+			var files []map[string]string
+			for _, ff := range fileFlags {
+				parts := strings.SplitN(ff, ":", 2)
+				if len(parts) != 2 {
+					return fmt.Errorf("invalid --file format %q (expected local_path:guest_path)", ff)
+				}
+				data, err := os.ReadFile(parts[0])
+				if err != nil {
+					return fmt.Errorf("read file %s: %w", parts[0], err)
+				}
+				files = append(files, map[string]string{
+					"guest_path": parts[1],
+					"content":    base64Encode(data),
+				})
+			}
+			req["files"] = files
 		}
 
 		// Parse --volume flags: name:mount[:ro]
@@ -121,11 +157,16 @@ func init() {
 	createCmd.Flags().String("env", "", "Environment variables (K=V,K=V)")
 	createCmd.Flags().String("init", "", "Init script")
 	createCmd.Flags().Bool("keep-hot", false, "Prevent thermal transitions (for autonomous agents)")
+	createCmd.Flags().Bool("hugepages", false, "Use 2MB hugepages (faster boot, no diff snapshots)")
 	createCmd.Flags().String("template", "", "Template name or ID")
 	createCmd.Flags().StringSlice("volume", nil, "Persistent volume (name:mount[:ro])")
+	createCmd.Flags().StringSlice("secret", nil, "Secret name from store (repeatable)")
+	createCmd.Flags().StringSlice("file", nil, "Inject file (local_path:guest_path, repeatable)")
 
 	editCmd.Flags().Bool("keep-hot", false, "Prevent thermal transitions (for autonomous agents)")
 	editCmd.Flags().Bool("allow-cold", false, "Re-enable thermal transitions")
+
+	startCmd.Flags().Bool("force", false, "Force start (retry after failed restore)")
 }
 
 // --- edit ---
@@ -220,8 +261,10 @@ var stopCmd = &cobra.Command{
 var startCmd = &cobra.Command{
 	Use:   "start <sandbox>",
 	Short: "Resume a stopped sandbox",
-	Long:  `Resume a sandbox from its snapshot. Continues exactly where it left off.`,
-	Example: `  bhatti start dev`,
+	Long: `Resume a sandbox from its snapshot. Continues exactly where it left off.
+Use --force to retry after a failed restore.`,
+	Example: `  bhatti start dev
+  bhatti start dev --force`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -231,8 +274,13 @@ var startCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		force, _ := cmd.Flags().GetBool("force")
+		var body map[string]any
+		if force {
+			body = map[string]any{"force": true}
+		}
 		var sb map[string]any
-		if err := apiJSON("POST", "/sandboxes/"+id+"/start", nil, &sb); err != nil {
+		if err := apiJSON("POST", "/sandboxes/"+id+"/start", body, &sb); err != nil {
 			return err
 		}
 		if isJSON(cmd) {

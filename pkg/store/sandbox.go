@@ -20,11 +20,15 @@ type Sandbox struct {
 	StoppedAt      *time.Time      `json:"stopped_at,omitempty"`
 	KeepHot        bool            `json:"keep_hot"`
 	ShellTokenHash string          `json:"-"` // never expose in API responses
+	CPUs       float64         `json:"cpus"`
+	MemoryMB   int             `json:"memory_mb"`
+	DiskSizeMB int             `json:"disk_size_mb"`
+	Image      string          `json:"image"`
 }
 
 // SecretRecord tracks an encrypted secret.
 
-const sandboxCols = `id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at, stopped_at, keep_hot, COALESCE(shell_token_hash,'')`
+const sandboxCols = `id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at, stopped_at, keep_hot, COALESCE(shell_token_hash,''), COALESCE(cpus,1), COALESCE(memory_mb,1024), COALESCE(disk_size_mb,0), COALESCE(image,'minimal')`
 
 func (s *Store) CreateSandbox(sb Sandbox) error {
 	if sb.EngineMeta == nil {
@@ -35,8 +39,8 @@ func (s *Store) CreateSandbox(sb Sandbox) error {
 		keepHot = 1
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO sandboxes (id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at, keep_hot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sb.ID, sb.Name, sb.TemplateID, sb.EngineID, sb.Status, sb.IP, string(sb.EngineMeta), sb.CreatedBy, sb.CreatedAt, keepHot,
+		`INSERT INTO sandboxes (id, name, template_id, engine_id, status, ip, engine_meta_json, created_by, created_at, keep_hot, cpus, memory_mb, disk_size_mb, image) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sb.ID, sb.Name, sb.TemplateID, sb.EngineID, sb.Status, sb.IP, string(sb.EngineMeta), sb.CreatedBy, sb.CreatedAt, keepHot, sb.CPUs, sb.MemoryMB, sb.DiskSizeMB, sb.Image,
 	)
 	return err
 }
@@ -173,7 +177,7 @@ func scanSandbox(s scanner) (*Sandbox, error) {
 	var metaJSON string
 	var stoppedAt sql.NullTime
 	var keepHot int
-	err := s.Scan(&sb.ID, &sb.Name, &sb.TemplateID, &sb.EngineID, &sb.Status, &sb.IP, &metaJSON, &sb.CreatedBy, &sb.CreatedAt, &stoppedAt, &keepHot, &sb.ShellTokenHash)
+	err := s.Scan(&sb.ID, &sb.Name, &sb.TemplateID, &sb.EngineID, &sb.Status, &sb.IP, &metaJSON, &sb.CreatedBy, &sb.CreatedAt, &stoppedAt, &keepHot, &sb.ShellTokenHash, &sb.CPUs, &sb.MemoryMB, &sb.DiskSizeMB, &sb.Image)
 	if err != nil {
 		return nil, err
 	}
