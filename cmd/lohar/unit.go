@@ -59,6 +59,13 @@ type Config struct {
 	// point at a tempdir socket to exercise the receiver without
 	// clobbering the host's real /dev/log.
 	SyslogSocketPath string
+
+	// NotifySocketPath is the unix datagram socket the sd_notify
+	// receiver binds and that we expose to daemons via the
+	// NOTIFY_SOCKET env var when their unit declares Type=notify.
+	// Production: /run/systemd/notify (systemd's convention). Tests
+	// point at a tempdir socket.
+	NotifySocketPath string
 }
 
 // ProductionConfig returns the Config that PID-1 lohar uses inside a
@@ -83,6 +90,7 @@ func ProductionConfig() Config {
 			"/etc/systemd/system",
 		},
 		SyslogSocketPath: "/dev/log",
+		NotifySocketPath: "/run/systemd/notify",
 	}
 }
 
@@ -201,6 +209,41 @@ func (u *Unit) LastExitCode() int {
 	}
 	n, _ := strconv.Atoi(strings.TrimSpace(string(data)))
 	return n
+}
+
+// ActivatingMarkerPath returns <PidDir>/<canonical>.activating.
+//
+// Created by svcStart for Type=notify units before the daemon spawns.
+// The notify receiver removes it on READY=1. Existence of the marker
+// means the daemon has been spawned but hasn't yet declared itself
+// ready -- the systemd ActiveState=activating equivalent.
+//
+// Lives on disk for the same reason the failed marker does: a fresh
+// systemctl client process needs to read the state without having
+// participated in the spawning. Type=simple/forking/oneshot units
+// never have an activating marker -- they're "active" the moment
+// fork+exec succeeds.
+func (u *Unit) ActivatingMarkerPath() string {
+	return filepath.Join(u.reg.Config.PidDir, u.Canonical+".activating")
+}
+
+// MarkActivating writes an empty marker file. The contents don't matter;
+// the existence does.
+func (u *Unit) MarkActivating() error {
+	os.MkdirAll(u.reg.Config.PidDir, 0755)
+	return os.WriteFile(u.ActivatingMarkerPath(), []byte{}, 0644)
+}
+
+// ClearActivating removes the marker. Idempotent (no error if absent).
+func (u *Unit) ClearActivating() {
+	os.Remove(u.ActivatingMarkerPath())
+}
+
+// IsActivating returns true if the .activating marker exists, i.e. the
+// unit's daemon is running but hasn't sent READY=1 via sd_notify yet.
+func (u *Unit) IsActivating() bool {
+	_, err := os.Stat(u.ActivatingMarkerPath())
+	return err == nil
 }
 
 // ReadPID returns the running PID for this unit, or an error if no

@@ -559,15 +559,69 @@ func svcStart(u *Unit) error {
 		svcType = "simple"
 	}
 
+	// Type=notify: write the activating marker BEFORE spawning so the
+	// notify receiver can clear it as soon as READY=1 arrives. The
+	// receiver is a separate goroutine; if the daemon is fast enough
+	// to send READY=1 before svcStart's wait loop starts, the marker
+	// is already gone and the wait returns immediately.
+	if svcType == "notify" {
+		if err := u.MarkActivating(); err != nil {
+			return fmt.Errorf("mark activating: %w", err)
+		}
+	}
+
 	switch svcType {
 	case "oneshot":
 		return runServiceCommand(execStart, svc)
 	case "forking":
 		return startForking(u, execStart, svc)
 	default:
-		// simple, exec, notify, dbus — all treated as simple daemons.
-		return startDaemon(u, execStart, svc)
+		// simple, exec, dbus -- treated as simple daemons (active on
+		// fork+exec). notify is also handled by startDaemon but blocks
+		// at the end waiting for READY=1.
+		if err := startDaemon(u, execStart, svc); err != nil {
+			u.ClearActivating()
+			return err
+		}
+		if svcType == "notify" {
+			return waitForNotifyReady(u, svc)
+		}
+		return nil
 	}
+}
+
+// waitForNotifyReady blocks until the unit's .activating marker is
+// removed (the notify receiver clears it on READY=1) or TimeoutStartSec
+// elapses. Mirrors systemd's behaviour: "systemctl start postgres"
+// returns only after postgres has actually opened its socket, so the
+// next command in a script doesn't race against half-started state.
+//
+// If the timeout fires, we return an error AND mark the unit failed so
+// the watcher's restart policy applies (the daemon may also still be
+// running and consuming resources -- the caller can choose to stop it
+// if needed).
+func waitForNotifyReady(u *Unit, svc serviceFile) error {
+	timeout := parseRestartSec(svc.get("Service", "TimeoutStartSec"))
+	if timeout < time.Second {
+		timeout = 90 * time.Second // systemd's default
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !u.IsActivating() {
+			return nil // READY=1 received
+		}
+		if !u.IsRunning() {
+			// Daemon died before signalling ready. The watcher will
+			// observe the exit and write the failed marker via the
+			// usual path; we just bail out of the wait.
+			u.ClearActivating()
+			return fmt.Errorf("%s exited before sending READY=1", u.Canonical)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	u.ClearActivating()
+	u.MarkFailed(1)
+	return fmt.Errorf("%s did not send READY=1 within %v", u.Canonical, timeout)
 }
 
 func startDaemon(u *Unit, execStart string, svc serviceFile) error {
@@ -589,6 +643,11 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	cmd := exec.Command("/bin/sh", "-c", "exec "+execStart)
 	cmd.Dir = svc.get("Service", "WorkingDirectory")
 	cmd.Env = buildServiceEnv(svc)
+	// For Type=notify daemons we expose NOTIFY_SOCKET so libsystemd's
+	// sd_notify(3) (or any reimplementation) can find our receiver.
+	// Setting it unconditionally is harmless for non-notify daemons --
+	// they just won't connect to it.
+	cmd.Env = append(cmd.Env, "NOTIFY_SOCKET="+u.reg.Config.NotifySocketPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin = nil
 
@@ -1030,8 +1089,15 @@ func (r *Registry) svcDisableByName(name, suffix string) error {
 	return nil
 }
 
+// svcIsActive returns true only when the unit is running AND has
+// finished activating. For Type=simple/forking/oneshot units the
+// activating marker is never written, so this reduces to IsRunning.
+// For Type=notify units, the marker is present until READY=1 arrives;
+// during that window the unit is "activating", not "active". Matches
+// systemd's distinction — scripts polling is-active won't see a
+// half-started Type=notify daemon as ready.
 func svcIsActive(u *Unit) bool {
-	return u.IsRunning()
+	return u.IsRunning() && !u.IsActivating()
 }
 
 func svcIsEnabled(u *Unit) bool {
@@ -1100,6 +1166,13 @@ func svcStatus(u *Unit, displayName string) {
 		case u.IsFailed():
 			active = "failed"
 			failedExit = u.LastExitCode()
+		case u.IsActivating():
+			// Running but hasn't sent READY=1 yet. systemd shows this
+			// as "activating (start)".
+			active = "activating"
+			if p, err := u.ReadPID(); err == nil && processAlive(p) {
+				pid = p
+			}
 		default:
 			if p, err := u.ReadPID(); err == nil && processAlive(p) {
 				active = "active"

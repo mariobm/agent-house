@@ -144,6 +144,12 @@ func runAgent() {
 
 	go startSyslogReceiver(globalRegistry)
 
+	// sd_notify receiver: daemons declaring Type=notify connect to
+	// $NOTIFY_SOCKET (which we set in their env at spawn time) and send
+	// READY=1 when initialised. The receiver attributes via cgroup-per-
+	// unit and clears the .activating marker so svcStart can return.
+	go startNotifyReceiver(globalRegistry)
+
 	// Privileged systemctl operations from in-guest non-root callers go
 	// through this Unix socket. PID 1 lohar runs the op as root and sends
 	// the formatted output back. See cmd/lohar/systemctl_ipc.go.

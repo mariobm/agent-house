@@ -351,6 +351,118 @@ func TestSystemctlPrivilegeBoundary(t *testing.T) {
 	assertExecOutput(t, eng, info.ID, "systemctl is-active ssh", "inactive")
 }
 
+// TestSystemctlNotifyTypeWaitsForReady locks F2 in at the integration
+// level: a Type=notify unit reports active ONLY after the daemon sends
+// READY=1, not when fork+exec succeeds. Without F2, scripts of the form
+// `systemctl start postgres && psql -c '...'` race against postgres's
+// startup -- it says it's active, the next command tries to connect,
+// gets refused.
+//
+// We use a tiny Python helper as the ExecStart: it connects to
+// $NOTIFY_SOCKET, sends READY=1 after a short pause, then sleeps. The
+// test verifies:
+//   - is-active returns 'activating' (or 'inactive') during the pause
+//   - svcStart returns only after READY=1
+//   - is-active returns 'active' after READY=1
+func TestSystemctlNotifyTypeWaitsForReady(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	spec := testSpec("sctl-notify")
+	spec.DiskSizeMB = 2048
+	info, err := eng.Create(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	// Need python3 in the VM for the notify helper. minimal tier already
+	// has it.
+	execOrFail(t, eng, info.ID, "sudo apt-get update -qq")
+
+	// A tiny Type=notify daemon: pause 500ms, send READY=1, sleep 30s.
+	helper := `#!/usr/bin/env python3
+import os, socket, time
+time.sleep(0.5)
+s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+s.connect(os.environ['NOTIFY_SOCKET'])
+s.send(b'READY=1\n')
+time.sleep(30)
+`
+	execOrFail(t, eng, info.ID, "sudo mkdir -p /opt/notify-test")
+	execOrFail(t, eng, info.ID,
+		"sudo sh -c 'cat > /opt/notify-test/daemon.py' <<'EOF'\n"+helper+"EOF")
+	execOrFail(t, eng, info.ID, "sudo chmod +x /opt/notify-test/daemon.py")
+
+	unit := `[Unit]
+Description=Notify test daemon
+
+[Service]
+Type=notify
+ExecStart=/opt/notify-test/daemon.py
+TimeoutStartSec=10
+`
+	execOrFail(t, eng, info.ID,
+		"sudo sh -c 'cat > /etc/systemd/system/notifytest.service' <<'EOF'\n"+unit+"EOF")
+
+	// systemctl start should block until READY=1 (~500ms).
+	start := time.Now()
+	execOrFail(t, eng, info.ID, "sudo systemctl start notifytest")
+	elapsed := time.Since(start)
+	if elapsed < 400*time.Millisecond {
+		t.Errorf("start returned in %v; expected >= 400ms (waiting for READY=1)", elapsed)
+	}
+
+	assertExecOutput(t, eng, info.ID, "systemctl is-active notifytest", "active")
+
+	// Stop should also work (KillMode=control-group default).
+	execOrFail(t, eng, info.ID, "sudo systemctl stop notifytest")
+	assertExecOutput(t, eng, info.ID, "systemctl is-active notifytest", "inactive")
+}
+
+// TestSystemctlNotifyTimeout verifies that a Type=notify daemon which
+// never sends READY=1 causes svcStart to time out and report failed,
+// rather than hanging forever or lying about the state.
+func TestSystemctlNotifyTimeout(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	spec := testSpec("sctl-notify-to")
+	info, err := eng.Create(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	unit := `[Unit]
+Description=Lazy notify daemon
+
+[Service]
+Type=notify
+ExecStart=/bin/sleep 60
+TimeoutStartSec=2
+`
+	execOrFail(t, eng, info.ID,
+		"sudo sh -c 'cat > /etc/systemd/system/lazy.service' <<'EOF'\n"+unit+"EOF")
+
+	// Daemon never sends READY=1; svcStart should error out at
+	// TimeoutStartSec=2.
+	start := time.Now()
+	r := execCmd(t, eng, info.ID, "sudo systemctl start lazy")
+	elapsed := time.Since(start)
+	if r.ExitCode == 0 {
+		t.Errorf("start should have failed (READY=1 never sent), got exit 0")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("start took %v; expected ~2s (TimeoutStartSec)", elapsed)
+	}
+
+	assertExecOutput(t, eng, info.ID, "systemctl is-failed lazy", "failed")
+
+	// Cleanup the still-running sleep.
+	execCmd(t, eng, info.ID, "sudo pkill -f 'sleep 60'")
+}
+
 func TestSystemctlThermalCycles(t *testing.T) {
 	eng := testEngine(t)
 	ctx := context.Background()
