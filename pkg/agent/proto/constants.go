@@ -49,6 +49,16 @@ const (
 	FILE_STAT_RESP  byte = 0x55 // guest → host: JSON FileInfo
 	FILE_LS_REQ     byte = 0x56 // host → guest: JSON {"path": "..."}
 	FILE_LS_RESP    byte = 0x57 // guest → host: JSON []FileInfo
+
+	// Systemctl IPC: privileged unit operations are forwarded from the
+	// systemctl shim binary (running as caller uid) to PID-1 lohar (running
+	// as root) over a Unix domain socket. Spoken on /run/bhatti/systemctl.sock
+	// inside the guest — not over vsock, because this is in-guest IPC.
+	// Caller uid is established via SO_PEERCRED on the server side, NOT
+	// from any client-claimed field; the request payload is just the op +
+	// args.
+	SYSTEMCTL_REQ  byte = 0x60 // client → lohar: JSON SystemctlRequest
+	SYSTEMCTL_RESP byte = 0x61 // lohar → client: JSON SystemctlResponse
 )
 
 // Vsock ports

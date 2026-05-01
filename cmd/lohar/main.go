@@ -131,6 +131,11 @@ func runAgent() {
 	go reapZombies()
 	go startSyslogReceiver()
 
+	// Privileged systemctl operations from in-guest non-root callers go
+	// through this Unix socket. PID 1 lohar runs the op as root and sends
+	// the formatted output back. See cmd/lohar/systemctl_ipc.go.
+	startSystemctlListener()
+
 	// --- Listeners ---
 
 	lnControl, err := listenVsock(proto.VsockPortControl)

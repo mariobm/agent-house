@@ -53,3 +53,23 @@ type FileInfo struct {
 	IsDir bool   `json:"is_dir"`
 	Mtime int64  `json:"mtime"`  // unix timestamp
 }
+
+// SystemctlRequest is the body of a SYSTEMCTL_REQ frame: a single privileged
+// unit operation (start/stop/restart/enable/etc.) and its arguments. The
+// caller's identity is NOT carried in this struct — the server uses
+// SO_PEERCRED on the Unix socket to learn the caller's uid authoritatively.
+// Trusting a client-claimed uid would be a security bug.
+type SystemctlRequest struct {
+	Op    string            `json:"op"`
+	Units []string          `json:"units"`
+	Flags map[string]string `json:"flags,omitempty"`
+}
+
+// SystemctlResponse is the body of a SYSTEMCTL_RESP frame. The op has
+// already been executed; this carries the result the client should print
+// and exit with.
+type SystemctlResponse struct {
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}

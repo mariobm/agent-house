@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
 
 // systemctl shim — reads .service files and manages processes directly.
@@ -34,7 +36,10 @@ var serviceDirs = []string{
 // real systemd state.
 var etcSystemdDir = "/etc/systemd/system"
 
-const (
+// pidDir and logDir are vars (not consts) so tests can sandbox them. The
+// production values are the real /run and /var/log paths; runAgent ensures
+// /run/bhatti/services exists at boot.
+var (
 	pidDir = "/run/bhatti/services"
 	logDir = "/var/log/bhatti"
 )
@@ -131,6 +136,35 @@ func runSystemctl(args []string) {
 	}
 
 	_ = quiet // TODO: suppress stdout when set
+
+	// IPC dispatch for privileged ops: if we're not PID 1 and a daemon is
+	// reachable on /run/bhatti/systemctl.sock, forward the request and
+	// replay its output. This is what stops `bhatti exec dev -- systemctl
+	// stop ssh` (running as the unprivileged lohar user) from silently
+	// no-op'ing — PID 1 runs the kill as root, errors actually surface,
+	// and a non-root caller gets a clean Access-denied response.
+	//
+	// If the daemon isn't there (test envs, dev hosts), we fall through to
+	// the in-process path. Forward-compatible with v1.10.x flows.
+	if requiresPrivilege(command) {
+		ipcReq := proto.SystemctlRequest{
+			Op:    command,
+			Units: units,
+			Flags: map[string]string{},
+		}
+		if nowFlag {
+			ipcReq.Flags["now"] = "1"
+		}
+		if signalName != "" {
+			ipcReq.Flags["signal"] = signalName
+		}
+		if resp, ok := tryDispatchViaIPC(ipcReq); ok {
+			os.Stdout.Write([]byte(resp.Stdout))
+			os.Stderr.Write([]byte(resp.Stderr))
+			os.Exit(resp.ExitCode)
+		}
+		// Fallthrough: no daemon reachable, run in-process below.
+	}
 
 	// resolveOrFatal looks up a unit name through the registry. For not-found
 	// units the behaviour matches what the old free-function dispatch did:
@@ -552,9 +586,25 @@ func startForking(u *Unit, execStart string, svc serviceFile) error {
 
 func svcStop(u *Unit) error {
 	pid, err := u.ReadPID()
-	if err != nil || !processAlive(pid) {
+	if err != nil {
+		return nil // not running, nothing to do
+	}
+	// Defensive guard: never signal PID ≤ 1.
+	//
+	//   pid == 0  → kill(-0, ...) broadcasts to the caller's process group
+	//   pid == 1  → kill(-1, ...) is the POSIX "send to ALL processes I'm
+	//                allowed to signal" sentinel — catastrophic from PID 1
+	//
+	// Neither is a legitimate state (svcStart never writes 1 or 0), but a
+	// corrupt pidfile or a manual-edit accident must not be allowed to
+	// turn `systemctl stop` into a system-wide kill.
+	if pid <= 1 {
 		u.RemovePID()
-		return nil
+		return fmt.Errorf("refusing to signal pid %d (corrupt pidfile)", pid)
+	}
+	if !processAlive(pid) {
+		u.RemovePID()
+		return nil // pidfile stale
 	}
 
 	svc := u.Sections
@@ -567,7 +617,14 @@ func svcStop(u *Unit) error {
 		}
 	}
 
-	syscall.Kill(-pid, syscall.SIGTERM)
+	// SIGTERM to the process group. Errors are now surfaced — previously
+	// EPERM (non-root caller) was silently dropped, which made
+	// `systemctl stop` look like it succeeded when nothing happened.
+	// ESRCH means the process died between processAlive() and Kill();
+	// treat as success.
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errIsESRCH(err) {
+		return fmt.Errorf("kill -TERM %d: %w", pid, err)
+	}
 	for i := 0; i < 50; i++ {
 		if !processAlive(pid) {
 			u.RemovePID()
@@ -575,9 +632,18 @@ func svcStop(u *Unit) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	syscall.Kill(-pid, syscall.SIGKILL)
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errIsESRCH(err) {
+		return fmt.Errorf("kill -KILL %d: %w", pid, err)
+	}
 	u.RemovePID()
 	return nil
+}
+
+// errIsESRCH reports whether err is or wraps syscall.ESRCH ("no such
+// process"). Used to treat a race between processAlive() and Kill() as
+// success rather than an error.
+func errIsESRCH(err error) bool {
+	return err == syscall.ESRCH
 }
 
 func svcReload(u *Unit) error {
@@ -590,7 +656,10 @@ func svcReload(u *Unit) error {
 	if execReload := svc.get("Service", "ExecReload"); execReload != "" {
 		return runServiceCommand(execReload, svc)
 	}
-	return syscall.Kill(pid, syscall.SIGHUP)
+	if err := syscall.Kill(pid, syscall.SIGHUP); err != nil {
+		return fmt.Errorf("kill -HUP %d: %w", pid, err)
+	}
+	return nil
 }
 
 // svcEnable creates the enable-symlinks for a unit. C3 will extend this
