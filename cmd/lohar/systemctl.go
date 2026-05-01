@@ -488,6 +488,26 @@ func processAlive(pid int) bool {
 	return err == nil
 }
 
+// humanBytes formats a byte count the way systemd's status does:
+// "124.5M", "1.2G". Picks the largest unit where the value is >= 1.
+func humanBytes(n uint64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+	switch {
+	case n >= GB:
+		return fmt.Sprintf("%.1fG", float64(n)/float64(GB))
+	case n >= MB:
+		return fmt.Sprintf("%.1fM", float64(n)/float64(MB))
+	case n >= KB:
+		return fmt.Sprintf("%.1fK", float64(n)/float64(KB))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
+}
+
 // stopRequested tracks units that an admin asked to stop, so the watcher
 // goroutine knows to suppress the auto-restart that Restart=on-failure
 // would otherwise trigger when the daemon exits.
@@ -590,6 +610,16 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 		return fmt.Errorf("empty ExecStart")
 	}
 
+	// Create the cgroup BEFORE spawning so resource limits are in effect
+	// from the moment the process is moved into it. Errors are non-fatal:
+	// if cgroup setup fails (kernel without v2, missing controllers,
+	// running outside PID 1 in a test) we still start the daemon — it
+	// just won't have isolation. The KillMode=control-group path detects
+	// the missing cgroup and falls back to PGID-kill.
+	if err := u.CreateCgroup(); err != nil {
+		fmt.Fprintf(os.Stderr, "lohar: cgroup setup for %s: %v (proceeding without isolation)\n", u.Canonical, err)
+	}
+
 	cmd := exec.Command("/bin/sh", "-c", "exec "+execStart)
 	cmd.Dir = svc.get("Service", "WorkingDirectory")
 	cmd.Env = buildServiceEnv(svc)
@@ -615,6 +645,18 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	// Close log file in the parent — the child has its own fd.
 	if logFile != nil {
 		logFile.Close()
+	}
+
+	// Move the process into the unit's cgroup. The window between
+	// cmd.Start() and this write is brief but real — the daemon runs
+	// briefly in the parent's cgroup. systemd avoids this with
+	// CLONE_INTO_CGROUP via clone3, which Go's os/exec doesn't expose.
+	// For our use case this is acceptable: the daemon is doing exec
+	// setup (loading shared libs, parsing config) during this window,
+	// not consuming bulk resources.
+	if err := u.PlaceInCgroup(cmd.Process.Pid); err != nil {
+		fmt.Fprintf(os.Stderr, "lohar: cgroup place %d in %s: %v\n",
+			cmd.Process.Pid, u.Canonical, err)
 	}
 
 	u.WritePID(cmd.Process.Pid)
@@ -804,6 +846,7 @@ func svcStop(u *Unit) error {
 	pid, err := u.ReadPID()
 	if err != nil {
 		clearStopRequested(u.Canonical) // no watcher to consume the flag
+		u.RemoveCgroup()                // best-effort cleanup of empty cgroup
 		return nil                      // not running, nothing to do
 	}
 	// Defensive guard: never signal PID ≤ 1.
@@ -821,6 +864,7 @@ func svcStop(u *Unit) error {
 	}
 	if !processAlive(pid) {
 		u.RemovePID()
+		u.RemoveCgroup()
 		clearStopRequested(u.Canonical)
 		return nil // pidfile stale
 	}
@@ -831,29 +875,56 @@ func svcStop(u *Unit) error {
 		time.Sleep(500 * time.Millisecond)
 		if !processAlive(pid) {
 			u.RemovePID()
+			u.RemoveCgroup()
 			return nil
 		}
 	}
 
-	// SIGTERM to the process group. Errors are now surfaced — previously
-	// EPERM (non-root caller) was silently dropped, which made
-	// `systemctl stop` look like it succeeded when nothing happened.
-	// ESRCH means the process died between processAlive() and Kill();
-	// treat as success.
-	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errIsESRCH(err) {
-		return fmt.Errorf("kill -TERM %d: %w", pid, err)
-	}
-	for i := 0; i < 50; i++ {
-		if !processAlive(pid) {
+	// KillMode=control-group (the default in systemd) uses the kernel's
+	// cgroup.kill primitive: one write delivers SIGKILL to every process
+	// in the cgroup, including double-forked children, daemons that
+	// setsid'd themselves out of the parent's PGID, and dbus-activated
+	// helpers — all the things PGID-kill misses. This is the architectural
+	// improvement F1 brings.
+	//
+	// KillMode=process keeps the legacy PGID-only behaviour for services
+	// that explicitly opt out (rare; mostly historical Type=forking
+	// daemons that manage their own children).
+	//
+	// Fallback: cgroup.kill is Linux >=5.14. On older kernels the write
+	// fails with ENOENT and we fall back to PGID-kill, preserving
+	// behaviour at the cost of the extra-children guarantee.
+	switch killModeFor(u) {
+	case "control-group":
+		if err := u.KillCgroup(); err == nil {
+			u.WaitCgroupDrain(5 * time.Second)
+			u.RemoveCgroup()
 			u.RemovePID()
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		// fallthrough to PGID-kill
+		fallthrough
+	case "process":
+		// SIGTERM to the process group. Errors are surfaced; ESRCH means
+		// the process died between processAlive() and Kill() — treated as
+		// success.
+		if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errIsESRCH(err) {
+			return fmt.Errorf("kill -TERM %d: %w", pid, err)
+		}
+		for i := 0; i < 50; i++ {
+			if !processAlive(pid) {
+				u.RemovePID()
+				u.RemoveCgroup()
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errIsESRCH(err) {
+			return fmt.Errorf("kill -KILL %d: %w", pid, err)
+		}
+		u.RemovePID()
+		u.RemoveCgroup()
 	}
-	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errIsESRCH(err) {
-		return fmt.Errorf("kill -KILL %d: %w", pid, err)
-	}
-	u.RemovePID()
 	return nil
 }
 
@@ -1079,6 +1150,19 @@ func svcStatus(u *Unit, displayName string) {
 		fmt.Printf(" (Result: exit-code, code=%d)", failedExit)
 	}
 	fmt.Println()
+
+	// Cgroup accounting (systemd's status format). Only printed when the
+	// service is running and the controllers report non-zero values —
+	// don't clutter the output for inactive units or kernels without the
+	// memory/pids controllers.
+	if u != nil && pid > 0 {
+		if mem := u.CgroupMemoryCurrent(); mem > 0 {
+			fmt.Printf("     Memory: %s\n", humanBytes(mem))
+		}
+		if tasks := u.CgroupTasksCurrent(); tasks > 0 {
+			fmt.Printf("     Tasks: %d\n", tasks)
+		}
+	}
 
 	// Show last few lines of log if available.
 	if u != nil {
