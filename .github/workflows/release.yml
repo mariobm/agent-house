@@ -99,7 +99,14 @@ jobs:
     name: Build Rootfs (${{ matrix.tier }}-${{ matrix.arch }})
     needs: lohar
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # amd64 rootfs builds on the GitHub-free ubuntu-latest runners take
+    # ~25-32 minutes for the heavier tiers (computer, browser) because of
+    # debootstrap + apt-get. arm64 finishes in 4-14 minutes on
+    # ubuntu-24.04-arm. 30m put amd64 right at the timeout edge — the
+    # v1.10.2/v1.10.3/v1.10.4 release runs all timed out on at least one
+    # amd64 tier even though nothing meaningful changed in the build.
+    # 60 minutes gives 2x headroom without affecting fast jobs.
+    timeout-minutes: 60
     strategy:
       matrix:
         tier: [minimal, browser, docker, computer]
