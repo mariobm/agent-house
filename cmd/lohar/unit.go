@@ -405,11 +405,7 @@ func (r *Registry) Resolve(name string) (*Unit, error) {
 
 	base, suffix := splitSuffix(name)
 	cacheKey := base + suffix
-	if u, ok := r.byKey[base]; ok && u.Suffix == suffix {
-		return u, nil
-	}
-	if u, ok := r.byKey[base]; ok && suffix == ".service" {
-		// Cached without explicit .service suffix (the common case).
+	if u, ok := r.byKey[cacheKey]; ok {
 		return u, nil
 	}
 	if _, miss := r.notFound[cacheKey]; miss {
@@ -425,7 +421,7 @@ func (r *Registry) Resolve(name string) (*Unit, error) {
 			Aliases:   map[string]struct{}{},
 			Masked:    true,
 		}
-		r.byKey[base] = u
+		r.byKey[base+suffix] = u
 		return u, nil
 	}
 
@@ -487,7 +483,7 @@ func (r *Registry) resolveDirect(base, suffix string) (*Unit, error) {
 		if inode != 0 {
 			if existing, ok := r.byInode[inode]; ok {
 				existing.Aliases[base] = struct{}{}
-				r.byKey[base] = existing
+				r.byKey[base+suffix] = existing
 				// Late-arriving alias: load drop-ins under the new name
 				// so e.g. /etc/systemd/system/sshd.service.d/*.conf applies
 				// even if Resolve("ssh") happened first.
@@ -528,15 +524,15 @@ func (r *Registry) resolveByAliasScan(base, suffix string) (*Unit, error) {
 					// Found it. Build (or reuse) the Unit for this fragment
 					// and register base as an alias.
 					canonical := strings.TrimSuffix(e.Name(), suffix)
-					if existing, ok := r.byKey[canonical]; ok && existing.Suffix == suffix {
+					if existing, ok := r.byKey[canonical+suffix]; ok {
 						existing.Aliases[base] = struct{}{}
-						r.byKey[base] = existing
+						r.byKey[base+suffix] = existing
 						r.loadDropIns(existing, base, suffix)
 						return existing, nil
 					}
 					u := r.buildUnit(canonical, suffix, realPath)
 					u.Aliases[base] = struct{}{}
-					r.byKey[base] = u
+					r.byKey[base+suffix] = u
 					r.loadDropIns(u, base, suffix)
 					return u, nil
 				}
@@ -591,7 +587,7 @@ func (r *Registry) resolveTemplateInstance(base, suffix string) (*Unit, error) {
 		//   - foo@bar.service.d/*.conf (instance-specific)
 		r.loadDropIns(u, templateName, suffix)
 		r.loadDropIns(u, base, suffix)
-		r.byKey[base] = u
+		r.byKey[base+suffix] = u
 		return u, nil
 	}
 	return nil, ErrUnitNotFound
@@ -615,16 +611,18 @@ func (r *Registry) buildUnit(canonical, suffix, realPath string) *Unit {
 		Path:      realPath,
 		Sections:  parseServiceFile(realPath),
 	}
-	r.byKey[canonical] = u
+	r.byKey[canonical+suffix] = u
 
-	// [Install] Alias= entries become alias keys pointing at the same Unit.
+	// [Install] Alias= entries become alias keys pointing at the same
+	// Unit. Aliases share the source unit's suffix — you can't have
+	// Alias=sshd.socket on a .service unit.
 	for _, alias := range u.Sections.getAll("Install", "Alias") {
 		aliasBase, _ := splitSuffix(strings.TrimSpace(alias))
 		if aliasBase == "" || aliasBase == canonical {
 			continue
 		}
 		u.Aliases[aliasBase] = struct{}{}
-		r.byKey[aliasBase] = u
+		r.byKey[aliasBase+suffix] = u
 	}
 
 	r.loadDropIns(u, canonical, suffix)

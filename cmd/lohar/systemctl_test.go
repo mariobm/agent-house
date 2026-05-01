@@ -171,6 +171,58 @@ func TestRegistryResolveDirect(t *testing.T) {
 	}
 }
 
+func TestRegistryServiceAndSocketAreDistinct(t *testing.T) {
+	// Regression for an integration-test failure: openssh-server's
+	// postinst calls 'systemctl enable ssh.socket' (resolving .socket)
+	// then 'systemctl restart ssh.service' (resolving .service). A bug
+	// in the byKey indexing made both names map to the same key ("ssh")
+	// regardless of suffix, so the second call returned the .socket
+	// Unit and svcStart failed with 'no ExecStart in ssh.socket'.
+	//
+	// Fix: byKey is now keyed on full name (base+suffix). The two units
+	// occupy distinct entries.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "ssh.service"),
+		[]byte("[Service]\nExecStart=/usr/sbin/sshd -D\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "ssh.socket"),
+		[]byte("[Socket]\nListenStream=22\nAccept=no\n"), 0644)
+
+	reg := testRegistry(t, dir)
+
+	// Resolve the socket FIRST (mirroring the postinst's order).
+	sock, err := reg.Resolve("ssh.socket")
+	if err != nil {
+		t.Fatalf("Resolve(ssh.socket): %v", err)
+	}
+	if sock.Suffix != ".socket" {
+		t.Errorf("sock.Suffix = %q, want .socket", sock.Suffix)
+	}
+
+	// Now resolve the service. Pre-fix, this returned the socket Unit.
+	svc, err := reg.Resolve("ssh.service")
+	if err != nil {
+		t.Fatalf("Resolve(ssh.service): %v", err)
+	}
+	if svc.Suffix != ".service" {
+		t.Errorf("svc.Suffix = %q, want .service (the socket Unit was returned for a service query)", svc.Suffix)
+	}
+	if svc == sock {
+		t.Error("svc and sock returned identical *Unit pointers; .service and .socket must be distinct")
+	}
+	if !strings.HasSuffix(svc.Path, "ssh.service") {
+		t.Errorf("svc.Path = %q, want it to end in ssh.service", svc.Path)
+	}
+
+	// And the bare-name resolution still works (defaults to .service).
+	bare, err := reg.Resolve("ssh")
+	if err != nil {
+		t.Fatalf("Resolve(ssh): %v", err)
+	}
+	if bare != svc {
+		t.Errorf("Resolve(ssh) should match Resolve(ssh.service), got different pointers")
+	}
+}
+
 func TestRegistryAliasResolution(t *testing.T) {
 	// The Fastidious bug regression test: ssh.service with Alias=sshd.service.
 	// Resolve("ssh") and Resolve("sshd") must return the SAME Unit pointer,
