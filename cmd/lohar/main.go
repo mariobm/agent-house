@@ -47,6 +47,22 @@ func main() {
 // mounts filesystems, configures the system, starts listeners,
 // starts enabled services, then handles exec/shell/file requests.
 func runAgent() {
+	// SAFETY GUARD: lohar's runAgent does PID-1 things (mounts /proc,
+	// installs a SIGTERM handler that calls reboot(POWER_OFF), brings
+	// up loopback, starts every enabled service). All of that is only
+	// safe inside a Firecracker microVM where lohar IS PID 1. Running
+	// it on a real host as root has powered off two Pi5 machines
+	// in this project's history. Refuse to proceed unless we really
+	// are PID 1.
+	if os.Getpid() != 1 {
+		fmt.Fprintf(os.Stderr, "lohar: refusing to runAgent: not PID 1 (PID=%d). "+
+			"This binary's agent path is for use inside a Firecracker VM as init. "+
+			"For systemctl/journalctl invocations, the busybox dispatch routes "+
+			"based on argv[0]; symlink /usr/bin/systemctl -> lohar to use those.\n",
+			os.Getpid())
+		os.Exit(2)
+	}
+
 	bootStart := time.Now()
 	var bootLog strings.Builder
 	bp := func(name string) {
