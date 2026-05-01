@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -321,6 +322,30 @@ func runSystemctl(args []string) {
 			}
 			os.Exit(1)
 		}
+	case "is-failed":
+		// Read-only; stays in-process. is-failed prints "failed" if the
+		// .failed marker exists for the unit, otherwise prints the
+		// current ActiveState approximation (active or inactive). Exit
+		// 0 only when the unit IS failed — systemd's contract for
+		// scripts that want to filter for crashed services.
+		if len(units) == 0 {
+			os.Exit(1)
+		}
+		u, _ := resolveOrTolerate(units[0])
+		if u != nil && u.IsFailed() {
+			if !quiet {
+				fmt.Println("failed")
+			}
+			return // exit 0
+		}
+		state := "inactive"
+		if u != nil && svcIsActive(u) {
+			state = "active"
+		}
+		if !quiet {
+			fmt.Println(state)
+		}
+		os.Exit(1)
 	case "status":
 		if len(units) == 0 {
 			fmt.Println("running")
@@ -368,8 +393,16 @@ func runSystemctl(args []string) {
 				syscall.Kill(-pid, sig)
 			}
 		}
-	case "daemon-reload", "daemon-reexec", "reset-failed":
-		// no-op
+	case "daemon-reload", "daemon-reexec":
+		// no-op (we re-read unit files on each Resolve, so daemon-reload
+		// has no work to do; daemon-reexec is meaningless because we're
+		// not a long-running process here)
+	case "reset-failed":
+		for _, raw := range units {
+			if u, _ := resolveOrTolerate(raw); u != nil {
+				u.ClearFailed()
+			}
+		}
 	case "preset":
 		for _, raw := range units {
 			u, _ := resolveOrTolerate(raw)
@@ -453,6 +486,35 @@ func resolveSocketToService(name string) string {
 func processAlive(pid int) bool {
 	_, err := os.Stat(fmt.Sprintf("/proc/%d", pid))
 	return err == nil
+}
+
+// stopRequested tracks units that an admin asked to stop, so the watcher
+// goroutine knows to suppress the auto-restart that Restart=on-failure
+// would otherwise trigger when the daemon exits.
+//
+// In-memory map; lives in PID-1 lohar's address space alongside the
+// watcher goroutines that read it. Both svcStop and the watcher run in
+// the same process when the IPC path is in use (which is always, in
+// production); a sync.Mutex covers the (rare) concurrent access.
+var stopRequested = struct {
+	sync.Mutex
+	set map[string]bool
+}{set: map[string]bool{}}
+
+func markStopRequested(canonical string) {
+	stopRequested.Lock()
+	stopRequested.set[canonical] = true
+	stopRequested.Unlock()
+}
+func clearStopRequested(canonical string) {
+	stopRequested.Lock()
+	delete(stopRequested.set, canonical)
+	stopRequested.Unlock()
+}
+func isStopRequested(canonical string) bool {
+	stopRequested.Lock()
+	defer stopRequested.Unlock()
+	return stopRequested.set[canonical]
 }
 
 // --- Service operations ---
@@ -556,8 +618,155 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	}
 
 	u.WritePID(cmd.Process.Pid)
-	cmd.Process.Release()
+	u.ClearFailed() // a new run starts with a clean slate
+
+	// Spawn a watcher goroutine that observes the daemon's exit and
+	// applies the Restart= policy. cmd.Process.Release() is NOT called
+	// before this — the watcher needs the cmd handle for cmd.Wait().
+	//
+	// Snapshot/restore caveat: this goroutine is bound to *os.Process,
+	// which doesn't survive a process restart. If lohar (PID 1) restarts
+	// for any reason, the watcher is gone; daemons that crash thereafter
+	// won't auto-restart until an admin runs `systemctl restart`. In a
+	// Firecracker microVM that snapshot/restores the entire VM atomically,
+	// goroutines pause/resume cleanly so this caveat doesn't apply to the
+	// snapshot lifecycle — only to a hypothetical lohar-only restart.
+	go watchAndMaybeRestart(u, cmd)
 	return nil
+}
+
+// watchAndMaybeRestart is the per-daemon supervisor goroutine. It blocks
+// on cmd.Wait() (which also reaps the zombie), then:
+//
+//   - Updates the failed-state marker based on the exit code.
+//   - Removes the pidfile.
+//   - Consults Restart= policy and invokes svcStart again if appropriate,
+//     subject to a burst limit so a flapping service can't pin a CPU.
+//
+// If an admin called systemctl stop (markStopRequested), the restart is
+// suppressed and the stop-marker cleared.
+func watchAndMaybeRestart(u *Unit, cmd *exec.Cmd) {
+	err := cmd.Wait()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = 1
+		}
+	}
+
+	u.RemovePID()
+	if exitCode == 0 {
+		u.ClearFailed()
+	} else {
+		u.MarkFailed(exitCode)
+	}
+
+	if isStopRequested(u.Canonical) {
+		clearStopRequested(u.Canonical)
+		return
+	}
+
+	policy := u.Sections.get("Service", "Restart")
+	if !shouldRestart(policy, exitCode) {
+		return
+	}
+	if !restartBurstAllowed(u) {
+		fmt.Fprintf(os.Stderr, "lohar: %s flapping, giving up after start-limit-burst\n", u.Canonical)
+		return
+	}
+
+	restartDelay := parseRestartSec(u.Sections.get("Service", "RestartSec"))
+	time.Sleep(restartDelay)
+
+	if err := svcStart(u); err != nil {
+		fmt.Fprintf(os.Stderr, "lohar: auto-restart of %s failed: %v\n", u.Canonical, err)
+	}
+}
+
+// shouldRestart maps the Restart= directive to a yes/no for the given
+// exit code. Mirrors systemd's policy:
+//
+//   no            never
+//   always        always (also after clean exits)
+//   on-success    only after exit 0
+//   on-failure    after non-zero exit (the common case)
+//   on-abnormal   after signals (exit > 128, by convention)
+//   "" (unset)    treated as no — services explicitly opt in
+func shouldRestart(policy string, exitCode int) bool {
+	failed := exitCode != 0
+	switch policy {
+	case "always":
+		return true
+	case "on-success":
+		return !failed
+	case "on-failure":
+		return failed
+	case "on-abnormal":
+		return exitCode > 128
+	case "no", "":
+		return false
+	}
+	return false
+}
+
+// parseRestartSec returns the RestartSec= value as a time.Duration.
+// Empty or unparseable input defaults to 100ms (matches systemd's default).
+func parseRestartSec(v string) time.Duration {
+	if v == "" {
+		return 100 * time.Millisecond
+	}
+	// Bare integers in unit files are seconds (systemd convention).
+	if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+		return time.Duration(n) * time.Second
+	}
+	if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil {
+		return d
+	}
+	return 100 * time.Millisecond
+}
+
+// restartBurst tracks recent restart attempts per Unit. Flapping services
+// (start, crash, restart, crash, ...) are caught here and given up on,
+// matching systemd's StartLimitBurst / StartLimitIntervalSec defaults
+// (5 attempts in 10 seconds). Per-unit map; protected by its own mutex.
+var restartBurst = struct {
+	sync.Mutex
+	history map[string][]time.Time
+}{history: map[string][]time.Time{}}
+
+func restartBurstAllowed(u *Unit) bool {
+	burst := 5
+	if v := u.Sections.get("Service", "StartLimitBurst"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			burst = n
+		}
+	}
+	interval := 10 * time.Second
+	if v := u.Sections.get("Service", "StartLimitIntervalSec"); v != "" {
+		interval = parseRestartSec(v)
+	}
+
+	restartBurst.Lock()
+	defer restartBurst.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-interval)
+	history := restartBurst.history[u.Canonical]
+	// Drop attempts older than the interval.
+	fresh := history[:0]
+	for _, t := range history {
+		if t.After(cutoff) {
+			fresh = append(fresh, t)
+		}
+	}
+	if len(fresh) >= burst {
+		restartBurst.history[u.Canonical] = fresh
+		return false
+	}
+	fresh = append(fresh, now)
+	restartBurst.history[u.Canonical] = fresh
+	return true
 }
 
 func startForking(u *Unit, execStart string, svc serviceFile) error {
@@ -585,9 +794,17 @@ func startForking(u *Unit, execStart string, svc serviceFile) error {
 }
 
 func svcStop(u *Unit) error {
+	// Tell the watcher this is intentional so the Restart= policy doesn't
+	// fire after we kill the daemon. Cleared by the watcher when it sees
+	// the flag, or by the deferred clear below if there was nothing to
+	// stop.
+	markStopRequested(u.Canonical)
+	defer u.ClearFailed() // a clean stop is not a failure
+
 	pid, err := u.ReadPID()
 	if err != nil {
-		return nil // not running, nothing to do
+		clearStopRequested(u.Canonical) // no watcher to consume the flag
+		return nil                      // not running, nothing to do
 	}
 	// Defensive guard: never signal PID ≤ 1.
 	//
@@ -604,6 +821,7 @@ func svcStop(u *Unit) error {
 	}
 	if !processAlive(pid) {
 		u.RemovePID()
+		clearStopRequested(u.Canonical)
 		return nil // pidfile stale
 	}
 
@@ -834,10 +1052,17 @@ func svcStatus(u *Unit, displayName string) {
 	displayName = normalizeName(displayName)
 	active := "inactive"
 	pid := 0
+	failedExit := 0
 	if u != nil {
-		if p, err := u.ReadPID(); err == nil && processAlive(p) {
-			active = "active"
-			pid = p
+		switch {
+		case u.IsFailed():
+			active = "failed"
+			failedExit = u.LastExitCode()
+		default:
+			if p, err := u.ReadPID(); err == nil && processAlive(p) {
+				active = "active"
+				pid = p
+			}
 		}
 	}
 	desc := displayName
@@ -850,6 +1075,8 @@ func svcStatus(u *Unit, displayName string) {
 	fmt.Printf("     Active: %s", active)
 	if pid > 0 {
 		fmt.Printf(" (running, PID %d)", pid)
+	} else if failedExit != 0 {
+		fmt.Printf(" (Result: exit-code, code=%d)", failedExit)
 	}
 	fmt.Println()
 

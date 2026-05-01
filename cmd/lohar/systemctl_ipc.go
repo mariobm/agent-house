@@ -412,9 +412,16 @@ func dispatchPrivilegedOp(req proto.SystemctlRequest) int {
 			}
 			svcEnable(u)
 		}
-	case "daemon-reload", "daemon-reexec", "reset-failed":
-		// no-op (matches in-process behaviour for now; reset-failed becomes
-		// meaningful in C6 once we track failed state)
+	case "daemon-reload", "daemon-reexec":
+		// no-op (we re-read unit files on each Resolve)
+	case "reset-failed":
+		for _, raw := range req.Units {
+			u, err := reg.Resolve(raw)
+			if err != nil {
+				continue
+			}
+			u.ClearFailed()
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "systemctl: unsupported privileged op %q\n", req.Op)
 		return 1

@@ -92,6 +92,48 @@ func (u *Unit) WantsLink(target string) string {
 	return filepath.Join("/etc/systemd/system", target+".wants", u.FullName())
 }
 
+// FailedMarkerPath returns /run/bhatti/services/<canonical>.failed.
+//
+// The presence of this file means the unit's last run terminated with a
+// non-zero exit code; the file's contents are the integer exit code
+// (decimal). svcStart removes it; svcStop removes it (clean stop is not
+// failure); the watcher writes it on crash. systemctl is-failed reads it.
+//
+// Lives on disk because failed-state needs to survive across systemctl
+// client invocations — each one creates a fresh Registry, so in-memory
+// state on a *Unit is only visible to the watcher that wrote it.
+func (u *Unit) FailedMarkerPath() string {
+	return filepath.Join(pidDir, u.Canonical+".failed")
+}
+
+// MarkFailed writes the failed marker with the given exit code.
+func (u *Unit) MarkFailed(exitCode int) {
+	os.MkdirAll(pidDir, 0755)
+	os.WriteFile(u.FailedMarkerPath(), []byte(fmt.Sprintf("%d", exitCode)), 0644)
+}
+
+// ClearFailed removes the failed marker. Idempotent.
+func (u *Unit) ClearFailed() {
+	os.Remove(u.FailedMarkerPath())
+}
+
+// IsFailed returns true if the failed marker exists. Used by svcIsFailed.
+func (u *Unit) IsFailed() bool {
+	_, err := os.Stat(u.FailedMarkerPath())
+	return err == nil
+}
+
+// LastExitCode returns the exit code stored in the failed marker, or 0
+// if no marker exists or the file is malformed.
+func (u *Unit) LastExitCode() int {
+	data, err := os.ReadFile(u.FailedMarkerPath())
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	return n
+}
+
 // ReadPID returns the running PID for this unit, or an error if no
 // pidfile exists. The pidfile is keyed by canonical name, so calling
 // ReadPID through any alias returns the same PID.
