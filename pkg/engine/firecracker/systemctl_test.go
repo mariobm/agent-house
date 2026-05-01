@@ -4,10 +4,37 @@ package firecracker
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
+
+// writeFile writes content (typically multi-line) to a path inside the
+// guest. Necessary because execCmd takes a single string and does
+// strings.Fields on it, which mangles newlines and breaks shell pipes/
+// redirects. We bypass that by calling eng.Exec directly with an argv
+// of ["sh", "-c", <one shell command>] -- the shell handles all the
+// newline + pipe + redirect parsing inside the VM.
+//
+// Content is base64-encoded so it has no shell-special characters and
+// can be passed as a single token even if it contains $, ', `, etc.
+func writeFile(t *testing.T, eng *Engine, id, path, content string) {
+	t.Helper()
+	b64 := base64.StdEncoding.EncodeToString([]byte(content))
+	shellCmd := fmt.Sprintf("echo %s | base64 -d | sudo tee %s >/dev/null", b64, path)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r, err := eng.Exec(ctx, id, []string{"sh", "-c", shellCmd})
+	if err != nil {
+		t.Fatalf("writeFile %s: exec error: %v", path, err)
+	}
+	if r.ExitCode != 0 {
+		t.Fatalf("writeFile %s: exit %d\nstdout: %s\nstderr: %s",
+			path, r.ExitCode, r.Stdout, r.Stderr)
+	}
+}
 
 // These tests run on real Firecracker VMs on the Pi cluster.
 // They require the systemctl shim to be baked into the rootfs
@@ -272,8 +299,7 @@ RestartSec=10ms
 StartLimitBurst=3
 StartLimitIntervalSec=10
 `
-	execOrFail(t, eng, info.ID,
-		"sudo sh -c 'cat > /etc/systemd/system/crasher.service' <<EOF\n"+unitFile+"EOF")
+	writeFile(t, eng, info.ID, "/etc/systemd/system/crasher.service", unitFile)
 	execOrFail(t, eng, info.ID, "sudo systemctl start crasher")
 
 	// Give the watcher time to hit the burst limit and give up.
@@ -376,9 +402,12 @@ func TestSystemctlNotifyTypeWaitsForReady(t *testing.T) {
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	// Need python3 in the VM for the notify helper. minimal tier already
-	// has it.
+	// minimal tier doesn't ship python3; install it. The notify helper
+	// could be written in C or as a static Go binary, but python3 is
+	// already in universe and small (~12MB). Adds ~5-10s to the test
+	// for the install.
 	execOrFail(t, eng, info.ID, "sudo apt-get update -qq")
+	execOrFail(t, eng, info.ID, "sudo apt-get install -y --no-install-recommends python3")
 
 	// A tiny Type=notify daemon: pause 500ms, send READY=1, sleep 30s.
 	helper := `#!/usr/bin/env python3
@@ -390,8 +419,7 @@ s.send(b'READY=1\n')
 time.sleep(30)
 `
 	execOrFail(t, eng, info.ID, "sudo mkdir -p /opt/notify-test")
-	execOrFail(t, eng, info.ID,
-		"sudo sh -c 'cat > /opt/notify-test/daemon.py' <<'EOF'\n"+helper+"EOF")
+	writeFile(t, eng, info.ID, "/opt/notify-test/daemon.py", helper)
 	execOrFail(t, eng, info.ID, "sudo chmod +x /opt/notify-test/daemon.py")
 
 	unit := `[Unit]
@@ -402,8 +430,7 @@ Type=notify
 ExecStart=/opt/notify-test/daemon.py
 TimeoutStartSec=10
 `
-	execOrFail(t, eng, info.ID,
-		"sudo sh -c 'cat > /etc/systemd/system/notifytest.service' <<'EOF'\n"+unit+"EOF")
+	writeFile(t, eng, info.ID, "/etc/systemd/system/notifytest.service", unit)
 
 	// systemctl start should block until READY=1 (~500ms).
 	start := time.Now()
@@ -442,8 +469,7 @@ Type=notify
 ExecStart=/bin/sleep 60
 TimeoutStartSec=2
 `
-	execOrFail(t, eng, info.ID,
-		"sudo sh -c 'cat > /etc/systemd/system/lazy.service' <<'EOF'\n"+unit+"EOF")
+	writeFile(t, eng, info.ID, "/etc/systemd/system/lazy.service", unit)
 
 	// Daemon never sends READY=1; svcStart should error out at
 	// TimeoutStartSec=2.
