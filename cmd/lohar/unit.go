@@ -148,15 +148,30 @@ type Registry struct {
 	// byInode dedupes units reachable through symlinks: the same physical
 	// file resolved through two paths returns the same *Unit.
 	byInode map[uint64]*Unit
+	// notFound caches names we already tried to resolve and couldn't find,
+	// keyed by base+suffix. Without this, the syslog receiver would re-scan
+	// every unit file for every kernel/cron/login message tagged with
+	// something that doesn't match a unit. Invalidated on Reload (TODO C6+).
+	notFound map[string]struct{}
 }
 
 // NewRegistry returns a fresh, empty registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		byKey:   make(map[string]*Unit),
-		byInode: make(map[uint64]*Unit),
+		byKey:    make(map[string]*Unit),
+		byInode:  make(map[uint64]*Unit),
+		notFound: make(map[string]struct{}),
 	}
 }
+
+// globalRegistry is the long-lived Registry used by PID-1 lohar's syslog
+// receiver, target-wants service activation, and IPC handler. Created in
+// runAgent at boot and shared across the goroutines that need to map names
+// to units.
+//
+// For the systemctl client (busybox-dispatched, short-lived process), a
+// fresh Registry per invocation is still appropriate — see runSystemctl.
+var globalRegistry *Registry
 
 // ErrUnitNotFound is returned by Resolve when no unit file exists for the
 // queried name and the name doesn't appear as an [Install] Alias= elsewhere.
@@ -184,12 +199,16 @@ func (r *Registry) Resolve(name string) (*Unit, error) {
 	defer r.mu.Unlock()
 
 	base, suffix := splitSuffix(name)
+	cacheKey := base + suffix
 	if u, ok := r.byKey[base]; ok && u.Suffix == suffix {
 		return u, nil
 	}
 	if u, ok := r.byKey[base]; ok && suffix == ".service" {
 		// Cached without explicit .service suffix (the common case).
 		return u, nil
+	}
+	if _, miss := r.notFound[cacheKey]; miss {
+		return nil, fmt.Errorf("%w: %s", ErrUnitNotFound, cacheKey)
 	}
 
 	// Mask check: any service dir with <base><suffix> -> /dev/null.
@@ -221,7 +240,10 @@ func (r *Registry) Resolve(name string) (*Unit, error) {
 		return u, nil
 	}
 
-	return nil, fmt.Errorf("%w: %s%s", ErrUnitNotFound, base, suffix)
+	// Cache the miss — keeps high-frequency unknown tags from the syslog
+	// receiver (kernel, cron, login) from re-scanning every fragment file.
+	r.notFound[cacheKey] = struct{}{}
+	return nil, fmt.Errorf("%w: %s", ErrUnitNotFound, cacheKey)
 }
 
 // checkMasked returns true if base+suffix is a symlink to /dev/null in any

@@ -129,6 +129,14 @@ func runAgent() {
 
 	installSignalHandlers()
 	go reapZombies()
+
+	// Build the long-lived Unit registry shared by the syslog receiver,
+	// service activation, and the IPC handler. Holding it here means a
+	// syslog message tagged "sshd" gets reconciled to the canonical Unit
+	// (ssh.service) on first lookup and cached thereafter — logs land in
+	// the same file regardless of which name the daemon uses internally.
+	globalRegistry = NewRegistry()
+
 	go startSyslogReceiver()
 
 	// Privileged systemctl operations from in-guest non-root callers go
@@ -269,18 +277,33 @@ func reapZombies() {
 	}
 }
 
+// syslogSocketPath is overridable in tests; in production it must be
+// /dev/log because that's where libc's syslog(3) sends. Tests use a
+// tempdir path to avoid clobbering the host's real /dev/log.
+var syslogSocketPath = "/dev/log"
+
 // startSyslogReceiver creates /dev/log and routes syslog messages to
-// /var/log/bhatti/<tag>.log. Services like sshd, postgres, and nginx
-// write to syslog instead of stdout. Without this, their logs are lost.
+// /var/log/bhatti/<canonical>.log via the Unit registry: a daemon that
+// logs as "sshd[123]: ..." lands in /var/log/bhatti/ssh.log when
+// ssh.service has Alias=sshd.service — unifying with the stdout/stderr
+// capture in svcStart, which already keys by canonical name.
+//
+// Tags that don't match any known Unit (kernel, cron, login, custom
+// daemons not managed by the shim) fall back to /var/log/bhatti/<tag>.log
+// so they're still captured and greppable.
+//
+// Services like sshd, postgres, and nginx write to syslog (via libc's
+// openlog/syslog) instead of stdout when daemonised. Without this
+// receiver their logs are lost.
 func startSyslogReceiver() {
-	os.Remove("/dev/log")
-	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: "/dev/log", Net: "unixgram"})
+	os.Remove(syslogSocketPath)
+	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: syslogSocketPath, Net: "unixgram"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "lohar: syslog receiver: %v\n", err)
 		return
 	}
-	os.Chmod("/dev/log", 0666)
-	os.MkdirAll("/var/log/bhatti", 0755)
+	os.Chmod(syslogSocketPath, 0666)
+	os.MkdirAll(logDir, 0755)
 
 	buf := make([]byte, 8192)
 	for {
@@ -292,7 +315,17 @@ func startSyslogReceiver() {
 		if tag == "" {
 			tag = "syslog"
 		}
-		logPath := filepath.Join("/var/log/bhatti", tag+".log")
+		logPath := filepath.Join(logDir, tag+".log")
+		// Reconcile the syslog tag to a canonical Unit log path: messages
+		// from a daemon's libc syslog (tagged after the binary, e.g. sshd)
+		// merge with the stdout/stderr captured by svcStart (named after
+		// the unit, e.g. ssh.service). Misses fall back to a tag-keyed
+		// file as before.
+		if globalRegistry != nil {
+			if u, err := globalRegistry.Resolve(tag); err == nil && !u.Masked {
+				logPath = u.LogPath()
+			}
+		}
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
 			f.WriteString(msg + "\n")
 			f.Close()
