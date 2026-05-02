@@ -42,23 +42,29 @@ percentiles() {
     }'
 }
 
-# Time a command in milliseconds
+# Time a command in milliseconds. Uses bash 5+'s $EPOCHREALTIME (microsecond
+# precision, zero fork). Strips the decimal so we can do integer math in
+# pure bash; output is `<ms-integer>.<microseconds-mod-1000>`.
+#
+# Earlier versions of this script used three python3 invocations per
+# measurement, which added 150-300 ms of fork overhead and made any
+# sub-100ms operation unmeasurable. Watch out if you reintroduce that.
 time_ms() {
-    local start end
-    start=$(python3 -c 'import time; print(time.monotonic_ns())')
+    local start_us="${EPOCHREALTIME//.}"
     "$@" > /dev/null 2>&1
-    end=$(python3 -c 'import time; print(time.monotonic_ns())')
-    python3 -c "print(($end - $start) / 1_000_000)"
+    local end_us="${EPOCHREALTIME//.}"
+    local diff=$((end_us - start_us))
+    printf '%d.%03d\n' $((diff / 1000)) $((diff % 1000))
 }
 
 # Like time_ms but captures output too (for extracting sandbox IDs etc)
 time_ms_out() {
     local outfile="$1"; shift
-    local start end
-    start=$(python3 -c 'import time; print(time.monotonic_ns())')
+    local start_us="${EPOCHREALTIME//.}"
     "$@" > "$outfile" 2>&1 || true
-    end=$(python3 -c 'import time; print(time.monotonic_ns())')
-    python3 -c "print(($end - $start) / 1_000_000)"
+    local end_us="${EPOCHREALTIME//.}"
+    local diff=$((end_us - start_us))
+    printf '%d.%03d\n' $((diff / 1000)) $((diff % 1000))
 }
 
 echo -e "${BOLD}Bhatti Performance Benchmark${NC}"
@@ -351,7 +357,9 @@ percentiles "$FILE"
 subhead "4c. Raw HTTP (curl to /health — no auth)"
 FILE="$RESULTS_DIR/api_health.txt"
 > "$FILE"
-API_URL=$(grep api_url ~/.config/bhatti/config.yaml 2>/dev/null | awk '{print $2}' || echo "https://api.bhatti.sh")
+# Read api_url from the CLI's actual config locations (precedence: env > user > system).
+API_URL="${BHATTI_URL:-$(grep -h '^api_url:' ~/.bhatti/config.yaml /etc/bhatti/config.yaml 2>/dev/null | head -1 | awk '{print $2}')}"
+API_URL="${API_URL:-http://localhost:8080}"
 for i in $(seq 1 3); do curl -sf "$API_URL/health" > /dev/null 2>&1; done
 for i in $(seq 1 "$ITERATIONS"); do
     t=$(time_ms curl -sf "$API_URL/health")
@@ -363,7 +371,7 @@ percentiles "$FILE"
 subhead "4d. Raw HTTP (curl to /sandboxes — with auth)"
 FILE="$RESULTS_DIR/api_sandboxes_curl.txt"
 > "$FILE"
-TOKEN=$(grep auth_token ~/.config/bhatti/config.yaml 2>/dev/null | awk '{print $2}')
+TOKEN="${BHATTI_TOKEN:-$(grep -h '^auth_token:' ~/.bhatti/config.yaml 2>/dev/null | awk '{print $2}')}"
 for i in $(seq 1 3); do curl -sf -H "Authorization: Bearer $TOKEN" "$API_URL/sandboxes" > /dev/null 2>&1; done
 for i in $(seq 1 "$ITERATIONS"); do
     t=$(time_ms curl -sf -H "Authorization: Bearer $TOKEN" "$API_URL/sandboxes")
@@ -382,13 +390,14 @@ subhead "5a. 5 concurrent execs"
 FILE="$RESULTS_DIR/concurrent_5.txt"
 > "$FILE"
 for run in $(seq 1 10); do
-    start=$(python3 -c 'import time; print(time.monotonic_ns())')
+    start_us="${EPOCHREALTIME//.}"
     for i in $(seq 1 5); do
         bhatti exec "$SB" -- true > /dev/null 2>&1 &
     done
     wait
-    end=$(python3 -c 'import time; print(time.monotonic_ns())')
-    python3 -c "print(($end - $start) / 1_000_000)" >> "$FILE"
+    end_us="${EPOCHREALTIME//.}"
+    diff=$((end_us - start_us))
+    printf '%d.%03d\n' $((diff / 1000)) $((diff % 1000)) >> "$FILE"
 done
 echo -e "${YELLOW}5 concurrent execs, wall time (ms):${NC}"
 percentiles "$FILE"
@@ -397,13 +406,14 @@ subhead "5b. 10 concurrent execs"
 FILE="$RESULTS_DIR/concurrent_10.txt"
 > "$FILE"
 for run in $(seq 1 10); do
-    start=$(python3 -c 'import time; print(time.monotonic_ns())')
+    start_us="${EPOCHREALTIME//.}"
     for i in $(seq 1 10); do
         bhatti exec "$SB" -- true > /dev/null 2>&1 &
     done
     wait
-    end=$(python3 -c 'import time; print(time.monotonic_ns())')
-    python3 -c "print(($end - $start) / 1_000_000)" >> "$FILE"
+    end_us="${EPOCHREALTIME//.}"
+    diff=$((end_us - start_us))
+    printf '%d.%03d\n' $((diff / 1000)) $((diff % 1000)) >> "$FILE"
 done
 echo -e "${YELLOW}10 concurrent execs, wall time (ms):${NC}"
 percentiles "$FILE"
@@ -412,13 +422,14 @@ subhead "5c. 20 concurrent execs"
 FILE="$RESULTS_DIR/concurrent_20.txt"
 > "$FILE"
 for run in $(seq 1 10); do
-    start=$(python3 -c 'import time; print(time.monotonic_ns())')
+    start_us="${EPOCHREALTIME//.}"
     for i in $(seq 1 20); do
         bhatti exec "$SB" -- true > /dev/null 2>&1 &
     done
     wait
-    end=$(python3 -c 'import time; print(time.monotonic_ns())')
-    python3 -c "print(($end - $start) / 1_000_000)" >> "$FILE"
+    end_us="${EPOCHREALTIME//.}"
+    diff=$((end_us - start_us))
+    printf '%d.%03d\n' $((diff / 1000)) $((diff % 1000)) >> "$FILE"
 done
 echo -e "${YELLOW}20 concurrent execs, wall time (ms):${NC}"
 percentiles "$FILE"
@@ -426,13 +437,14 @@ percentiles "$FILE"
 subhead "5d. Sequential exec throughput (30 execs back-to-back)"
 FILE="$RESULTS_DIR/sequential_throughput.txt"
 > "$FILE"
-start=$(python3 -c 'import time; print(time.monotonic_ns())')
+start_us="${EPOCHREALTIME//.}"
 for i in $(seq 1 30); do
     bhatti exec "$SB" -- true > /dev/null 2>&1
 done
-end=$(python3 -c 'import time; print(time.monotonic_ns())')
-total_ms=$(python3 -c "print(($end - $start) / 1_000_000)")
-per_exec=$(python3 -c "print($total_ms / 30)")
+end_us="${EPOCHREALTIME//.}"
+diff=$((end_us - start_us))
+total_ms=$(printf '%d.%03d' $((diff / 1000)) $((diff % 1000)))
+per_exec=$(awk -v t="$diff" 'BEGIN { printf "%.3f", t / 1000 / 30 }')
 echo -e "  30 sequential execs: ${total_ms}ms total, ${per_exec}ms/exec"
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
@@ -447,8 +459,7 @@ FILE="$RESULTS_DIR/network_rtt.txt"
 for i in $(seq 1 "$ITERATIONS"); do
     # Use curl with timing to measure just the TLS connection setup
     t=$(curl -sf -o /dev/null -w '%{time_connect}' "$API_URL/health" 2>/dev/null)
-    ms=$(python3 -c "print(float('$t') * 1000)")
-    echo "$ms" >> "$FILE"
+    awk -v s="$t" 'BEGIN { printf "%.3f\n", s * 1000 }' >> "$FILE"
 done
 echo -e "${YELLOW}TCP connect time (ms):${NC}"
 percentiles "$FILE"
@@ -457,8 +468,7 @@ FILE="$RESULTS_DIR/network_ttfb.txt"
 > "$FILE"
 for i in $(seq 1 "$ITERATIONS"); do
     t=$(curl -sf -o /dev/null -w '%{time_starttransfer}' "$API_URL/health" 2>/dev/null)
-    ms=$(python3 -c "print(float('$t') * 1000)")
-    echo "$ms" >> "$FILE"
+    awk -v s="$t" 'BEGIN { printf "%.3f\n", s * 1000 }' >> "$FILE"
 done
 echo -e "${YELLOW}TTFB /health (ms):${NC}"
 percentiles "$FILE"
