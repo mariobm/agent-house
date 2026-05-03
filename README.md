@@ -1,4 +1,7 @@
-# ⚒ Bhatti
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
+  <img alt="bhatti" src="assets/logo-light.png" height="48">
+</picture>
 
 Open-source Firecracker microVM orchestrator. Each sandbox is a real Linux VM with its own kernel, filesystem, and process isolation — created in seconds, paused for free, resumed in microseconds.
 
