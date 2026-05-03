@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/sahil-shubham/bhatti/main/scripts/i
 ```
 </details>
 
-> 📖 **Full documentation lives at [bhatti.sh](https://bhatti.sh).** This README is a snapshot; the website is the source of truth and gets updated with each release. Start at the [Quickstart](https://bhatti.sh/docs/quickstart/), or jump to [Decisions & learnings](https://bhatti.sh/docs/under-the-hood/decisions/) for the long-form war stories (vsock-after-restore, the rory incident, the 1-second SYN retransmit, …).
+> **Full documentation: [bhatti.sh](https://bhatti.sh).** This README is a snapshot. The website is the source of truth and is updated with each release. The pages most worth reading are the [Quickstart](https://bhatti.sh/docs/quickstart/), the [Architecture](https://bhatti.sh/docs/under-the-hood/architecture/) overview, and [Decisions & learnings](https://bhatti.sh/docs/under-the-hood/decisions/).
 
 ## Updating
 
@@ -71,9 +71,9 @@ Use `--image` to create sandboxes from non-default tiers:
 bhatti create --name scraper --image browser
 bhatti exec scraper -- npx playwright test
 
-# Run a desktop environment (VNC on port 6901)
+# Run a desktop environment (KasmVNC web client on port 6080)
 bhatti create --name desktop --image computer
-bhatti publish desktop -p 6901
+bhatti publish desktop -p 6080
 
 # Run Docker-in-VM
 bhatti create --name ci --image docker
@@ -223,8 +223,8 @@ sudo bhatti user create --name alice --max-sandboxes 5
 
 Full docs live at **[bhatti.sh](https://bhatti.sh)** — that's the canonical reference. The list below is a hand-picked entry point.
 
-| | |
-|---|---|
+| Page | What it covers |
+|------|----------------|
 | **[Quickstart](https://bhatti.sh/docs/quickstart/)** | Install + create your first sandbox |
 | **[Self-Hosting](https://bhatti.sh/docs/self-hosting/)** | Run bhatti on your own hardware, requirements, backups |
 | **[Concepts](https://bhatti.sh/docs/concepts/)** | Sandboxes, thermal states, the two binaries |
