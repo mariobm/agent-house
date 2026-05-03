@@ -114,11 +114,28 @@ cleanup() {
     echo
     if (( ${#CREATED_SANDBOXES[@]} > 0 )); then
         echo "Cleaning up ${#CREATED_SANDBOXES[@]} sandbox(es)..."
-        local s
+        # Destroy sequentially with retry-on-rate-limit. The destroy endpoint
+        # shares the create rate-limit bucket (30/min, burst 10), so 30+
+        # parallel destroys exhaust the burst and the rest silently fail.
+        # Sequential + retry is slower (~70s for 34 sandboxes) but reliable.
+        local s attempt failed=0
         for s in "${CREATED_SANDBOXES[@]}"; do
-            bhatti destroy "$s" -y >/dev/null 2>&1 &
+            for attempt in 1 2 3 4 5; do
+                if bhatti destroy "$s" -y >/dev/null 2>&1; then
+                    break
+                fi
+                # Backoff: rate-limit bucket refills 30/min = 2s/token.
+                # Allow a touch more so we don't keep racing the bucket.
+                sleep 2.5
+                if (( attempt == 5 )); then
+                    ((failed++))
+                fi
+            done
         done
-        wait
+        if (( failed > 0 )); then
+            echo "${RED}cleanup: $failed sandbox(es) could not be destroyed after retries${NC}" >&2
+            echo "${RED}  manual cleanup: bhatti list | awk '/^$RUN_ID/ {print \$1}' | xargs -I{} bhatti destroy {} -y${NC}" >&2
+        fi
     fi
     if (( exit_code != 0 )); then
         echo "${RED}bench exited with status $exit_code${NC}" >&2
