@@ -246,6 +246,61 @@ func TestCLIInspectRichOutput(t *testing.T) {
 	if mem, _ := sb["memory_mb"].(float64); mem != 2048 {
 		t.Errorf("memory_mb: %v, want 2048", sb["memory_mb"])
 	}
+	// Created with no --image, so the user-visible image name should be the
+	// "minimal" default — never empty, never a stale value from another path.
+	if img, _ := sb["image"].(string); img != "minimal" {
+		t.Errorf("image: %q, want \"minimal\"", img)
+	}
+}
+
+// TestCLIInspectImageNonDefault locks in the fix for the direct-creation
+// path dropping req.Image on the floor. Before the fix, `bhatti inspect`
+// always reported "minimal" regardless of --image, because the server
+// built engine.SandboxSpec without copying req.Image into spec.Image and
+// the storage layer fell back to "minimal".
+func TestCLIInspectImageNonDefault(t *testing.T) {
+	c := setupCLITest(t)
+
+	// Use a non-default tier image that install.sh registers as a system
+	// image. "browser" is the canonical second tier; if the test rig only
+	// has "minimal", skip rather than false-fail.
+	const wantImage = "browser"
+	if _, _, code := c.run("image", "list"); code != 0 {
+		t.Skip("image list unavailable on this rig")
+	}
+	listOut, _, _ := c.run("image", "list")
+	if !strings.Contains(listOut, wantImage) {
+		t.Skipf("image %q not registered on this rig", wantImage)
+	}
+
+	name := fmt.Sprintf("cli-img-%d", time.Now().UnixNano()%100000)
+	_, stderr, code := c.run("create", "--name", name, "--image", wantImage)
+	if code != 0 {
+		t.Fatalf("create --image %s exit %d: %s", wantImage, code, stderr)
+	}
+	t.Cleanup(func() { c.run("destroy", name, "-y") })
+
+	// Text output must show the real image, not "minimal".
+	stdout, _, code := c.run("inspect", name)
+	if code != 0 {
+		t.Fatalf("inspect exit %d", code)
+	}
+	if !strings.Contains(stdout, "Image:") || !strings.Contains(stdout, wantImage) {
+		t.Errorf("inspect should show Image: %s, got:\n%s", wantImage, stdout)
+	}
+	if strings.Contains(stdout, "Image:      minimal") {
+		t.Errorf("inspect reported minimal but sandbox was created with --image %s:\n%s", wantImage, stdout)
+	}
+
+	// JSON must agree.
+	jsonOut, _, _ := c.run("--json", "inspect", name)
+	var sb map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonOut), &sb); err != nil {
+		t.Fatalf("json parse: %v\nraw: %s", err, jsonOut)
+	}
+	if got, _ := sb["image"].(string); got != wantImage {
+		t.Errorf("json image: %q, want %q", got, wantImage)
+	}
 }
 
 func TestCLIPorts(t *testing.T) {

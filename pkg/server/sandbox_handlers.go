@@ -296,6 +296,7 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 
 			spec = engine.SandboxSpec{
 				Name:              req.Name,
+				Image:             req.Image, // user-visible image name; mirror of template branch so inspect/audit show the real image, not the "minimal" fallback
 				CPUs:              req.CPUs,
 				MemoryMB:          req.MemoryMB,
 				DiskSizeMB:        req.DiskSizeMB,
