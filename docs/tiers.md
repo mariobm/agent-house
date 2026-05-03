@@ -21,17 +21,18 @@ it appears in `bhatti image list` on next restart.
 ## Installing additional tiers on an existing server
 
 By default, the install script only downloads the single tier configured in
-`/etc/bhatti/config.yaml`. Use `BHATTI_TIERS` to pull additional tiers:
+`/etc/bhatti/config.yaml`. Pass `--tiers` to pull additional tiers:
 
 ```bash
 # Install all available tiers
-curl -fsSL bhatti.sh/install | sudo BHATTI_TIERS=all bash
+curl -fsSL bhatti.sh/install | sudo bash -s -- --tiers all
 
-# Install specific tiers
-curl -fsSL bhatti.sh/install | sudo BHATTI_TIERS=computer,browser bash
+# Install specific tiers (comma-separated)
+curl -fsSL bhatti.sh/install | sudo bash -s -- --tiers computer,browser
 ```
 
-The server discovers the new rootfs files on restart and registers them
+The `bash -s -- ...` syntax passes flags through the curl pipe. The
+server discovers the new rootfs files on restart and registers them
 automatically. No config changes needed — the config only controls which
 tier is the default for `bhatti create` when no `--image` is specified.
 

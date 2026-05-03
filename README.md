@@ -13,16 +13,21 @@ bhatti destroy dev
 
 ## Install
 
-```bash
-curl -fsSL bhatti.sh/install | bash
-```
-
-On macOS, installs the CLI (~11MB binary). On Linux, asks whether you want the CLI or a full self-hosted server.
-
-Self-hosting? Same command with `sudo` — it downloads pre-built binaries, a kernel, and an Ubuntu 24.04 rootfs:
+On any Linux box with KVM — a Raspberry Pi 5, a Hetzner AX, a cloud VM with nested virtualization:
 
 ```bash
 curl -fsSL bhatti.sh/install | sudo bash
+```
+
+That downloads the daemon + agent + Firecracker + jailer + kernel + a minimal Ubuntu 24.04 rootfs (~200MB total), creates an `admin` user, and wires the CLI on the same box to use it. After it finishes you can run `bhatti create --name dev` immediately — no `bhatti setup` needed.
+
+For a CLI-only install on a different machine (driving a remote bhatti server):
+
+```bash
+curl -fsSL bhatti.sh/install | bash
+bhatti setup --url https://your-server:8080 --token bht_...
+# or:
+bhatti setup    # interactive
 ```
 
 <details>
@@ -33,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/sahil-shubham/bhatti/main/scripts/i
 ```
 </details>
 
-See [Quickstart](docs/quickstart.md) for full setup details.
+See [Quickstart](docs/quickstart.md) for the full first-run walkthrough.
 
 ## Updating
 
@@ -138,7 +143,7 @@ The server auto-discovers tiers from `/var/lib/bhatti/images/`. Install more wit
 
 | Command | Description |
 |---------|-------------|
-| `setup` | Interactive CLI configuration (endpoint + API key) |
+| `setup` | Configure CLI endpoint and API key (interactive, or `--url`/`--token` for agents/CI) |
 | `update` | Update bhatti to the latest version |
 | `version` | Print version and check for updates |
 | `completion` | Generate shell completions (bash/zsh/fish) |

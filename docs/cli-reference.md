@@ -6,21 +6,39 @@ All sandbox commands accept sandbox name or ID interchangeably.
 
 ## Installation
 
+Server (Linux + KVM, recommended):
+
+```bash
+curl -fsSL bhatti.sh/install | sudo bash
+```
+
+This also wires the CLI on the same box — admin user is auto-created and its API key is written to your `~/.bhatti/config.yaml`. No `bhatti setup` needed for local use.
+
+CLI only (driving a remote server from your laptop):
+
 ```bash
 curl -fsSL bhatti.sh/install | bash
 ```
 
-On macOS, installs the CLI. On Linux, prompts for CLI or self-hosted server. Re-running updates an existing installation. The CLI is also included in the server install.
+Re-running updates an existing installation.
 
 ## Configuration
 
-### Interactive setup
+### Setup
+
+Interactive (prompts for endpoint and key):
 
 ```bash
 bhatti setup
 ```
 
-Prompts for API endpoint and API key, saves to `~/.bhatti/config.yaml`, tests the connection.
+Non-interactive (agents, CI, provisioning scripts):
+
+```bash
+bhatti setup --url https://api.bhatti.sh --token bht_your_key_here
+```
+
+Writes to `~/.bhatti/config.yaml` and tests the connection by listing sandboxes. Exits non-zero on auth failure so scripts can detect it. Key input is masked when typed at the prompt.
 
 ### Config file
 

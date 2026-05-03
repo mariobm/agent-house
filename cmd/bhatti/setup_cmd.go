@@ -13,29 +13,65 @@ import (
 
 // --- setup ---
 
+var (
+	setupURL   string
+	setupToken string
+)
+
 var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Configure CLI endpoint and API key",
-	Long: `Interactive setup for remote CLI users. Prompts for the API endpoint
-and API key, saves to ~/.bhatti/config.yaml, and tests the connection.`,
-	Example: `  bhatti setup`,
+	Long: `Configure the CLI's API endpoint and key. Writes the result to
+~/.bhatti/config.yaml and tests the connection by listing sandboxes.
+
+With no flags, runs interactively (prompts for endpoint and key).
+With --url and --token, runs non-interactively — useful for agents,
+CI scripts, and provisioning tools that can't answer prompts.`,
+	Example: `  # Interactive
+  bhatti setup
+
+  # Non-interactive (agents, CI)
+  bhatti setup --url https://api.bhatti.sh --token bht_abc123`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("API endpoint [%s]: ", apiURL)
-		var endpoint string
-		fmt.Scanln(&endpoint)
-		if endpoint == "" {
-			endpoint = apiURL
+		var endpoint, key string
+
+		// Non-interactive path: both flags must be set together. If only
+		// one is set, we still drop into prompts to fill in the other —
+		// keeps the flag affordance lenient without surprising scripts.
+		nonInteractive := setupURL != "" && setupToken != ""
+
+		if nonInteractive {
+			endpoint = setupURL
+			key = strings.TrimSpace(setupToken)
+		} else {
+			if setupURL != "" {
+				endpoint = setupURL
+			} else {
+				fmt.Printf("API endpoint [%s]: ", apiURL)
+				var in string
+				fmt.Scanln(&in)
+				if in == "" {
+					endpoint = apiURL
+				} else {
+					endpoint = in
+				}
+			}
+
+			if setupToken != "" {
+				key = strings.TrimSpace(setupToken)
+			} else {
+				fmt.Print("API key: ")
+				keyBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+				fmt.Println()
+				if err != nil {
+					return fmt.Errorf("read key: %w", err)
+				}
+				key = strings.TrimSpace(string(keyBytes))
+			}
 		}
 
-		fmt.Print("API key: ")
-		keyBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Println()
-		if err != nil {
-			return fmt.Errorf("read key: %w", err)
-		}
-		key := strings.TrimSpace(string(keyBytes))
 		if key == "" {
-			return fmt.Errorf("API key is required")
+			return fmt.Errorf("API key is required (pass --token or enter at the prompt)")
 		}
 
 		// Write config
@@ -67,11 +103,18 @@ and API key, saves to ~/.bhatti/config.yaml, and tests the connection.`,
 		var sandboxes []any
 		if err := apiJSON("GET", "/sandboxes", nil, &sandboxes); err != nil {
 			fmt.Printf("✗ %v\n", err)
+			if nonInteractive {
+				return fmt.Errorf("authentication failed: %w", err)
+			}
 			return nil
 		}
 		fmt.Printf("✓ authenticated (%d sandboxes)\n", len(sandboxes))
 
-		// Suggest shell completions
+		// Skip the completions hint when run non-interactively — it's
+		// noise to a script that just wanted to write the config.
+		if nonInteractive {
+			return nil
+		}
 		shell := os.Getenv("SHELL")
 		switch {
 		case strings.HasSuffix(shell, "/zsh"):
@@ -86,4 +129,9 @@ and API key, saves to ~/.bhatti/config.yaml, and tests the connection.`,
 		}
 		return nil
 	},
+}
+
+func init() {
+	setupCmd.Flags().StringVar(&setupURL, "url", "", "API endpoint URL (skips the prompt when set with --token)")
+	setupCmd.Flags().StringVar(&setupToken, "token", "", "API key (skips the prompt when set with --url)")
 }

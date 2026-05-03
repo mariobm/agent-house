@@ -1,153 +1,72 @@
 # Quickstart
 
-There are two ways to use Bhatti: **install the CLI** to use someone else's server, or **run the full server** on your own hardware. Both use the same install command.
+The whole site documentation lives at <https://bhatti.sh/docs> — this
+file is the short version, kept in the repo for offline readers and
+people browsing GitHub.
+
+There are two entry points:
+
+1. **Self-host on a Linux box you own** (the recommended path). Install
+   the daemon, get a sandbox in about five minutes, including download.
+2. **Drive a remote bhatti from your laptop** (useful when someone
+   else runs the server, or when you've installed bhatti on a server
+   and want to use it from your laptop).
 
 ---
 
-## Option A: Use the CLI (remote user)
+## Self-hosting
 
-If someone gave you an API key, you just need the CLI binary. No KVM, no root, no Go — works on macOS and Linux.
+You need:
 
-### Install
-
-```bash
-curl -fsSL bhatti.sh/install | bash
-```
-
-This downloads a ~11MB binary for your OS and architecture and puts it in `/usr/local/bin`. On Linux, the script asks whether you want just the CLI or a full server — pick CLI.
-
-### Configure
-
-```bash
-bhatti setup
-```
-
-```
-API endpoint [http://localhost:8080]: https://api.bhatti.sh
-API key: ****
-Saved to ~/.bhatti/config.yaml
-Testing connection... ✓ connected (sandboxes: 0, uptime: 4h23m)
-```
-
-Or set environment variables directly:
-
-```bash
-export BHATTI_URL=https://api.bhatti.sh
-export BHATTI_TOKEN=bht_your_api_key_here
-```
-
-### Use
-
-```bash
-bhatti create --name dev
-bhatti exec dev -- uname -a               # Linux VM, full isolation
-bhatti exec dev -- node --version          # Node 22 pre-installed
-bhatti shell dev                           # interactive shell (Ctrl+\ to detach)
-echo 'console.log("hi")' | bhatti file write dev /workspace/app.js
-bhatti file read dev /workspace/app.js
-bhatti destroy dev
-```
-
-That's it. Each sandbox is a real Firecracker microVM with its own kernel, filesystem, and network. Idle sandboxes pause automatically and resume transparently on the next command.
-
----
-
-## Option B: Run the Server (self-hosted)
-
-Run Bhatti on your own Linux box with KVM — Raspberry Pi 5, AWS Graviton, Hetzner bare metal, or any x86_64/arm64 machine with `/dev/kvm`.
-
-### Install
+- Linux with KVM (`/dev/kvm` exists)
+- Root access (the install script uses `sudo`)
+- ~1 GB of disk for the minimal tier
 
 ```bash
 curl -fsSL bhatti.sh/install | sudo bash
 ```
 
-The script detects Linux, prompts for self-host, and asks which rootfs tier you want (minimal, browser, or docker). It then:
-- Downloads Firecracker, the bhatti daemon, and the lohar guest agent
-- Downloads a Linux kernel and pre-built Ubuntu 24.04 rootfs
-- Creates an admin user and saves the API key to `~/.bhatti/config.yaml`
+The script downloads `bhatti`, `lohar`, Firecracker, the jailer, the
+kernel, and an Ubuntu 24.04 rootfs. It then:
 
-```
-==> Installing bhatti v0.5.0 (server, minimal tier) on myhost (aarch64)
-==> Installing Firecracker 1.14.0
-  ✓ Firecracker 1.14.0
-==> Installing bhatti v0.5.0
-  ✓ bhatti v0.5.0
-==> Installing lohar
-==> Installing kernel
-==> Installing minimal rootfs
-==> Creating admin user
+- Installs a systemd unit (`bhatti.service`) and starts the daemon.
+- Creates an `admin` user.
+- Writes the admin API key to `/root/.bhatti/config.yaml` **and** to
+  the invoking user's `~/.bhatti/config.yaml`. So if you ran the
+  install with `sudo` from your normal user, your CLI is already
+  wired up.
 
-============================================
-  bhatti v0.5.0 installed
-  tier: minimal
-
-  Admin API key: bht_abc123...
-  (saved to ~/.bhatti/config.yaml)
-
-  Start the daemon:
-    cd /var/lib/bhatti && sudo bhatti serve
-
-  Run as a systemd service:
-    sudo cp /var/lib/bhatti/bhatti.service /etc/systemd/system/
-    sudo systemctl enable --now bhatti
-
-  ⚠  BACK UP: /var/lib/bhatti/age.key
-     If lost, all encrypted secrets become unrecoverable.
-============================================
-```
-
-### Updating
+That last point matters: **you don't need to run `bhatti setup` after
+installing.** Go straight to creating a sandbox:
 
 ```bash
-bhatti update                   # CLI: updates the binary
-sudo bhatti update              # Server: updates all components
-sudo bhatti update --tiers all  # Server: also pull additional tiers
+bhatti create --name dev
+bhatti exec dev -- uname -a
+bhatti shell dev                    # Ctrl+\ to detach, scrollback preserved
+echo 'console.log("hi")' | bhatti file write dev /workspace/app.js
+bhatti file read dev /workspace/app.js
+bhatti destroy dev
 ```
 
-Or re-run the install command directly:
+Each sandbox is a real Firecracker microVM. Idle sandboxes pause
+themselves automatically and resume on the next request. See
+[`docs/thermal-management.md`](thermal-management.md).
 
-```bash
-curl -fsSL bhatti.sh/install | bash         # CLI
-curl -fsSL bhatti.sh/install | sudo bash    # server
-```
-
-### Start the daemon
-
-```bash
-cd /var/lib/bhatti && sudo bhatti serve
-```
-
-### Create users
-
-Each user gets their own API key, sandbox limit, resource caps, and isolated network:
+### Adding a teammate
 
 ```bash
 sudo bhatti user create --name alice --max-sandboxes 5
-# → API key: bht_...  (shown once, save it now)
-
-sudo bhatti user create --name bob --max-sandboxes 10 --max-cpus 4 --max-memory 4096
-
-sudo bhatti user list
-# ID           NAME                 SANDBOXES  CPUS   MEM    SUBNET
-# usr_admin    admin                0/50       4      4096   1
-# usr_a1b2     alice                0/5        4      4096   2
-# usr_c3d4     bob                  0/10       4      4096   3
+# → API key: bht_...  (shown once)
 ```
 
-Users are isolated at every layer:
-- **API**: each user sees only their own sandboxes and secrets
-- **Network**: each user gets a dedicated bridge and `/24` subnet — VMs from different users cannot communicate
-- **Resources**: per-user sandbox count limits and CPU/memory caps
-- **Rate limits**: per-user token buckets (10 creates/min, 120 execs/min)
+Send Alice the key over a secure channel. On her machine she follows
+the remote-CLI flow below.
 
-Give alice her API key. She installs the CLI ([Option A](#option-a-use-the-cli-remote-user)), runs `bhatti setup`, and she's in.
-
-### Key rotation
+### Key rotation, deletion
 
 ```bash
-sudo bhatti user rotate-key alice
-# → New key: bht_...  (old key immediately invalidated)
+sudo bhatti user rotate-key alice    # invalidates old key, prints new one
+sudo bhatti user delete alice         # fails if alice has running sandboxes
 ```
 
 ### Secrets
@@ -158,25 +77,76 @@ bhatti secret list
 bhatti secret delete API_KEY
 ```
 
-Secrets are encrypted at rest with [age](https://age-encryption.org/) and scoped per user.
+Secrets are encrypted at rest with [age](https://age-encryption.org/)
+under `/var/lib/bhatti/age.key`. **Back that key up.** If you lose it,
+every encrypted secret on the server is unrecoverable.
 
 ---
 
-## What Just Happened
+## Driving a remote bhatti from your laptop
+
+This is the path for someone using a bhatti server they don't run, or
+for using bhatti from your laptop after installing it on a separate
+host.
+
+```bash
+# 1. Install the CLI binary (no sudo)
+curl -fsSL bhatti.sh/install | bash
+
+# 2. Configure
+bhatti setup --url https://your-server:8080 --token bht_...
+# or interactively:
+bhatti setup
+```
+
+`bhatti setup` accepts `--url` and `--token` for non-interactive use
+(agents, CI, provisioning scripts). Without flags it prompts and masks
+the key on input. The auth check always runs and the command exits
+non-zero on failure, so a bad key surfaces immediately.
+
+Or set environment variables, which take precedence over the saved
+config at runtime:
+
+```bash
+export BHATTI_URL=https://your-server:8080
+export BHATTI_TOKEN=bht_your_api_key_here
+```
+
+Once configured, every other command is the same as the self-hosted
+case (`bhatti create`, `bhatti exec`, etc.). You see only the
+sandboxes that belong to your user — bhatti is multi-tenant by
+default.
+
+---
+
+## What just happened
 
 When you ran `bhatti create --name dev`:
 
-1. The server authenticated your API key (SHA-256 hash lookup), checked your sandbox limit, and validated the name
-2. It copied the base rootfs (CoW clone if filesystem supports it), created a config drive with hostname/DNS/auth token, allocated a TAP device on your user's bridge network, started a Firecracker process, configured it over the Unix socket API, booted the kernel, and waited for lohar (the guest agent) to respond
-3. The sandbox is now running with its own kernel, its own filesystem, and its own network — isolated from other users' sandboxes by separate L2 bridge segments and iptables rules
+1. The daemon authenticated your API key (SHA-256 hash lookup),
+   checked your sandbox cap, and validated the name.
+2. It copied the base rootfs (CoW reflink on btrfs/XFS), built a 1 MB
+   ext4 config drive with hostname / DNS / auth token, allocated a
+   TAP device on your user's bridge, started a Firecracker process,
+   configured it via Firecracker's Unix-socket HTTP API, booted the
+   kernel, and waited for `lohar` (the guest agent) to respond on
+   TCP :1024.
+3. The sandbox is now running — its own kernel, its own filesystem,
+   its own L2 segment, isolated from other users by per-user bridges
+   and iptables rules.
 
-When you left the sandbox idle for 30 seconds, it automatically transitioned to *warm* (vCPUs paused, ~400µs resume). After 30 minutes idle, it would be snapshotted to disk (*cold*, ~50ms resume). The next `exec` transparently restores it. See [Thermal Management](thermal-management.md).
+When you leave the sandbox idle for 30 seconds, the thermal manager
+pauses its vCPUs and inflates a virtio-balloon to take ~50% of its
+RAM back. After 30 minutes idle, it snapshots to disk and frees the
+host RAM entirely. The next request transparently restores it. See
+[`docs/thermal-management.md`](thermal-management.md).
 
 ---
 
-## Next Steps
+## Next
 
 - [Architecture](architecture.md) — how the system fits together
 - [API Reference](api-reference.md) — REST and WebSocket endpoints
-- [CLI Reference](cli-reference.md) — all commands
-- [Design Decisions](decisions.md) — why things are the way they are
+- [CLI Reference](cli-reference.md) — every command and flag
+- [Site docs](https://bhatti.sh/docs) — long-form, with the most
+  recent voice and structure
