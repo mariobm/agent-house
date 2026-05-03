@@ -161,7 +161,7 @@ Sleeping sandboxes wake automatically.`,
 }
 
 func init() {
-	execCmd.Flags().Int("timeout", 0, "Exec timeout in seconds (default: 300, max: 3600)")
+	execCmd.Flags().Int("timeout", 0, "Exec timeout in seconds (default: 300, max: 86400)")
 	execCmd.Flags().Bool("detach", false, "Run in background, return PID immediately")
 }
 

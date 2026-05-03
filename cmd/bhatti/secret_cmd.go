@@ -68,6 +68,10 @@ var secretDeleteCmd = &cobra.Command{
 		setupTiming(cmd)
 		defer printTiming()
 
+		if !confirmAction(cmd, fmt.Sprintf("Delete secret %q?", args[0])) {
+			return nil
+		}
+
 		if err := apiJSON("DELETE", "/secrets/"+args[0], nil, nil); err != nil {
 			return err
 		}
@@ -79,5 +83,6 @@ var secretDeleteCmd = &cobra.Command{
 func init() {
 	secretCmd.AddCommand(secretSetCmd)
 	secretCmd.AddCommand(secretListCmd)
+	secretDeleteCmd.Flags().BoolP("yes", "y", false, "Skip confirmation")
 	secretCmd.AddCommand(secretDeleteCmd)
 }
