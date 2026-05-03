@@ -324,8 +324,13 @@ run_lifecycle() {
     echo "${YELLOW}Stop / snapshot (ms):${NC}"
     percentiles "$file"
 
-    # 1c. Cold resume (start)
-    subhead "1c. Start from cold (snapshot resume)"
+    # 1c. Cold resume (start) — ORCHESTRATION COST ONLY.
+    # FC restores snapshots with `backend_type: "File"` (lazy mmap-faulting),
+    # so `bhatti start` returns when the mmap is set up but BEFORE memory
+    # pages are actually faulted in. The user-facing cold-start cost is in
+    # cold_resume_exec.txt or publish_wake_cold.txt — don't use this number
+    # for any "how fast does a sandbox wake up" claim. See bench/README.md.
+    subhead "1c. Start from cold (snapshot resume — orchestration only)"
     file="$RESULTS_DIR/cold_resume.txt"
     : > "$file"
     for ((i = 1; i <= LIFECYCLE_N; i++)); do
