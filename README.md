@@ -5,7 +5,7 @@
 
 Open-source Firecracker microVM orchestrator. Each sandbox is a real Linux VM with its own kernel, filesystem, and process isolation — created in seconds, paused for free, resumed in microseconds.
 
-Built for running AI coding agents in isolated environments. A paused sandbox resumes and executes a command in **under 3ms**.
+Built for running AI coding agents in isolated environments. A paused sandbox wakes and serves an HTTP request in **under 4ms**.
 
 ```
 bhatti create --name dev --cpus 2 --memory 1024
@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/sahil-shubham/bhatti/main/scripts/i
 ```
 </details>
 
-See [Quickstart](docs/quickstart.md) for the full first-run walkthrough.
+> 📖 **Full documentation lives at [bhatti.sh](https://bhatti.sh).** This README is a snapshot; the website is the source of truth and gets updated with each release. Start at the [Quickstart](https://bhatti.sh/docs/quickstart/), or jump to [Decisions & learnings](https://bhatti.sh/docs/under-the-hood/decisions/) for the long-form war stories (vsock-after-restore, the rory incident, the 1-second SYN retransmit, …).
 
 ## Updating
 
@@ -80,7 +80,7 @@ bhatti create --name ci --image docker
 bhatti exec ci -- docker run hello-world
 ```
 
-The server auto-discovers tiers from `/var/lib/bhatti/images/`. Install more with `sudo bhatti update --tiers all`. See [Tiers](docs/tiers.md) for details on adding custom tiers.
+The server auto-discovers tiers from `/var/lib/bhatti/images/`. Install more with `sudo bhatti update --tiers all`. See [Adding a tier](https://bhatti.sh/docs/contributing/adding-a-tier/) for details on building your own.
 
 ## CLI Commands
 
@@ -151,27 +151,30 @@ The server auto-discovers tiers from `/var/lib/bhatti/images/`. Install more wit
 | `version` | Print version and check for updates |
 | `completion` | Generate shell completions (bash/zsh/fish) |
 
-All commands support `--json` for machine-readable output. See [CLI Reference](docs/cli-reference.md) for full flag details.
+All commands support `--json` for machine-readable output. See the [CLI Reference](https://bhatti.sh/docs/reference/cli/) for full flag details.
 
 ## Performance
 
-On a Raspberry Pi 5 (ARM64, NVMe):
+Measured on a Hetzner AX102 (Ryzen 9, x86_64, NVMe, btrfs) running
+bhatti v1.11.0. CLI on the daemon host so loopback latency only —
+add your network RTT for remote use. Reproduce with `bench/run.sh`
+in this repo; methodology and gotchas in `bench/README.md`.
 
 ```
-                                p50       p95       p99
-Exec command:                   1.26ms    1.88ms    2.93ms
-1KB file read:                  433µs     733µs     1.08ms
-1KB file write:                 754µs     1.17ms    1.82ms
-Warm resume + exec:             2.70ms    7.36ms    7.36ms
-Cold resume + exec:             40.8ms    42.3ms    42.3ms
-10 concurrent execs:            12.8ms    22.3ms    22.3ms
-
-VM boot (create + first exec):  8.0s      8.4s      8.4s
-Full snapshot (512MB):           3.3s      3.6s      3.6s
-Diff snapshot:                  20.7ms    35.9ms    35.9ms
-Pause (hot→warm):               450µs     611µs     611µs
-Resume (warm→hot):               462µs     565µs     565µs
+                                p50       p99
+Create a machine                266ms     291ms
+Snapshot to disk (1024MB)       485ms     807ms
+Wake on request (cold)          360ms     430ms
+Wake on request (warm)          3.7ms     10.2ms
+Destroy a machine               87ms      96ms
+Run a command                   12ms      14ms
+20 commands in parallel         32ms      39ms
 ```
+
+Cold-wake reads the memory snapshot from disk on first use — page-in
+cost is included, not just the orchestration call returning. Warm-wake
+is the killer feature: vCPUs paused but memory still in RAM means a
+transparent wake feels free.
 
 ## Architecture
 
@@ -180,7 +183,7 @@ bhatti (host daemon)                        lohar (guest agent, PID 1 in each VM
   ├─ REST/WS API (:8080)                     ├─ TCP :1024 (exec, files, sessions)
   ├─ Per-user auth (API keys, SHA-256)        ├─ TCP :1025 (port forwarding)
   ├─ Firecracker engine                       ├─ PTY sessions + 64KB scrollback
-  │  (create, exec, snapshot, diff snap)      ├─ Atomic file writes
+  │  (create, exec, snapshot, restore)        ├─ Atomic file writes
   ├─ Thermal manager                          ├─ Process group kill
   │  (hot → warm → cold, auto)               ├─ Exec as uid 1000 (not root)
   ├─ Per-user bridge networks (isolated)      └─ Config drive (env, secrets)
@@ -189,7 +192,7 @@ bhatti (host daemon)                        lohar (guest agent, PID 1 in each VM
   └─ Reverse proxy (HTTP + WebSocket)
 ```
 
-Idle sandbox → **warm** after 30s (vCPUs paused, ~400µs resume) → **cold** after 30min (snapshotted to disk, memory freed, ~50ms resume). Any API request transparently wakes it.
+Idle sandbox → **warm** after 30s (vCPUs paused, ~4ms wake) → **cold** after 30min (snapshotted to disk, memory freed, ~360ms wake including page-in on first request). Any API request transparently wakes it.
 
 ## Multi-Tenant Isolation
 
@@ -203,13 +206,12 @@ sudo bhatti user create --name alice --max-sandboxes 5
 - **API scoping** — users see only their own sandboxes and secrets
 - **Network isolation** — per-user bridge + /24 subnet, cross-user traffic blocked at L2
 - **Resource caps** — per-user limits on sandbox count, CPUs, and memory
-- **Rate limiting** — per-user token buckets (10 creates/min, 120 execs/min)
+- **Rate limiting** — per-user token buckets (30 creates/min, 600 execs/min, 1200 reads/min)
 - **Secrets** — encrypted at rest (age), scoped per user
 
 ## Key Features
 
 - **Preview URLs** — `bhatti publish dev -p 3000` → `https://dev-k3m9x2.bhatti.sh`, auto-wake from sleep
-- **Diff snapshots** — only dirty pages after the first snapshot (~52ms vs ~4.4s)
 - **Session-aware exec** — TTY sessions survive disconnects, scrollback replayed on reattach
 - **OCI image support** — `bhatti image pull python:3.12` → use as base for sandboxes
 - **Persistent volumes** — survive sandbox destruction, mountable across sandboxes
@@ -219,19 +221,23 @@ sudo bhatti user create --name alice --max-sandboxes 5
 
 ## Documentation
 
+Full docs live at **[bhatti.sh](https://bhatti.sh)** — that's the canonical reference. The list below is a hand-picked entry point.
+
 | | |
 |---|---|
-| **[Quickstart](docs/quickstart.md)** | CLI install + server install, user management |
-| **[Architecture](docs/architecture.md)** | System design, data flow, concurrency model |
-| **[Tiers](docs/tiers.md)** | Rootfs tiers, adding custom tiers |
-| **[Wire Protocol](docs/wire-protocol.md)** | Binary framing, connection lifecycle, auth |
-| **[Guest Agent](docs/guest-agent.md)** | PID 1 init, PTY, sessions, process management |
-| **[Thermal Management](docs/thermal-management.md)** | Hot/warm/cold, diff snapshots, activity caching |
-| **[Networking](docs/networking.md)** | Per-user bridges, iptables isolation, kernel ip= |
-| **[API Reference](docs/api-reference.md)** | REST/WebSocket endpoints |
-| **[CLI Reference](docs/cli-reference.md)** | All commands and flags |
-| **[Testing](docs/testing.md)** | 11K lines of tests, zero mocks for VM tests |
-| **[Design Decisions](docs/decisions.md)** | Why TCP over vsock, why no FC SDK, why PID 1, ... |
+| **[Quickstart](https://bhatti.sh/docs/quickstart/)** | Install + create your first sandbox |
+| **[Self-Hosting](https://bhatti.sh/docs/self-hosting/)** | Run bhatti on your own hardware, requirements, backups |
+| **[Concepts](https://bhatti.sh/docs/concepts/)** | Sandboxes, thermal states, the two binaries |
+| **[Architecture](https://bhatti.sh/docs/under-the-hood/architecture/)** | System design, data flow, concurrency model |
+| **[Firecracker engine](https://bhatti.sh/docs/under-the-hood/engine/)** | HTTP API, jailer, rate limits, why no FC SDK |
+| **[Lohar (the guest agent)](https://bhatti.sh/docs/under-the-hood/lohar-the-blacksmith/)** | PID 1 init, the systemctl shim, PTY, sessions, file ops |
+| **[Thermal states](https://bhatti.sh/docs/under-the-hood/thermal-states/)** | Hot/warm/cold, snapshots, the balloon trick |
+| **[Networking](https://bhatti.sh/docs/under-the-hood/networking/)** | Per-user bridges, iptables, the ARP trick |
+| **[Wire protocol](https://bhatti.sh/docs/under-the-hood/wire-protocol/)** | Binary framing, connection lifecycle, auth |
+| **[Decisions & learnings](https://bhatti.sh/docs/under-the-hood/decisions/)** | Why TCP over vsock, why no diff snapshots, the bugs we paid for |
+| **[CLI Reference](https://bhatti.sh/docs/reference/cli/)** | All commands and flags |
+| **[API Reference](https://bhatti.sh/docs/reference/api/)** | REST/WebSocket endpoints |
+| **[Testing](https://bhatti.sh/docs/contributing/testing/)** | 11K lines of tests, zero mocks for VM tests |
 
 ## Requirements
 
