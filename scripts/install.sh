@@ -269,6 +269,33 @@ is_up_to_date() {
     [ "$actual" = "$expected" ]
 }
 
+# Returns 0 if every listed tier's rootfs is on disk AND its stored sidecar
+# checksum matches the current release. Returns 1 if any tier is missing
+# or stale (or if CHECKSUMS is empty — assume stale rather than wrongly skip).
+#
+# Why this exists separately from is_up_to_date():
+# Rootfs is the one component where the local file (.ext4) is NOT what the
+# release ships (.ext4.zst). install_rootfs() stores the *compressed*
+# checksum in a .sha256 sidecar after a successful install, and uses that
+# sidecar for its own skip-if-fresh check. The do_server_update() outer
+# gate must use the same predicate, otherwise it can short-circuit before
+# install_rootfs() ever gets a chance to look — which is exactly the bug
+# that hid stale tier images behind `bhatti update --tiers <X>`.
+all_rootfs_up_to_date() {
+    local tier rootfs cks_file expected stored
+    for tier in "$@"; do
+        rootfs="$DATA_DIR/images/rootfs-${tier}-${ARCH}.ext4"
+        cks_file="$DATA_DIR/images/.rootfs-${tier}-${ARCH}.sha256"
+        [ -f "$rootfs" ] || return 1
+        expected=$(remote_sha256 "rootfs-${tier}-${ARCH}.ext4.zst")
+        [ -n "$expected" ] || return 1
+        [ -f "$cks_file" ] || return 1
+        stored=$(cat "$cks_file" 2>/dev/null || true)
+        [ "$stored" = "$expected" ] || return 1
+    done
+    return 0
+}
+
 # Verify a downloaded file matches the expected checksum. Dies on mismatch.
 verify_checksum() {
     local file="$1" expected_name="$2"
@@ -929,17 +956,26 @@ do_server_update() {
         esac
     fi
 
-    # Check if everything is already up to date
+    # Check if everything is already up to date.
+    # Non-rootfs components only get a -f existence check here; each
+    # install_*() function does its own checksum-based skip when called.
+    # Rootfs files MUST go through a checksum check (all_rootfs_up_to_date)
+    # because a stale .ext4 from a previous version can satisfy -f and
+    # short-circuit `bhatti update --tiers <X>` for that tier — the gate
+    # would skip install_rootfs() before its own skip-check ran.
     local all_present=true
     [ -f "/usr/local/bin/bhatti" ]                          || all_present=false
     [ -f "/usr/local/bin/firecracker" ]                     || all_present=false
     [ -f "$DATA_DIR/lohar" ]                                || all_present=false
     [ -f "$DATA_DIR/images/vmlinux-${ARCH}" ]               || all_present=false
-    for t in $tiers_to_install; do
-        [ -f "$DATA_DIR/images/rootfs-${t}-${ARCH}.ext4" ]  || all_present=false
-    done
 
-    if [ -n "$current" ] && [ "v${current#v}" = "${VERSION}" ] && [ "$all_present" = true ]; then
+    local rootfs_fresh=true
+    # shellcheck disable=SC2086
+    # intentional word-splitting: $tiers_to_install is space-separated tokens
+    all_rootfs_up_to_date $tiers_to_install || rootfs_fresh=false
+
+    if [ -n "$current" ] && [ "v${current#v}" = "${VERSION}" ] \
+       && [ "$all_present" = true ] && [ "$rootfs_fresh" = true ]; then
         success "bhatti ${VERSION} (server, ${tier} tier) is already up to date"
         return 0
     fi
