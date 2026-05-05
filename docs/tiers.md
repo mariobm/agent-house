@@ -10,6 +10,87 @@ for sandboxes. Each tier builds on `minimal` and adds specific tooling.
 | `docker` | + Docker Engine | ~550MB |
 | `computer` | + Full desktop (KasmVNC + XFCE + Chromium) | ~1.5GB |
 
+## Computer tier (KasmVNC desktop)
+
+A full graphical Linux desktop inside a Firecracker microVM: KasmVNC + XFCE +
+Chromium, served over a single port (6080) as an HTTP/WebSocket web client.
+
+### First-time use
+
+```bash
+bhatti create --name desktop --image computer --cpus 2 --memory 4096 --disk-size 8192
+bhatti publish desktop -p 6080
+bhatti exec desktop -- vnc-creds          # ← prints username + password
+# Open the URL printed by `publish` in your browser, log in.
+```
+
+**Why `--cpus 2` minimum.** KasmVNC's encoder thread count is sized to the
+guest's vCPUs (it leaves one for the desktop itself). On `--cpus 1` the encoder,
+the X server, XFCE, and Chromium all share one core — expect <10 fps. Two cores
+is the practical floor for a usable desktop; four is comfortable.
+
+### Credentials
+
+A random 16-character password is generated **on first boot of each sandbox**
+(not bake-time). It is hashed into `/root/.kasmpasswd` for KasmVNC and stored
+cleartext in `/root/.vnc/cleartext` (root-only) for the `vnc-creds` helper.
+
+- Each sandbox you create gets its own password.
+- The published rootfs image carries no shared secret.
+- Snapshot/resume preserves the existing password.
+- `bhatti image save` will bake the current password into the saved image —
+  treat saved-from-running images like any other secret-bearing artifact.
+
+Retrieve them anytime:
+
+```bash
+bhatti exec desktop -- vnc-creds          # human-readable
+bhatti exec desktop -- vnc-creds --json   # for scripts/agents
+```
+
+### Tunables
+
+Pass at create time with `--env`:
+
+| Variable | Default | What it controls |
+|---|---|---|
+| `DISPLAY_WIDTH`  | `1280`         | X server geometry width |
+| `DISPLAY_HEIGHT` | `720`          | X server geometry height |
+| `DISPLAY_DEPTH`  | `24`           | colour depth (16/24/32) |
+| `KASM_FRAMERATE` | `30`           | max frames/sec the encoder will emit; raise for video |
+| `KASM_THREADS`   | `nproc - 1`    | encoder thread count; default leaves 1 vCPU for the desktop |
+
+```bash
+bhatti create --name desktop --image computer --cpus 4 --memory 4096 \
+    --env DISPLAY_WIDTH=1920 --env DISPLAY_HEIGHT=1080 \
+    --env KASM_FRAMERATE=60
+```
+
+### Beyond the env knobs
+
+KasmVNC has dozens of options bhatti deliberately does not surface (dynamic
+quality bounds, video-mode thresholds, scaling algorithms, DLP/clipboard
+policy, etc.). For those, edit `/etc/kasmvnc/kasmvnc.yaml` inside the sandbox
+and reconnect. The upstream documentation is authoritative:
+
+- Options reference: <https://github.com/kasmtech/KasmVNC/wiki/Video-Rendering-Options>
+- Stats / control API: <https://github.com/kasmtech/KasmVNC/wiki/API>
+- Browser-side tuning: <https://github.com/kasmtech/KasmVNC/wiki/Browser-Support>
+
+### Agent helpers (run via `bhatti exec`)
+
+| Helper | Purpose |
+|---|---|
+| `vnc-creds [--json]` | Print the username and password for this sandbox |
+| `screenshot [--base64]` | Capture the current display as PNG |
+| `screen-size` | Print the current X resolution |
+| `active-window` / `list-windows` | Inspect window state |
+| `xdotool ...` | Drive mouse/keyboard input |
+| `chromium-browser <url>` | Launch Chromium with sane flags |
+
+`DISPLAY=:99` is pre-set for `bhatti exec` (via `/run/bhatti/env`), so these
+just work without any environment plumbing.
+
 ## How tiers are discovered
 
 The server **auto-discovers** tiers at startup by globbing for

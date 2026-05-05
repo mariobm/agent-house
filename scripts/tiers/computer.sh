@@ -6,10 +6,11 @@
 # Gives a complete graphical Linux desktop inside a Firecracker microVM.
 # Access via KasmVNC web client on port 6080.
 #
-# Usage after boot:
-#   bhatti create --name desktop --image computer --cpus 2 --memory 4096 --disk 8192
+# First-time usage:
+#   bhatti create --name desktop --image computer --cpus 2 --memory 4096 --disk-size 8192
 #   bhatti publish desktop -p 6080
-#   # Open the URL in your browser → full Ubuntu desktop
+#   bhatti exec desktop -- vnc-creds      # ← prints username + per-sandbox password
+#   # Open the published URL in your browser, log in with those creds.
 #
 # For AI agents (DISPLAY is pre-set for uid 1000 via /run/bhatti/env):
 #   bhatti exec desktop -- screenshot                       # → /tmp/screen.png
@@ -18,6 +19,17 @@
 #   bhatti exec desktop -- xdotool type "hello world"
 #   bhatti exec desktop -- xdotool key Return
 #   bhatti exec desktop -- chromium-browser https://example.com
+#
+# Tunables (set via `bhatti create --env KEY=value`):
+#   DISPLAY_WIDTH    default 1280
+#   DISPLAY_HEIGHT   default 720
+#   DISPLAY_DEPTH    default 24
+#   KASM_FRAMERATE   default 30  (max frames/sec the encoder will emit; raise for video)
+#   KASM_THREADS     default $((nproc-1))  (encoder thread count; auto leaves 1 vCPU for desktop)
+#
+# Beyond these, edit /etc/kasmvnc/kasmvnc.yaml inside the sandbox; KasmVNC reloads
+# its config on the next session. See https://github.com/kasmtech/KasmVNC/wiki for
+# the full option set.
 set -euo pipefail
 
 # Build minimal base first
@@ -201,14 +213,17 @@ DESKTOP
 
 
 # ==========================================================================
-# KasmVNC config — pre-configure so it starts without interactive prompts
-# ==========================================================================
-mkdir -p "$MOUNT/root/.vnc"
-
-# Create password file with write-enabled root user
-chroot "$MOUNT" /bin/bash -c '
-printf "password\npassword\n" | kasmvncpasswd -u root -rwo /root/.vnc/kasmpasswd 2>/dev/null || true
-'
+# KasmVNC: NO bake-time password.
+# ----------------------------------------------------------------------------
+# A random password is generated on first boot in /etc/bhatti/init.sh below,
+# hashed into /root/.kasmpasswd (the upstream-default location), and stored
+# cleartext in /root/.vnc/cleartext (root:root 0600) so the `vnc-creds`
+# helper can print it on demand.
+#
+# Why first-boot, not bake-time:
+#   - Every sandbox gets unique credentials.
+#   - The published rootfs image carries no shared secret.
+#   - Snapshot/resume preserves the password (file already exists, skip regen).
 
 # ==========================================================================
 # Boot profile: start KasmVNC + desktop stack
@@ -218,25 +233,52 @@ cat > "$MOUNT/etc/bhatti/init.sh" << 'PROFILE'
 #!/bin/sh
 # Computer tier boot profile — starts KasmVNC + desktop stack.
 # Single port: 6080 (HTTP + WebSocket).
+#
+# Auth: HTTP Basic over the WebSocket. A random password is generated on
+# first boot. `bhatti exec <name> -- vnc-creds` prints it.
 
-# Resolution from env (set via bhatti create --env), default 1280x720
+# Tunables (override via `bhatti create --env KEY=value`)
 WIDTH="${DISPLAY_WIDTH:-1280}"
 HEIGHT="${DISPLAY_HEIGHT:-720}"
 DEPTH="${DISPLAY_DEPTH:-24}"
+FRAMERATE="${KASM_FRAMERATE:-30}"
+NPROC=$(nproc 2>/dev/null || echo 1)
+THREADS="${KASM_THREADS:-$([ "$NPROC" -gt 1 ] && echo $((NPROC - 1)) || echo 1)}"
 
 export DISPLAY=:99
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
-# 1. KasmVNC X server (replaces Xvfb + x11vnc + noVNC + websockify)
+# --- First-boot credential generation -------------------------------------
+# Generate a random password the first time this VM boots, then persist it
+# (both the kasmpasswd hash KasmVNC reads and a cleartext copy that the
+# `vnc-creds` helper can show via sudo). On subsequent boots — including
+# resume from snapshot — the file already exists and we skip regen.
+if [ ! -f /root/.kasmpasswd ]; then
+    PW=$(tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom 2>/dev/null | head -c 16)
+    if [ -z "$PW" ]; then
+        # Fallback for kernels without /dev/urandom early; should never hit.
+        PW=$(date +%s%N | sha256sum | head -c 16)
+    fi
+    mkdir -p /root/.vnc
+    printf '%s\n%s\n' "$PW" "$PW" | kasmvncpasswd -u kasm_user -wo /root/.kasmpasswd >/dev/null 2>&1
+    chmod 600 /root/.kasmpasswd
+    printf 'username: kasm_user\npassword: %s\n' "$PW" > /root/.vnc/cleartext
+    chmod 600 /root/.vnc/cleartext
+fi
+
+# 1. KasmVNC X server (replaces Xvfb + x11vnc + noVNC + websockify).
+# Note: NO -disableBasicAuth — it would silently 401 every /api/* endpoint
+#       (see common/network/websocket.c in KasmVNC source: the `owner` flag
+#       is only set inside the basic-auth branch).
 /usr/bin/Xkasmvnc :99 \
     -geometry "${WIDTH}x${HEIGHT}" -depth "$DEPTH" \
     -websocketPort 6080 \
     -interface 0.0.0.0 \
     -BlacklistTimeout 0 \
     -FreeKeyMappings \
-    -disableBasicAuth \
     -AlwaysShared \
-    -SecurityTypes None \
+    -FrameRate="$FRAMERATE" \
+    -RecThreads="$THREADS" \
     &
 
 # Wait for X
@@ -267,5 +309,39 @@ mkdir -p /run/bhatti
 echo "DISPLAY=:99" > /run/bhatti/env
 PROFILE
 chmod 755 "$MOUNT/etc/bhatti/init.sh"
+
+# ==========================================================================
+# vnc-creds helper: prints the per-sandbox username + password.
+#
+# Reads /root/.vnc/cleartext via sudo (lohar/uid 1000 has passwordless sudo).
+# This is the documented first-time-user discovery path:
+#   bhatti exec <name> -- vnc-creds          # human-readable
+#   bhatti exec <name> -- vnc-creds --json   # machine-readable for agents
+# ==========================================================================
+cat > "$MOUNT/usr/local/bin/vnc-creds" << 'BIN'
+#!/bin/sh
+set -eu
+FILE=/root/.vnc/cleartext
+if [ ! -r "$FILE" ]; then
+    # Fall back to sudo for non-root callers (typical: lohar runs exec as uid 1000).
+    if ! sudo -n test -r "$FILE" 2>/dev/null; then
+        echo "vnc-creds: cannot read $FILE; KasmVNC may still be initializing" >&2
+        exit 1
+    fi
+    USER_LINE=$(sudo -n awk -F': ' '$1=="username"{print $2}' "$FILE")
+    PASS_LINE=$(sudo -n awk -F': ' '$1=="password"{print $2}' "$FILE")
+else
+    USER_LINE=$(awk -F': ' '$1=="username"{print $2}' "$FILE")
+    PASS_LINE=$(awk -F': ' '$1=="password"{print $2}' "$FILE")
+fi
+
+if [ "${1:-}" = "--json" ]; then
+    printf '{"username":"%s","password":"%s"}\n' "$USER_LINE" "$PASS_LINE"
+else
+    printf 'username: %s\npassword: %s\n' "$USER_LINE" "$PASS_LINE"
+    printf '\nUse these creds at the URL printed by `bhatti publish <name> -p 6080`.\n'
+fi
+BIN
+chmod 755 "$MOUNT/usr/local/bin/vnc-creds"
 
 echo "==> Computer tier done."

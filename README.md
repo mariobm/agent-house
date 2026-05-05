@@ -74,8 +74,9 @@ bhatti create --name scraper --image browser
 bhatti exec scraper -- npx playwright test
 
 # Run a desktop environment (KasmVNC web client on port 6080)
-bhatti create --name desktop --image computer
+bhatti create --name desktop --image computer --cpus 2 --memory 4096
 bhatti publish desktop -p 6080
+bhatti exec desktop -- vnc-creds          # username + per-sandbox password
 
 # Run Docker-in-VM
 bhatti create --name ci --image docker
