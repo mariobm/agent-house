@@ -24,7 +24,7 @@
 #   DISPLAY_WIDTH    default 1280
 #   DISPLAY_HEIGHT   default 720
 #   DISPLAY_DEPTH    default 24
-#   KASM_FRAMERATE   default 30  (max frames/sec the encoder will emit; raise for video)
+#   KASM_FRAMERATE   default 60  (max frames/sec the encoder emits; matches upstream)
 #   KASM_THREADS     default $((nproc-1))  (encoder thread count; auto leaves 1 vCPU for desktop)
 #
 # Beyond these, edit /etc/kasmvnc/kasmvnc.yaml inside the sandbox; KasmVNC reloads
@@ -241,7 +241,7 @@ cat > "$MOUNT/etc/bhatti/init.sh" << 'PROFILE'
 WIDTH="${DISPLAY_WIDTH:-1280}"
 HEIGHT="${DISPLAY_HEIGHT:-720}"
 DEPTH="${DISPLAY_DEPTH:-24}"
-FRAMERATE="${KASM_FRAMERATE:-30}"
+FRAMERATE="${KASM_FRAMERATE:-60}"
 NPROC=$(nproc 2>/dev/null || echo 1)
 THREADS="${KASM_THREADS:-$([ "$NPROC" -gt 1 ] && echo $((NPROC - 1)) || echo 1)}"
 
@@ -278,7 +278,7 @@ fi
     -FreeKeyMappings \
     -AlwaysShared \
     -FrameRate="$FRAMERATE" \
-    -RecThreads="$THREADS" \
+    -RectThreads="$THREADS" \
     &
 
 # Wait for X

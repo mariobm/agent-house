@@ -57,13 +57,13 @@ Pass at create time with `--env`:
 | `DISPLAY_WIDTH`  | `1280`         | X server geometry width |
 | `DISPLAY_HEIGHT` | `720`          | X server geometry height |
 | `DISPLAY_DEPTH`  | `24`           | colour depth (16/24/32) |
-| `KASM_FRAMERATE` | `30`           | max frames/sec the encoder will emit; raise for video |
+| `KASM_FRAMERATE` | `60`           | max frames/sec the encoder will emit (matches KasmVNC's upstream default) |
 | `KASM_THREADS`   | `nproc - 1`    | encoder thread count; default leaves 1 vCPU for the desktop |
 
 ```bash
 bhatti create --name desktop --image computer --cpus 4 --memory 4096 \
     --env DISPLAY_WIDTH=1920 --env DISPLAY_HEIGHT=1080 \
-    --env KASM_FRAMERATE=60
+    --env KASM_FRAMERATE=30   # cap the encoder for low-bandwidth links
 ```
 
 ### Beyond the env knobs
