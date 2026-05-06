@@ -130,6 +130,27 @@ func (s *Store) UpdateSandboxEngine(id, engineID, ip string) error {
 	return err
 }
 
+// RenameSandbox updates the user-visible name of a sandbox, scoped to the
+// owning user. The partial unique index idx_sandboxes_user_name (see
+// store.go) enforces per-user name uniqueness among non-destroyed sandboxes;
+// on conflict the returned error contains "UNIQUE", which the handler maps
+// to a 409. Returns a "not found" error if no row matches the (id, userID)
+// pair — same semantics as DeleteSandbox.
+func (s *Store) RenameSandbox(userID, id, newName string) error {
+	res, err := s.db.Exec(
+		`UPDATE sandboxes SET name = ? WHERE id = ? AND created_by = ?`,
+		newName, id, userID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("sandbox %q not found", id)
+	}
+	return nil
+}
+
 // UpdateSandboxKeepHot sets or clears the keep_hot flag for a sandbox.
 func (s *Store) UpdateSandboxKeepHot(id string, keepHot bool) error {
 	v := 0

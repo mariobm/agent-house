@@ -655,6 +655,103 @@ func TestSandboxNameUniquenessPerUser(t *testing.T) {
 	}
 }
 
+func TestRenameSandbox(t *testing.T) {
+	s := testStore(t)
+
+	// Happy path: rename a single sandbox, lookup by old name fails, by new
+	// name succeeds.
+	if err := s.CreateSandbox(Sandbox{
+		ID: "r1", Name: "foo", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenameSandbox("usr_alice", "r1", "bar"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	got, err := s.GetSandbox("usr_alice", "bar")
+	if err != nil {
+		t.Fatalf("get by new name: %v", err)
+	}
+	if got.ID != "r1" || got.Name != "bar" {
+		t.Fatalf("after rename: id=%s name=%s", got.ID, got.Name)
+	}
+	if _, err := s.GetSandbox("usr_alice", "foo"); err == nil {
+		t.Fatal("expected lookup by old name to fail")
+	}
+}
+
+func TestRenameSandbox_Conflict(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateSandbox(Sandbox{
+		ID: "a", Name: "foo", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+	s.CreateSandbox(Sandbox{
+		ID: "b", Name: "bar", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+
+	err := s.RenameSandbox("usr_alice", "a", "bar")
+	if err == nil {
+		t.Fatal("expected UNIQUE conflict")
+	}
+	if !strings.Contains(err.Error(), "UNIQUE") {
+		t.Fatalf("expected UNIQUE in error, got: %v", err)
+	}
+
+	// 'a' still exists with its original name
+	got, err := s.GetSandbox("usr_alice", "a")
+	if err != nil || got.Name != "foo" {
+		t.Fatalf("after failed rename, expected name=foo, got name=%s err=%v", got.Name, err)
+	}
+}
+
+func TestRenameSandbox_DestroyedNameReusable(t *testing.T) {
+	s := testStore(t)
+
+	// 'foo' exists but is destroyed; the partial unique index should let us
+	// rename another sandbox to 'foo'.
+	s.CreateSandbox(Sandbox{
+		ID: "old", Name: "foo", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+	s.UpdateSandboxStatus("old", "destroyed")
+
+	s.CreateSandbox(Sandbox{
+		ID: "new", Name: "bar", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+	if err := s.RenameSandbox("usr_alice", "new", "foo"); err != nil {
+		t.Fatalf("rename to destroyed-sandbox name: %v", err)
+	}
+}
+
+func TestRenameSandbox_OtherUserCannotRename(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateSandbox(Sandbox{
+		ID: "x", Name: "foo", Status: "running",
+		CreatedBy: "usr_alice", CreatedAt: time.Now(),
+	})
+
+	// Bob cannot rename Alice's sandbox — rows-affected is zero.
+	err := s.RenameSandbox("usr_bob", "x", "bar")
+	if err == nil {
+		t.Fatal("expected not-found error for cross-user rename")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected 'not found', got: %v", err)
+	}
+
+	// Original is unchanged.
+	got, _ := s.GetSandbox("usr_alice", "x")
+	if got.Name != "foo" {
+		t.Fatalf("sandbox name was modified by other user: %s", got.Name)
+	}
+}
+
 func TestCountUserSandboxes(t *testing.T) {
 	s := testStore(t)
 
