@@ -25,17 +25,30 @@ DATA_DIR="/var/lib/bhatti"
 # computer, browser" follows ALL_KNOWN_TIERS order, not insertion order).
 ALL_KNOWN_TIERS="minimal browser docker computer"
 
+# ── Test overrides ──────────────────────────────────
+# Set by scripts/install_smoke.bats to point the installer at a local
+# fake-release tree instead of GitHub. Not user-facing; intentionally
+# undocumented in --help. The smoke test is the keystone of "if CI
+# passes, install actually works" — these are how it does its job.
+#   BHATTI_TEST_VERSION       — skip the GitHub API call, use this version
+#   BHATTI_TEST_RELEASE_URL   — base URL for asset downloads (file:// or http://)
+#   BHATTI_TEST_BIN_DEST      — override /usr/local/bin/bhatti install path
+
 # ── Formatting ────────────────────────────────────────
 
-BOLD='\033[1m'
-DIM='\033[2m'
-GREEN='\033[32m'
-RED='\033[31m'
-RESET='\033[0m'
+# ANSI-C quoting ($'\033...') so $RED is a real ESC byte sequence,
+# letting us pass it through %s in printf instead of embedding it in
+# format strings (which trips SC2059 and is genuinely unsafe if a value
+# ever contains a percent sign).
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+GREEN=$'\033[32m'
+RED=$'\033[31m'
+RESET=$'\033[0m'
 
-info()    { [ "${QUIET:-}" = "1" ] && return; printf "  ${DIM}%s${RESET}\n" "$*"; }
-heading() { [ "${QUIET:-}" = "1" ] && return; printf "\n${BOLD}==> %s${RESET}\n" "$*"; }
-success() { [ "${QUIET:-}" = "1" ] && return; printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
+info()    { [ "${QUIET:-}" = "1" ] && return; printf '  %s%s%s\n' "$DIM" "$*" "$RESET"; }
+heading() { [ "${QUIET:-}" = "1" ] && return; printf '\n%s==> %s%s\n' "$BOLD" "$*" "$RESET"; }
+success() { [ "${QUIET:-}" = "1" ] && return; printf '  %s✓%s %s\n' "$GREEN" "$RESET" "$*"; }
 
 # ── Timing ────────────────────────────────────────────
 
@@ -48,10 +61,10 @@ step_elapsed() {
 }
 
 die() {
-    printf "\n${RED}error: %s${RESET}\n" "$1" >&2
+    printf '\n%serror: %s%s\n' "$RED" "$1" "$RESET" >&2
     shift
     for line in "$@"; do
-        printf "  %s\n" "$line" >&2
+        printf '  %s\n' "$line" >&2
     done
     exit 1
 }
@@ -64,11 +77,11 @@ die() {
 
 _err_trap() {
     local exit_code=$?
-    printf "\n${RED}install failed unexpectedly${RESET}\n" >&2
-    printf "  line %d: %s\n" "$1" "$BASH_COMMAND" >&2
-    printf "  exit code: %d\n" "$exit_code" >&2
-    printf "\n  Please report this at:\n" >&2
-    printf "  https://github.com/%s/issues\n\n" "$GITHUB_REPO" >&2
+    printf '\n%sinstall failed unexpectedly%s\n' "$RED" "$RESET" >&2
+    printf '  line %d: %s\n' "$1" "$BASH_COMMAND" >&2
+    printf '  exit code: %d\n' "$exit_code" >&2
+    printf '\n  Please report this at:\n' >&2
+    printf '  https://github.com/%s/issues\n\n' "$GITHUB_REPO" >&2
 }
 trap '_err_trap $LINENO' ERR
 
@@ -123,6 +136,12 @@ need_sudo() {
     # Read from /dev/tty so this works under `curl … | bash`, where
     # stdin is the piped script and not a terminal.
     if [ -r /dev/tty ]; then
+        # shellcheck disable=SC2024
+        # SC2024: sudo doesn't read stdin for the password (it goes
+        # through tcsetattr on /dev/tty directly). Keeping the redirect
+        # is intentional: it forces stdin to be the controlling terminal
+        # in this scope, which matters under `curl ... | bash` where
+        # stdin would otherwise be the piped script.
         sudo -v < /dev/tty || die "could not obtain sudo privileges"
     else
         sudo -v || die "could not obtain sudo privileges" \
@@ -140,11 +159,18 @@ need_sudo() {
 detect_platform() {
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     HOST_ARCH=$(uname -m)
+    map_arch "$HOST_ARCH"
+}
 
-    case "$HOST_ARCH" in
+# Map a host arch (uname -m output) to (ARCH, FC_ARCH) globals.
+# Extracted from detect_platform so tests can drive every case without
+# spawning a process — detect_platform itself is just "call uname,
+# then map_arch", which doesn't need its own test.
+map_arch() {
+    case "$1" in
         x86_64)        ARCH="amd64"; FC_ARCH="x86_64" ;;
         aarch64|arm64) ARCH="arm64"; FC_ARCH="aarch64" ;;
-        *) die "unsupported architecture: $HOST_ARCH" ;;
+        *) die "unsupported architecture: $1" ;;
     esac
 }
 
@@ -362,6 +388,14 @@ check_disk_space() {
 # ── Version helpers ───────────────────────────────────
 
 resolve_latest_version() {
+    # Test override: skip the GitHub API call, use whatever URL/version
+    # the smoke test set up. See the BHATTI_TEST_* block at the top.
+    if [ -n "${BHATTI_TEST_VERSION:-}" ]; then
+        VERSION="$BHATTI_TEST_VERSION"
+        RELEASE_URL="${BHATTI_TEST_RELEASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${VERSION}}"
+        return 0
+    fi
+
     local response
     response=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest") \
         || die "could not reach GitHub API" \
@@ -428,10 +462,17 @@ detect_install_type() {
 # Detect existing rootfs tier from config.yaml, falling back to filename glob.
 # Reading config.yaml is authoritative — it's what the server actually uses.
 # The glob fallback handles edge cases (missing config, manual installs).
+#
+# Optional arg $1: explicit config path. When unset, tries the canonical
+# location and the pre-v1.6 fallback in $DATA_DIR. Tests pass an explicit
+# path to drive the parser without touching real system files.
 detect_tier() {
     # Primary: parse firecracker_rootfs from config.yaml
-    local config_file="/etc/bhatti/config.yaml"
-    [ -f "$config_file" ] || config_file="$DATA_DIR/config.yaml"  # pre-v1.6 fallback
+    local config_file="${1:-}"
+    if [ -z "$config_file" ]; then
+        config_file="/etc/bhatti/config.yaml"
+        [ -f "$config_file" ] || config_file="$DATA_DIR/config.yaml"  # pre-v1.6 fallback
+    fi
     if [ -f "$config_file" ]; then
         local rootfs_path
         rootfs_path=$(grep '^firecracker_rootfs:' "$config_file" | awk '{print $2}' | tr -d '"' | tr -d "'") || true
@@ -482,7 +523,9 @@ installed_fc_version() {
 
 install_bhatti_binary() {
     local binary="bhatti-${OS}-${ARCH}"
-    local dest="/usr/local/bin/bhatti"
+    # BHATTI_TEST_BIN_DEST lets the smoke test redirect the install away
+    # from /usr/local/bin so it doesn't clobber a developer's real bhatti.
+    local dest="${BHATTI_TEST_BIN_DEST:-/usr/local/bin/bhatti}"
     local dest_dir
     dest_dir=$(dirname "$dest")
 
@@ -549,8 +592,13 @@ install_bhatti_binary() {
         $SUDO install -m 0755 "$tmp" "$dest" \
             || die "failed to install binary to ${dest}"
     else
-        $SUDO cp "$tmp" "$dest" && $SUDO chmod 0755 "$dest" \
-            || die "failed to install binary to ${dest}"
+        # cp+chmod fallback for the rare box without install(1).
+        # `if !` instead of A&&B||C so chmod failure also triggers die
+        # — the && || form was a SC2015 footgun even if it happened to
+        # work here (writer's intent isn't obvious to the reader).
+        if ! { $SUDO cp "$tmp" "$dest" && $SUDO chmod 0755 "$dest"; }; then
+            die "failed to install binary to ${dest}"
+        fi
     fi
     rm -f "$tmp"
     BHATTI_STAGE_FILE=""
@@ -800,7 +848,7 @@ do_cli_install() {
         # Guard against major version crossings for CLI updates too
         if crosses_major "$current" "$VERSION"; then
             echo ""
-            printf "  ${RED}⚠  Major version upgrade: ${current} → ${VERSION}${RESET}\n"
+            printf '  %s⚠  Major version upgrade: %s → %s%s\n' "$RED" "$current" "$VERSION" "$RESET"
             echo "  Review release notes: https://github.com/${GITHUB_REPO}/releases/tag/${VERSION}"
             echo ""
             if [ "${BHATTI_FORCE:-}" != "1" ]; then
@@ -925,7 +973,7 @@ do_server_install() {
         if systemctl enable --now bhatti 2>/dev/null; then
             # Verify the service is actually healthy
             local healthy=false
-            for i in 1 2 3 4 5; do
+            for _ in 1 2 3 4 5; do
                 if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
                     healthy=true
                     break
@@ -935,14 +983,14 @@ do_server_install() {
             if [ "$healthy" = true ]; then
                 success "bhatti service started and healthy"
             else
-                printf "  ${RED}⚠  Service started but not responding on :8080${RESET}\n"
+                printf '  %s⚠  Service started but not responding on :8080%s\n' "$RED" "$RESET"
                 echo "  Check logs:"
                 echo "    sudo journalctl -u bhatti --no-pager -n 20"
                 echo ""
                 journalctl -u bhatti --no-pager -n 5 2>/dev/null || true
             fi
         else
-            printf "  ${RED}⚠  Failed to start bhatti service${RESET}\n"
+            printf '  %s⚠  Failed to start bhatti service%s\n' "$RED" "$RESET"
             echo "  Check logs:"
             echo "    sudo journalctl -u bhatti --no-pager -n 20"
             echo ""
@@ -1017,7 +1065,7 @@ do_server_update() {
     # config schema, etc.) that require manual migration steps.
     if [ -n "$current" ] && crosses_major "$current" "$VERSION"; then
         echo ""
-        printf "  ${RED}⚠  Major version upgrade: ${current} → ${VERSION}${RESET}\n"
+        printf '  %s⚠  Major version upgrade: %s → %s%s\n' "$RED" "$current" "$VERSION" "$RESET"
         echo "  This may include breaking changes. Review the release notes:"
         echo "    https://github.com/${GITHUB_REPO}/releases/tag/${VERSION}"
         echo ""
@@ -1086,7 +1134,7 @@ do_server_update() {
     echo "============================================"
     local elapsed=$(( SECONDS - _total_start ))
     echo "  bhatti updated to ${VERSION} (${elapsed}s)"
-    echo "  tiers: $(echo $tiers_to_install | tr ' ' ', ')"
+    echo "  tiers: $(echo "$tiers_to_install" | tr ' ' ', ')"
     # Status of every "other" tier (not in this update), in two buckets:
     #   stale on disk — user has a tier image from a previous release
     #   not installed — user never pulled this tier
@@ -1277,7 +1325,7 @@ parse_flags() {
             --mode=*)  BHATTI_MODE="${1#--mode=}"; shift ;;
             --force)   BHATTI_FORCE=1; shift ;;
             --quiet)   QUIET=1; shift ;;
-            --verbose) VERBOSE=1; set -x; shift ;;
+            --verbose) set -x; shift ;;
             --help|-h) usage; exit 0 ;;
             *) die "unknown flag: $1" ;;
         esac
