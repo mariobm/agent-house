@@ -85,10 +85,13 @@ PATCH /sandboxes/:id
 ```
 
 ```json
-{"keep_hot": true}
+{"keep_hot": true, "name": "new-name"}
 ```
 
-Toggles mutable sandbox properties. Currently supports `keep_hot` only. Returns the updated sandbox object.
+Toggles mutable sandbox properties. All fields are optional; supply only the ones you want to change. Returns the updated sandbox object.
+
+- `keep_hot` — prevent thermal transitions (see Thermal management).
+- `name` — rename the sandbox. Must match `[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}` and be unique among the user's non-destroyed sandboxes; returns 409 on conflict. The in-guest hostname is set at create time and is *not* changed by rename. Public URLs from `bhatti publish` keep their original alias and remain stable. Active shells, exec sessions, and websockets continue uninterrupted.
 
 ### Destroy
 

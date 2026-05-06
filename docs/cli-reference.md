@@ -108,6 +108,28 @@ Shows only your sandboxes (scoped to your API key).
 bhatti destroy dev
 ```
 
+### edit
+
+Update mutable settings on an existing sandbox.
+
+```bash
+# Rename a sandbox
+bhatti edit dev --name dev-old
+
+# Pin to hot tier (autonomous agents that hold persistent connections)
+bhatti edit my-agent --keep-hot
+
+# Re-enable thermal transitions
+bhatti edit my-agent --allow-cold
+```
+
+Rename notes:
+
+- The in-guest hostname is fixed at create time and is **not** changed by rename. Same behaviour as `docker rename`.
+- Published URLs from `bhatti publish` keep their original alias and remain stable.
+- Active shells, exec sessions, and websockets keep working through the rename — they're keyed on the sandbox ID, not the name.
+- A renamed sandbox's old name is immediately available for a new sandbox — same as destroy-then-create.
+
 ### exec
 
 ```bash
