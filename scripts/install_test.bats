@@ -119,6 +119,35 @@ output_contains() {
     version_gt v1.0 v0.9
 }
 
+# ── resolve_latest_version: BHATTI_VERSION override ──────────────────
+# Production env-var path that lets a caller pin a specific tag instead
+# of letting GitHub's `releases/latest` decide. The two requirements:
+#   1. VERSION is set verbatim from BHATTI_VERSION.
+#   2. RELEASE_URL points at GitHub's release-download URL for that tag
+#      (NOT influenced by BHATTI_TEST_RELEASE_URL — that override is
+#      reserved for the smoke test rig).
+# Without #2, a caller could end up downloading binaries from the
+# previous test run's fake release tree, which would silently install
+# the wrong artifacts.
+
+@test "resolve_latest_version: BHATTI_VERSION pins VERSION and RELEASE_URL to the GitHub tag" {
+    BHATTI_VERSION=v1.11.4-rc.1 resolve_latest_version
+    [ "$VERSION" = "v1.11.4-rc.1" ]
+    [ "$RELEASE_URL" = "https://github.com/sahil-shubham/bhatti/releases/download/v1.11.4-rc.1" ]
+}
+
+@test "resolve_latest_version: BHATTI_TEST_VERSION takes precedence over BHATTI_VERSION (test rig wins inside test rig)" {
+    # If both are set, the test override must win so the smoke test
+    # rig keeps working even if the test environment leaks a real
+    # BHATTI_VERSION value.
+    BHATTI_TEST_VERSION=v0.0.1-test \
+    BHATTI_TEST_RELEASE_URL=file:///tmp/fake \
+    BHATTI_VERSION=v1.11.4-rc.1 \
+        resolve_latest_version
+    [ "$VERSION" = "v0.0.1-test" ]
+    [ "$RELEASE_URL" = "file:///tmp/fake" ]
+}
+
 # ── crosses_major / major_version ──────────────────────────────────
 # Drives the "are you sure?" prompt for v0.x → v1.0.0 type upgrades.
 # major_version is a one-liner; one test is enough.

@@ -15,6 +15,13 @@
 #   BHATTI_MODE=cli|server     — skip install type prompt
 #   BHATTI_TIER=minimal|browser|docker|computer — skip tier prompt (server only)
 #   BHATTI_TIERS=all|tier1,tier2,...  — install additional tiers on update (server only)
+#   BHATTI_VERSION=v1.x.y      — install/update to this exact tag instead of
+#                                latest. Useful for validating an `-rc` prerelease
+#                                before promoting it (the `releases/latest` API call
+#                                that the script normally uses skips prereleases).
+#                                The tag must exist as a public release/prerelease;
+#                                draft releases require auth and are not reachable
+#                                via the plain HTTPS asset URLs this script uses.
 
 # Skip script-mode hardening (set -e, traps) when sourced by the bats
 # test suite — those flags clobber bats' own ERR trap and result
@@ -407,6 +414,20 @@ resolve_latest_version() {
     if [ -n "${BHATTI_TEST_VERSION:-}" ]; then
         VERSION="$BHATTI_TEST_VERSION"
         RELEASE_URL="${BHATTI_TEST_RELEASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${VERSION}}"
+        return 0
+    fi
+
+    # Production override: caller pinned a specific tag (e.g.
+    #   sudo BHATTI_VERSION=v1.11.4-rc.1 bhatti update
+    # to validate a prerelease on a single host before promoting it to
+    # latest). Bypasses the `releases/latest` API call which only sees
+    # non-prerelease tags. The asset URL pattern is the standard GitHub
+    # release download URL; if the tag exists and is non-draft the
+    # downloads will work, otherwise install_* helpers fail loudly with
+    # the URL they tried.
+    if [ -n "${BHATTI_VERSION:-}" ]; then
+        VERSION="$BHATTI_VERSION"
+        RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}"
         return 0
     fi
 
