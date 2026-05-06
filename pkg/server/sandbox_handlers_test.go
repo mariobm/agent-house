@@ -106,6 +106,111 @@ func TestKeepHotPatchNonexistent(t *testing.T) {
 	resp.Body.Close()
 }
 
+// ==========================================================================
+// rename (PATCH name)
+// ==========================================================================
+
+func TestPatchSandbox_Rename(t *testing.T) {
+	_, ts := setup(t)
+	oldName := uniqueName(t, "rn")
+	sb := createSandbox(t, ts, oldName)
+
+	newName := uniqueName(t, "rn-new")
+	resp := doReq(t, ts, "PATCH", "/sandboxes/"+sb.ID, map[string]any{"name": newName})
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PATCH rename: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var updated store.Sandbox
+	decodeJSON(t, resp, &updated)
+	if updated.Name != newName {
+		t.Fatalf("response name = %q, want %q", updated.Name, newName)
+	}
+
+	// GET by new name works
+	resp = doReq(t, ts, "GET", "/sandboxes/"+newName, nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("GET by new name: expected 200, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// GET by old name returns 404
+	resp = doReq(t, ts, "GET", "/sandboxes/"+oldName, nil)
+	if resp.StatusCode != 404 {
+		t.Fatalf("GET by old name: expected 404, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestPatchSandbox_RenameInvalidName(t *testing.T) {
+	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "badrn"))
+
+	resp := doReq(t, ts, "PATCH", "/sandboxes/"+sb.ID, map[string]any{
+		"name": "has spaces",
+	})
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400 for invalid name, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestPatchSandbox_RenameConflict(t *testing.T) {
+	_, ts := setup(t)
+	a := createSandbox(t, ts, uniqueName(t, "a"))
+	b := createSandbox(t, ts, uniqueName(t, "b"))
+
+	// Rename a → b.Name should 409.
+	resp := doReq(t, ts, "PATCH", "/sandboxes/"+a.ID, map[string]any{"name": b.Name})
+	if resp.StatusCode != 409 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 409, got %d: %s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+}
+
+func TestPatchSandbox_RenameSameName(t *testing.T) {
+	_, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "same"))
+
+	// PATCH with the current name is a no-op: 200 and the row is unchanged.
+	resp := doReq(t, ts, "PATCH", "/sandboxes/"+sb.ID, map[string]any{"name": sb.Name})
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var updated store.Sandbox
+	decodeJSON(t, resp, &updated)
+	if updated.Name != sb.Name {
+		t.Fatalf("same-name PATCH changed name: %q -> %q", sb.Name, updated.Name)
+	}
+}
+
+func TestPatchSandbox_RenameAndKeepHot(t *testing.T) {
+	srv, ts := setup(t)
+	sb := createSandbox(t, ts, uniqueName(t, "both"))
+
+	newName := uniqueName(t, "both-new")
+	resp := doReq(t, ts, "PATCH", "/sandboxes/"+sb.ID, map[string]any{
+		"name":     newName,
+		"keep_hot": true,
+	})
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var updated store.Sandbox
+	decodeJSON(t, resp, &updated)
+	if updated.Name != newName || !updated.KeepHot {
+		t.Fatalf("both fields not applied: name=%q keep_hot=%v", updated.Name, updated.KeepHot)
+	}
+
+	// Persistence check
+	stored, _ := srv.store.GetSandboxByID(sb.ID)
+	if stored.Name != newName || !stored.KeepHot {
+		t.Fatalf("both fields not persisted: name=%q keep_hot=%v", stored.Name, stored.KeepHot)
+	}
+}
+
 func TestKeepHotThermalCycleSkip(t *testing.T) {
 	srv, ts := setup(t)
 

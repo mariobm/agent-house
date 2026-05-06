@@ -661,11 +661,42 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			KeepHot *bool `json:"keep_hot"`
+			KeepHot *bool   `json:"keep_hot"`
+			Name    *string `json:"name"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			errResp(w, 400, "invalid json: "+err.Error())
 			return
+		}
+		// Apply rename first so any subsequent log lines (and the keep_hot
+		// wake path) reference the new name. Each field is independent;
+		// these are sequential DB writes, not a single transaction —
+		// acceptable since there is no consistency invariant between them.
+		if req.Name != nil && *req.Name != sb.Name {
+			newName := *req.Name
+			if !isValidName(newName) {
+				errResp(w, 400, "invalid sandbox name: must match [a-zA-Z0-9][a-zA-Z0-9._-]{0,62}")
+				return
+			}
+			if err := s.store.RenameSandbox(user.ID, sb.ID, newName); err != nil {
+				// Match the create-path convention for UNIQUE-violation
+				// detection (see the create handler above).
+				if strings.Contains(err.Error(), "UNIQUE") {
+					errResp(w, 409, fmt.Sprintf("name %q is already in use", newName))
+					return
+				}
+				errRespInternal(w, r, "rename sandbox failed", err)
+				return
+			}
+			oldName := sb.Name
+			sb.Name = newName
+			slog.Info("sandbox.updated",
+				"sandbox_id", sb.ID, "old_name", oldName, "new_name", newName,
+				"user", user.Name)
+			s.RecordEvent(store.Event{
+				Type: "sandbox.updated", UserID: user.ID, SandboxID: sb.ID,
+				Meta: map[string]any{"old_name": oldName, "new_name": newName},
+			})
 		}
 		if req.KeepHot != nil {
 			if err := s.store.UpdateSandboxKeepHot(sb.ID, *req.KeepHot); err != nil {
