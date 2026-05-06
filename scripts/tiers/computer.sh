@@ -267,9 +267,24 @@ if [ ! -f /root/.kasmpasswd ]; then
 fi
 
 # 1. KasmVNC X server (replaces Xvfb + x11vnc + noVNC + websockify).
-# Note: NO -disableBasicAuth — it would silently 401 every /api/* endpoint
-#       (see common/network/websocket.c in KasmVNC source: the `owner` flag
-#       is only set inside the basic-auth branch).
+#
+# Two auth layers KasmVNC speaks, both must be set right or the desktop is
+# unreachable in different ways:
+#
+#   HTTP Basic Auth on /api/* and /websockify   — backed by /root/.kasmpasswd
+#     via -KasmPasswordFile (default location). Set up by kasmvncpasswd above.
+#     The `owner` flag the management API requires is set ONLY inside this
+#     branch (see common/network/websocket.c), so -disableBasicAuth would
+#     silently 401 every /api/* endpoint. We do NOT pass -disableBasicAuth.
+#
+#   VNC RFB Auth (-SecurityTypes)               — the VNC protocol's own
+#     password negotiation, run after the WebSocket is upgraded. Default is
+#     VncAuth which needs -PasswordFile set; without it the connection is
+#     rejected with "No password configured for VNC Auth" the moment the
+#     client tries to attach (you see KasmVNC's web client load, then the red
+#     banner appears). We pass -SecurityTypes=None because HTTP Basic above
+#     is the security boundary; adding a second password layer for the same
+#     boundary is just two passwords for one trust decision.
 /usr/bin/Xkasmvnc :99 \
     -geometry "${WIDTH}x${HEIGHT}" -depth "$DEPTH" \
     -websocketPort 6080 \
@@ -277,6 +292,7 @@ fi
     -BlacklistTimeout 0 \
     -FreeKeyMappings \
     -AlwaysShared \
+    -SecurityTypes=None \
     -FrameRate="$FRAMERATE" \
     -RectThreads="$THREADS" \
     &
