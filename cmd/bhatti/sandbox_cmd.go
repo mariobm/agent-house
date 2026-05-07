@@ -267,8 +267,12 @@ and toggling keep_hot to control thermal management.`,
 			outputJSON(sb)
 		} else {
 			fmt.Printf("Updated %s\n", args[0])
-			if newName != "" {
+			if newName != "" && newName != args[0] {
 				fmt.Printf("  name:     %s\n", newName)
+				// The in-guest hostname is set at create time via the
+				// config drive and is not changed by rename. Heads off
+				// the surprise of seeing the old name in shell prompts.
+				fmt.Println("  Note: in-guest hostname unchanged (set at create time)")
 			}
 			if keepHot {
 				fmt.Println("  keep_hot: true (thermal transitions disabled)")
