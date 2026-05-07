@@ -1,14 +1,31 @@
-# Slicer Architecture Learnings
+# SlicerVM — research notes on a peer Firecracker orchestrator
 
 Research notes from hands-on testing of [SlicerVM](https://docs.slicervm.com/)
-(v0.1.108) on Raspberry Pi 5. Slicer is a production Firecracker orchestrator
-by OpenFaaS Ltd. These notes inform bhatti's architecture decisions.
+(v0.1.108) on Raspberry Pi 5. SlicerVM is a production Firecracker orchestrator
+by OpenFaaS Ltd, evaluated alongside [Sprites](./sprites-learnings.md) and
+other projects in the Firecracker-orchestrator space.
 
 Tested: 2026-03-15
 
+## What this file is and isn't
+
+This is a record of *what SlicerVM does as a product* — not a list of techniques
+sourced from it. SlicerVM is closed-source; everything noted below was observed
+from its public documentation, its CLI, and runtime behavior of the binaries
+shipped in its OCI images.
+
+Every technique referenced in this file has a documented upstream origin in
+Linux, Firecracker, or cloud-init. The "[Standard Linux/Firecracker techniques
+worth using](#standard-linuxfirecracker-techniques-worth-using)" section at the
+bottom enumerates each one with its actual source. Bhatti's design follows those
+upstream sources directly; SlicerVM appears in this file because it's a useful
+concrete example to compare against, and because its public release notes
+(e.g. the v0.1.108 unship of suspend/restore) corroborate upstream Firecracker
+behaviors we hit independently.
+
 ---
 
-## How Slicer's guest agent works
+## What SlicerVM's guest agent exposes (observed)
 
 - **`slicer-agent`** (6.7MB Go binary) runs as a systemd service inside the VM
 - Listens on **vsock port 514** (shell) and **vsock port 516** (RPC/exec)
@@ -41,14 +58,17 @@ Tested: 2026-03-15
 - Supports ZFS and devmapper for instant clones
 - Image tags encode kernel version + arch
 
-## Pause/Resume vs Snapshot/Restore
+## Pause/Resume vs Snapshot/Restore in SlicerVM
+
+What ships in v0.1.108:
 
 - **Pause/Resume** (vCPU only): works reliably. FC process stays alive,
   memory stays allocated, vsock UDS stays intact. Exec works immediately
   after resume.
 - **Suspend/Restore** (snapshot to disk): CLI commands exist (`slicer vm
   suspend`, `slicer vm restore`) but return 404 on v0.1.108. Not yet
-  shipped. Likely hitting the same vsock-after-snapshot issue we found.
+  shipped. Public corroboration of the upstream Firecracker vsock-after-restore
+  issue documented in the next section.
 
 ## Key finding: vsock is broken after Firecracker snapshot/restore
 
@@ -71,9 +91,11 @@ Confirmed independently:
 
 ## Standard Linux/Firecracker techniques worth using
 
-Slicer demonstrates several standard techniques well. These are not Slicer
-inventions — they are documented Linux, Firecracker, and cloud-init patterns.
-Listed here as a reminder of which to adopt for bhatti, with their actual origins.
+SlicerVM is a useful concrete example of several standard techniques. To be
+explicit: **none of these are SlicerVM inventions.** They are documented Linux,
+Firecracker, and cloud-init patterns, and bhatti adopts them from those upstream
+sources directly. Listed here with their actual origins so the attribution is
+unambiguous.
 
 1. **Kernel `ip=` cmdline** for guest network config before init runs.
    Documented in linux `Documentation/admin-guide/kernel-parameters.txt`.
