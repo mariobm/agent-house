@@ -8,3 +8,4 @@ pi-session-*.html
 /lohar
 .worktrees/
 docs/PLAN-learning.md
+docs/internal/
