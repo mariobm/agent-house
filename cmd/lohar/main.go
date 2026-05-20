@@ -35,6 +35,16 @@ func main() {
 		return
 	}
 
+	// Verb dispatch: argv[1] subcommand. This is a different axis than
+	// the busybox-style argv[0] dispatch above — `lohar spawn` is a
+	// private supervisor primitive (called by startDaemon to fix the
+	// cgroup-placement race for forking daemons), not a user-facing
+	// verb. Deliberately not symlinked into PATH. See cmd/lohar/spawn.go.
+	if len(os.Args) > 1 && os.Args[1] == "spawn" {
+		runSpawn(os.Args[2:])
+		return
+	}
+
 	if os.Getenv("LOHAR_TEST") == "1" {
 		runTestMode()
 		return
