@@ -41,12 +41,21 @@ func TestMain(m *testing.M) {
 		// the daemon (PID preserved, never returns) or calls os.Exit
 		// on failure; the os.Exit(99) below is a defensive marker for
 		// "spawn unexpectedly returned" \u2014 should never fire.
+		// Match production's main() which calls runSpawn(os.Args[2:]),
+		// skipping both argv[0] (the binary path) and argv[1] ("spawn").
+		// Our test invocation looks like:
+		//   <testbin> --helper-args spawn --cgroup <path> -- <argv...>
+		// so we strip up to and including "--helper-args", then strip
+		// "spawn" if present.
 		args := os.Args[1:]
 		for i, a := range args {
 			if a == "--helper-args" {
 				args = args[i+1:]
 				break
 			}
+		}
+		if len(args) > 0 && args[0] == "spawn" {
+			args = args[1:]
 		}
 		runSpawn(args)
 		os.Exit(99)
