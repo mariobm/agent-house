@@ -681,18 +681,42 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 		fmt.Fprintf(os.Stderr, "lohar: cgroup setup for %s: %v (proceeding without isolation)\n", u.Canonical, err)
 	}
 
-	cmd := exec.Command("/bin/sh", "-c", "exec "+execStart)
+	// Spawn via the `lohar spawn` helper instead of /bin/sh directly.
+	// The helper does one thing before exec'ing into the daemon: writes
+	// its own PID into <cgroup>/cgroup.procs. Because the write happens
+	// before any fork by the daemon (X-server detach, dbus pre-fork, etc.)
+	// and execve preserves cgroup membership, every descendant of the
+	// daemon lands in the unit's cgroup. Stop-time cgroup.kill then
+	// catches all of them.
+	//
+	// This replaces the previous post-cmd.Start() PlaceInCgroup call,
+	// which had a race window where the daemon could fork before being
+	// moved (e.g. Xkasmvnc's daemon(3) fork escaping to 0::/, leaving
+	// an orphan that systemctl stop couldn't kill). See spawn.go and
+	// docs/internal/PLAN-spawn-helper.md for the full story.
+	//
+	// /proc/self/exe is the kernel-maintained symlink to lohar's binary.
+	// Cheap (no syscall on Linux — it's a kernel-side resolve at execve
+	// time), test-friendly, and standard practice for re-exec patterns
+	// (gosu, su-exec, runc all use it).
+	cmd := exec.Command("/proc/self/exe", "spawn",
+		"--cgroup", u.CgroupPath(),
+		"--", "/bin/sh", "-c", "exec "+execStart)
 	cmd.Dir = svc.get("Service", "WorkingDirectory")
 	cmd.Env = buildServiceEnv(svc)
 	// For Type=notify daemons we expose NOTIFY_SOCKET so libsystemd's
 	// sd_notify(3) (or any reimplementation) can find our receiver.
 	// Setting it unconditionally is harmless for non-notify daemons --
-	// they just won't connect to it.
+	// they just won't connect to it. Inherited through the spawn helper
+	// across both execves (lohar spawn → /bin/sh → daemon).
 	cmd.Env = append(cmd.Env, "NOTIFY_SOCKET="+u.reg.Config.NotifySocketPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin = nil
 
-	// Capture stdout/stderr to log file for debugging.
+	// Capture stdout/stderr to log file for debugging. The log fd is
+	// inherited by lohar spawn and then by the daemon across both
+	// execves — close-on-exec is not set by exec.Command, so the fd
+	// survives unless syscall.Exec explicitly closes it (it doesn't).
 	os.MkdirAll(u.reg.Config.LogDir, 0755)
 	logFile, err := os.OpenFile(u.LogPath(),
 		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -713,18 +737,11 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 		logFile.Close()
 	}
 
-	// Move the process into the unit's cgroup. The window between
-	// cmd.Start() and this write is brief but real — the daemon runs
-	// briefly in the parent's cgroup. systemd avoids this with
-	// CLONE_INTO_CGROUP via clone3, which Go's os/exec doesn't expose.
-	// For our use case this is acceptable: the daemon is doing exec
-	// setup (loading shared libs, parsing config) during this window,
-	// not consuming bulk resources.
-	if err := u.PlaceInCgroup(cmd.Process.Pid); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: cgroup place %d in %s: %v\n",
-			cmd.Process.Pid, u.Canonical, err)
-	}
-
+	// cmd.Process.Pid is the PID of the forked child, which is the same
+	// PID running lohar spawn, /bin/sh, and ultimately the daemon —
+	// execve preserves PID across all three transitions. The cgroup
+	// placement happens inside lohar spawn before its execve into
+	// /bin/sh; no PlaceInCgroup call is needed here.
 	u.WritePID(cmd.Process.Pid)
 	u.ClearFailed() // a new run starts with a clean slate
 

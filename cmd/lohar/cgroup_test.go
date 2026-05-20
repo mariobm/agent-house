@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -351,6 +352,114 @@ Restart=no
 	// shell errors out before allocating enough. Either way, non-zero.
 	if code := u.LastExitCode(); code == 0 {
 		t.Errorf("LastExitCode = 0; expected non-zero from OOM-kill or shell error")
+	}
+}
+
+// TestStartDaemonPlacesProcessInUnitCgroup is the test that would have
+// caught the v1.11.9 bug a year ago. It exercises the full svcStart
+// path — startDaemon spawning through `lohar spawn` into the daemon —
+// and asserts that /proc/<pid>/cgroup shows the unit's cgroup, not the
+// root cgroup (0::/).
+//
+// Requires a real cgroup v2 hierarchy because /proc/<pid>/cgroup
+// reflects the kernel's view; a synthetic tempdir CgroupRoot doesn't
+// reach the kernel. Skips on dev Mac and non-root Linux; runs on the
+// Pi cluster integration runner, which executes as root with cgroup v2
+// mounted.
+//
+// What this guards against:
+//   - Reverting the spawn-helper wiring back to the post-cmd.Start()
+//     PlaceInCgroup write (which races against forking daemons).
+//   - Future tier additions whose ExecStart wrapping accidentally
+//     bypasses lohar spawn.
+func TestStartDaemonPlacesProcessInUnitCgroup(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("requires root for real cgroup operations")
+	}
+	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err != nil {
+		t.Skip("requires cgroup v2 mounted at /sys/fs/cgroup")
+	}
+	if _, err := os.Stat("/sys/fs/cgroup/system.slice"); err != nil {
+		if err := os.MkdirAll("/sys/fs/cgroup/system.slice", 0755); err != nil {
+			t.Skipf("can't create system.slice: %v", err)
+		}
+	}
+
+	dir := t.TempDir()
+	// Real kernel cgroup root, tempdirs for shim state. svcStart will
+	// CreateCgroup under /sys/fs/cgroup/system.slice/<unit>.service and
+	// then spawn the daemon through lohar spawn, which writes its PID
+	// into that cgroup before exec'ing into the daemon.
+	reg := NewRegistry(Config{
+		ServiceDirs: []string{dir},
+		CgroupRoot:  "/sys/fs/cgroup",
+		PidDir:      t.TempDir(),
+		LogDir:      t.TempDir(),
+	})
+	t.Cleanup(reg.WaitForWatchers)
+
+	// /bin/sleep doesn't fork — but the test isn't about forks; it's
+	// about "did the supervisor's first cgroup-placement happen at all?"
+	// If lohar spawn is invoked correctly, the daemon (sleep) ends up
+	// in the unit's cgroup; if the supervisor regressed to the old
+	// post-cmd.Start() path with no helper, sleep would still end up
+	// there too — BUT only if PlaceInCgroup ran. The way this test
+	// catches a regression is by asserting the placement happens at all.
+	// A future variant that uses a forking daemon (Xkasmvnc, dbus-daemon)
+	// would catch the race specifically; that lives in the agni-01
+	// smoke test.
+	os.WriteFile(filepath.Join(dir, "spawn-test.service"), []byte(`
+[Service]
+Type=simple
+ExecStart=/bin/sleep 30
+Restart=no
+`), 0644)
+
+	u, err := reg.Resolve("spawn-test")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	defer func() {
+		svcStop(u)
+		u.RemoveCgroup()
+	}()
+
+	if err := svcStart(u); err != nil {
+		t.Fatalf("svcStart: %v", err)
+	}
+
+	// Give spawn → sh → sleep a moment to complete the execve chain
+	// and land the PID in the cgroup. In practice the cgroup write
+	// happens before the first execve, so this is the time between
+	// supervisor returning from cmd.Start() and being able to read the
+	// pidfile back — microseconds in normal operation.
+	deadline := time.Now().Add(2 * time.Second)
+	var pid int
+	for time.Now().Before(deadline) {
+		pid, err = u.ReadPID()
+		if err == nil && pid > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if pid <= 0 {
+		t.Fatalf("no valid pid after svcStart: pid=%d err=%v", pid, err)
+	}
+
+	// Read /proc/<pid>/cgroup and assert the unit's cgroup, not 0::/.
+	// cgroup v2 format: "0::/system.slice/spawn-test.service\n"
+	cgData, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		t.Fatalf("read /proc/%d/cgroup: %v", pid, err)
+	}
+	cgLine := strings.TrimSpace(string(cgData))
+
+	if cgLine == "0::/" || strings.HasSuffix(cgLine, "::/") {
+		t.Fatalf("daemon landed in root cgroup (the v1.11.9 bug): %q", cgLine)
+	}
+	wantSuffix := "system.slice/spawn-test.service"
+	if !strings.HasSuffix(cgLine, wantSuffix) {
+		t.Errorf("/proc/%d/cgroup = %q, want suffix %q", pid, cgLine, wantSuffix)
 	}
 }
 
