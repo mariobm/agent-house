@@ -1643,7 +1643,37 @@ func parseServiceFile(path string) serviceFile {
 		return sf
 	}
 	section := ""
-	for _, line := range strings.Split(string(data), "\n") {
+
+	// First pass: glue backslash-continuation lines together so multi-line
+	// directives parse as one logical line. systemd does this in
+	// `extract_first_word` (`src/basic/extract-word.c`); a backslash
+	// immediately before the newline joins this line with the next, with
+	// the backslash and the newline dropped. Common in upstream unit files
+	// for long ExecStart/Environment directives; without it those land as
+	// truncated values plus a stream of unparseable orphan lines.
+	rawLines := strings.Split(string(data), "\n")
+	lines := make([]string, 0, len(rawLines))
+	var joined strings.Builder
+	for _, l := range rawLines {
+		if strings.HasSuffix(l, "\\") {
+			joined.WriteString(l[:len(l)-1])
+			joined.WriteByte(' ')
+			continue
+		}
+		if joined.Len() > 0 {
+			joined.WriteString(l)
+			lines = append(lines, joined.String())
+			joined.Reset()
+			continue
+		}
+		lines = append(lines, l)
+	}
+	// Trailing backslash with no following line: keep what we have.
+	if joined.Len() > 0 {
+		lines = append(lines, joined.String())
+	}
+
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue

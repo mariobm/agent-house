@@ -89,6 +89,48 @@ Alias=testd.service
 	}
 }
 
+func TestParseServiceFileBackslashContinuation(t *testing.T) {
+	// Real systemd glues a line ending in `\` with the next line. Lots of
+	// upstream unit files use this for long ExecStart / Environment values.
+	// Before C9 the shim parsed each line independently, so a continued
+	// directive was silently truncated at the `\` and the rest of the
+	// lines were dropped as orphan key-less lines.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cont.service")
+	os.WriteFile(path, []byte(`[Service]
+Type=simple
+ExecStart=/usr/bin/long-daemon \
+    --first-flag value-1 \
+    --second-flag value-2 \
+    --third-flag value-3
+Environment=A=1 \
+    B=2
+Restart=on-failure
+`), 0644)
+
+	svc := parseServiceFile(path)
+
+	// The parser glues continued lines with a single space and preserves
+	// any leading whitespace from the next line. Multi-space runs are
+	// harmless: shell argv-splitting collapses them anyway, so
+	// ExecStart="foo     --bar" is equivalent to ExecStart="foo --bar".
+	gotStart := svc.get("Service", "ExecStart")
+	wantStart := "/usr/bin/long-daemon      --first-flag value-1      --second-flag value-2      --third-flag value-3"
+	if gotStart != wantStart {
+		t.Errorf("ExecStart joined wrong:\n got: %q\nwant: %q", gotStart, wantStart)
+	}
+
+	gotEnv := svc.get("Service", "Environment")
+	wantEnv := "A=1      B=2"
+	if gotEnv != wantEnv {
+		t.Errorf("Environment joined wrong:\n got: %q\nwant: %q", gotEnv, wantEnv)
+	}
+
+	if svc.get("Service", "Restart") != "on-failure" {
+		t.Errorf("Restart after continuation block lost: %q", svc.get("Service", "Restart"))
+	}
+}
+
 func TestParseServiceFileMultipleExecStartPre(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "multi.service")
