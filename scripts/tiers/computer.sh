@@ -20,7 +20,7 @@
 #   bhatti exec desktop -- xdotool key Return
 #   bhatti exec desktop -- chromium-browser https://example.com
 #
-# Tunables (set via `bhatti create --env KEY=value`):
+# Tunables (set via `bhatti create --env KEY=value,KEY=value`):
 #   DISPLAY_WIDTH    default 1280
 #   DISPLAY_HEIGHT   default 720
 #   DISPLAY_DEPTH    default 24
@@ -30,6 +30,20 @@
 # Beyond these, edit /etc/kasmvnc/kasmvnc.yaml inside the sandbox; KasmVNC reloads
 # its config on the next session. See https://github.com/kasmtech/KasmVNC/wiki for
 # the full option set.
+#
+# Init model (per PLAN-tiers-systemd.md): the desktop stack is managed by
+# lohar's systemctl shim as four units, replacing the monolithic init.sh:
+#   * kasmvnc-firstboot.service  — oneshot, generates per-sandbox password
+#                                  + computes default KASM_THREADS
+#   * kasmvnc.service            — the X server + RFB→WebSocket gateway
+#   * xfce-session.service       — XFCE desktop session
+#   * bhatti-display-env.service — exposes DISPLAY=:99 to `bhatti exec`
+#
+# Deliberately NOT started: dbus-daemon (long-lived inotify watches +
+# epoll sets don't survive snapshot/restore cleanly on ARM64 — see
+# PLAN-systemd-rc.md for the underlying reason) and pulseaudio (not used
+# by any documented agent flow). The dbus packages stay installed so
+# libdbus keeps linking; we just don't run a system bus at boot.
 set -euo pipefail
 
 # Build minimal base first
@@ -101,10 +115,11 @@ apt-get install -y --no-install-recommends \
 apt-get install -y --no-install-recommends \
     xdotool xclip xsel scrot imagemagick
 
-# --- Audio (dummy sink so apps dont crash) ---
-apt-get install -y --no-install-recommends pulseaudio
-
-# --- DBus (required by Chromium, GTK apps) ---
+# --- DBus libs (NO daemon — see init-model comment at top) ---
+# We keep the dbus/dbus-x11 packages so libdbus links continue to work for
+# anything XFCE/Chromium has compiled against, but we do NOT start a
+# system bus at boot. Per the plan: long-lived dbus state (inotify,
+# epoll) doesnt survive Firecracker snapshot/restore cleanly on ARM64.
 apt-get install -y --no-install-recommends dbus dbus-x11
 
 # --- Misc ---
@@ -120,7 +135,8 @@ rm -rf /var/lib/apt/lists/* /tmp/*
 '
 
 # ==========================================================================
-# Agent helper scripts
+# Agent helper scripts (unchanged from pre-v1.11.9 — these are
+# user-facing binaries, not boot-path code)
 # ==========================================================================
 
 # screenshot: one command, outputs path or base64
@@ -187,7 +203,12 @@ BIN
 chmod 755 "$MOUNT/usr/local/bin/screen-size"
 
 # ==========================================================================
-# Environment: set DISPLAY globally
+# Environment: set DISPLAY globally (for interactive shells / PAM)
+#
+# The systemd-managed services get DISPLAY from their own Environment=
+# directives; these files cover ssh-like interactive sessions and the
+# `bhatti exec` path (which also picks up DISPLAY via /run/bhatti/env
+# written by bhatti-display-env.service below).
 # ==========================================================================
 echo 'export DISPLAY=:99' >> "$MOUNT/etc/environment"
 cat > "$MOUNT/etc/profile.d/bhatti-display.sh" << 'PROF'
@@ -211,120 +232,149 @@ Categories=Network;WebBrowser;
 MimeType=text/html;text/xml;application/xhtml+xml;
 DESKTOP
 
-
 # ==========================================================================
-# KasmVNC: NO bake-time password.
-# ----------------------------------------------------------------------------
-# A random password is generated on first boot in /etc/bhatti/init.sh below,
-# hashed into /root/.kasmpasswd (the upstream-default location), and stored
-# cleartext in /root/.vnc/cleartext (root:root 0600) so the `vnc-creds`
-# helper can print it on demand.
+# Systemd units (replacing the legacy /etc/bhatti/init.sh)
 #
-# Why first-boot, not bake-time:
-#   - Every sandbox gets unique credentials.
-#   - The published rootfs image carries no shared secret.
-#   - Snapshot/resume preserves the password (file already exists, skip regen).
-
+# Activation graph at boot:
+#   kasmvnc-firstboot.service ──┐
+#                               ├──> kasmvnc.service ──> xfce-session.service
+#                               │
+#                               └──> (none — leaf)
+#   bhatti-display-env.service   (no After=, runs in first wave)
+#
+# kasmvnc-firstboot generates per-sandbox credentials (idempotent via
+# ConditionPathExists=!) and computes the KASM_THREADS default by
+# appending to /run/bhatti/config-env, but ONLY if the user didn't pass
+# their own value via `bhatti create --env`. User-supplied values appear
+# in /run/bhatti/config-env before firstboot writes its append, so the
+# grep guard preserves user precedence.
 # ==========================================================================
-# Boot profile: start KasmVNC + desktop stack
-# ==========================================================================
-mkdir -p "$MOUNT/etc/bhatti"
-cat > "$MOUNT/etc/bhatti/init.sh" << 'PROFILE'
-#!/bin/sh
-# Computer tier boot profile — starts KasmVNC + desktop stack.
-# Single port: 6080 (HTTP + WebSocket).
-#
-# Auth: HTTP Basic over the WebSocket. A random password is generated on
-# first boot. `bhatti exec <name> -- vnc-creds` prints it.
 
-# Tunables (override via `bhatti create --env KEY=value`)
-WIDTH="${DISPLAY_WIDTH:-1280}"
-HEIGHT="${DISPLAY_HEIGHT:-720}"
-DEPTH="${DISPLAY_DEPTH:-24}"
-FRAMERATE="${KASM_FRAMERATE:-60}"
-NPROC=$(nproc 2>/dev/null || echo 1)
-THREADS="${KASM_THREADS:-$([ "$NPROC" -gt 1 ] && echo $((NPROC - 1)) || echo 1)}"
+# --- kasmvnc-firstboot.service ---
+# ConditionPathExists=! means: skip with no error if the file already
+# exists. On snapshot/resume the password is already there → skipped.
+# RemainAfterExit=yes so other units' After=kasmvnc-firstboot.service
+# treats it as active once it has run.
+cat > "$MOUNT/etc/systemd/system/kasmvnc-firstboot.service" << 'UNIT'
+[Unit]
+Description=Generate per-sandbox VNC credentials + compute KASM_THREADS default
+ConditionPathExists=!/root/.kasmpasswd
 
-export DISPLAY=:99
-rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '\
+    PW=$(tr -dc "A-HJ-NP-Za-km-z2-9" </dev/urandom 2>/dev/null | head -c 16); \
+    [ -z "$PW" ] && PW=$(date +%s%N | sha256sum | head -c 16); \
+    mkdir -p /root/.vnc; \
+    printf "%s\n%s\n" "$PW" "$PW" | kasmvncpasswd -u kasm_user -wo /root/.kasmpasswd >/dev/null 2>&1; \
+    chmod 600 /root/.kasmpasswd; \
+    printf "username: kasm_user\npassword: %s\n" "$PW" > /root/.vnc/cleartext; \
+    chmod 600 /root/.vnc/cleartext; \
+    mkdir -p /run/bhatti; \
+    if ! grep -q "^KASM_THREADS=" /run/bhatti/config-env 2>/dev/null; then \
+        NPROC=$(nproc 2>/dev/null || echo 1); \
+        THREADS=$([ "$NPROC" -gt 1 ] && echo $((NPROC - 1)) || echo 1); \
+        echo "KASM_THREADS=$THREADS" >> /run/bhatti/config-env; \
+    fi'
 
-# --- First-boot credential generation -------------------------------------
-# Generate a random password the first time this VM boots, then persist it
-# (both the kasmpasswd hash KasmVNC reads and a cleartext copy that the
-# `vnc-creds` helper can show via sudo). On subsequent boots — including
-# resume from snapshot — the file already exists and we skip regen.
-if [ ! -f /root/.kasmpasswd ]; then
-    PW=$(tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom 2>/dev/null | head -c 16)
-    if [ -z "$PW" ]; then
-        # Fallback for kernels without /dev/urandom early; should never hit.
-        PW=$(date +%s%N | sha256sum | head -c 16)
-    fi
-    mkdir -p /root/.vnc
-    printf '%s\n%s\n' "$PW" "$PW" | kasmvncpasswd -u kasm_user -wo /root/.kasmpasswd >/dev/null 2>&1
-    chmod 600 /root/.kasmpasswd
-    printf 'username: kasm_user\npassword: %s\n' "$PW" > /root/.vnc/cleartext
-    chmod 600 /root/.vnc/cleartext
-fi
+[Install]
+WantedBy=multi-user.target
+UNIT
 
-# 1. KasmVNC X server (replaces Xvfb + x11vnc + noVNC + websockify).
+# --- kasmvnc.service ---
 #
-# Two auth layers KasmVNC speaks, both must be set right or the desktop is
-# unreachable in different ways:
+# Type=simple. KasmVNC has no sd_notify support, so the shim considers
+# the unit active as soon as fork+exec succeeds. Users who need
+# readiness can poll `xdpyinfo -display :99` or the websocket port
+# (`curl -I http://127.0.0.1:6080`).
 #
-#   HTTP Basic Auth on /api/* and /websockify   — backed by /root/.kasmpasswd
-#     via -KasmPasswordFile (default location). Set up by kasmvncpasswd above.
-#     The `owner` flag the management API requires is set ONLY inside this
-#     branch (see common/network/websocket.c), so -disableBasicAuth would
-#     silently 401 every /api/* endpoint. We do NOT pass -disableBasicAuth.
-#
-#   VNC RFB Auth (-SecurityTypes)               — the VNC protocol's own
-#     password negotiation, run after the WebSocket is upgraded. Default is
-#     VncAuth which needs -PasswordFile set; without it the connection is
-#     rejected with "No password configured for VNC Auth" the moment the
-#     client tries to attach (you see KasmVNC's web client load, then the red
-#     banner appears). We pass -SecurityTypes=None because HTTP Basic above
-#     is the security boundary; adding a second password layer for the same
-#     boundary is just two passwords for one trust decision.
-/usr/bin/Xkasmvnc :99 \
-    -geometry "${WIDTH}x${HEIGHT}" -depth "$DEPTH" \
+# Defaults live in Environment=; EnvironmentFile=- picks up
+# `bhatti create --env DISPLAY_WIDTH=…` overrides. Shell-style $VAR
+# expansion happens inside the shim's /bin/sh -c wrapper.
+cat > "$MOUNT/etc/systemd/system/kasmvnc.service" << 'UNIT'
+[Unit]
+Description=KasmVNC X server + RFB→WebSocket gateway
+After=kasmvnc-firstboot.service
+Requires=kasmvnc-firstboot.service
+
+[Service]
+Type=simple
+Environment=DISPLAY_WIDTH=1280
+Environment=DISPLAY_HEIGHT=720
+Environment=DISPLAY_DEPTH=24
+Environment=KASM_FRAMERATE=60
+Environment=KASM_THREADS=1
+EnvironmentFile=-/run/bhatti/config-env
+ExecStartPre=/bin/sh -c 'rm -f /tmp/.X99-lock /tmp/.X11-unix/X99'
+ExecStart=/bin/sh -c '/usr/bin/Xkasmvnc :99 \
+    -geometry ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} -depth ${DISPLAY_DEPTH} \
     -websocketPort 6080 \
     -interface 0.0.0.0 \
     -BlacklistTimeout 0 \
     -FreeKeyMappings \
     -AlwaysShared \
     -SecurityTypes=None \
-    -FrameRate="$FRAMERATE" \
-    -RectThreads="$THREADS" \
-    &
+    -FrameRate=${KASM_FRAMERATE} \
+    -RectThreads=${KASM_THREADS}'
+Restart=on-failure
+RestartSec=2s
 
-# Wait for X
-for i in $(seq 1 30); do
-    xdpyinfo -display :99 >/dev/null 2>&1 && break
-    sleep 0.1
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# --- xfce-session.service ---
+#
+# Requires=kasmvnc.service so killing kasmvnc cascades (xfce without an
+# X server is pointless). After= guarantees ordering.
+cat > "$MOUNT/etc/systemd/system/xfce-session.service" << 'UNIT'
+[Unit]
+Description=XFCE desktop session
+After=kasmvnc.service
+Requires=kasmvnc.service
+
+[Service]
+Type=simple
+Environment=DISPLAY=:99
+Environment=HOME=/root
+ExecStart=/usr/bin/startxfce4
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# --- bhatti-display-env.service ---
+#
+# Writes DISPLAY=:99 to /run/bhatti/env so the lohar agent's env-merge
+# (cmd/lohar/main.go, post-startEnabledServices) picks it up and exposes
+# DISPLAY to every `bhatti exec` invocation. Oneshot with no After=
+# dependency — runs in the first activation wave, completes before any
+# wave is considered done.
+cat > "$MOUNT/etc/systemd/system/bhatti-display-env.service" << 'UNIT'
+[Unit]
+Description=Expose DISPLAY=:99 to bhatti exec via /run/bhatti/env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'mkdir -p /run/bhatti && echo DISPLAY=:99 > /run/bhatti/env'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# Enable all four via wants/ symlinks (deb-systemd-helper isn't involved
+# for our own units — we just create the symlink directly).
+for unit in kasmvnc-firstboot.service kasmvnc.service xfce-session.service bhatti-display-env.service; do
+    ln -sf "/etc/systemd/system/$unit" \
+        "$MOUNT/etc/systemd/system/multi-user.target.wants/$unit"
 done
-if ! xdpyinfo -display :99 >/dev/null 2>&1; then
-    echo "bhatti: KasmVNC not ready after 3s" >&2
-    exit 1
-fi
 
-# 2. System DBus (Chromium needs it)
-mkdir -p /run/dbus
-dbus-daemon --system --fork 2>/dev/null || true
-
-# 3. Session DBus
-eval $(dbus-launch --sh-syntax)
-
-# 4. Dummy audio sink (non-fatal)
-pulseaudio --start --exit-idle-time=-1 2>/dev/null || true
-
-# 5. XFCE desktop session
-startxfce4 &
-
-# 6. Write runtime env for lohar (so bhatti exec inherits DISPLAY)
-mkdir -p /run/bhatti
-echo "DISPLAY=:99" > /run/bhatti/env
-PROFILE
-chmod 755 "$MOUNT/etc/bhatti/init.sh"
+# --- Drop the legacy init.sh path entirely ---
+rm -f "$MOUNT/etc/bhatti/init.sh"
 
 # ==========================================================================
 # vnc-creds helper: prints the per-sandbox username + password.
