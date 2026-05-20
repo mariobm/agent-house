@@ -665,6 +665,24 @@ func waitForNotifyReady(u *Unit, svc serviceFile) error {
 	return fmt.Errorf("%s did not send READY=1 within %v", u.Canonical, timeout)
 }
 
+// spawnHelperPath is the binary invoked by startDaemon to perform the
+// race-free cgroup placement before execve into the daemon. Defaults to
+// /proc/self/exe — the kernel-maintained symlink to the running binary,
+// which in production resolves to lohar itself (started by the kernel
+// as PID 1 from /usr/local/bin/lohar). The argv[1]-verb dispatch in
+// main.go then routes the subprocess to runSpawn.
+//
+// Tests override this (and spawnHelperPrefix / spawnHelperEnv below) so
+// that startDaemon's subprocess is the test binary itself, re-routed
+// through TestMain to runSpawn. /proc/self/exe in a test binary is the
+// test binary, which has its own main (testing.M.Run) and would not
+// hit our argv-verb dispatch — hence the redirection.
+var (
+	spawnHelperPath   = "/proc/self/exe"
+	spawnHelperPrefix []string // argv prepended before "spawn ..."
+	spawnHelperEnv    []string // extra env vars set on cmd.Env
+)
+
 func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	execStart = strings.TrimLeft(execStart, "-!+:@")
 	if execStart == "" {
@@ -695,13 +713,18 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	// an orphan that systemctl stop couldn't kill). See spawn.go and
 	// docs/internal/PLAN-spawn-helper.md for the full story.
 	//
-	// /proc/self/exe is the kernel-maintained symlink to lohar's binary.
-	// Cheap (no syscall on Linux — it's a kernel-side resolve at execve
-	// time), test-friendly, and standard practice for re-exec patterns
-	// (gosu, su-exec, runc all use it).
-	cmd := exec.Command("/proc/self/exe", "spawn",
+	// spawnHelperPath defaults to /proc/self/exe — the kernel-maintained
+	// symlink to lohar's binary. Cheap (no syscall on Linux: kernel-side
+	// resolve at execve time), test-friendly, and standard practice for
+	// re-exec patterns (gosu, su-exec, runc all use it). The Prefix and
+	// Env slices are empty in production and only populated by tests.
+	spawnArgs := append([]string{}, spawnHelperPrefix...)
+	spawnArgs = append(spawnArgs,
+		"spawn",
 		"--cgroup", u.CgroupPath(),
-		"--", "/bin/sh", "-c", "exec "+execStart)
+		"--", "/bin/sh", "-c", "exec "+execStart,
+	)
+	cmd := exec.Command(spawnHelperPath, spawnArgs...)
 	cmd.Dir = svc.get("Service", "WorkingDirectory")
 	cmd.Env = buildServiceEnv(svc)
 	// For Type=notify daemons we expose NOTIFY_SOCKET so libsystemd's
@@ -710,6 +733,7 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	// they just won't connect to it. Inherited through the spawn helper
 	// across both execves (lohar spawn → /bin/sh → daemon).
 	cmd.Env = append(cmd.Env, "NOTIFY_SOCKET="+u.reg.Config.NotifySocketPath)
+	cmd.Env = append(cmd.Env, spawnHelperEnv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin = nil
 

@@ -117,42 +117,21 @@ func slicesEqual(a, b []string) bool {
 //
 // runSpawn is hard to test in-process because it calls os.Exit on
 // failure and syscall.Exec on success. Either branch tears down the
-// test process. The agent_test.go pattern (TestHelperAgent) handles
-// the same problem by re-execing the test binary with a guarded test
-// target. We do the same here.
-
-// TestHelperSpawn is the subprocess entry point used by helperSpawn —
-// not a real test; it's a no-op unless the GO_WANT_SPAWN_HELPER env var
-// is set. When set, args after "--helper-args" on the command line are
-// passed verbatim to runSpawn.
-func TestHelperSpawn(t *testing.T) {
-	if os.Getenv("GO_WANT_SPAWN_HELPER") != "1" {
-		return
-	}
-	// go test inserts its own -test.* flags before our args. Skip past
-	// them to the "--helper-args" sentinel.
-	args := os.Args[1:]
-	for i, a := range args {
-		if a == "--helper-args" {
-			args = args[i+1:]
-			break
-		}
-	}
-	runSpawn(args)
-	// runSpawn either os.Exits or syscall.Execs. If we reach this line,
-	// runSpawn returned without doing either — that's a bug.
-	t.Fatal("runSpawn returned without exec or exit")
-}
+// test process. The dispatch lives in TestMain (cmd/lohar/main_test.go)
+// which routes the subprocess to runSpawn whenever LOHAR_SPAWN_HELPER=1
+// is set in the environment. We just need to invoke ourselves with that
+// env var and the helper-args sentinel.
 
 // helperSpawn re-execs the test binary so that runSpawn runs in a
 // fresh process. Returns stdout, stderr, and the exit code observed by
-// the parent.
+// the parent. The TestMain dispatch (see main_test.go) handles routing
+// args after "--helper-args" to runSpawn.
 func helperSpawn(t *testing.T, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
-	allArgs := []string{"-test.run=TestHelperSpawn", "--helper-args"}
+	allArgs := []string{"--helper-args"}
 	allArgs = append(allArgs, args...)
 	cmd := exec.Command(os.Args[0], allArgs...)
-	cmd.Env = append(os.Environ(), "GO_WANT_SPAWN_HELPER=1")
+	cmd.Env = append(os.Environ(), "LOHAR_SPAWN_HELPER=1")
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
