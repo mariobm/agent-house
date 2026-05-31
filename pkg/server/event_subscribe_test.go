@@ -217,6 +217,142 @@ closed:
 	}
 }
 
+// TestSubscribe_FilterByUser is the third dimension of SubscriptionFilter,
+// the mirror of TestSubscribe_FilterBySandbox. Filling out the coverage
+// matrix — a future refactor that drops UserID matching gets caught here.
+func TestSubscribe_FilterByUser(t *testing.T) {
+	t.Cleanup(func() { goleak.VerifyNone(t) })
+	rec := newTestRecorder(t)
+
+	sub := rec.Subscribe(SubscriptionFilter{UserID: "usr_target"})
+	defer sub.Cancel()
+
+	rec.Record(store.Event{Type: "x", UserID: "usr_other"})
+	rec.Record(store.Event{Type: "x", UserID: "usr_target"})
+	rec.Record(store.Event{Type: "x", UserID: "usr_other"})
+
+	got := recvWithTimeout(t, sub.C, time.Second)
+	if got.UserID != "usr_target" {
+		t.Fatalf("got UserID=%q, want usr_target", got.UserID)
+	}
+	select {
+	case e := <-sub.C:
+		t.Fatalf("unexpected second event %+v", e)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestSubscribe_FilterCombinedAND pins down that non-empty filter
+// dimensions are ANDed together. The combined predicate is
+// (TypePrefix=thermal AND SandboxID=sb1 AND UserID=usr_a). An event
+// that matches only some dimensions must NOT be delivered. This is
+// what the autoscaler relies on for "my pool's sandboxes only".
+func TestSubscribe_FilterCombinedAND(t *testing.T) {
+	t.Cleanup(func() { goleak.VerifyNone(t) })
+	rec := newTestRecorder(t)
+
+	sub := rec.Subscribe(SubscriptionFilter{
+		TypePrefix: "thermal",
+		SandboxID:  "sb1",
+		UserID:     "usr_a",
+	})
+	defer sub.Cancel()
+
+	// Each of these matches some but not all dimensions:
+	rec.Record(store.Event{Type: "thermal.snap", SandboxID: "sb1", UserID: "usr_b"})    // wrong user
+	rec.Record(store.Event{Type: "thermal.snap", SandboxID: "sb2", UserID: "usr_a"})    // wrong sandbox
+	rec.Record(store.Event{Type: "sandbox.created", SandboxID: "sb1", UserID: "usr_a"}) // wrong type
+	// This one matches all three:
+	rec.Record(store.Event{Type: "thermal.pause", SandboxID: "sb1", UserID: "usr_a"})
+
+	got := recvWithTimeout(t, sub.C, time.Second)
+	if got.Type != "thermal.pause" || got.SandboxID != "sb1" || got.UserID != "usr_a" {
+		t.Fatalf("AND filter let through wrong event: %+v", got)
+	}
+	select {
+	case e := <-sub.C:
+		t.Fatalf("unexpected second event %+v", e)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestSubscribe_EventsBufferedBeforeFirstRead verifies the "register
+// now, read later" contract: events Record()'d after Subscribe but
+// before the consumer reads from C are buffered (up to subscriberBuffer)
+// and delivered when the consumer eventually reads.
+//
+// This pins down a subtle but load-bearing property for any subscriber
+// pattern that does setup work between Subscribe and the first <-sub.C
+// — e.g. the DNS responder seeding its zone from store.ListSandboxes
+// before starting to consume events.
+func TestSubscribe_EventsBufferedBeforeFirstRead(t *testing.T) {
+	t.Cleanup(func() { goleak.VerifyNone(t) })
+	rec := newTestRecorder(t)
+
+	sub := rec.Subscribe(SubscriptionFilter{})
+	defer sub.Cancel()
+
+	// Fire 5 events with NO consumer reading yet.
+	for i := 0; i < 5; i++ {
+		rec.Record(store.Event{Type: "sandbox.created", SandboxID: fmt.Sprintf("sb%d", i)})
+	}
+
+	// Now drain. All 5 should be sitting in the buffer.
+	got := []string{}
+	for i := 0; i < 5; i++ {
+		e := recvWithTimeout(t, sub.C, time.Second)
+		got = append(got, e.SandboxID)
+	}
+	if len(got) != 5 {
+		t.Fatalf("got %d events, want 5: %v", len(got), got)
+	}
+	// Order should be insertion order (channels are FIFO).
+	for i, id := range got {
+		if id != fmt.Sprintf("sb%d", i) {
+			t.Fatalf("out-of-order at index %d: got %q want sb%d", i, id, i)
+		}
+	}
+}
+
+// TestSubscribe_PersistenceUnaffectedByDisconnectedSubscriber proves
+// that a slow subscriber's disconnect doesn't interfere with the
+// SQLite write path. If fan-out errors leaked into the persistent
+// stream, we'd see fewer events in the database than we Record()'d.
+func TestSubscribe_PersistenceUnaffectedByDisconnectedSubscriber(t *testing.T) {
+	t.Cleanup(func() { goleak.VerifyNone(t) })
+
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "ev.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rec := NewEventRecorder(st)
+
+	// Register a subscriber that we'll never drain — it will fill its
+	// buffer and get disconnected mid-test.
+	slow := rec.Subscribe(SubscriptionFilter{})
+	_ = slow // intentionally not consumed
+
+	// Record more events than the subscriber buffer (64) so the slow
+	// one definitely gets disconnected.
+	const total = subscriberBuffer + 50
+	for i := 0; i < total; i++ {
+		rec.Record(store.Event{Type: "x", SandboxID: fmt.Sprintf("sb%d", i)})
+	}
+
+	// Close drains pending SQLite writes.
+	rec.Close()
+
+	events, err := st.QueryEvents(store.EventFilter{Limit: total + 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != total {
+		t.Fatalf("persisted %d events, want %d (slow subscriber's disconnect leaked into SQLite path?)", len(events), total)
+	}
+}
+
 // TestSubscribe_ConcurrentRecordSubscribeCancel exercises the locking
 // under load. Concurrent producers + consumers + churning subscriptions.
 // goleak.VerifyNone catches any goroutine that escapes.
