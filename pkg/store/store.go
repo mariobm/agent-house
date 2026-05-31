@@ -108,6 +108,7 @@ ALTER TABLE sandboxes ADD COLUMN cpus REAL NOT NULL DEFAULT 1;
 ALTER TABLE sandboxes ADD COLUMN memory_mb INTEGER NOT NULL DEFAULT 1024;
 ALTER TABLE sandboxes ADD COLUMN disk_size_mb INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sandboxes ADD COLUMN image TEXT NOT NULL DEFAULT 'minimal';
+ALTER TABLE sandboxes ADD COLUMN labels TEXT NOT NULL DEFAULT '{}';
 `
 
 // New opens (or creates) the SQLite database and runs migrations.
