@@ -293,7 +293,7 @@ func (e *Engine) startVM(ctx context.Context, id string, force bool) error {
 			userNet := e.userNetworks[vm.UserID]
 			e.mu.RUnlock()
 			if userNet != nil {
-				if err := ensureUserBridge(userNet); err != nil {
+				if err := e.bringUpUserNetwork(userNet); err != nil {
 					return fmt.Errorf("recreate bridge for resume: %w", err)
 				}
 				if _, err := createTapDevice(id, userNet.BridgeName); err != nil {
@@ -444,6 +444,12 @@ func (e *Engine) Destroy(ctx context.Context, id string) error {
 	}
 
 	vm.stateMu.Lock()
+
+	// Unregister name → IP in the per-user DNS responder before the
+	// IP returns to the FIFO pool. Doing this BEFORE killFC means a
+	// concurrent peer's name lookup can't race a destroyed sandbox's
+	// stale IP back into the wire. G1.1 of PLAN-bhatti-v2.md.
+	e.dnsDelete(vm.UserID, vm.Name)
 
 	if vm.Status == "running" && vm.cmd != nil {
 		killFC(vm.cmd, 1*time.Second)

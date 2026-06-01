@@ -298,7 +298,7 @@ func (e *Engine) ResumeSnapshot(ctx context.Context, snapDir string, manifest *S
 
 	// 2. Network: allocate the EXACT same IP (guest memory has it hardcoded)
 	userNet := e.getOrCreateUserNetwork(manifest.UserID, manifest.SubnetIndex)
-	if err = ensureUserBridge(userNet); err != nil {
+	if err = e.bringUpUserNetwork(userNet); err != nil {
 		return info, fmt.Errorf("setup user bridge: %w", err)
 	}
 	if err = userNet.Pool.TryAllocate(manifest.Network.GuestIP); err != nil {

@@ -115,7 +115,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	// 3. Get or create user's network, allocate IP, create TAP
 	phase("network_start")
 	userNet := e.getOrCreateUserNetwork(spec.UserID, spec.SubnetIndex)
-	if err = ensureUserBridge(userNet); err != nil {
+	if err = e.bringUpUserNetwork(userNet); err != nil {
 		return info, fmt.Errorf("setup user bridge: %w", err)
 	}
 	guestIP, err = userNet.Pool.Allocate()
@@ -418,6 +418,13 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 	e.mu.Lock()
 	e.vms[id] = vm
 	e.mu.Unlock()
+
+	// Register name → IP in the per-user DNS responder so other
+	// sandboxes on the same bridge can resolve this one by name.
+	// G1.1 of PLAN-bhatti-v2.md. No-op if DNS bind failed at bridge
+	// startup; we don't want sandbox creation to fail on a DNS
+	// hiccup.
+	e.dnsSet(spec.UserID, name, guestIP)
 	phase("create_complete")
 
 	return engine.SandboxInfo{

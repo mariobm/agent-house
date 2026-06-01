@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/sahil-shubham/bhatti/pkg/dns"
 )
 
 // UserNetwork holds the network state for a single user.
@@ -18,6 +20,13 @@ type UserNetwork struct {
 	GatewayIP  string // e.g. "10.0.1.1"
 	Subnet     string // e.g. "10.0.1.0/24"
 	Pool       *ipPool
+
+	// DNS is the per-user DNS responder bound to GatewayIP:53. Started
+	// by Engine.bringUpUserNetwork after ensureUserBridge succeeds;
+	// stopped by Engine.removeUserNetworkIfEmpty before destroyUserBridge.
+	// nil when the bind failed (in which case L2/L3 still works, just
+	// no name resolution for this user). G1.1 of PLAN-bhatti-v2.md.
+	DNS *dns.Server
 }
 
 // subnetFromIndex converts a 1-based subnet index to network parameters.
