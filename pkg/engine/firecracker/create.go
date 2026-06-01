@@ -209,15 +209,16 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 
 	phase("config_drive_start")
 	if err = createConfigDrive(configDrivePath, SandboxConfig{
-		SandboxID: id,
-		Hostname:  name,
-		Token:     token,
-		Env:       envMap,
-		Files:     filesMap,
-		Volumes:   volumeMounts,
-		Init:      spec.Init,
-		DNS:       []string{"1.1.1.1", "8.8.8.8"},
-		User:      "lohar",
+		SandboxID:   id,
+		Hostname:    name,
+		Token:       token,
+		Env:         envMap,
+		Files:       filesMap,
+		Volumes:     volumeMounts,
+		Init:        spec.Init,
+		DNS:         []string{"1.1.1.1", "8.8.8.8"},
+		DNSInternal: userNet.GatewayIP, // G1.1: lohar prepends as first resolver
+		User:        "lohar",
 	}); err != nil {
 		return info, fmt.Errorf("create config drive: %w", err)
 	}
