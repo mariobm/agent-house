@@ -269,9 +269,10 @@ func TestEngine_DNSEndToEndOverRealBridge(t *testing.T) {
 	e := newTestEngine(t)
 	// Use 10.99.99.0/24 — the test subnet TestUserBridgeLifecycle
 	// already conventions on. Won't collide with anything in normal
-	// use.
+	// use. Bridge name must fit in Linux's 15-char IFNAMSIZ minus the
+	// NUL terminator; "brbhatti-d99" is 12 chars.
 	un := &UserNetwork{
-		BridgeName: "brbhatti-dnstest",
+		BridgeName: "brbhatti-d99",
 		GatewayIP:  "10.99.99.1",
 		Subnet:     "10.99.99.0/24",
 		Pool:       newIPPool("10.99.99.1"),

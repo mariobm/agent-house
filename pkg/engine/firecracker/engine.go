@@ -194,12 +194,18 @@ func (e *Engine) Shutdown() {
 	if e.cancel != nil {
 		e.cancel()
 	}
-	e.mu.RLock()
+	// Lock (not RLock): we write un.DNS = nil inside the loop. Pre-fix
+	// this was an RLock + write race — not flagged by tests because
+	// Shutdown only runs once per Engine, but the lock-discipline
+	// invariant is
+	//   "writes go under Lock, reads go under RLock"
+	// and we'd be lying to readers otherwise.
+	e.mu.Lock()
 	for _, un := range e.userNetworks {
 		stopDNSForBridge(un.DNS)
 		un.DNS = nil
 	}
-	e.mu.RUnlock()
+	e.mu.Unlock()
 
 	e.mu.RLock()
 	ids := make([]string, 0, len(e.vms))
