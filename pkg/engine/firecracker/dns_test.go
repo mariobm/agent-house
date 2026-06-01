@@ -4,11 +4,15 @@ package firecracker
 
 import (
 	"context"
+	"encoding/binary"
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"os/exec"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sahil-shubham/bhatti/pkg/dns"
 )
@@ -237,3 +241,180 @@ func itoaSlow(i int) string {
 	}
 	return string(buf[pos:])
 }
+
+// TestEngine_DNSEndToEndOverRealBridge is the integration test the
+// rest of dns_test.go can't be: real bridge interface, real bind to
+// the bridge gateway on port 53, real UDP query over the network.
+// Mirrors the runtime path a sandbox would hit when its libresolv
+// queries 10.0.N.1:53. Gated on root for ip link / iptables / port 53.
+//
+// Lives alongside the rest of the DNS glue tests but only runs on
+// arc-runner-set (the integration runner). The CI step that runs
+// `go test ./pkg/engine/firecracker/` with sudo picks it up.
+func TestEngine_DNSEndToEndOverRealBridge(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("must run as root (creates bridge + binds port 53)")
+	}
+	// Docker-as-root without iproute2 (e.g. plain golang:1.25 dev
+	// containers) lands here. Skip rather than fail on the missing
+	// `ip` invocation — the test belongs on the integration runner
+	// which installs iproute2 + iptables explicitly.
+	if _, err := exec.LookPath("ip"); err != nil {
+		t.Skip("iproute2 not installed; integration runner has it")
+	}
+	if _, err := exec.LookPath("iptables"); err != nil {
+		t.Skip("iptables not installed; integration runner has it")
+	}
+
+	e := newTestEngine(t)
+	// Use 10.99.99.0/24 — the test subnet TestUserBridgeLifecycle
+	// already conventions on. Won't collide with anything in normal
+	// use.
+	un := &UserNetwork{
+		BridgeName: "brbhatti-dnstest",
+		GatewayIP:  "10.99.99.1",
+		Subnet:     "10.99.99.0/24",
+		Pool:       newIPPool("10.99.99.1"),
+	}
+	e.userNetworks["usr_dnstest"] = un
+
+	// Pre-populate a VM so seedDNS has work to do (the recovery-shaped
+	// case where bringUpUserNetwork must populate from e.vms).
+	e.vms["sb_dnstest"] = &VM{
+		ID: "sb_dnstest", Name: "alpha", UserID: "usr_dnstest",
+		GuestIP: "10.99.99.7",
+	}
+
+	// Bring up the bridge + start DNS via the actual production path.
+	if err := e.bringUpUserNetwork(un); err != nil {
+		t.Fatalf("bringUpUserNetwork: %v", err)
+	}
+	t.Cleanup(func() {
+		stopDNSForBridge(un.DNS)
+		// Cleanup bridge + the per-bridge iptables ACCEPT that
+		// ensureUserBridge installed. Both are idempotent on absence.
+		destroyUserBridge(un.BridgeName)
+	})
+	if un.DNS == nil {
+		t.Fatal("bringUpUserNetwork should have started the DNS server")
+	}
+
+	// Query the responder over the network. The gateway IP is bound
+	// to the bridge interface on this host, so a UDP packet to
+	// 10.99.99.1:53 reaches the responder via the loopback path on
+	// the bridge.
+	query := makeDNSQuery(t, "alpha", 1)
+	resp := udpQuery(t, "10.99.99.1:53", query, 2*time.Second)
+	if resp == nil {
+		t.Fatal("no DNS response")
+	}
+
+	// Last 4 bytes of an A response = IPv4 RDATA. Easier than re-
+	// parsing the whole message and equivalent to what the dns/
+	// package tests already verify.
+	if len(resp) < 4 {
+		t.Fatalf("response too short: %v", resp)
+	}
+	tail := resp[len(resp)-4:]
+	want := []byte{10, 99, 99, 7}
+	for i := 0; i < 4; i++ {
+		if tail[i] != want[i] {
+			t.Fatalf("A RDATA: got %v want %v (full response: %v)", tail, want, resp)
+		}
+	}
+
+	// Sandbox added AFTER bringUpUserNetwork (the Engine.Create case)
+	// must also show up via dnsSet.
+	e.vms["sb_late"] = &VM{
+		ID: "sb_late", Name: "beta", UserID: "usr_dnstest",
+		GuestIP: "10.99.99.8",
+	}
+	e.dnsSet("usr_dnstest", "beta", "10.99.99.8")
+	resp = udpQuery(t, "10.99.99.1:53", makeDNSQuery(t, "beta", 2), 2*time.Second)
+	if resp == nil {
+		t.Fatal("no DNS response for late-registered name")
+	}
+	tail = resp[len(resp)-4:]
+	want = []byte{10, 99, 99, 8}
+	for i := 0; i < 4; i++ {
+		if tail[i] != want[i] {
+			t.Fatalf("late A RDATA: got %v want %v", tail, want)
+		}
+	}
+
+	// Destroy path: dnsDelete should make the name un-resolvable
+	// before the actual VM teardown happens (the Engine.Destroy
+	// ordering). NXDOMAIN, not silent failure.
+	e.dnsDelete("usr_dnstest", "alpha")
+	resp = udpQuery(t, "10.99.99.1:53", makeDNSQuery(t, "alpha", 3), 2*time.Second)
+	if resp == nil {
+		t.Fatal("no DNS response after dnsDelete (server should still respond, just NXDOMAIN)")
+	}
+	// Header byte 3 (low byte of flags) holds the RCODE in the bottom
+	// 4 bits. NXDOMAIN = 3.
+	if rcode := resp[3] & 0x0F; rcode != 3 {
+		t.Errorf("after dnsDelete: RCODE=%d, want 3 (NXDOMAIN); response=%v", rcode, resp)
+	}
+}
+
+// makeDNSQuery builds a minimal A-query for the given name. ID is
+// echoed by the server so we can correlate responses if needed.
+func makeDNSQuery(t *testing.T, name string, id uint16) []byte {
+	t.Helper()
+	// 12-byte header + name + 4-byte (qtype,qclass).
+	var buf []byte
+	hdr := make([]byte, 12)
+	binary.BigEndian.PutUint16(hdr[0:2], id)
+	binary.BigEndian.PutUint16(hdr[2:4], 0x0100) // RD=1
+	binary.BigEndian.PutUint16(hdr[4:6], 1)      // QDCOUNT
+	buf = append(buf, hdr...)
+
+	// Encode name as length-prefixed labels.
+	for _, label := range splitLabels(name) {
+		buf = append(buf, byte(len(label)))
+		buf = append(buf, []byte(label)...)
+	}
+	buf = append(buf, 0) // root label
+
+	var qtail [4]byte
+	binary.BigEndian.PutUint16(qtail[0:2], 1) // QType A
+	binary.BigEndian.PutUint16(qtail[2:4], 1) // QClass IN
+	buf = append(buf, qtail[:]...)
+	return buf
+}
+
+func splitLabels(name string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(name); i++ {
+		if name[i] == '.' {
+			out = append(out, name[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(name) {
+		out = append(out, name[start:])
+	}
+	return out
+}
+
+func udpQuery(t *testing.T, addr string, query []byte, timeout time.Duration) []byte {
+	t.Helper()
+	conn, err := net.Dial("udp", addr)
+	if err != nil {
+		t.Fatalf("dial %s: %v", addr, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(timeout))
+	if _, err := conn.Write(query); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	resp := make([]byte, 512)
+	n, err := conn.Read(resp)
+	if err != nil {
+		return nil
+	}
+	return resp[:n]
+}
+
+
