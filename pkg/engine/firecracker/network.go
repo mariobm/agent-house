@@ -217,31 +217,53 @@ func setupGlobalFirewall() error {
 		{"filter", "FORWARD", []string{"-d", "10.0.0.0/8", "-m", "state",
 			"--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}},
 
+		// IMPORTANT — ordering subtlety: setupGlobalFirewall installs
+		// every rule with `iptables -I FORWARD/INPUT 1` (insert at
+		// position 1). Each insert pushes earlier rules DOWN, so the
+		// final iptables chain order is REVERSED from the slice. The
+		// LAST rule in the slice ends up at the TOP of the chain.
+		//
+		// The original [RELATED ACCEPT, NEW DROP] pair worked by
+		// accident: state matchers don't overlap, so even with the DROP
+		// at the top, RELATED packets fall through to the ACCEPT below.
+		// My port-53 ACCEPT does NOT have a state matcher — if it sits
+		// below the DROP NEW, every initial DNS query (state=NEW) hits
+		// DROP first and is silently lost. Caught the hard way in
+		// integration run 26745876400.
+		//
+		// Therefore order in this slice is:
+		//   4. RELATED ACCEPT      → ends up at BOTTOM (inserted first)
+		//   5. NEW DROP            → middle
+		//   6a/6b. port-53 ACCEPT  → ends up at TOP (inserted last)
+		// which produces the iptables-evaluation order we actually
+		// want: port-53-ACCEPT before NEW-DROP before RELATED-ACCEPT.
+
 		// 4. Allow return traffic from VMs to host (agent TCP responses).
 		// The bhatti daemon initiates TCP connections to VMs. The SYN-ACK
-		// enters INPUT with source 10.0.0.0/8. Without this rule, rule 6
+		// enters INPUT with source 10.0.0.0/8. Without this rule, rule 5
 		// would kill all agent connections.
-		// MUST come before rule 6.
 		{"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-m", "state",
 			"--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}},
 
-		// 5a/5b. Allow VM → host DNS (G1.1 of PLAN-bhatti-v2.md). The
+		// 5. Block VM-initiated connections to host (API, SSH, everything).
+		// Only NEW connections are dropped. Prevents compromised VMs from
+		// reaching the bhatti API or SSH. DNS escape hatch is rules 6a/6b
+		// which iptables evaluates BEFORE this DROP (see ordering note).
+		{"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-m", "state",
+			"--state", "NEW", "-j", "DROP"}},
+
+		// 6a/6b. Allow VM → host DNS (G1.1 of PLAN-bhatti-v2.md). The
 		// per-user DNS responder binds to the bridge gateway IP
 		// (10.0.N.1:53). A sandbox querying its resolver opens a NEW
-		// connection from 10.0.0.0/8 — without these rules, rule 6 drops
+		// connection from 10.0.0.0/8 — without these rules, rule 5 drops
 		// it. Port-scoped to 53 so this doesn't widen the attack
-		// surface for non-DNS host services; destination match against
-		// 10.0.0.0/8 keeps it scoped to bridge gateways.
+		// surface for non-DNS host services; destination-scoped to
+		// 10.0.0.0/8 keeps it from accepting random DNS traffic.
+		// Listed LAST in this slice intentionally — see ordering note.
 		{"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-d", "10.0.0.0/8",
 			"-p", "udp", "--dport", "53", "-j", "ACCEPT"}},
 		{"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-d", "10.0.0.0/8",
 			"-p", "tcp", "--dport", "53", "-j", "ACCEPT"}},
-
-		// 6. Block VM-initiated connections to host (API, SSH, everything).
-		// Only NEW connections are dropped. Prevents compromised VMs from
-		// reaching the bhatti API or SSH. DNS escape hatch is rules 5a/5b.
-		{"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-m", "state",
-			"--state", "NEW", "-j", "DROP"}},
 
 		// 6. NAT for outbound
 		{"nat", "POSTROUTING", []string{"-s", "10.0.0.0/8", "-o", defaultIface,
