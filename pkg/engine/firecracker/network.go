@@ -217,53 +217,46 @@ func setupGlobalFirewall() error {
 		{"filter", "FORWARD", []string{"-d", "10.0.0.0/8", "-m", "state",
 			"--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}},
 
-		// IMPORTANT — ordering subtlety: setupGlobalFirewall installs
-		// every rule with `iptables -I FORWARD/INPUT 1` (insert at
-		// position 1). Each insert pushes earlier rules DOWN, so the
-		// final iptables chain order is REVERSED from the slice. The
-		// LAST rule in the slice ends up at the TOP of the chain.
+		// ORDERING (in this slice == in iptables top-down): the install
+		// loop below iterates this slice in REVERSE and inserts each
+		// rule at position 1. That means the LAST rule iterated (= the
+		// FIRST rule in this slice) ends up at the TOP of the chain.
+		// So this slice reads in iptables-evaluation order: top first.
 		//
-		// The original [RELATED ACCEPT, NEW DROP] pair worked by
-		// accident: state matchers don't overlap, so even with the DROP
-		// at the top, RELATED packets fall through to the ACCEPT below.
-		// My port-53 ACCEPT does NOT have a state matcher — if it sits
-		// below the DROP NEW, every initial DNS query (state=NEW) hits
-		// DROP first and is silently lost. Caught the hard way in
-		// integration run 26745876400.
-		//
-		// Therefore order in this slice is:
-		//   4. RELATED ACCEPT      → ends up at BOTTOM (inserted first)
-		//   5. NEW DROP            → middle
-		//   6a/6b. port-53 ACCEPT  → ends up at TOP (inserted last)
-		// which produces the iptables-evaluation order we actually
-		// want: port-53-ACCEPT before NEW-DROP before RELATED-ACCEPT.
+		// I had this backwards in 412d82a and put port-53 ACCEPTs at
+		// the END of the slice thinking they'd land at the top. They
+		// landed at the BOTTOM, below the DROP NEW. Diagnostic dump
+		// from a raspi-5b reproduction showed the packet hitting the
+		// DROP NEW (pkt count = 1) and the ACCEPTs at 0. Reverted to
+		// the right order: port-53 ACCEPTs go BEFORE the DROP NEW in
+		// the slice so they're evaluated first.
 
 		// 4. Allow return traffic from VMs to host (agent TCP responses).
 		// The bhatti daemon initiates TCP connections to VMs. The SYN-ACK
-		// enters INPUT with source 10.0.0.0/8. Without this rule, rule 5
+		// enters INPUT with source 10.0.0.0/8. Without this rule, rule 6
 		// would kill all agent connections.
 		{"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-m", "state",
 			"--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}},
 
-		// 5. Block VM-initiated connections to host (API, SSH, everything).
-		// Only NEW connections are dropped. Prevents compromised VMs from
-		// reaching the bhatti API or SSH. DNS escape hatch is rules 6a/6b
-		// which iptables evaluates BEFORE this DROP (see ordering note).
-		{"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-m", "state",
-			"--state", "NEW", "-j", "DROP"}},
-
-		// 6a/6b. Allow VM → host DNS (G1.1 of PLAN-bhatti-v2.md). The
+		// 5a/5b. Allow VM → host DNS (G1.1 of PLAN-bhatti-v2.md). The
 		// per-user DNS responder binds to the bridge gateway IP
 		// (10.0.N.1:53). A sandbox querying its resolver opens a NEW
-		// connection from 10.0.0.0/8 — without these rules, rule 5 drops
-		// it. Port-scoped to 53 so this doesn't widen the attack
+		// connection from 10.0.0.0/8 — without these rules, rule 6
+		// drops it. Port-scoped to 53 so this doesn't widen the attack
 		// surface for non-DNS host services; destination-scoped to
 		// 10.0.0.0/8 keeps it from accepting random DNS traffic.
-		// Listed LAST in this slice intentionally — see ordering note.
+		// MUST come before rule 6 (the NEW DROP).
 		{"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-d", "10.0.0.0/8",
 			"-p", "udp", "--dport", "53", "-j", "ACCEPT"}},
 		{"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-d", "10.0.0.0/8",
 			"-p", "tcp", "--dport", "53", "-j", "ACCEPT"}},
+
+		// 6. Block VM-initiated connections to host (API, SSH, everything).
+		// Only NEW connections are dropped. Prevents compromised VMs from
+		// reaching the bhatti API or SSH. DNS escape hatch is rules 5a/5b
+		// which iptables evaluates BEFORE this DROP.
+		{"filter", "INPUT", []string{"-s", "10.0.0.0/8", "-m", "state",
+			"--state", "NEW", "-j", "DROP"}},
 
 		// 6. NAT for outbound
 		{"nat", "POSTROUTING", []string{"-s", "10.0.0.0/8", "-o", defaultIface,
@@ -314,14 +307,26 @@ func cleanupOldBridge() {
 			"-i", defaultIface, "-o", "brbhatti0", "-j", "ACCEPT")
 	}
 
-	// Remove old 10.0.0.0/8 rules that may have been appended (-A) at
-	// the wrong position (bottom of chain, after UFW rules)
-	runQuiet("iptables", "-D", "FORWARD", "-s", "10.0.0.0/8", "-d", "10.0.0.0/8", "-j", "DROP")
-	runQuiet("iptables", "-D", "FORWARD", "-s", "10.0.0.0/8", "!", "-d", "10.0.0.0/8", "-j", "ACCEPT")
-	runQuiet("iptables", "-D", "FORWARD", "-d", "10.0.0.0/8", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
-	runQuiet("iptables", "-D", "INPUT", "-s", "10.0.0.0/8", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
-	runQuiet("iptables", "-D", "INPUT", "-s", "10.0.0.0/8", "-m", "state", "--state", "NEW", "-j", "DROP")
-	runQuiet("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", "10.0.0.0/8", "-o", defaultIface, "-j", "MASQUERADE")
+	// DELIBERATELY do NOT delete the 10.0.0.0/8 FORWARD/INPUT/NAT
+	// rules here, even though earlier versions of this function did.
+	// Those rules ARE the current rules that setupGlobalFirewall
+	// installs — deleting them and re-inserting forces them to the
+	// top of the chain on each Engine.New, which gets the relative
+	// ordering between INPUT rules wrong on the 2nd-and-later call:
+	//
+	//   1st New: clean install → [RELATED, UDP53, TCP53, DROP] ✓
+	//   2nd New: cleanup deletes RELATED + DROP, leaves UDP53/TCP53.
+	//            setupGlobalFirewall's -C check finds UDP53/TCP53
+	//            and skips them, then -I-1 inserts DROP and RELATED
+	//            on top → [RELATED, DROP, UDP53, TCP53] ✗
+	//
+	// The 2nd-and-later order puts DROP NEW above the port-53
+	// ACCEPTs, so NEW DNS queries from sandboxes match the DROP
+	// first and get silently lost. setupGlobalFirewall is
+	// idempotent on its own (via -C), so the delete-and-reinsert
+	// dance buys nothing once we're past the 192.168.137.0/24 era
+	// migration. Hunted down via raspi-5b reproducer + iptables
+	// diagnostic dump on test failure.
 }
 
 func createTapDevice(sandboxID string, bridge string) (tapName string, err error) {

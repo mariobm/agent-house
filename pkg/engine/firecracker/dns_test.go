@@ -307,7 +307,24 @@ func TestEngine_DNSEndToEndOverRealBridge(t *testing.T) {
 	query := makeDNSQuery(t, "alpha", 1)
 	resp := udpQuery(t, "10.99.99.1:53", query, 2*time.Second)
 	if resp == nil {
-		t.Fatal("no DNS response")
+		// On failure dump iptables + interface state — this is what
+		// caught the 412d82a slice-ordering inversion. The packet was
+		// matching the DROP NEW rule (counter went 0 → 1) instead of
+		// the port-53 ACCEPT (still 0), proving the ACCEPTs were below
+		// the DROP in the chain. Keep these dumps for the next time
+		// this test starts mysteriously timing out.
+		dumpDiag := func(label string, name string, args ...string) {
+			out, err := exec.Command(name, args...).CombinedOutput()
+			t.Logf("=== %s ===\n%s (err=%v)", label, string(out), err)
+		}
+		dumpDiag("iptables INPUT", "iptables", "-L", "INPUT", "-v", "-n", "--line-numbers")
+		dumpDiag("iptables FORWARD", "iptables", "-L", "FORWARD", "-v", "-n", "--line-numbers")
+		dumpDiag("ip addr", "ip", "-d", "addr", "show", "brbhatti-d99")
+		dumpDiag("ip route", "ip", "route")
+		dumpDiag("ss", "sh", "-c", "ss -tunlp 2>&1 | head -20")
+		dumpDiag("sysctl rp_filter", "sh", "-c",
+			"sysctl net.ipv4.conf.all.rp_filter net.ipv4.conf.brbhatti-d99.rp_filter net.ipv4.conf.lo.rp_filter 2>&1")
+		t.Fatal("no DNS response (see diagnostics above)")
 	}
 
 	// Last 4 bytes of an A response = IPv4 RDATA. Easier than re-
