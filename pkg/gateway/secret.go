@@ -11,10 +11,10 @@ import (
 // This file is the L7 secret layer: minting per-sandbox aliases and substituting
 // them for real credentials on egress. The guest only ever holds the alias; the
 // real value lives here and is spliced in only for requests to the secret's
-// allowed hosts. See docs/internal/DESIGN-bhatti-v2-secrets-and-trust.md §3.2/§3.6b.
+// allowed hosts. See docs/internal/DESIGN-ahvm-v2-secrets-and-trust.md §3.2/§3.6b.
 
 // aliasMarker is a fixed infix embedded in every alias so a leaked alias is
-// recognizable as bhatti's even if it's no longer in a live table (a canary the
+// recognizable as ahvm's even if it's no longer in a live table (a canary the
 // audit layer can scan for globally). High-entropy random bytes surround it.
 const aliasMarker = "bht"
 

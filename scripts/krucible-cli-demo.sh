@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end local CLI demo on the krucible engine — runs an ISOLATED daemon +
-# CLI on this Mac without touching your system ~/.bhatti config (which points at
+# CLI on this Mac without touching your system ~/.ahvm config (which points at
 # the remote server). Everything lives under $KRUCIBLE_WORK + a throwaway config.
 #
 # Usage: scripts/krucible-cli-demo.sh
@@ -17,36 +17,36 @@ if ! pkg-config --exists libkrun 2>/dev/null; then
   echo "ERROR: libkrun not installed (brew install libkrun)"; exit 1
 fi
 
-echo "==> build (libkrucible + bhatti daemon/CLI + vmm helper + base rootfs)"
+echo "==> build (libkrucible + ahvm daemon/CLI + vmm helper + base rootfs)"
 make krucible >/dev/null
-go build -o bhatti ./cmd/bhatti/
+go build -o ahvm ./cmd/ahvm/
 make vmm >/dev/null
 [ -x dist/krucible-rootfs/init.krun ] || ./scripts/krucible-rootfs.sh >/dev/null
 
 # libkrun comes from the libkrucible prefix; libkrunfw from Homebrew. The daemon
-# passes krucible_libdir to bhatti-vmm as its dyld search path.
+# passes krucible_libdir to ahvm-vmm as its dyld search path.
 FORK_LIB="$REPO/libkrucible/_install/lib"
 
-# Isolated config — never read/written by the system bhatti.
+# Isolated config — never read/written by the system ahvm.
 cat > "$CFG" <<EOF
 engine: krucible
 listen: ":$PORT"
 data_dir: $WORK/data
 krucible_rootfs: $REPO/dist/krucible-rootfs
-krucible_vmm: $REPO/bhatti-vmm
+krucible_vmm: $REPO/ahvm-vmm
 krucible_libdir: $FORK_LIB:/opt/homebrew/lib
 api_url: http://localhost:$PORT
 EOF
-export BHATTI_CONFIG="$CFG"
+export AHVM_CONFIG="$CFG"
 
 echo "==> create local user (direct store write)"
-KEY="$(./bhatti user create --name dev 2>&1 | grep -oE 'bht_[A-Za-z0-9]+' | head -1)"
+KEY="$(./ahvm user create --name dev 2>&1 | grep -oE 'bht_[A-Za-z0-9]+' | head -1)"
 [ -n "$KEY" ] || { echo "ERROR: could not mint API key"; exit 1; }
-export BHATTI_TOKEN="$KEY"
+export AHVM_TOKEN="$KEY"
 echo "    token: ${KEY:0:12}…"
 
-echo "==> start daemon (./bhatti serve, engine=krucible) on :$PORT"
-./bhatti serve > "$WORK/serve.log" 2>&1 &
+echo "==> start daemon (./ahvm serve, engine=krucible) on :$PORT"
+./ahvm serve > "$WORK/serve.log" 2>&1 &
 SRV=$!
 cleanup() { kill "$SRV" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -55,7 +55,7 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
-# check "<expected substring>" ./bhatti <args...> — runs, prints, and asserts.
+# check "<expected substring>" ./ahvm <args...> — runs, prints, and asserts.
 FAILED=0
 check() {
   want="$1"; shift
@@ -65,12 +65,12 @@ check() {
   if printf '%s' "$out" | grep -qF -- "$want"; then echo "  [ok] matched: $want"; else echo "  [MISS] expected: $want"; FAILED=1; fi
 }
 
-check "created"        ./bhatti create --name s1 --cpus 1 --memory 512
-check "s1"             ./bhatti list
-check "hello-from-cli" ./bhatti exec s1 -- echo hello-from-cli
-check "OK http 200"    ./bhatti exec s1 -- netcheck http   # real egress from the sandbox
-check "running"        ./bhatti inspect s1
-check "destroyed"      ./bhatti destroy s1 --yes
+check "created"        ./ahvm create --name s1 --cpus 1 --memory 512
+check "s1"             ./ahvm list
+check "hello-from-cli" ./ahvm exec s1 -- echo hello-from-cli
+check "OK http 200"    ./ahvm exec s1 -- netcheck http   # real egress from the sandbox
+check "running"        ./ahvm inspect s1
+check "destroyed"      ./ahvm destroy s1 --yes
 
 echo
 if [ "$FAILED" = 0 ]; then

@@ -2,7 +2,7 @@ package proto
 
 // Frame types for the guest agent protocol.
 //
-// All communication between the bhatti host process and a guest VM happens
+// All communication between the ahvm host process and a guest VM happens
 // over vsock using a binary framing protocol. This protocol is
 // engine-independent — it can be tested over net.Pipe() or a Unix socket
 // without any VM.
@@ -59,7 +59,7 @@ const (
 
 	// Systemctl IPC: privileged unit operations are forwarded from the
 	// systemctl shim binary (running as caller uid) to PID-1 lohar (running
-	// as root) over a Unix domain socket. Spoken on /run/bhatti/systemctl.sock
+	// as root) over a Unix domain socket. Spoken on /run/ahvm/systemctl.sock
 	// inside the guest — not over vsock, because this is in-guest IPC.
 	// Caller uid is established via SO_PEERCRED on the server side, NOT
 	// from any client-claimed field; the request payload is just the op +

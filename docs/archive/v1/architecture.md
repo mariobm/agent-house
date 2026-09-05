@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/under-the-hood/architecture/>.
+> <https://ahvm.sh/docs/under-the-hood/architecture/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -9,7 +9,7 @@
 
 # Architecture
 
-Bhatti has two binaries. **bhatti** runs on the host — it's the daemon, the CLI, the HTTP server, the thermal manager, and the engine that talks to Firecracker. **lohar** runs inside every microVM as PID 1 — it handles exec, file operations, PTY sessions, and port forwarding.
+AHVM has two binaries. **ahvm** runs on the host — it's the daemon, the CLI, the HTTP server, the thermal manager, and the engine that talks to Firecracker. **lohar** runs inside every microVM as PID 1 — it handles exec, file operations, PTY sessions, and port forwarding.
 
 They communicate over TCP using a [binary framing protocol](wire-protocol.md).
 
@@ -18,7 +18,7 @@ They communicate over TCP using a [binary framing protocol](wire-protocol.md).
 │  Host  (Pi 5 / Graviton / x86_64 bare metal)                     │
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────────┐  │
-│  │  bhatti daemon  (bhatti serve)                              │  │
+│  │  ahvm daemon  (ahvm serve)                              │  │
 │  │                                                             │  │
 │  │  ┌──────────┐  ┌───────────────┐  ┌──────────────────────┐  │  │
 │  │  │ REST/WS  │  │ Engine        │  │ Store (SQLite)       │  │  │
@@ -55,7 +55,7 @@ They communicate over TCP using a [binary framing protocol](wire-protocol.md).
 │  │  │  └────────────────────────┘  │                           │  │
 │  │  │  user: lohar  /workspace     │                           │  │
 │  │  └──────────────────────────────┘                           │  │
-│  │  tapXXXXXXXX ─── brbhatti0 (bridge) ─── iptables NAT        │  │
+│  │  tapXXXXXXXX ─── brahvm0 (bridge) ─── iptables NAT        │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -85,7 +85,7 @@ The Firecracker engine extends this with thermal management (`Pause`, `Resume`, 
 
 ### What the consumer sees
 
-Two operations: create and destroy. Everything between is bhatti's job.
+Two operations: create and destroy. Everything between is ahvm's job.
 
 ```
 Create ──► sandbox exists (always "running" from API perspective) ──► Destroy
@@ -128,7 +128,7 @@ The lock discipline has two patterns:
 
 ## Data Flow: Exec
 
-Here's the complete path of `bhatti exec dev -- echo hello`:
+Here's the complete path of `ahvm exec dev -- echo hello`:
 
 ```
 CLI                     HTTP Server              Engine                  Agent Client            Lohar (guest)
@@ -183,7 +183,7 @@ Each NDJSON line is flushed immediately. The Firecracker engine implements `Stre
 ## Disk Layout
 
 ```
-/var/lib/bhatti/
+/var/lib/ahvm/
 ├── config.yaml                   daemon config (engine, listen, auth, paths)
 ├── state.db                      SQLite (WAL mode, sandboxes/templates/secrets/FC state)
 ├── age.key                       secret encryption key (age)
@@ -207,7 +207,7 @@ Each NDJSON line is flushed immediately. The Firecracker engine implements `Stre
 
 ```
 cmd/
-  bhatti/
+  ahvm/
     main.go             daemon + CLI entrypoint, VM recovery, graceful shutdown
     cli.go              CLI commands (create, exec, shell, file, secret, ...)
     engine_linux.go     Firecracker engine constructor (Linux only)

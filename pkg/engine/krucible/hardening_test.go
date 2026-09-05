@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // Guest-hardening + init behaviors (migration plan P2). These assert at the
@@ -92,7 +92,7 @@ func TestKrucibleExecRunsAsUid1000(t *testing.T) {
 
 // TestKrucibleConfigDriveUnmountedAfterBoot is the FC `ConfigDriveUnmounted`
 // guest-hardening behavior: after lohar applies the config drive it unmounts +
-// removes /run/bhatti/config, so the in-guest auth token (and the rest of the
+// removes /run/ahvm/config, so the in-guest auth token (and the rest of the
 // boot config) isn't left readable to sandbox processes.
 func TestKrucibleConfigDriveUnmountedAfterBoot(t *testing.T) {
 	eng := newBlockRootEngine(t).(*Engine)
@@ -107,11 +107,11 @@ func TestKrucibleConfigDriveUnmountedAfterBoot(t *testing.T) {
 	t.Cleanup(func() { eng.Destroy(context.Background(), id) })
 
 	// The mount point (and its config.json) must be gone.
-	if _, err := eng.FileStat(ctx, id, "/run/bhatti/config/config.json"); err == nil {
-		t.Fatal("/run/bhatti/config/config.json still present — config drive not unmounted/removed (token exposed)")
+	if _, err := eng.FileStat(ctx, id, "/run/ahvm/config/config.json"); err == nil {
+		t.Fatal("/run/ahvm/config/config.json still present — config drive not unmounted/removed (token exposed)")
 	}
-	if _, err := eng.FileStat(ctx, id, "/run/bhatti/config"); err == nil {
-		t.Fatal("/run/bhatti/config still present after boot — config drive mount not cleaned up")
+	if _, err := eng.FileStat(ctx, id, "/run/ahvm/config"); err == nil {
+		t.Fatal("/run/ahvm/config still present after boot — config drive mount not cleaned up")
 	}
 }
 

@@ -18,7 +18,6 @@ type ImageRecord struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-
 func (s *Store) CreateImage(img ImageRecord) error {
 	_, err := s.db.Exec(
 		`INSERT INTO images (id, user_id, name, source, file_path, size_mb, oci_digest, oci_config_json, created_at)
@@ -29,7 +28,7 @@ func (s *Store) CreateImage(img ImageRecord) error {
 	return err
 }
 
-// GetImage retrieves an image by user and name. Falls back to admin images (user_id='').
+// GetImage retrieves an image by user and name. Falls back to admin images (user_id=”).
 func (s *Store) GetImage(userID, name string) (*ImageRecord, error) {
 	var img ImageRecord
 	const cols = `id, user_id, name, source, file_path, size_mb, oci_digest, oci_config_json, created_at`

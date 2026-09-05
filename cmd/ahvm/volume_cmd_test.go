@@ -196,4 +196,3 @@ func TestCLIVolumeDeleteWhileAttached(t *testing.T) {
 	}
 	t.Log("✓ volume delete blocked while attached")
 }
-

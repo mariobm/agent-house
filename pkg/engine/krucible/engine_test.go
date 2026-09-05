@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/engine/enginetest"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine/enginetest"
 )
 
-// ensureVMMSigned keeps the dev loop robust on darwin: HVF requires bhatti-vmm
-// to carry the hypervisor entitlement, but a plain `go build -o bhatti-vmm`
+// ensureVMMSigned keeps the dev loop robust on darwin: HVF requires ahvm-vmm
+// to carry the hypervisor entitlement, but a plain `go build -o ahvm-vmm`
 // (instead of `make vmm`) strips the ad-hoc signature, so hv_vm_create then
 // fails for EVERY VM (VmSetup(VmCreate)) — an easy, silent way to lose an hour.
 // Re-apply it here (idempotent, ~50ms) so tests pass regardless of how the
@@ -29,7 +29,7 @@ func ensureVMMSigned(t *testing.T, vmm string) {
 }
 
 // newSuiteEngine builds a krucible engine for the shared enginetest suite,
-// self-skipping if libkrun / bhatti-vmm aren't available (so `go test ./...`
+// self-skipping if libkrun / ahvm-vmm aren't available (so `go test ./...`
 // stays green on hosts without libkrun). Build the helper with `make vmm`.
 func newSuiteEngine(t *testing.T) engine.Engine {
 	repo := repoRoot(t)
@@ -39,9 +39,9 @@ func newSuiteEngine(t *testing.T) engine.Engine {
 	if !hasHypervisor() {
 		t.Skip("no hypervisor (/dev/kvm or HVF); skipping VM suite")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
+	vmm := filepath.Join(repo, "ahvm-vmm")
 	if _, err := os.Stat(vmm); err != nil {
-		t.Skip("bhatti-vmm not built — run `make vmm`; skipping")
+		t.Skip("ahvm-vmm not built — run `make vmm`; skipping")
 	}
 	ensureVMMSigned(t, vmm)
 	eng, err := New(Config{
@@ -81,9 +81,9 @@ func newBlockRootEngine(t *testing.T) engine.Engine {
 	if _, err := exec.LookPath("mke2fs"); err != nil {
 		t.Skip("mke2fs not found (e2fsprogs); skipping block-root suite")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
+	vmm := filepath.Join(repo, "ahvm-vmm")
 	if _, err := os.Stat(vmm); err != nil {
-		t.Skip("bhatti-vmm not built — run `make vmm`; skipping")
+		t.Skip("ahvm-vmm not built — run `make vmm`; skipping")
 	}
 	ensureVMMSigned(t, vmm)
 	eng, err := New(Config{
@@ -142,7 +142,7 @@ func hasLibkrun() bool {
 }
 
 // hasHypervisor reports whether a usable hypervisor is present, so the VM suites
-// skip (rather than fail) on hosts that have libkrun + bhatti-vmm built but no
+// skip (rather than fail) on hosts that have libkrun + ahvm-vmm built but no
 // accelerator — e.g. a GitHub-hosted CI runner with no /dev/kvm. On linux we
 // require an openable /dev/kvm (KVM); on darwin HVF is always available on the
 // supported hardware (the entitlement/codesign is the real gate, enforced when

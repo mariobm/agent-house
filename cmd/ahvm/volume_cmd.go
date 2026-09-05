@@ -13,17 +13,17 @@ var volumeCmd = &cobra.Command{
 	Short: "Manage persistent volumes",
 	Long: `Persistent volumes are ext4 filesystems that survive sandbox destruction.
 Attach them with '--volume name:/mount' on create.`,
-	Example: `  bhatti volume create --name workspace --size 5120
-  bhatti create --name dev --volume workspace:/workspace
-  bhatti volume resize workspace --size 10240
-  bhatti volume list`,
+	Example: `  ahvm volume create --name workspace --size 5120
+  ahvm create --name dev --volume workspace:/workspace
+  ahvm volume resize workspace --size 10240
+  ahvm volume list`,
 }
 
 var volumeCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a persistent volume",
-	Example: `  bhatti volume create --name workspace --size 5120
-  bhatti volume create --name data --size 20480`,
+	Example: `  ahvm volume create --name workspace --size 5120
+  ahvm volume create --name data --size 20480`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()
@@ -146,10 +146,10 @@ func init() {
 // --- volume clone (B11) ---
 
 var volumeCloneCmd = &cobra.Command{
-	Use:   "clone <source-volume> --name <new-name>",
-	Short: "Clone a volume (point-in-time copy)",
-	Example: `  bhatti volume clone workspace --name workspace-backup`,
-	Args: exactArgs(1),
+	Use:     "clone <source-volume> --name <new-name>",
+	Short:   "Clone a volume (point-in-time copy)",
+	Example: `  ahvm volume clone workspace --name workspace-backup`,
+	Args:    exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, _ := cmd.Flags().GetString("name")
 		if name == "" {

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
-	"github.com/sahil-shubham/bhatti/pkg/configdrive"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/configdrive"
 )
 
 // fetchOverUDS mimics exactly what lohar does at boot: dial the config UDS,

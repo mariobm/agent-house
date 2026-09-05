@@ -12,7 +12,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 // PTY ioctl constants (same on amd64 and arm64 Linux).
@@ -163,7 +163,7 @@ func handleTTYSession(conn net.Conn, req proto.ExecRequest) {
 // during the replay, and leaving Attached=nil until the replay finishes
 // ensures the reader cannot interleave live bytes ahead of the
 // historical buffer when the lock is finally released. Tranche 0a #2
-// of PLAN-bhatti-v2.md.
+// of PLAN-ahvm-v2.md.
 //
 // Pre-fix, sess.Attached was set early and scrollback was written
 // outside the lock; the PTY reader could fire between the two, sending

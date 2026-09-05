@@ -1,6 +1,6 @@
 # Feature: Rename an existing sandbox
 
-Discussion: [#14](https://github.com/sahil-shubham/bhatti/discussions/14)
+Discussion: [#14](https://github.com/mariobm/agent-house/discussions/14)
 
 ---
 
@@ -30,9 +30,9 @@ Half-day change end-to-end. ~130 LOC including tests.
 | `pkg/engine/firecracker.VM.Name` | held in memory, used only for slog labels and the (unused) `engine.List()` return | stale until next daemon restart — see below |
 | Config drive `Hostname` | becomes `/etc/hostname` and `/etc/hosts` in the guest at boot | **deliberately not touched** |
 | `publish_rules.alias` | derived from name *at publish time*, then frozen | **not touched** — public URLs stay stable |
-| `bhatti-<name>-workspace` default volume name | generated once at create time | not touched, volume is its own object |
+| `ahvm-<name>-workspace` default volume name | generated once at create time | not touched, volume is its own object |
 | `RestoreVM(id, name, …)` on daemon restart | reads `sandboxes.name` from the store | picks up the new name automatically |
-| `~/.cache/bhatti/sandboxes` (CLI completion) | newline-separated list | updated by CLI on rename, also rebuilt on next `bhatti ls` |
+| `~/.cache/ahvm/sandboxes` (CLI completion) | newline-separated list | updated by CLI on rename, also rebuilt on next `ahvm ls` |
 | Active shell / exec / websocket sessions | keyed on `sb.ID` and the shell token, never `sb.Name` | **not affected — live sessions keep working** |
 | `snapshots.source_sandbox`, `events.sandbox_id` | both reference sandbox ID | not affected — historical records stay linked |
 
@@ -53,7 +53,7 @@ already shared externally. Rewriting it on rename would silently
 break links. Keep it frozen — the user can `unpublish && publish`
 to get a fresh one if they want it.
 
-**Auto-generated volume names.** `bhatti-<name>-workspace` was a
+**Auto-generated volume names.** `ahvm-<name>-workspace` was a
 one-shot default at create time and is now the volume's actual
 identifier. Volumes are independent objects with their own
 lifecycle; renaming the sandbox does not retroactively rename
@@ -151,7 +151,7 @@ Matches the idempotent-create behaviour. An empty string name fails
 
 `PATCH /sandboxes/:id` already accepts either a UUID or a name in
 the path (`s.store.GetSandbox` falls back to name lookup). So
-`bhatti edit old-name --name new-name` works without the CLI doing a
+`ahvm edit old-name --name new-name` works without the CLI doing a
 pre-resolve.
 
 ---
@@ -209,7 +209,7 @@ UNIQUE-rollback in the create handler.
 
 ## CLI
 
-**`cmd/bhatti/sandbox_cmd.go`** — add `--name` to the existing `edit`
+**`cmd/ahvm/sandbox_cmd.go`** — add `--name` to the existing `edit`
 command. No new top-level command in v1.
 
 ```go
@@ -227,7 +227,7 @@ if newName != "" {
 
 After a successful PATCH that included a rename, update the local
 completion cache (`addToCompletionCache` and
-`removeFromCompletionCache` already exist in `cmd/bhatti/cli.go`):
+`removeFromCompletionCache` already exist in `cmd/ahvm/cli.go`):
 
 ```go
 if newName != "" && newName != args[0] {
@@ -236,25 +236,25 @@ if newName != "" && newName != args[0] {
 }
 ```
 
-The cache is also rebuilt by every `bhatti ls`, so this is mostly
+The cache is also rebuilt by every `ahvm ls`, so this is mostly
 for the user who renames and immediately tab-completes. Two lines.
 
 Add an example to the `editCmd.Long`:
 
 ```
   # Rename a sandbox
-  bhatti edit dev --name dev-old
+  ahvm edit dev --name dev-old
 ```
 
 ### CLI ergonomics — honest assessment
 
-`bhatti edit foo --name bar` reads slightly oddly: the positional
+`ahvm edit foo --name bar` reads slightly oddly: the positional
 argument is the *old* name and the flag is the *new* name. Compare
 to `mv old new` / `git mv old new` / `docker rename old new`, which
 all use two positionals. We're picking the inconsistency in exchange
 for a one-line flag addition versus a fresh top-level cobra command
 with its own `setupTiming`, resolver, JSON shape, and tests. If
-discoverability turns out to matter, adding `bhatti rename` later as
+discoverability turns out to matter, adding `ahvm rename` later as
 a thin alias that calls into the same code path is two lines and
 non-breaking. Defer.
 
@@ -298,10 +298,10 @@ DB writes, not a transaction); returned body has both updated; one
 **`TestPatchSandbox_RenameSameName`** — PATCH with current name → 200,
 no DB write, no event.
 
-### CLI — `cmd/bhatti/cli_test.go`
+### CLI — `cmd/ahvm/cli_test.go`
 
-**`TestEdit_Rename`** — `bhatti create --name a`, `bhatti edit a
---name b`, then `bhatti inspect b` succeeds and `bhatti inspect a`
+**`TestEdit_Rename`** — `ahvm create --name a`, `ahvm edit a
+--name b`, then `ahvm inspect b` succeeds and `ahvm inspect a`
 errors. Completion cache contains `b`, not `a`.
 
 ---
@@ -322,12 +322,12 @@ only the ones you want to change.
 - `name` — rename the sandbox. Must match `[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}`
   and be unique among the user's non-destroyed sandboxes; returns 409
   on conflict. The in-guest hostname is set at create time and is
-  *not* changed by rename. Public URLs from `bhatti publish` keep
+  *not* changed by rename. Public URLs from `ahvm publish` keep
   their original alias and remain stable. Active shells, exec
   sessions, and websockets continue uninterrupted.
 ```
 
-**`docs/cli-reference.md`** — add a `bhatti edit --name` example
+**`docs/cli-reference.md`** — add a `ahvm edit --name` example
 under the existing `edit` entry.
 
 ---
@@ -338,7 +338,7 @@ One PR, four commits for review clarity:
 
 1. `pkg/store/sandbox.go`: `RenameSandbox` + store tests.
 2. `pkg/server/sandbox_handlers.go`: PATCH extension + handler tests.
-3. `cmd/bhatti/sandbox_cmd.go`: `--name` flag + completion cache + CLI test.
+3. `cmd/ahvm/sandbox_cmd.go`: `--name` flag + completion cache + CLI test.
 4. `docs/api-reference.md`, `docs/cli-reference.md`: docs.
 
 ---
@@ -367,7 +367,7 @@ matches the create-path convention of `strings.Contains(err.Error(),
 "UNIQUE")`. Adding a sentinel for one call site is either
 inconsistent with create or scope creep (refactor both).
 
-**A separate `bhatti rename` command.** `bhatti edit --name` covers
+**A separate `ahvm rename` command.** `ahvm edit --name` covers
 the request; a verb alias is a non-breaking 2-line addition if
 discoverability proves to matter.
 

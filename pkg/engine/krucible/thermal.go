@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 // This file implements pkg/server.ThermalEngine on top of the libkrun control

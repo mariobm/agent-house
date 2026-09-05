@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // TestKrucibleConfigOverVsock is the §3.4 real-usage gate. It proves the flows
@@ -19,7 +19,7 @@ import (
 //  1. create SUCCEEDS with mke2fs unavailable — the exact macOS 500 ("mke2fs:
 //     executable file not found") the config drive caused, and its fix;
 //  2. env from the config reaches the guest over the config vsock (lohar
-//     materialises it at /run/bhatti/config-env);
+//     materialises it at /run/ahvm/config-env);
 //  3. an injected file is written in the guest;
 //  4. the per-sandbox token is delivered and enforced — a wrong-token agent
 //     client is rejected, a correct-token one works. (A failed fetch would leave
@@ -79,7 +79,7 @@ func TestKrucibleConfigOverVsock(t *testing.T) {
 	}
 
 	// (2) env delivered over vsock (lohar writes configEnv to config-env).
-	if env := readGuest("/run/bhatti/config-env"); !strings.Contains(env, "FOO=bar") || !strings.Contains(env, "SECRET_KEY=sk-live-xyz") {
+	if env := readGuest("/run/ahvm/config-env"); !strings.Contains(env, "FOO=bar") || !strings.Contains(env, "SECRET_KEY=sk-live-xyz") {
 		t.Errorf("config-env = %q, want it to contain FOO=bar and SECRET_KEY=sk-live-xyz", env)
 	}
 	// (3) injected file materialised.

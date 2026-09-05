@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 // handlePipedSession creates a non-TTY session with scrollback and reattach.
@@ -170,7 +170,7 @@ func readPipedHostInput(conn net.Conn, sess *Session) {
 			}
 			sess.mu.Unlock()
 			return
-		// RESIZE: ignored for piped sessions (no PTY)
+			// RESIZE: ignored for piped sessions (no PTY)
 		}
 	}
 }

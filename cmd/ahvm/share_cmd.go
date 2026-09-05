@@ -14,9 +14,9 @@ var shareCmd = &cobra.Command{
 	Long: `Generate a shareable URL that opens an interactive terminal in the browser.
 Each call generates a fresh token (previous token is immediately invalidated).
 Use --revoke to disable shell access.`,
-	Example: `  bhatti share dev
-  bhatti share dev --json
-  bhatti share dev --revoke`,
+	Example: `  ahvm share dev
+  ahvm share dev --json
+  ahvm share dev --revoke`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	Run: func(cmd *cobra.Command, args []string) {

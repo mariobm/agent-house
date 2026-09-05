@@ -8,7 +8,7 @@ resume flow, with failure analysis for each step.
 ## Flow 1: Stop() — Hot/Warm → Cold (snapshot to disk)
 
 Called by: thermal manager (warm→cold), `SnapshotAll` (shutdown), user
-`bhatti stop`.
+`ahvm stop`.
 
 **Source:** `lifecycle.go:Stop()`
 
@@ -227,7 +227,7 @@ in the issues section).
 
 Called by: `main.go` at startup.
 
-**Source:** `cmd/bhatti/main.go:recoverVMs()`
+**Source:** `cmd/ahvm/main.go:recoverVMs()`
 
 ### Step 1: List all sandboxes
 
@@ -318,7 +318,7 @@ Populates the engine's in-memory VM map with the recovered state.
 ## Flow 4: startVM() — Cold → Hot (resume from snapshot)
 
 Called by: `EnsureHot()` (on first API request to a cold sandbox),
-auto-wake (for keep_hot sandboxes at startup), user `bhatti start`.
+auto-wake (for keep_hot sandboxes at startup), user `ahvm start`.
 
 **Source:** `lifecycle.go:startVM()`
 
@@ -602,7 +602,7 @@ checkpoint succeeded, but the source VM might be in a bad state.
 
 ## Flow 6: handleSnapshotResume() — Create sandbox from named snapshot
 
-Called by: `bhatti snapshot resume <name>`.
+Called by: `ahvm snapshot resume <name>`.
 
 **Source:** `admin_handlers.go:handleSnapshotResume()`
 
@@ -867,7 +867,7 @@ assignment in recovery (`vol0`, `vol1`, ...) depends on DB query order,
 which may not match the original order. FC would mount the wrong drive
 at the wrong path.
 
-**Location:** `cmd/bhatti/main.go:recoverVMs()` step 3.
+**Location:** `cmd/ahvm/main.go:recoverVMs()` step 3.
 
 **Fix:** Store drive_id in `volume_attachments` or use an ORDER BY.
 

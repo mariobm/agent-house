@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 // Regression test for the TTY scrollback / live-PTY ordering race on
-// reattach. Tranche 0a item #2 of PLAN-bhatti-v2.md.
+// reattach. Tranche 0a item #2 of PLAN-ahvm-v2.md.
 //
 // Pre-fix, handleSessionAttach set sess.Attached=conn early, then
 // snapshotted and wrote the scrollback OUTSIDE sess.mu. Between those
@@ -43,11 +43,11 @@ func TestSessionAttachOrdering_PTYReaderDoesNotInterleave(t *testing.T) {
 	// Build a session directly. No real PTY — we drive the Scrollback
 	// from the synthetic PTY reader below.
 	sess := &Session{
-		ID:        "test-ordering",
-		Argv:      []string{"sh"},
-		TTY:       true,
+		ID:         "test-ordering",
+		Argv:       []string{"sh"},
+		TTY:        true,
 		Scrollback: newRingBuffer(65536),
-		CreatedAt: time.Now(),
+		CreatedAt:  time.Now(),
 	}
 
 	const historicalSize = 1024
@@ -104,10 +104,10 @@ func TestSessionAttachOrdering_PTYReaderDoesNotInterleave(t *testing.T) {
 	// only STDOUT data (the bytes that would render to the user's
 	// terminal). SESSION_INFO and other control frames are ignored.
 	var (
-		stdout    bytes.Buffer
-		readErr   error
-		readMu    sync.Mutex
-		readDone  = make(chan struct{})
+		stdout   bytes.Buffer
+		readErr  error
+		readMu   sync.Mutex
+		readDone = make(chan struct{})
 	)
 	go func() {
 		defer close(readDone)
@@ -173,11 +173,11 @@ func TestSessionAttachOrdering_PTYReaderDoesNotInterleave(t *testing.T) {
 // STDOUT(scrollback) → EXIT sequence.
 func TestSessionAttachOrdering_DetachedSessionExitedReplay(t *testing.T) {
 	sess := &Session{
-		ID:        "test-exited",
-		Argv:      []string{"echo", "done"},
-		TTY:       true,
+		ID:         "test-exited",
+		Argv:       []string{"echo", "done"},
+		TTY:        true,
 		Scrollback: newRingBuffer(65536),
-		CreatedAt: time.Now(),
+		CreatedAt:  time.Now(),
 	}
 	exitCode := 0
 	sess.ExitCode = &exitCode

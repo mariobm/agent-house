@@ -1,11 +1,11 @@
 [Unit]
-Description=Bhatti Sandbox Infrastructure
+Description=AHVM Sandbox Infrastructure
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bhatti serve
-WorkingDirectory=/var/lib/bhatti
+ExecStart=/usr/local/bin/ahvm serve
+WorkingDirectory=/var/lib/ahvm
 Environment=HOME=/root
 Restart=always
 RestartSec=5

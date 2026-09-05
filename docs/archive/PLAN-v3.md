@@ -1,4 +1,4 @@
-# Bhatti v3 — CLI, Filesystem, Deployment
+# AHVM v3 — CLI, Filesystem, Deployment
 
 Parts 8–12 are done: VM lifecycle, sessions, thermal management, auth,
 volumes, init scripts. 67 integration tests on real Firecracker VMs.
@@ -15,7 +15,7 @@ Part 17 (API fix)      — no deps, prerequisite for CLI
      ↓
 Part 18 (CLI)          — needs Part 13 + 17
      ↓
-Part 19 (deployment)   — needs Part 18 (bhatti serve)
+Part 19 (deployment)   — needs Part 18 (ahvm serve)
      ↓
 Part 20 (install)      — needs Part 19 (systemd service)
 ```
@@ -27,7 +27,7 @@ All parts support both aarch64 and x86_64.
 ## Part 13 — Filesystem API
 
 Read, write, stat, and list files inside a sandbox. Used by the CLI
-(`bhatti file read/write`) and by SDK consumers building on top of bhatti.
+(`ahvm file read/write`) and by SDK consumers building on top of ahvm.
 
 ### 13.1 Frame Types
 
@@ -501,7 +501,7 @@ Same binary as the daemon. Single file. No CLI framework — `os.Args` + `flag`.
 ### 18.1 Mode Detection
 
 ```go
-// cmd/bhatti/main.go
+// cmd/ahvm/main.go
 
 func main() {
     if len(os.Args) > 1 && os.Args[1] != "serve" {
@@ -515,11 +515,11 @@ func main() {
 ### 18.2 CLI Config
 
 ```go
-// cmd/bhatti/cli.go
+// cmd/ahvm/cli.go
 
 var (
-    apiURL   = envOr("BHATTI_URL", "http://localhost:8080")
-    apiToken = envOr("BHATTI_TOKEN", "")
+    apiURL   = envOr("AHVM_URL", "http://localhost:8080")
+    apiToken = envOr("AHVM_TOKEN", "")
 )
 
 func init() {
@@ -589,10 +589,10 @@ func runCLI() {
 }
 
 func printUsage() {
-    fmt.Fprintf(os.Stderr, `Usage: bhatti <command> [args]
+    fmt.Fprintf(os.Stderr, `Usage: ahvm <command> [args]
 
 Commands:
-  serve                         Start the bhatti daemon
+  serve                         Start the ahvm daemon
   create [flags]                Create a new sandbox
   list                          List sandboxes
   destroy <id|name>             Destroy a sandbox
@@ -603,8 +603,8 @@ Commands:
   secret set|list|delete        Manage secrets
 
 Environment:
-  BHATTI_URL     API endpoint (default: http://localhost:8080)
-  BHATTI_TOKEN   Auth token (default: from ~/.bhatti/config.yaml)
+  AHVM_URL     API endpoint (default: http://localhost:8080)
+  AHVM_TOKEN   Auth token (default: from ~/.ahvm/config.yaml)
 `)
 }
 ```
@@ -665,7 +665,7 @@ func cmdList(args []string) {
 
 ```go
 func cmdDestroy(args []string) {
-    if len(args) == 0 { fatal("usage: bhatti destroy <id|name>") }
+    if len(args) == 0 { fatal("usage: ahvm destroy <id|name>") }
     id := resolveID(args[0])
     if err := apiJSON("DELETE", "/sandboxes/"+id, nil, nil); err != nil {
         fatal(err)
@@ -688,7 +688,7 @@ func cmdExec(args []string) {
         }
     }
     if target == "" || len(cmd) == 0 {
-        fatal("usage: bhatti exec <id|name> -- CMD...")
+        fatal("usage: ahvm exec <id|name> -- CMD...")
     }
     id := resolveID(target)
 
@@ -712,7 +712,7 @@ a dependency).
 
 ```go
 func cmdShell(args []string) {
-    if len(args) == 0 { fatal("usage: bhatti shell <id|name>") }
+    if len(args) == 0 { fatal("usage: ahvm shell <id|name>") }
     id := resolveID(args[0])
 
     wsURL := strings.Replace(apiURL, "http://", "ws://", 1)
@@ -805,7 +805,7 @@ func (s *Server) handleSandboxSessions(w http.ResponseWriter, r *http.Request, i
 ```go
 // CLI:
 func cmdPS(args []string) {
-    if len(args) == 0 { fatal("usage: bhatti ps <id|name>") }
+    if len(args) == 0 { fatal("usage: ahvm ps <id|name>") }
     id := resolveID(args[0])
 
     var sessions []struct {
@@ -829,10 +829,10 @@ func cmdPS(args []string) {
 
 ```go
 func cmdFile(args []string) {
-    if len(args) < 1 { fatal("usage: bhatti file read|write|ls <id> <path>") }
+    if len(args) < 1 { fatal("usage: ahvm file read|write|ls <id> <path>") }
     switch args[0] {
     case "read":
-        if len(args) < 3 { fatal("usage: bhatti file read <id> <path>") }
+        if len(args) < 3 { fatal("usage: ahvm file read <id> <path>") }
         id := resolveID(args[1])
         resp, err := apiRequest("GET",
             "/sandboxes/"+id+"/files?path="+url.QueryEscape(args[2]), nil)
@@ -845,7 +845,7 @@ func cmdFile(args []string) {
         io.Copy(os.Stdout, resp.Body)
 
     case "write":
-        if len(args) < 3 { fatal("usage: bhatti file write <id> <path> < file") }
+        if len(args) < 3 { fatal("usage: ahvm file write <id> <path> < file") }
         id := resolveID(args[1])
         // Read all stdin to get Content-Length
         data, _ := io.ReadAll(os.Stdin)
@@ -864,7 +864,7 @@ func cmdFile(args []string) {
         fmt.Println("ok")
 
     case "ls":
-        if len(args) < 3 { fatal("usage: bhatti file ls <id> <path>") }
+        if len(args) < 3 { fatal("usage: ahvm file ls <id> <path>") }
         id := resolveID(args[1])
         var files []struct {
             Name  string `json:"name"`
@@ -890,10 +890,10 @@ func cmdFile(args []string) {
 
 ```go
 func cmdSecret(args []string) {
-    if len(args) == 0 { fatal("usage: bhatti secret set|list|delete") }
+    if len(args) == 0 { fatal("usage: ahvm secret set|list|delete") }
     switch args[0] {
     case "set":
-        if len(args) < 3 { fatal("usage: bhatti secret set NAME VALUE") }
+        if len(args) < 3 { fatal("usage: ahvm secret set NAME VALUE") }
         if err := apiJSON("POST", "/secrets", map[string]any{
             "name": args[1], "value": args[2],
         }, nil); err != nil { fatal(err) }
@@ -903,7 +903,7 @@ func cmdSecret(args []string) {
         apiJSON("GET", "/secrets", nil, &secrets)
         for _, s := range secrets { fmt.Println(s.Name) }
     case "delete":
-        if len(args) < 2 { fatal("usage: bhatti secret delete NAME") }
+        if len(args) < 2 { fatal("usage: ahvm secret delete NAME") }
         apiJSON("DELETE", "/secrets/"+args[1], nil, nil)
         fmt.Println("deleted")
     }
@@ -937,20 +937,20 @@ func resolveID(nameOrID string) string {
 
 ### 18.14 Tests
 
-- `TestCLICreate` — `bhatti create --name test-cli`, verify output has ID.
+- `TestCLICreate` — `ahvm create --name test-cli`, verify output has ID.
 - `TestCLIList` — create, list, verify sandbox in table.
-- `TestCLIExec` — `bhatti exec <name> -- echo hello`, verify stdout + exit 0.
-- `TestCLIExecFailure` — `bhatti exec <name> -- false`, verify exit code 1.
+- `TestCLIExec` — `ahvm exec <name> -- echo hello`, verify stdout + exit 0.
+- `TestCLIExecFailure` — `ahvm exec <name> -- false`, verify exit code 1.
 - `TestCLIDestroy` — create, destroy, verify list is empty.
 - `TestCLIFileWriteRead` — write file via CLI, read back, verify content.
-- `TestCLIFileLS` — write files, `bhatti file ls`, verify names.
-- `TestCLIPS` — create sandbox with TTY session, `bhatti ps`, verify listed.
+- `TestCLIFileLS` — write files, `ahvm file ls`, verify names.
+- `TestCLIPS` — create sandbox with TTY session, `ahvm ps`, verify listed.
 
 ---
 
 ## Part 19 — Deployment
 
-### 19.1 bhatti serve
+### 19.1 ahvm serve
 
 Rename current `main()` daemon logic to `runDaemon()`. When
 `os.Args[1] == "serve"` or no args, call `runDaemon()`.
@@ -958,16 +958,16 @@ Rename current `main()` daemon logic to `runDaemon()`. When
 ### 19.2 Systemd Service
 
 ```ini
-# deploy/bhatti.service
+# deploy/ahvm.service
 
 [Unit]
-Description=Bhatti Sandbox Infrastructure
+Description=AHVM Sandbox Infrastructure
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bhatti serve
-WorkingDirectory=/var/lib/bhatti
+ExecStart=/usr/local/bin/ahvm serve
+WorkingDirectory=/var/lib/ahvm
 Environment=HOME=/root
 Restart=always
 RestartSec=5
@@ -980,7 +980,7 @@ WantedBy=multi-user.target
 
 ### 19.3 Config
 
-Install script generates `/var/lib/bhatti/config.yaml`. Architecture-aware
+Install script generates `/var/lib/ahvm/config.yaml`. Architecture-aware
 paths:
 
 ```yaml
@@ -988,10 +988,10 @@ paths:
 engine: firecracker
 listen: :8080
 auth_token: <random-32-hex>
-data_dir: /var/lib/bhatti
+data_dir: /var/lib/ahvm
 firecracker_bin: /usr/local/bin/firecracker
-firecracker_kernel: /var/lib/bhatti/images/vmlinux-arm64
-firecracker_rootfs: /var/lib/bhatti/images/rootfs-base-arm64.ext4
+firecracker_kernel: /var/lib/ahvm/images/vmlinux-arm64
+firecracker_rootfs: /var/lib/ahvm/images/rootfs-base-arm64.ext4
 ```
 
 ```yaml
@@ -999,10 +999,10 @@ firecracker_rootfs: /var/lib/bhatti/images/rootfs-base-arm64.ext4
 engine: firecracker
 listen: :8080
 auth_token: <random-32-hex>
-data_dir: /var/lib/bhatti
+data_dir: /var/lib/ahvm
 firecracker_bin: /usr/local/bin/firecracker
-firecracker_kernel: /var/lib/bhatti/images/vmlinux-amd64
-firecracker_rootfs: /var/lib/bhatti/images/rootfs-base-amd64.ext4
+firecracker_kernel: /var/lib/ahvm/images/vmlinux-amd64
+firecracker_rootfs: /var/lib/ahvm/images/rootfs-base-amd64.ext4
 ```
 
 ---
@@ -1012,7 +1012,7 @@ firecracker_rootfs: /var/lib/bhatti/images/rootfs-base-amd64.ext4
 One command on a fresh Linux host with KVM:
 
 ```bash
-curl -fsSL https://bhatti.sh/install.sh | sudo bash
+curl -fsSL https://ahvm.sh/install.sh | sudo bash
 ```
 
 Supports both aarch64 and x86_64.
@@ -1024,9 +1024,9 @@ Supports both aarch64 and x86_64.
 # scripts/install.sh
 set -euo pipefail
 
-BHATTI_VERSION="${BHATTI_VERSION:-latest}"
+AHVM_VERSION="${AHVM_VERSION:-latest}"
 FC_VERSION="1.6.0"
-DATA_DIR="/var/lib/bhatti"
+DATA_DIR="/var/lib/ahvm"
 
 # --- Preflight ---
 
@@ -1048,7 +1048,7 @@ if [[ ! -e /dev/kvm ]]; then
     fi
 fi
 
-echo "==> Installing bhatti on $(hostname) ($HOST_ARCH)"
+echo "==> Installing ahvm on $(hostname) ($HOST_ARCH)"
 
 # --- Directories ---
 
@@ -1067,18 +1067,18 @@ if [[ ! -f /usr/local/bin/firecracker ]]; then
     rm -rf "release-v${FC_VERSION}-${FC_ARCH}"
 fi
 
-# --- Bhatti + Lohar binaries ---
+# --- AHVM + Lohar binaries ---
 
-echo "==> Downloading bhatti and lohar..."
-if [[ "$BHATTI_VERSION" == "latest" ]]; then
-    BHATTI_VERSION=$(curl -fsSL \
-        https://api.github.com/repos/sahil-shubham/bhatti/releases/latest \
+echo "==> Downloading ahvm and lohar..."
+if [[ "$AHVM_VERSION" == "latest" ]]; then
+    AHVM_VERSION=$(curl -fsSL \
+        https://api.github.com/repos/sahil-shubham/ahvm/releases/latest \
         | grep tag_name | cut -d'"' -f4)
 fi
-RELEASE_URL="https://github.com/sahil-shubham/bhatti/releases/download/${BHATTI_VERSION}"
-curl -fsSL "${RELEASE_URL}/bhatti-linux-${GO_ARCH}" -o /usr/local/bin/bhatti
+RELEASE_URL="https://github.com/mariobm/agent-house/releases/download/${AHVM_VERSION}"
+curl -fsSL "${RELEASE_URL}/ahvm-linux-${GO_ARCH}" -o /usr/local/bin/ahvm
 curl -fsSL "${RELEASE_URL}/lohar-linux-${GO_ARCH}" -o "$DATA_DIR/lohar"
-chmod +x /usr/local/bin/bhatti "$DATA_DIR/lohar"
+chmod +x /usr/local/bin/ahvm "$DATA_DIR/lohar"
 
 # --- Kernel ---
 
@@ -1128,15 +1128,15 @@ fi
 # --- Systemd ---
 
 echo "==> Installing systemd service..."
-cat > /etc/systemd/system/bhatti.service << 'EOF'
+cat > /etc/systemd/system/ahvm.service << 'EOF'
 [Unit]
-Description=Bhatti Sandbox Infrastructure
+Description=AHVM Sandbox Infrastructure
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bhatti serve
-WorkingDirectory=/var/lib/bhatti
+ExecStart=/usr/local/bin/ahvm serve
+WorkingDirectory=/var/lib/ahvm
 Environment=HOME=/root
 Restart=always
 RestartSec=5
@@ -1148,23 +1148,23 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable bhatti
-systemctl start bhatti
+systemctl enable ahvm
+systemctl start ahvm
 
 # --- Summary ---
 
 TOKEN=$(grep auth_token "$DATA_DIR/config.yaml" | awk '{print $2}')
 echo ""
 echo "============================================"
-echo "  bhatti is running on :8080"
+echo "  ahvm is running on :8080"
 echo "  auth token: ${TOKEN}"
 echo ""
 echo "  Quick start:"
-echo "    export BHATTI_TOKEN=${TOKEN}"
-echo "    bhatti create --name hello"
-echo "    bhatti exec hello -- echo 'it works'"
-echo "    bhatti shell hello"
-echo "    bhatti destroy hello"
+echo "    export AHVM_TOKEN=${TOKEN}"
+echo "    ahvm create --name hello"
+echo "    ahvm exec hello -- echo 'it works'"
+echo "    ahvm shell hello"
+echo "    ahvm destroy hello"
 echo "============================================"
 ```
 

@@ -14,9 +14,9 @@ import (
 var fileCmd = &cobra.Command{
 	Use:   "file <read|write|ls> <id|name> <path>",
 	Short: "Read, write, and list files in a sandbox",
-	Example: `  bhatti file read dev /workspace/app.js
-  echo 'hello' | bhatti file write dev /workspace/greeting.txt
-  bhatti file ls dev /workspace/`,
+	Example: `  ahvm file read dev /workspace/app.js
+  echo 'hello' | ahvm file write dev /workspace/greeting.txt
+  ahvm file ls dev /workspace/`,
 }
 
 var fileReadCmd = &cobra.Command{

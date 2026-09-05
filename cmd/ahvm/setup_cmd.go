@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sahil-shubham/bhatti/pkg"
+	"github.com/mariobm/agent-house/pkg"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -22,16 +22,16 @@ var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Configure CLI endpoint and API key",
 	Long: `Configure the CLI's API endpoint and key. Writes the result to
-~/.bhatti/config.yaml and tests the connection by listing sandboxes.
+~/.ahvm/config.yaml and tests the connection by listing sandboxes.
 
 With no flags, runs interactively (prompts for endpoint and key).
 With --url and --token, runs non-interactively — useful for agents,
 CI scripts, and provisioning tools that can't answer prompts.`,
 	Example: `  # Interactive
-  bhatti setup
+  ahvm setup
 
   # Non-interactive (agents, CI)
-  bhatti setup --url https://api.bhatti.sh --token bht_abc123`,
+  ahvm setup --url https://api.ahvm.sh --token bht_abc123`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var endpoint, key string
 
@@ -81,7 +81,7 @@ CI scripts, and provisioning tools that can't answer prompts.`,
 
 		// Write config to the *invoking* user's home, even if we're running
 		// under sudo. pkg.DefaultDataDir() honors SUDO_USER, so this resolves
-		// to the same path that a later non-sudo `bhatti list` will read.
+		// to the same path that a later non-sudo `ahvm list` will read.
 		cfgDir := pkg.DefaultDataDir()
 		if err := os.MkdirAll(cfgDir, 0700); err != nil {
 			return fmt.Errorf("create config dir %s: %w", cfgDir, err)
@@ -102,12 +102,12 @@ CI scripts, and provisioning tools that can't answer prompts.`,
 		}
 
 		// If we're root via sudo, hand the dir+file back to the real user.
-		// Otherwise the next non-sudo `bhatti` invocation will hit EACCES
-		// on a root-owned ~/.bhatti and the user will (incorrectly) reach
+		// Otherwise the next non-sudo `ahvm` invocation will hit EACCES
+		// on a root-owned ~/.ahvm and the user will (incorrectly) reach
 		// for sudo again — the loop we're trying to break.
 		pkg.EnsureUserOwnedPath(cfgDir, cfgPath)
 		if os.Getenv("SUDO_USER") != "" && os.Getenv("SUDO_USER") != "root" {
-			fmt.Fprintf(os.Stderr, "note: you don't need sudo for `bhatti setup` —\n"+
+			fmt.Fprintf(os.Stderr, "note: you don't need sudo for `ahvm setup` —\n"+
 				"      saved config for user %q so it works without sudo next time.\n",
 				os.Getenv("SUDO_USER"))
 		}
@@ -139,13 +139,13 @@ CI scripts, and provisioning tools that can't answer prompts.`,
 		switch {
 		case strings.HasSuffix(shell, "/zsh"):
 			fmt.Println("\nEnable completions:")
-			fmt.Println("  echo 'source <(bhatti completion zsh)' >> ~/.zshrc")
+			fmt.Println("  echo 'source <(ahvm completion zsh)' >> ~/.zshrc")
 		case strings.HasSuffix(shell, "/bash"):
 			fmt.Println("\nEnable completions:")
-			fmt.Println("  echo 'source <(bhatti completion bash)' >> ~/.bashrc")
+			fmt.Println("  echo 'source <(ahvm completion bash)' >> ~/.bashrc")
 		case strings.HasSuffix(shell, "/fish"):
 			fmt.Println("\nEnable completions:")
-			fmt.Println("  bhatti completion fish > ~/.config/fish/completions/bhatti.fish")
+			fmt.Println("  ahvm completion fish > ~/.config/fish/completions/ahvm.fish")
 		case os.Getenv("PSModulePath") != "":
 			// PowerShell exports PSModulePath into every child process on
 			// Windows, macOS, and Linux. SHELL is unset on Windows and on
@@ -153,7 +153,7 @@ CI scripts, and provisioning tools that can't answer prompts.`,
 			// this branch only fires when the previous cases didn't match
 			// — i.e. native Windows or someone running `pwsh` directly.
 			fmt.Println("\nEnable completions:")
-			fmt.Println("  bhatti completion powershell >> $PROFILE")
+			fmt.Println("  ahvm completion powershell >> $PROFILE")
 		}
 		return nil
 	},

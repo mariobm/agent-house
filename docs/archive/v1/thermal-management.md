@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/under-the-hood/thermal-states/>.
+> <https://ahvm.sh/docs/under-the-hood/thermal-states/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -9,7 +9,7 @@
 
 # Thermal Management
 
-Bhatti manages VM resources automatically through three thermal states. The consumer never sees this — from the API's perspective, every sandbox is always "running." Behind the scenes, idle VMs progressively release resources and transparently restore when needed.
+AHVM manages VM resources automatically through three thermal states. The consumer never sees this — from the API's perspective, every sandbox is always "running." Behind the scenes, idle VMs progressively release resources and transparently restore when needed.
 
 ## The Three States
 
@@ -85,11 +85,11 @@ Sandboxes with `keep_hot: true` are skipped entirely by the thermal cycle. The V
 
 ```bash
 # At creation time
-bhatti create --name agent --init "hermes gateway" --keep-hot
+ahvm create --name agent --init "hermes gateway" --keep-hot
 
 # Toggle on an existing sandbox
-bhatti edit agent --keep-hot
-bhatti edit agent --allow-cold
+ahvm edit agent --keep-hot
+ahvm edit agent --allow-cold
 ```
 
 ```

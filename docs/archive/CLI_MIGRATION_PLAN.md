@@ -2,7 +2,7 @@
 
 ## Why
 
-The current CLI has a config bug where env vars silently override `bhatti setup`,
+The current CLI has a config bug where env vars silently override `ahvm setup`,
 762 lines of hand-rolled dispatch that's hard to extend, and no structured output
 for agents. Before the agent starts using the CLI, fix the foundation.
 
@@ -17,7 +17,7 @@ flags, help text, and completions painful.
 ### File Layout
 
 All client-side CLI logic in a top-level `cli/` package. Server-side daemon
-code stays in `cmd/bhatti/` (it pulls Linux-specific engine deps).
+code stays in `cmd/ahvm/` (it pulls Linux-specific engine deps).
 
 ```
 cli/
@@ -38,7 +38,7 @@ cli/
   timing.go         — HTTP trace transport
   cli_test.go       — integration tests
 
-cmd/bhatti/
+cmd/ahvm/
   main.go           — registers serve command, calls cli.Execute()
   engine_linux.go   — newFirecrackerEngine (Linux + KVM only)
   engine_other.go   — stub for macOS builds
@@ -48,7 +48,7 @@ cmd/bhatti/
 
 `main.go` is ~10 lines — it registers the `serve` command (which needs
 Linux engine imports) onto `cli.RootCmd`, then calls `cli.Execute()`.
-The serve command lives in `cmd/bhatti/` because it imports the firecracker
+The serve command lives in `cmd/ahvm/` because it imports the firecracker
 engine and recovery logic that shouldn't be in the client-side `cli/` package.
 
 Old `cli.go` (762 lines) goes away.
@@ -59,7 +59,7 @@ Old `cli.go` (762 lines) goes away.
 --flag  →  config file  →  env var  →  default
 ```
 
-`bhatti setup` writes the config, it just works. Env vars are the fallback
+`ahvm setup` writes the config, it just works. Env vars are the fallback
 for CI. A flag is the one-off escape hatch.
 
 ```go
@@ -71,7 +71,7 @@ func loadConfig(cmd *cobra.Command) {
         apiURL = v
     } else if cfg.APIURL != "" {
         apiURL = cfg.APIURL
-    } else if v := os.Getenv("BHATTI_URL"); v != "" {
+    } else if v := os.Getenv("AHVM_URL"); v != "" {
         apiURL = v
     }
     // default is already "http://localhost:8080"
@@ -81,7 +81,7 @@ func loadConfig(cmd *cobra.Command) {
         apiToken = v
     } else if cfg.AuthToken != "" {
         apiToken = cfg.AuthToken
-    } else if v := os.Getenv("BHATTI_TOKEN"); v != "" {
+    } else if v := os.Getenv("AHVM_TOKEN"); v != "" {
         apiToken = v
     }
 }
@@ -105,8 +105,8 @@ Explicit flag, no magic. When you want JSON, you say `--json`.
 ### On read commands (list, ps, version, file ls)
 
 ```bash
-bhatti list              # table for humans
-bhatti list --json       # JSON for agents
+ahvm list              # table for humans
+ahvm list --json       # JSON for agents
 ```
 
 Table output stays exactly as-is. JSON output returns the raw API response:
@@ -120,10 +120,10 @@ Table output stays exactly as-is. JSON output returns the raw API response:
 ### On mutations (create, destroy)
 
 ```bash
-bhatti create --name dev --json
+ahvm create --name dev --json
 # → {"id":"c4ae2df238261a6f","name":"dev","status":"running","ip":"10.0.1.2",...}
 
-bhatti destroy dev --json
+ahvm destroy dev --json
 # → {"status":"destroyed"}
 ```
 
@@ -133,7 +133,7 @@ Exec is special — stdout/stderr go to their normal file descriptors (so piping
 works). `--json` wraps the metadata:
 
 ```bash
-bhatti exec dev --json -- npm test
+ahvm exec dev --json -- npm test
 # stdout: npm test output (goes to stdout as-is)
 # stderr: npm test errors (goes to stderr as-is)
 # After completion, prints to stdout:
@@ -154,7 +154,7 @@ exit code forwarded).
 ### On errors
 
 ```bash
-bhatti exec nonexistent -- echo hello
+ahvm exec nonexistent -- echo hello
 # table mode: "Error: 404 Not Found: not found" on stderr, exit 1
 # --json mode: {"error": "not found"} on stdout, exit 1
 ```
@@ -185,7 +185,7 @@ Goes to stderr so it never pollutes piped output.
 ### Output
 
 ```
-$ bhatti exec dev --timing -- echo hello
+$ ahvm exec dev --timing -- echo hello
 hello
 ---
 dns:       1ms
@@ -202,7 +202,7 @@ the actual work. This tells you instantly whether latency is network or server.
 For sandbox creation:
 
 ```
-$ bhatti create --name test --timing
+$ ahvm create --name test --timing
 a1b2c3d4  test  10.0.1.4
 ---
 dns:       1ms
@@ -220,7 +220,7 @@ total:     3536ms
 When both are set, timing is a separate JSON object on stderr:
 
 ```
-$ bhatti list --json --timing
+$ ahvm list --json --timing
 [{"id":"abc","name":"dev",...}]              ← stdout
 {"dns_ms":1,"connect_ms":43,...}             ← stderr
 ```
@@ -277,12 +277,12 @@ context and print after the response.
 Cobra gives this for free:
 
 ```bash
-bhatti completion zsh > "${fpath[1]}/_bhatti"
-bhatti completion bash > /etc/bash_completion.d/bhatti
-bhatti completion fish > ~/.config/fish/completions/bhatti.fish
+ahvm completion zsh > "${fpath[1]}/_ahvm"
+ahvm completion bash > /etc/bash_completion.d/ahvm
+ahvm completion fish > ~/.config/fish/completions/ahvm.fish
 ```
 
-This completes `bhatti cr<tab>` → `create`, `bhatti create --cp<tab>` → `--cpus`,
+This completes `ahvm cr<tab>` → `create`, `ahvm create --cp<tab>` → `--cpus`,
 etc. Zero network calls.
 
 ### Dynamic sandbox name completion — local cache, never blocks
@@ -290,20 +290,20 @@ etc. Zero network calls.
 The problem you raised: if the server is in Germany, hitting the API on every
 tab keypress adds 100-200ms+ latency. That's unacceptable.
 
-Solution: **opportunistic local cache**. Every time `bhatti list` runs
+Solution: **opportunistic local cache**. Every time `ahvm list` runs
 successfully, it writes sandbox names to a temp file. Completions read that
 file — instant, offline, never blocks.
 
 ```go
-// On every successful `bhatti list`:
+// On every successful `ahvm list`:
 func cacheSandboxNames(names []string) {
-    path := filepath.Join(os.TempDir(), fmt.Sprintf("bhatti-completions-%d", os.Getuid()))
+    path := filepath.Join(os.TempDir(), fmt.Sprintf("ahvm-completions-%d", os.Getuid()))
     os.WriteFile(path, []byte(strings.Join(names, "\n")), 0600)
 }
 
 // Completion function reads the cache, never hits network:
 func completeSandboxNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-    path := filepath.Join(os.TempDir(), fmt.Sprintf("bhatti-completions-%d", os.Getuid()))
+    path := filepath.Join(os.TempDir(), fmt.Sprintf("ahvm-completions-%d", os.Getuid()))
     data, err := os.ReadFile(path)
     if err != nil {
         return nil, cobra.ShellCompDirectiveNoFileComp
@@ -332,8 +332,8 @@ psCmd.ValidArgsFunction = completeSandboxNames
 One flag, maps to the existing `timeout_sec` API field:
 
 ```bash
-bhatti exec dev --timeout 30 -- npm test    # 30s timeout
-bhatti exec dev -- echo hello               # default 300s
+ahvm exec dev --timeout 30 -- npm test    # 30s timeout
+ahvm exec dev -- echo hello               # default 300s
 ```
 
 Agent should always set this. A hung process shouldn't block the agent forever.
@@ -377,7 +377,7 @@ Each step is one PR. Tests pass after each.
 - **TTY auto-detection for output format** — explicit `--json` is clearer.
 - **Structured exit codes** — exit 0/1 is fine. Agent reads the error JSON.
 - **Idempotent mutations** (`--if-not-exists`) — good for later, not blocking.
-- **`bhatti run` compound command** — nice shortcut, build it when the agent
+- **`ahvm run` compound command** — nice shortcut, build it when the agent
   actually needs it. Might not — the agent might prefer explicit create + exec
   for visibility.
 - **Multi-profile support** — design the config to allow it later, don't build now.

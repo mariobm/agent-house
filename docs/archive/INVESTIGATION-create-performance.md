@@ -1,7 +1,7 @@
 # Investigation: Sandbox Create Performance
 
 *Measured on raspi-5a (Pi 5, ARM64, NVMe WD SN530), April 26 2026.*
-*bhatti v1.8.4 (dev build with instrumentation), FC v1.14.0, kernel 6.1.155*
+*ahvm v1.8.4 (dev build with instrumentation), FC v1.14.0, kernel 6.1.155*
 
 ---
 
@@ -9,7 +9,7 @@
 
 Added `slog.Debug` instrumentation to six phases of the create pipeline
 (commit `57a232b`). All logging is at Debug level — invisible at default
-INFO level. Enabled via `BHATTI_LOG_LEVEL=debug` systemd override.
+INFO level. Enabled via `AHVM_LOG_LEVEL=debug` systemd override.
 
 Phases instrumented:
 1. Engine Create path — `create.phase` messages at every step
@@ -45,9 +45,9 @@ umount is faster on btrfs).
 
 Setup:
 ```bash
-sudo fallocate -l 20G /var/lib/bhatti-btrfs.img
-sudo mkfs.btrfs -f /var/lib/bhatti-btrfs.img
-sudo mount -o loop,noatime,compress=zstd:1 /var/lib/bhatti-btrfs.img /var/lib/bhatti
+sudo fallocate -l 20G /var/lib/ahvm-btrfs.img
+sudo mkfs.btrfs -f /var/lib/ahvm-btrfs.img
+sudo mount -o loop,noatime,compress=zstd:1 /var/lib/ahvm-btrfs.img /var/lib/ahvm
 ```
 
 Rollback: unmount btrfs, restore ext4 backup.
@@ -159,7 +159,7 @@ It does NOT include:
 - Any agent readiness polling
 
 Their measurement is valid for what it measures — raw kernel boot
-speed. But it's not comparable to bhatti's create time, which
+speed. But it's not comparable to ahvm's create time, which
 includes host-side prep, FC launch, kernel boot, agent readiness,
 and the TCP handshake.
 

@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/contributing/adding-a-tier/>.
+> <https://ahvm.sh/docs/contributing/adding-a-tier/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -27,9 +27,9 @@ Chromium, served over a single port (6080) as an HTTP/WebSocket web client.
 ### First-time use
 
 ```bash
-bhatti create --name desktop --image computer --cpus 2 --memory 4096 --disk-size 8192
-bhatti publish desktop -p 6080
-bhatti exec desktop -- vnc-creds          # ← prints username + password
+ahvm create --name desktop --image computer --cpus 2 --memory 4096 --disk-size 8192
+ahvm publish desktop -p 6080
+ahvm exec desktop -- vnc-creds          # ← prints username + password
 # Open the URL printed by `publish` in your browser, log in.
 ```
 
@@ -47,14 +47,14 @@ cleartext in `/root/.vnc/cleartext` (root-only) for the `vnc-creds` helper.
 - Each sandbox you create gets its own password.
 - The published rootfs image carries no shared secret.
 - Snapshot/resume preserves the existing password.
-- `bhatti image save` will bake the current password into the saved image —
+- `ahvm image save` will bake the current password into the saved image —
   treat saved-from-running images like any other secret-bearing artifact.
 
 Retrieve them anytime:
 
 ```bash
-bhatti exec desktop -- vnc-creds          # human-readable
-bhatti exec desktop -- vnc-creds --json   # for scripts/agents
+ahvm exec desktop -- vnc-creds          # human-readable
+ahvm exec desktop -- vnc-creds --json   # for scripts/agents
 ```
 
 ### Tunables
@@ -70,14 +70,14 @@ Pass at create time with `--env`:
 | `KASM_THREADS`   | `nproc - 1`    | encoder thread count; default leaves 1 vCPU for the desktop |
 
 ```bash
-bhatti create --name desktop --image computer --cpus 4 --memory 4096 \
+ahvm create --name desktop --image computer --cpus 4 --memory 4096 \
     --env DISPLAY_WIDTH=1920 --env DISPLAY_HEIGHT=1080 \
     --env KASM_FRAMERATE=30   # cap the encoder for low-bandwidth links
 ```
 
 ### Beyond the env knobs
 
-KasmVNC has dozens of options bhatti deliberately does not surface (dynamic
+KasmVNC has dozens of options ahvm deliberately does not surface (dynamic
 quality bounds, video-mode thresholds, scaling algorithms, DLP/clipboard
 policy, etc.). For those, edit `/etc/kasmvnc/kasmvnc.yaml` inside the sandbox
 and reconnect. The upstream documentation is authoritative:
@@ -86,7 +86,7 @@ and reconnect. The upstream documentation is authoritative:
 - Stats / control API: <https://github.com/kasmtech/KasmVNC/wiki/API>
 - Browser-side tuning: <https://github.com/kasmtech/KasmVNC/wiki/Browser-Support>
 
-### Agent helpers (run via `bhatti exec`)
+### Agent helpers (run via `ahvm exec`)
 
 | Helper | Purpose |
 |---|---|
@@ -97,34 +97,34 @@ and reconnect. The upstream documentation is authoritative:
 | `xdotool ...` | Drive mouse/keyboard input |
 | `chromium-browser <url>` | Launch Chromium with sane flags |
 
-`DISPLAY=:99` is pre-set for `bhatti exec` (via `/run/bhatti/env`), so these
+`DISPLAY=:99` is pre-set for `ahvm exec` (via `/run/ahvm/env`), so these
 just work without any environment plumbing.
 
 ## How tiers are discovered
 
 The server **auto-discovers** tiers at startup by globbing for
-`rootfs-*-{arch}.ext4` in the images directory (`/var/lib/bhatti/images/`).
+`rootfs-*-{arch}.ext4` in the images directory (`/var/lib/ahvm/images/`).
 Any file matching the pattern is registered as a built-in admin image.
 There is no hardcoded tier list in the server — drop a new rootfs file and
-it appears in `bhatti image list` on next restart.
+it appears in `ahvm image list` on next restart.
 
 ## Installing additional tiers on an existing server
 
 By default, the install script only downloads the single tier configured in
-`/etc/bhatti/config.yaml`. Pass `--tiers` to pull additional tiers:
+`/etc/ahvm/config.yaml`. Pass `--tiers` to pull additional tiers:
 
 ```bash
 # Install all available tiers
-curl -fsSL bhatti.sh/install | sudo bash -s -- --tiers all
+curl -fsSL ahvm.sh/install | sudo bash -s -- --tiers all
 
 # Install specific tiers (comma-separated)
-curl -fsSL bhatti.sh/install | sudo bash -s -- --tiers computer,browser
+curl -fsSL ahvm.sh/install | sudo bash -s -- --tiers computer,browser
 ```
 
 The `bash -s -- ...` syntax passes flags through the curl pipe. The
 server discovers the new rootfs files on restart and registers them
 automatically. No config changes needed — the config only controls which
-tier is the default for `bhatti create` when no `--image` is specified.
+tier is the default for `ahvm create` when no `--image` is specified.
 
 ## Adding a new tier
 
@@ -185,7 +185,7 @@ case "${tier_choice:-1}" in
 esac
 ```
 
-Also update the `BHATTI_TIER` env var comment at the top of the file.
+Also update the `AHVM_TIER` env var comment at the top of the file.
 
 ### 5. That's it
 
@@ -197,6 +197,6 @@ The server picks up the new rootfs automatically — no Go code changes needed.
 [ ] scripts/tiers/<name>.sh          — tier build script
 [ ] scripts/build-tier.sh            — SIZE_MB default in case statement
 [ ] .github/workflows/release.yml    — add to matrix.tier
-[ ] scripts/install.sh               — interactive menu + BHATTI_TIER comment
+[ ] scripts/install.sh               — interactive menu + AHVM_TIER comment
 [ ] scripts/install.sh               — add to ALL_KNOWN_TIERS in do_server_update()
 ```

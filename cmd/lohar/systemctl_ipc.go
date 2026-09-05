@@ -15,14 +15,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 // systemctlSocketPath is the in-guest UDS where PID-1 lohar listens for
 // privileged systemctl operations. Created at boot, mode 0666 so any user
 // can connect; the actual authorisation check uses SO_PEERCRED on the
 // accepted connection (kernel-vouched caller uid, not a client-claimed one).
-const systemctlSocketPath = "/run/bhatti/systemctl.sock"
+const systemctlSocketPath = "/run/ahvm/systemctl.sock"
 
 // privilegedOps lists systemctl subcommands that require root and therefore
 // route through PID-1 lohar over the IPC. Read-only ops (status, show,
@@ -104,7 +104,7 @@ func tryDispatchViaIPC(req proto.SystemctlRequest) (*proto.SystemctlResponse, bo
 
 // --- Server side ---
 
-// startSystemctlListener binds the UDS at /run/bhatti/systemctl.sock and
+// startSystemctlListener binds the UDS at /run/ahvm/systemctl.sock and
 // spawns an accept loop. Called from runAgent during boot; safe to call
 // even if the socket dir doesn't exist yet (we MkdirAll first).
 //
@@ -112,7 +112,7 @@ func tryDispatchViaIPC(req proto.SystemctlRequest) (*proto.SystemctlResponse, bo
 // doesn't block other systemctl invocations. Read-only paths don't reach
 // here (they stay in-process), so the only ops we serve are privileged.
 func startSystemctlListener() {
-	os.MkdirAll("/run/bhatti", 0755)
+	os.MkdirAll("/run/ahvm", 0755)
 	os.Remove(systemctlSocketPath) // stale from previous run
 	ln, err := net.Listen("unix", systemctlSocketPath)
 	if err != nil {

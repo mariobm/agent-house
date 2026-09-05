@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // TestEngineCapabilities boots one VM and probes the agent surface + TSI
@@ -29,9 +29,9 @@ func TestEngineCapabilities(t *testing.T) {
 	if !hasHypervisor() {
 		t.Skip("no hypervisor (/dev/kvm or HVF); skipping VM suite")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
+	vmm := filepath.Join(repo, "ahvm-vmm")
 	if _, err := os.Stat(vmm); err != nil {
-		t.Skip("bhatti-vmm not built — run `make vmm`; skipping")
+		t.Skip("ahvm-vmm not built — run `make vmm`; skipping")
 	}
 
 	eng, err := New(Config{

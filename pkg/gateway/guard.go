@@ -1,11 +1,11 @@
-// Package gateway is bhatti's host-side egress gateway: the single point that
+// Package gateway is ahvm's host-side egress gateway: the single point that
 // enforces where a sandbox may connect (the private-range / SSRF guard + the
 // per-sandbox egress policy) and, at L7, injects credentials on the guest's
 // behalf. This file is the L4 guard — pure, arch-agnostic, VM-free logic that
 // both the TSI egress filter and the virtio-net gateway share.
 //
-// Design: docs/internal/DESIGN-bhatti-v2-networking.md (§5.3) +
-// docs/internal/DESIGN-bhatti-v2-secrets-and-trust.md (§3.6a). The guard is
+// Design: docs/internal/DESIGN-ahvm-v2-networking.md (§5.3) +
+// docs/internal/DESIGN-ahvm-v2-secrets-and-trust.md (§3.6a). The guard is
 // deny-by-construction for the host: a sandbox reaches the internet by default
 // but never the host, loopback, link-local (incl. cloud metadata), or other
 // tenants — and only reaches RFC-1918 with an explicit opt-in.

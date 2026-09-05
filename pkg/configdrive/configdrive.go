@@ -1,6 +1,6 @@
-// Package configdrive defines the bhatti sandbox config schema: the JSON
+// Package configdrive defines the ahvm sandbox config schema: the JSON
 // (hostname, auth token, env, files, volumes, DNS, init, net) lohar fetches over
-// the guest→host config vsock at boot (DESIGN-bhatti-v2-secrets-and-trust §3.4),
+// the guest→host config vsock at boot (DESIGN-ahvm-v2-secrets-and-trust §3.4),
 // before the agent starts listening. It replaced the on-disk ext4 "config drive"
 // (retired along with mke2fs); the package name is kept for continuity. These
 // field names are the wire contract with lohar's reader (cmd/lohar/main.go:

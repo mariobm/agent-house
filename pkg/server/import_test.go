@@ -42,7 +42,9 @@ func TestImageImportEndpoint(t *testing.T) {
 		t.Fatal("method not allowed — routing broken")
 	}
 	// 400 is expected (invalid tarball)
-	var errResp struct{ Error string `json:"error"` }
+	var errResp struct {
+		Error string `json:"error"`
+	}
 	json.NewDecoder(resp.Body).Decode(&errResp)
 	t.Logf("import response: %d %s", resp.StatusCode, errResp.Error)
 }

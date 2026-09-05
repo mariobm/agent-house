@@ -14,11 +14,11 @@
 # creeping back in, the lesson is in the c31d997 / 4286d3a postmortem.
 
 setup() {
-    # BHATTI_TEST=1 tells install.sh to skip its script-mode hardening
+    # AHVM_TEST=1 tells install.sh to skip its script-mode hardening
     # (set -euo pipefail + ERR/EXIT traps). Those would clobber bats'
     # own bats_error_trap and silently turn failed assertions into
     # "missing tests" — see the matching block in scripts/install.sh.
-    export BHATTI_TEST=1
+    export AHVM_TEST=1
     source scripts/install.sh
 }
 
@@ -119,30 +119,30 @@ output_contains() {
     version_gt v1.0 v0.9
 }
 
-# ── resolve_latest_version: BHATTI_VERSION override ──────────────────
+# ── resolve_latest_version: AHVM_VERSION override ──────────────────
 # Production env-var path that lets a caller pin a specific tag instead
 # of letting GitHub's `releases/latest` decide. The two requirements:
-#   1. VERSION is set verbatim from BHATTI_VERSION.
+#   1. VERSION is set verbatim from AHVM_VERSION.
 #   2. RELEASE_URL points at GitHub's release-download URL for that tag
-#      (NOT influenced by BHATTI_TEST_RELEASE_URL — that override is
+#      (NOT influenced by AHVM_TEST_RELEASE_URL — that override is
 #      reserved for the smoke test rig).
 # Without #2, a caller could end up downloading binaries from the
 # previous test run's fake release tree, which would silently install
 # the wrong artifacts.
 
-@test "resolve_latest_version: BHATTI_VERSION pins VERSION and RELEASE_URL to the GitHub tag" {
-    BHATTI_VERSION=v1.11.4-rc.1 resolve_latest_version
+@test "resolve_latest_version: AHVM_VERSION pins VERSION and RELEASE_URL to the GitHub tag" {
+    AHVM_VERSION=v1.11.4-rc.1 resolve_latest_version
     [ "$VERSION" = "v1.11.4-rc.1" ]
-    [ "$RELEASE_URL" = "https://github.com/sahil-shubham/bhatti/releases/download/v1.11.4-rc.1" ]
+    [ "$RELEASE_URL" = "https://github.com/mariobm/agent-house/releases/download/v1.11.4-rc.1" ]
 }
 
-@test "resolve_latest_version: BHATTI_TEST_VERSION takes precedence over BHATTI_VERSION (test rig wins inside test rig)" {
+@test "resolve_latest_version: AHVM_TEST_VERSION takes precedence over AHVM_VERSION (test rig wins inside test rig)" {
     # If both are set, the test override must win so the smoke test
     # rig keeps working even if the test environment leaks a real
-    # BHATTI_VERSION value.
-    BHATTI_TEST_VERSION=v0.0.1-test \
-    BHATTI_TEST_RELEASE_URL=file:///tmp/fake \
-    BHATTI_VERSION=v1.11.4-rc.1 \
+    # AHVM_VERSION value.
+    AHVM_TEST_VERSION=v0.0.1-test \
+    AHVM_TEST_RELEASE_URL=file:///tmp/fake \
+    AHVM_VERSION=v1.11.4-rc.1 \
         resolve_latest_version
     [ "$VERSION" = "v0.0.1-test" ]
     [ "$RELEASE_URL" = "file:///tmp/fake" ]
@@ -206,21 +206,21 @@ output_contains() {
 
 @test "detect_install_type: 'none' on a fresh box (no config, no binary)" {
     DATA_DIR=$(mktemp -d)
-    PATH=/usr/bin:/bin   # strip out anything that might shadow `bhatti`
-    # Sanity: there's no /etc/bhatti/config.yaml on the test runner. If
+    PATH=/usr/bin:/bin   # strip out anything that might shadow `ahvm`
+    # Sanity: there's no /etc/ahvm/config.yaml on the test runner. If
     # there is, we're in a polluted environment and the test is a lie.
-    [ ! -f /etc/bhatti/config.yaml ] || skip "polluted host: /etc/bhatti/config.yaml exists"
+    [ ! -f /etc/ahvm/config.yaml ] || skip "polluted host: /etc/ahvm/config.yaml exists"
 
     result=$(detect_install_type)
     [ "$result" = "none" ]
     rm -rf "$DATA_DIR"
 }
 
-@test "detect_install_type: 'server' when /etc/bhatti/config.yaml exists" {
-    [ ! -f /etc/bhatti/config.yaml ] || skip "polluted host: /etc/bhatti/config.yaml exists"
-    # We can't write /etc/bhatti from the test, so verify the predicate
+@test "detect_install_type: 'server' when /etc/ahvm/config.yaml exists" {
+    [ ! -f /etc/ahvm/config.yaml ] || skip "polluted host: /etc/ahvm/config.yaml exists"
+    # We can't write /etc/ahvm from the test, so verify the predicate
     # the function uses by exercising the same shape via the pre-v1.6
-    # fallback path: /etc/bhatti missing AND $DATA_DIR/config.yaml present.
+    # fallback path: /etc/ahvm missing AND $DATA_DIR/config.yaml present.
     DATA_DIR=$(mktemp -d)
     : > "$DATA_DIR/config.yaml"
 
@@ -229,12 +229,12 @@ output_contains() {
     rm -rf "$DATA_DIR"
 }
 
-@test "detect_install_type: 'cli' when bhatti is in PATH and no server config" {
-    [ ! -f /etc/bhatti/config.yaml ] || skip "polluted host: /etc/bhatti/config.yaml exists"
+@test "detect_install_type: 'cli' when ahvm is in PATH and no server config" {
+    [ ! -f /etc/ahvm/config.yaml ] || skip "polluted host: /etc/ahvm/config.yaml exists"
     DATA_DIR=$(mktemp -d)
     local fakebin=$(mktemp -d)
-    : > "$fakebin/bhatti"
-    chmod +x "$fakebin/bhatti"
+    : > "$fakebin/ahvm"
+    chmod +x "$fakebin/ahvm"
     PATH="$fakebin:$PATH"
 
     result=$(detect_install_type)
@@ -243,7 +243,7 @@ output_contains() {
 }
 
 # ── detect_tier ───────────────────────────────────────────────────
-# Reads the configured tier from /etc/bhatti/config.yaml so update
+# Reads the configured tier from /etc/ahvm/config.yaml so update
 # pulls the right rootfs. The previous tests were copy-paste of the
 # parser inline — this set actually invokes the function via its
 # config-path arg.
@@ -252,7 +252,7 @@ output_contains() {
     local cfg=$(mktemp)
     ARCH=arm64
     cat > "$cfg" << EOF
-firecracker_rootfs: /var/lib/bhatti/images/rootfs-browser-arm64.ext4
+firecracker_rootfs: /var/lib/ahvm/images/rootfs-browser-arm64.ext4
 EOF
     [ "$(detect_tier "$cfg")" = "browser" ]
     rm -f "$cfg"
@@ -263,7 +263,7 @@ EOF
     ARCH=arm64
     cat > "$cfg" << EOF
 engine: krucible
-krucible_base_image: /var/lib/bhatti/images/rootfs-docker-arm64.ext4
+krucible_base_image: /var/lib/ahvm/images/rootfs-docker-arm64.ext4
 EOF
     [ "$(detect_tier "$cfg")" = "docker" ]
     rm -f "$cfg"
@@ -273,7 +273,7 @@ EOF
     local cfg=$(mktemp)
     ARCH=amd64
     cat > "$cfg" << EOF
-firecracker_rootfs: "/var/lib/bhatti/images/rootfs-docker-amd64.ext4"
+firecracker_rootfs: "/var/lib/ahvm/images/rootfs-docker-amd64.ext4"
 EOF
     [ "$(detect_tier "$cfg")" = "docker" ]
     rm -f "$cfg"
@@ -358,7 +358,7 @@ EOF
 }
 
 # ── all_rootfs_up_to_date ─────────────────────────────────────────
-# Regression coverage for `bhatti update --tiers <X>` silently
+# Regression coverage for `ahvm update --tiers <X>` silently
 # skipping a stale rootfs because do_server_update only checked file
 # existence, not checksum. See 4286d3a for the postmortem.
 
@@ -401,7 +401,7 @@ _set_checksums() {
 }
 
 @test "all_rootfs_up_to_date: regression — stale tier with no sidecar returns 1" {
-    # The bug: `bhatti update --tiers computer` left the stale computer
+    # The bug: `ahvm update --tiers computer` left the stale computer
     # rootfs because the gate only checked -f. An .ext4 with no .sha256
     # sidecar is by definition not verified — must be treated as stale.
     _setup_rootfs_fixture
@@ -530,7 +530,7 @@ _set_checksums() {
 }
 
 @test "stale + missing: bucketed UX scenario the hint was added for" {
-    # The exact strings the user sees on `bhatti update` after having
+    # The exact strings the user sees on `ahvm update` after having
     # pulled `computer` previously and never pulled browser/docker.
     _setup_rootfs_fixture
     _set_checksums minimal a computer d
@@ -545,34 +545,34 @@ _set_checksums() {
 # Each flag is a real shell path the user can hit. Cheap to test, and
 # regressions silently send the script down the wrong branch.
 
-@test "parse_flags: --tier browser sets BHATTI_TIER" {
-    BHATTI_TIER=""
+@test "parse_flags: --tier browser sets AHVM_TIER" {
+    AHVM_TIER=""
     parse_flags --tier browser
-    [ "$BHATTI_TIER" = "browser" ]
+    [ "$AHVM_TIER" = "browser" ]
 }
 
 @test "parse_flags: --tier=browser (equals syntax)" {
-    BHATTI_TIER=""
+    AHVM_TIER=""
     parse_flags --tier=browser
-    [ "$BHATTI_TIER" = "browser" ]
+    [ "$AHVM_TIER" = "browser" ]
 }
 
-@test "parse_flags: --tiers all sets BHATTI_TIERS" {
-    BHATTI_TIERS=""
+@test "parse_flags: --tiers all sets AHVM_TIERS" {
+    AHVM_TIERS=""
     parse_flags --tiers all
-    [ "$BHATTI_TIERS" = "all" ]
+    [ "$AHVM_TIERS" = "all" ]
 }
 
 @test "parse_flags: --tiers computer,browser (comma list)" {
-    BHATTI_TIERS=""
+    AHVM_TIERS=""
     parse_flags --tiers computer,browser
-    [ "$BHATTI_TIERS" = "computer,browser" ]
+    [ "$AHVM_TIERS" = "computer,browser" ]
 }
 
-@test "parse_flags: --force sets BHATTI_FORCE=1" {
-    BHATTI_FORCE=""
+@test "parse_flags: --force sets AHVM_FORCE=1" {
+    AHVM_FORCE=""
     parse_flags --force
-    [ "$BHATTI_FORCE" = "1" ]
+    [ "$AHVM_FORCE" = "1" ]
 }
 
 @test "parse_flags: --quiet sets QUIET=1" {
@@ -587,9 +587,9 @@ _set_checksums() {
 }
 
 @test "parse_flags: explicit flags override pre-set env vars" {
-    BHATTI_TIER="minimal"
+    AHVM_TIER="minimal"
     parse_flags --tier browser
-    [ "$BHATTI_TIER" = "browser" ]
+    [ "$AHVM_TIER" = "browser" ]
 }
 
 # ── output_contains helper self-test ─────────────────────────────

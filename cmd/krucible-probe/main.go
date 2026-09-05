@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/agent"
 )
 
 func main() {

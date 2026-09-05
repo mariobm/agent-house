@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // TestKrucibleConfigDrive boots a REAL block-root sandbox with a config drive

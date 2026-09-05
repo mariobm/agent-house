@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent"
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 // startTestAgent starts the agent as a subprocess in test mode over Unix sockets.
@@ -1444,7 +1444,7 @@ func TestAgentFileWriteRejectsDataBeyondDeclaredSize(t *testing.T) {
 	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
 		t.Fatalf("destination created after rejected write: %v", err)
 	}
-	if _, err := os.Stat(filePath + ".bhatti-tmp"); !os.IsNotExist(err) {
+	if _, err := os.Stat(filePath + ".ahvm-tmp"); !os.IsNotExist(err) {
 		t.Fatalf("temporary file left after rejected write: %v", err)
 	}
 }

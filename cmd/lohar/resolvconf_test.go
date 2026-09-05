@@ -11,7 +11,7 @@ import (
 // the in-cluster DNS responder (10.0.N.1) must come BEFORE any public
 // DNS entries so sandbox-name queries hit it first, then NXDOMAIN
 // falls through to the public servers for non-sandbox names.
-// G1.1 of PLAN-bhatti-v2.md.
+// G1.1 of PLAN-ahvm-v2.md.
 
 func TestBuildResolvConf_InternalFirst(t *testing.T) {
 	got := buildResolvConf("10.0.1.1", []string{"1.1.1.1", "8.8.8.8"})
@@ -60,7 +60,7 @@ func TestBuildResolvConf_PublicOnlyHasNoTimeoutOption(t *testing.T) {
 }
 
 func TestBuildResolvConf_PublicOnly(t *testing.T) {
-	// Backwards-compat: a host running an older bhatti daemon won't set
+	// Backwards-compat: a host running an older ahvm daemon won't set
 	// DNSInternal, so DNSInternal=="" and we render only public DNS.
 	got := buildResolvConf("", []string{"1.1.1.1", "8.8.8.8"})
 	lines := nameserverLines(got)
@@ -92,17 +92,17 @@ func TestBuildResolvConf_IncludesCommentForInternal(t *testing.T) {
 	// semantic — but we pin it anyway so anyone changing the format
 	// makes the change deliberately.
 	got := buildResolvConf("10.0.1.1", nil)
-	if !strings.HasPrefix(got, "# bhatti ") {
+	if !strings.HasPrefix(got, "# ahvm ") {
 		t.Fatalf("expected leading comment, got %q", got[:min(len(got), 50)])
 	}
 }
 
 func TestBuildResolvConf_PublicOnlyHasNoComment(t *testing.T) {
-	// When there's no in-cluster DNS, we shouldn't write the bhatti
+	// When there's no in-cluster DNS, we shouldn't write the ahvm
 	// comment header — it would be misleading.
 	got := buildResolvConf("", []string{"1.1.1.1"})
-	if strings.Contains(got, "# bhatti") {
-		t.Fatalf("public-only output should not mention bhatti: %q", got)
+	if strings.Contains(got, "# ahvm") {
+		t.Fatalf("public-only output should not mention ahvm: %q", got)
 	}
 }
 

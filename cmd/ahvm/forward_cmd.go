@@ -17,8 +17,8 @@ import (
 var forwardCmd = &cobra.Command{
 	Use:   "forward <sandbox> <guest-port> [host-port]",
 	Short: "Forward a host port to a port inside the sandbox",
-	Example: `  bhatti forward dev 3000          # 127.0.0.1:<random> -> guest:3000
-  bhatti forward dev 5432 5432     # 127.0.0.1:5432 -> guest:5432`,
+	Example: `  ahvm forward dev 3000          # 127.0.0.1:<random> -> guest:3000
+  ahvm forward dev 5432 5432     # 127.0.0.1:5432 -> guest:5432`,
 	Args:              cobra.RangeArgs(2, 3),
 	ValidArgsFunction: completeSandboxNames,
 	Run: func(cmd *cobra.Command, args []string) {

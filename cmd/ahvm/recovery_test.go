@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // mockVMStateProvider records RestoreVM calls for testing.
@@ -60,8 +60,8 @@ func saveTestFCState(t *testing.T, st *store.Store, id string, snapMemPath, snap
 		GuestMAC:    "02:ab:cd:ef:00:01",
 		VcpuCount:   1,
 		MemSizeMib:  512,
-		SocketPath:  "/var/lib/bhatti/sandboxes/test/firecracker.sock",
-		VsockPath:   "/var/lib/bhatti/sandboxes/test/vsock.sock",
+		SocketPath:  "/var/lib/ahvm/sandboxes/test/firecracker.sock",
+		VsockPath:   "/var/lib/ahvm/sandboxes/test/vsock.sock",
 	})
 }
 

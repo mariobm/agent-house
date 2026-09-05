@@ -19,7 +19,7 @@ New:
 ```
 sandbox/dev created (1 vCPU, 1024 MB, 1024 MB disk)
   IP:    10.0.1.2
-  Shell: bhatti shell dev
+  Shell: ahvm shell dev
 ```
 
 Shows resources so the user knows what was allocated (the #12
@@ -31,7 +31,7 @@ Idempotent create: `sandbox/dev unchanged (already exists)`.
 
 ## B2 — Streaming exec
 
-Second thing every user hits. `bhatti exec dev -- sudo apt-get
+Second thing every user hits. `ahvm exec dev -- sudo apt-get
 install openssh-server` shows nothing for 30+ seconds.
 
 When stdout is a terminal, send `Accept: application/x-ndjson`.
@@ -48,7 +48,7 @@ Pattern-match known errors, append recovery hints:
 Error: sandbox "dev" is not running
 
   Resume it first:
-    bhatti start dev
+    ahvm start dev
 ```
 
 Also: confirm verbs on stop/start/destroy:
@@ -90,12 +90,12 @@ Volumes:
 Server: add cpus, memory_mb, disk_size_mb, image columns to
 sandboxes table. Disk usage via live `df` exec (running VMs only).
 
-## B5 — `bhatti ports`
+## B5 — `ahvm ports`
 
 CLI for existing `GET /ports` and `GET /sandboxes/:id/ports`.
 
 ```
-$ bhatti ports dev
+$ ahvm ports dev
 PORT    PROXY
 22      /sandboxes/a1b2c3d4/proxy/22/
 8080    /sandboxes/a1b2c3d4/proxy/8080/
@@ -109,11 +109,11 @@ Drop ID from default columns (names are the primary key).
 Add `-o wide` with resources and image.
 
 ```
-$ bhatti ls
+$ ahvm ls
 NAME         STATUS   THERMAL  IP
 dev          running  hot      10.0.1.2
 
-$ bhatti ls -o wide
+$ ahvm ls -o wide
 NAME         STATUS   THERMAL  IP            CPUS  MEMORY  DISK   IMAGE
 dev          running  hot      10.0.1.2      1     1024    1024   minimal
 ```
@@ -122,13 +122,13 @@ Needs the store columns from B4.
 
 ## B7 — Wire up `--force` on start
 
-Error says `"use 'bhatti start --force' to retry"` but the flag
+Error says `"use 'ahvm start --force' to retry"` but the flag
 doesn't exist. Engine has `StartForce()`. Wire server + CLI.
 ~10 lines.
 
 ## B8 — Fix image pull Ctrl+C
 
-Trap SIGINT, print "pull continues on server, check: bhatti
+Trap SIGINT, print "pull continues on server, check: ahvm
 image list", exit cleanly. ~15 lines.
 
 ## B9 — `--detach` flag on exec
@@ -137,16 +137,16 @@ CLI for existing server `detach: true`. Fire-and-forget for
 long-running commands.
 
 ```
-$ bhatti exec dev --detach -- make build-all
+$ ahvm exec dev --detach -- make build-all
 pid: 4821
-output: /tmp/bhatti-exec-4821.log
+output: /tmp/ahvm-exec-4821.log
 ```
 
 ## B10 — `--hugepages` flag on create
 
 CLI for existing server/engine support. 3 lines.
 
-## B11 — `bhatti volume clone`
+## B11 — `ahvm volume clone`
 
 CLI for existing `POST /volumes/:name/snapshot`. ~20 lines.
 
@@ -182,7 +182,7 @@ systemctl shim behavior and limitations.
 Secrets are a dead end for CLI users. The documented flow is:
 
 ```bash
-bhatti secret set API_KEY sk-abc123
+ahvm secret set API_KEY sk-abc123
 # ...then what? No way to get it into a sandbox.
 ```
 
@@ -192,7 +192,7 @@ CLI. So `secret set/list/delete` exist but are unusable from the
 CLI.
 
 `--file` has no boot-time equivalent either. The workaround
-(`bhatti file write` after create) isn't atomic — the sandbox
+(`ahvm file write` after create) isn't atomic — the sandbox
 boots, init runs, and the file isn't there yet.
 
 ### Design: kubectl model
@@ -211,15 +211,15 @@ file in the guest):
 
 ```bash
 # Inline env (existing)
-bhatti create --name api --env NODE_ENV=production
+ahvm create --name api --env NODE_ENV=production
 
 # Secret from store (new)
-bhatti secret set API_KEY sk-abc123        # once
-bhatti create --name api --secret API_KEY  # every create
+ahvm secret set API_KEY sk-abc123        # once
+ahvm create --name api --secret API_KEY  # every create
 
 # File injection (new)
-bhatti create --name api --file .env:/app/.env
-bhatti create --name api --file id_rsa:/home/lohar/.ssh/id_rsa
+ahvm create --name api --file .env:/app/.env
+ahvm create --name api --file id_rsa:/home/lohar/.ssh/id_rsa
 ```
 
 ### Server changes
@@ -320,12 +320,12 @@ for _, f := range fileFlags {
 - `pkg/server/sandbox_handlers.go`: Add `Secrets` and `Files` to
   `createSandboxReq`, add resolution in direct-creation path.
   ~30 lines.
-- `cmd/bhatti/sandbox_cmd.go`: Add `--secret` and `--file` flags,
+- `cmd/ahvm/sandbox_cmd.go`: Add `--secret` and `--file` flags,
   parse and build request. ~40 lines.
 
 ## B16 — Integration tests
 
-New file: `cmd/bhatti/cli_ux_test.go`
+New file: `cmd/ahvm/cli_ux_test.go`
 
 This is the HN launch gate. Every B item gets verified by at least
 one test. Tests are organized in three tiers: must-have for launch,
@@ -348,7 +348,7 @@ func TestCLICreateVerboseOutput(t *testing.T)
     // Create sandbox, verify multi-line format:
     //   sandbox/<name> created (1 vCPU, 1024 MB, 1024 MB disk)
     //     IP:    10.x.x.x
-    //     Shell: bhatti shell <name>
+    //     Shell: ahvm shell <name>
     // Match exact format — not strings.Contains.
 
 func TestCLICreateIdempotent(t *testing.T)
@@ -361,14 +361,14 @@ func TestCLIStreamingExecNDJSON(t *testing.T)
     // Run slow command (echo line; sleep 0.1; echo line).
     // Verify Accept: application/x-ndjson was sent.
     // Verify stdout lines arrive incrementally.
-    // Use BHATTI_FORCE_STREAM=1 env to bypass TTY check in tests.
+    // Use AHVM_FORCE_STREAM=1 env to bypass TTY check in tests.
 
 // B3: Actionable error messages
 func TestCLIErrorExecOnStopped(t *testing.T)
     // Create → stop → exec. Verify stderr contains:
     //   sandbox "<name>" is not running
     //   Resume it first:
-    //     bhatti start <name>
+    //     ahvm start <name>
 
 func TestCLIStopStartConfirmVerbs(t *testing.T)
     // Stop → verify output: "sandbox/<name> stopped"
@@ -555,7 +555,7 @@ func TestCLIInspectStoppedSandbox(t *testing.T)
 | `TestCLIExecBufferedWhenPiped` | Existing `TestCLIExec` already runs piped. Tests a negative. |
 | `TestCLIErrorNotFound` | Existing `TestCLIExecNonexistentSandbox` + `TestCLIDestroyNonexistentSandbox` already cover. |
 | `TestCLIHelpGroupHeaders` | Tests cobra's group rendering, not our code. |
-| `TestCLICompletionScripts` | Tests cobra's `GenBashCompletion`. No bhatti logic. |
+| `TestCLICompletionScripts` | Tests cobra's `GenBashCompletion`. No ahvm logic. |
 | `TestCLIVersionCheck` | Existing `TestCLIVersion` already covers; `--json` proven by `TestCLIJSONOutput`. |
 | `TestCLIThermalCycleWithExec` | `TestCLILifecycleFullCycle` does 2 cycles; A6 engine tests do 5 with nginx. 30s+ of apt-get for no new signal. |
 | `TestCLICreateDuplicateName` | Identical to `TestCLICreateIdempotent`. |
@@ -663,7 +663,7 @@ Implementation order for HN:
 | # | Gap | Fix | Item | Test |
 |---|-----|-----|------|------|
 | 1 | `--force` flag referenced, doesn't exist | Wire server + CLI | B7 | `TestCLIForceStart` |
-| 2 | Port discovery: server exists, no CLI | `bhatti ports` | B5 | `TestCLIPorts` |
+| 2 | Port discovery: server exists, no CLI | `ahvm ports` | B5 | `TestCLIPorts` |
 | 3 | Detached exec: server supports, no CLI | `--detach` flag | B9 | `TestCLIDetachedExec` |
 | 4 | Streaming exec: server has NDJSON, CLI never requests | Stream when TTY | B2 | `TestCLIStreamingExecNDJSON` |
 | 5 | Hugepages: API field, no CLI flag | `--hugepages` flag | B10 | `TestCLIHugepagesFlag` |
@@ -671,7 +671,7 @@ Implementation order for HN:
 | 7 | UserData: dead field | Delete | B12 | — |
 | 8 | Secrets on create: store works, no CLI consumption path | `--secret` flag + server resolution | B15 | `TestCLICreateWithSecret` |
 | 9 | Files on create: engine supports, no CLI flag | `--file` flag + server injection | B15 | `TestCLICreateWithFile` |
-| 10 | Volume clone: server works, no CLI | `bhatti volume clone` | B11 | `TestCLIVolumeClone` |
+| 10 | Volume clone: server works, no CLI | `ahvm volume clone` | B11 | `TestCLIVolumeClone` |
 | 11 | Template CRUD: server works, CLI only consumes | Deferred | — | — |
 | 12 | Task status: server works, no CLI | Deferred | — | — |
 | 13 | Health endpoint: no CLI | Not needed | — | — |

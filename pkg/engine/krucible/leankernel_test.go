@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/engine/enginetest"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine/enginetest"
 )
 
 // leanColdEngine builds a block-root engine that boots the external lean kernel,
@@ -22,9 +22,9 @@ func leanColdEngine(t *testing.T) engine.Engine {
 	if !hasLibkrun() {
 		t.Skip("libkrun not installed; skipping")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
+	vmm := filepath.Join(repo, "ahvm-vmm")
 	if _, err := os.Stat(vmm); err != nil {
-		t.Skip("bhatti-vmm not built; skipping")
+		t.Skip("ahvm-vmm not built; skipping")
 	}
 	img := os.Getenv("KRUCIBLE_TEST_BASE_IMAGE")
 	lean := os.Getenv("KRUCIBLE_LEAN_KERNEL")
@@ -60,9 +60,9 @@ func TestKrucibleLeanKernel(t *testing.T) {
 	if !hasLibkrun() {
 		t.Skip("libkrun not installed; skipping")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
+	vmm := filepath.Join(repo, "ahvm-vmm")
 	if _, err := os.Stat(vmm); err != nil {
-		t.Skip("bhatti-vmm not built — run `make vmm`; skipping")
+		t.Skip("ahvm-vmm not built — run `make vmm`; skipping")
 	}
 	img := os.Getenv("KRUCIBLE_TEST_BASE_IMAGE")
 	lean := os.Getenv("KRUCIBLE_LEAN_KERNEL")

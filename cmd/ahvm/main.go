@@ -17,25 +17,25 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/acme/autocert"
 
-	"github.com/sahil-shubham/bhatti/pkg"
-	"github.com/sahil-shubham/bhatti/pkg/backup"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/server"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg"
+	"github.com/mariobm/agent-house/pkg/backup"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/server"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // version is set at build time via -ldflags
 var version = "dev"
 
 func main() {
-	// Propagate build-time version to server package for X-Bhatti-Version header.
+	// Propagate build-time version to server package for X-AHVM-Version header.
 	server.ServerVersion = version
 
 	// Register the serve command here (not in cli.go) because it imports
 	// the engine packages which have Linux build tags.
 	serveCmd := &cobra.Command{
 		Use:     "serve",
-		Short:   "Start the bhatti daemon",
+		Short:   "Start the ahvm daemon",
 		GroupID: "admin",
 		Run: func(cmd *cobra.Command, args []string) {
 			runDaemon()
@@ -48,9 +48,9 @@ func main() {
 
 func runDaemon() {
 	// Structured JSON logging for production.
-	// Log level configurable via BHATTI_LOG_LEVEL env var (debug, info, warn, error).
+	// Log level configurable via AHVM_LOG_LEVEL env var (debug, info, warn, error).
 	logLevel := slog.LevelInfo
-	switch os.Getenv("BHATTI_LOG_LEVEL") {
+	switch os.Getenv("AHVM_LOG_LEVEL") {
 	case "debug", "DEBUG":
 		logLevel = slog.LevelDebug
 	case "warn", "WARN":
@@ -333,7 +333,7 @@ func startPlainMode(cfg *pkg.Config, eng engine.Engine, st *store.Store, srv *se
 		servers = append(servers, httpServer)
 		port := cfg.Listen
 		go func() {
-			slog.Info("bhatti listening", "addr", cfg.Listen)
+			slog.Info("ahvm listening", "addr", cfg.Listen)
 			if lanIP := getLanIP(); lanIP != "" {
 				slog.Info("endpoints",
 					"local", "http://localhost"+port,
@@ -436,7 +436,7 @@ func startDomainMode(cfg *pkg.Config, eng engine.Engine, st *store.Store, srv *s
 		os.Exit(1)
 	}
 
-	// :443 — serves both API (api.bhatti.sh) and proxy (*.bhatti.sh)
+	// :443 — serves both API (api.ahvm.sh) and proxy (*.ahvm.sh)
 	//
 	// Disable HTTP/2 on the origin. Cloudflare's "HTTP/2 to Origin" (enabled
 	// by default) negotiates h2 via ALPN when the origin advertises it.
@@ -460,7 +460,7 @@ func startDomainMode(cfg *pkg.Config, eng engine.Engine, st *store.Store, srv *s
 	}
 	servers = append(servers, httpsServer)
 	go func() {
-		slog.Info("bhatti listening (domain mode)",
+		slog.Info("ahvm listening (domain mode)",
 			"api", "https://"+dom.APIHost,
 			"proxy", "https://*."+dom.ProxyZone,
 		)

@@ -1,4 +1,4 @@
-# bhatti-sandbox: general-purpose dev sandbox
+# ahvm-sandbox: general-purpose dev sandbox
 #
 # A lean Ubuntu-based environment with zsh, node, tmux, and claude-code.
 # User dotfiles and Claude credentials are injected at build time if present.
@@ -82,5 +82,5 @@ RUN if [ -f ~/.claude-inject/.claude.json ]; then mv ~/.claude-inject/.claude.js
 RUN sudo mkdir -p /workspace && sudo chown ${USERNAME}:${USERNAME} /workspace
 WORKDIR /workspace
 
-# Bhatti manages lifecycle
+# AHVM manages lifecycle
 CMD ["sleep", "infinity"]

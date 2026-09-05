@@ -1,5 +1,5 @@
 // Package oci handles pulling OCI/Docker images, flattening layers to a
-// directory tree, injecting the bhatti guest agent (lohar), and creating
+// directory tree, injecting the ahvm guest agent (lohar), and creating
 // ext4 rootfs images suitable for Firecracker microVMs.
 package oci
 
@@ -119,7 +119,7 @@ func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts
 
 	// 4. Flatten layers to temp directory
 	o.progress("flattening layers")
-	tmpDir, err := os.MkdirTemp("", "bhatti-oci-*")
+	tmpDir, err := os.MkdirTemp("", "ahvm-oci-*")
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +140,7 @@ func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts
 		}
 	}
 
-	// 5. Inject bhatti components
+	// 5. Inject ahvm components
 	o.progress("injecting lohar")
 	if err := injectLohar(tmpDir, loharPath); err != nil {
 		return nil, fmt.Errorf("inject lohar: %w", err)
@@ -212,7 +212,7 @@ func ImportFromTarball(ctx context.Context, tarballPath, outputPath, loharPath s
 	}
 	config := extractConfig(cfgFile)
 
-	tmpDir, err := os.MkdirTemp("", "bhatti-import-*")
+	tmpDir, err := os.MkdirTemp("", "ahvm-import-*")
 	if err != nil {
 		return nil, err
 	}

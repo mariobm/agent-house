@@ -1,4 +1,4 @@
-# Bhatti v0.7 - Reliability & Production Hardening
+# AHVM v0.7 - Reliability & Production Hardening
 
 v0.1 shipped multi-tenant security. v0.2 shipped CLI improvements. v0.3
 shipped images, persistent volumes, named snapshots, OCI support. v0.4
@@ -6,7 +6,7 @@ shipped custom kernel, rootfs tiers, 30-second install. v0.5 shipped
 public preview URLs with domain mode. v0.6 shipped CLI polish, local
 image import, thermal fixes.
 
-v0.7 makes bhatti dependable. The `rory` snapshot corruption incident
+v0.7 makes ahvm dependable. The `rory` snapshot corruption incident
 (April 1, 2026) exposed three compounding failures - silent thermal
 skip, Diff snapshot corruption, and no snapshot verification - that
 destroyed a persistent sandbox. The reliability audit and Firecracker
@@ -22,7 +22,7 @@ Two source documents:
 
 ## Current State
 
-Bhatti works well on the happy path. A sandbox boots in <1s, resumes
+AHVM works well on the happy path. A sandbox boots in <1s, resumes
 from snapshot in <3ms, and serves exec/shell/file operations reliably.
 But the system has no defense-in-depth:
 
@@ -218,7 +218,7 @@ thermal intervals, `maxThermalFailures = 10` means 100 seconds of agent
 silence before force-pause. A legitimately busy agent (heavy Exec
 blocking the Activity goroutine) would be paused. This is acceptable —
 100 seconds of unresponsive agent is indistinguishable from a stuck
-agent, and the user can immediately `bhatti exec` to resume it.
+agent, and the user can immediately `ahvm exec` to resume it.
 
 **Backward compatibility:** ✅ TRANSPARENT. Only adds logging and a
 safety net. No behavior change for healthy VMs.
@@ -261,7 +261,7 @@ func (e *Engine) ensureHot(ctx context.Context, id string) error {
 
     if vm.restoreFailed {
         return fmt.Errorf("sandbox %q snapshot is corrupt: %s - "+
-            "use 'bhatti start --force' to retry or "+
+            "use 'ahvm start --force' to retry or "+
             "destroy and recreate (volume data is safe)", id, vm.restoreError)
     }
 
@@ -284,7 +284,7 @@ func (e *Engine) ensureHot(ctx context.Context, id string) error {
 }
 ```
 
-**Reset path:** `bhatti start --force` clears the circuit breaker and
+**Reset path:** `ahvm start --force` clears the circuit breaker and
 retries. This handles transient host issues (OOM killed FC, disk full
 that was since resolved) without forcing the user to destroy.
 
@@ -844,7 +844,7 @@ if err = fcPut(ctx, client, "/metrics", fmt.Sprintf(
 }
 ```
 
-Metrics are NDJSON. A future phase can aggregate these into the bhatti
+Metrics are NDJSON. A future phase can aggregate these into the ahvm
 metrics endpoint. For now, they exist on disk for debugging.
 
 **Backward compatibility:** 🔄 ROLLING. New VMs only.
@@ -1089,18 +1089,18 @@ Document migration:
 
 ```bash
 # Save important sandbox data to volumes
-bhatti exec my-sandbox -- cp -r /important /workspace/
+ahvm exec my-sandbox -- cp -r /important /workspace/
 
 # Delete snapshots and sandboxes
-bhatti snapshot list | xargs bhatti snapshot delete
-bhatti list --json | jq -r '.[].name' | xargs bhatti destroy
+ahvm snapshot list | xargs ahvm snapshot delete
+ahvm list --json | jq -r '.[].name' | xargs ahvm destroy
 
 # Enable jailer
 # config.yaml: use_jailer: true
-sudo systemctl restart bhatti
+sudo systemctl restart ahvm
 
 # Recreate - volumes reattach, images work
-bhatti create --name my-sandbox --image my-env --volume workspace:/workspace
+ahvm create --name my-sandbox --image my-env --volume workspace:/workspace
 ```
 
 **Backward compatibility:** ⚠️ BREAKING. Snapshots and sandboxes must
@@ -1110,7 +1110,7 @@ be recreated. Volumes and images are safe.
 - `TestJailerBootAndExec` - boot with jailer, exec command, verify output
 - `TestJailerChroot` - verify FC process can't see host filesystem
   (`/proc/<fc-pid>/root` is the chroot)
-- `TestJailerUIDDrop` - verify FC process runs as `bhatti-vm` user
+- `TestJailerUIDDrop` - verify FC process runs as `ahvm-vm` user
 - `TestJailerCgroupLimits` - verify memory.max and cpu.max are set
 - `TestJailerSnapshotRoundtrip` - create, snapshot, destroy, resume
 - `TestJailerDevModeFallback` - empty JailerBinary, verify bare FC launch
@@ -1164,7 +1164,7 @@ host._
 
 ### 8.0 The Problem: Sandboxes Copy Everything
 
-Every `bhatti create` and `bhatti snapshot resume` does a full copy of
+Every `ahvm create` and `ahvm snapshot resume` does a full copy of
 all block devices. There is no sharing between the source and the clone.
 
 **Measured on agni-01** (2× Samsung PM983 NVMe, md RAID-1, ext4):
@@ -1287,25 +1287,25 @@ When the sandbox is later stopped and a new thermal snapshot is taken,
 FC rewrites mem.snap — at which point the CoW diverges and the full
 memory is allocated. But the initial resume is free.
 
-**Filesystem setup for self-hosters:** Put `/var/lib/bhatti` on btrfs.
+**Filesystem setup for self-hosters:** Put `/var/lib/ahvm` on btrfs.
 The simplest path (no partition changes, fully reversible):
 
 ```bash
 # Create btrfs image (pre-allocated to avoid ENOSPC)
-fallocate -l 500G /var/lib/bhatti-btrfs.img   # or whatever size
-mkfs.btrfs -f /var/lib/bhatti-btrfs.img
+fallocate -l 500G /var/lib/ahvm-btrfs.img   # or whatever size
+mkfs.btrfs -f /var/lib/ahvm-btrfs.img
 
-# Stop bhatti, rsync data, mount, restart
-systemctl stop bhatti
-mkdir -p /mnt/bhatti-new
-mount -o loop,noatime,compress=zstd:1 /var/lib/bhatti-btrfs.img /mnt/bhatti-new
-rsync -aHAX --sparse /var/lib/bhatti/ /mnt/bhatti-new/
-umount /mnt/bhatti-new
-mv /var/lib/bhatti /var/lib/bhatti-ext4-backup
-mkdir -p /var/lib/bhatti
-mount -o loop,noatime,compress=zstd:1 /var/lib/bhatti-btrfs.img /var/lib/bhatti
-echo '/var/lib/bhatti-btrfs.img /var/lib/bhatti btrfs loop,noatime,compress=zstd:1 0 0' >> /etc/fstab
-systemctl start bhatti
+# Stop ahvm, rsync data, mount, restart
+systemctl stop ahvm
+mkdir -p /mnt/ahvm-new
+mount -o loop,noatime,compress=zstd:1 /var/lib/ahvm-btrfs.img /mnt/ahvm-new
+rsync -aHAX --sparse /var/lib/ahvm/ /mnt/ahvm-new/
+umount /mnt/ahvm-new
+mv /var/lib/ahvm /var/lib/ahvm-ext4-backup
+mkdir -p /var/lib/ahvm
+mount -o loop,noatime,compress=zstd:1 /var/lib/ahvm-btrfs.img /var/lib/ahvm
+echo '/var/lib/ahvm-btrfs.img /var/lib/ahvm btrfs loop,noatime,compress=zstd:1 0 0' >> /etc/fstab
+systemctl start ahvm
 ```
 
 **Mount options:** `noatime` (no access time updates), `compress=zstd:1`
@@ -1383,14 +1383,14 @@ And it scales sub-linearly. 100 sandboxes from the same image:
 
 Users need a way to back up volume data to their own S3-compatible
 storage without setting up external tooling. This should be a
-first-class bhatti feature, not an ops runbook.
+first-class ahvm feature, not an ops runbook.
 
 #### Design
 
 ```
-bhatti volume backup <volume-name> --s3-bucket my-bucket --s3-endpoint s3.amazonaws.com
-bhatti volume restore <volume-name> --from s3://my-bucket/bhatti/volumes/workspace/2026-04-01T03:00:00Z.tar.zst
-bhatti volume backup list <volume-name>
+ahvm volume backup <volume-name> --s3-bucket my-bucket --s3-endpoint s3.amazonaws.com
+ahvm volume restore <volume-name> --from s3://my-bucket/ahvm/volumes/workspace/2026-04-01T03:00:00Z.tar.zst
+ahvm volume backup list <volume-name>
 ```
 
 Server-side config for S3 credentials (per-user or global):
@@ -1399,19 +1399,19 @@ Server-side config for S3 credentials (per-user or global):
 # config.yaml
 backup:
   s3_endpoint: "s3.eu-central-1.amazonaws.com"
-  s3_bucket: "my-bhatti-backups"
+  s3_bucket: "my-ahvm-backups"
   s3_access_key: "..."
   s3_secret_key: "..."
-  # Or per-user: users can configure via `bhatti config set backup.s3_bucket ...`
+  # Or per-user: users can configure via `ahvm config set backup.s3_bucket ...`
 ```
 
 #### What to back up
 
 | Data | Backup via | Why |
 |------|-----------|-----|
-| **Volumes** | `bhatti volume backup` | Irreplaceable user data |
-| **User images** | `bhatti image export` → user's own storage | Expensive to recreate |
-| **Named snapshots** | Future: `bhatti snapshot archive` | Large, cold, resumable |
+| **Volumes** | `ahvm volume backup` | Irreplaceable user data |
+| **User images** | `ahvm image export` → user's own storage | Expensive to recreate |
+| **Named snapshots** | Future: `ahvm snapshot archive` | Large, cold, resumable |
 
 The backup command:
 1. Pauses the sandbox (if attached and hot) or operates on the volume
@@ -1567,7 +1567,7 @@ Every item from both source documents mapped to its phase:
   separate design for thermal integration
 - **dm-thin storage driver** - deferred unless btrfs proves insufficient
   for self-hosters (see 8.1.2)
-- **Snapshot offload to S3** (`bhatti snapshot archive`) - future
+- **Snapshot offload to S3** (`ahvm snapshot archive`) - future
   extension of 8.4's S3 integration
 - **Cross-region backup replication** - deferred until primary S3 backup
   is proven in production

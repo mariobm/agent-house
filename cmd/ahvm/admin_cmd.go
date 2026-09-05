@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -15,9 +15,9 @@ var adminCmd = &cobra.Command{
 	Short: "Observability commands (requires DB access)",
 	Long: `Admin commands operate directly on the local SQLite database.
 Run on the server, not remotely.`,
-	Example: `  bhatti admin status
-  bhatti admin events --type thermal --since 24h
-  bhatti admin metrics --since 1h`,
+	Example: `  ahvm admin status
+  ahvm admin events --type thermal --since 24h
+  ahvm admin metrics --since 1h`,
 }
 
 // --- admin status ---
@@ -60,13 +60,13 @@ func adminStatusHuman(st *store.Store) error {
 	sandboxes, _ := st.ListAllSandboxes()
 
 	// Header + update check
-	fmt.Printf("Bhatti %s\n", version)
+	fmt.Printf("AHVM %s\n", version)
 	if version != "dev" {
 		if latestVer := checkLatestRelease(); latestVer != "" {
 			normVersion := "v" + strings.TrimPrefix(version, "v")
 			normLatest := "v" + strings.TrimPrefix(latestVer, "v")
 			if compareVersions(normVersion, normLatest) < 0 {
-				fmt.Printf("Update available: %s \u2192 %s (sudo bhatti update)\n", normVersion, normLatest)
+				fmt.Printf("Update available: %s \u2192 %s (sudo ahvm update)\n", normVersion, normLatest)
 			}
 		}
 	}
@@ -491,5 +491,3 @@ func fmtCount(n int64) string {
 	}
 	return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 }
-
-

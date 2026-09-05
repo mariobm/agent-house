@@ -12,10 +12,10 @@
 
 | Item | Value |
 |------|-------|
-| bhatti | v0.5.10 |
+| ahvm | v0.5.10 |
 | Firecracker | v1.14.0 |
 | Filesystem | ext4 on md RAID-1 (`/dev/md2`), 1.8TB total, 78GB used |
-| Data dir | `/var/lib/bhatti/` — 69GB |
+| Data dir | `/var/lib/ahvm/` — 69GB |
 | Sandboxes | 10 (9 stopped, 1 running: rory) |
 | Named snapshots | `rory-ready-v2` (7.9GB), `browser-ready` (3.0GB) |
 | Volumes | `rory-data` (5GB, attached to rory) |
@@ -41,7 +41,7 @@
 - **Memory:** Balloon device on new VMs, hugepages opt-in
 - **Storage:** reflink-auto on all block device copies (instant on btrfs)
 - **Backup:** S3-compatible volume backup/restore (native, zero deps)
-- **QoL:** Update notice only on `bhatti version`, install script guards
+- **QoL:** Update notice only on `ahvm version`, install script guards
   major version crossings
 - **Rate limiters:** Disabled by default (opt-in via config.yaml)
 
@@ -50,7 +50,7 @@ config schema changes. Existing sandboxes recover normally.
 
 ---
 
-## Phase A: Upgrade bhatti to v0.5.14
+## Phase A: Upgrade ahvm to v0.5.14
 
 The install script detects the existing server installation and updates
 all components (binary, lohar, kernel, rootfs). It stops the systemd
@@ -61,68 +61,68 @@ running sandbox) will get a snapshot. The 9 already-stopped sandboxes
 are no-ops.
 
 ```bash
-curl -fsSL bhatti.sh/install | sudo bash
+curl -fsSL ahvm.sh/install | sudo bash
 ```
 
 ### Verify
 
 ```bash
 # Check version
-bhatti version
-# Expected: bhatti v0.5.14
+ahvm version
+# Expected: ahvm v0.5.14
 
 # Check all 10 sandboxes recovered
-journalctl -u bhatti -n 50 --no-pager | grep -E 'recovered|recovery'
+journalctl -u ahvm -n 50 --no-pager | grep -E 'recovered|recovery'
 # Expected: "recovery complete" with count=10
 
 # Check rory is accessible (as kowshik or admin)
-bhatti list
+ahvm list
 # rory should appear with status=stopped
 
 # Quick smoke test: start and exec on a sandbox
-bhatti start sandbox-167074
-bhatti exec sandbox-167074 -- echo hello
-bhatti stop sandbox-167074
+ahvm start sandbox-167074
+ahvm exec sandbox-167074 -- echo hello
+ahvm stop sandbox-167074
 ```
 
 ### If something goes wrong
 
-The old binary is at `/usr/local/bin/bhatti.bak` (the install script
+The old binary is at `/usr/local/bin/ahvm.bak` (the install script
 doesn't create this — if you want a safety net, copy it before running
 the install):
 
 ```bash
 # Before running install:
-cp /usr/local/bin/bhatti /usr/local/bin/bhatti.v0.5.10
-cp /var/lib/bhatti/lohar /var/lib/bhatti/lohar.v0.5.10
+cp /usr/local/bin/ahvm /usr/local/bin/ahvm.v0.5.10
+cp /var/lib/ahvm/lohar /var/lib/ahvm/lohar.v0.5.10
 
 # To rollback:
-systemctl stop bhatti
-cp /usr/local/bin/bhatti.v0.5.10 /usr/local/bin/bhatti
-cp /var/lib/bhatti/lohar.v0.5.10 /var/lib/bhatti/lohar
-systemctl start bhatti
+systemctl stop ahvm
+cp /usr/local/bin/ahvm.v0.5.10 /usr/local/bin/ahvm
+cp /var/lib/ahvm/lohar.v0.5.10 /var/lib/ahvm/lohar
+systemctl start ahvm
 ```
 
 ---
 
 ## Phase B: btrfs Migration
 
-Converts `/var/lib/bhatti` from ext4 to btrfs-on-loopback. This gives
+Converts `/var/lib/ahvm` from ext4 to btrfs-on-loopback. This gives
 us instant copy-on-write clones (reflink) for sandbox creation and
 snapshot resume, plus transparent zstd compression.
 
 **Expected impact:**
 - Disk usage: 69GB → ~23GB (zstd compression + reflink sharing)
-- `bhatti create --image browser`: ~1.6s → ~0.01s
+- `ahvm create --image browser`: ~1.6s → ~0.01s
 - Snapshot resume: 3-8s → <0.1s
 - Named snapshot (Checkpoint): multi-second VM pause → near-zero
 
-bhatti must be stopped for this phase.
+ahvm must be stopped for this phase.
 
-### Step 1: Stop bhatti
+### Step 1: Stop ahvm
 
 ```bash
-systemctl stop bhatti
+systemctl stop ahvm
 ```
 
 Verify no firecracker processes are still running:
@@ -133,18 +133,18 @@ ps aux | grep firecracker | grep -v grep
 
 Should be empty. If any remain (zombies show as `[firecracker] <defunct>`),
 they're harmless and will disappear. If there's a live process, something
-went wrong with SnapshotAll — check `journalctl -u bhatti -n 100` before
+went wrong with SnapshotAll — check `journalctl -u ahvm -n 100` before
 proceeding.
 
 ### Step 2: Backup critical files
 
 These are small files that would be catastrophic to lose. The full ext4
-data directory is preserved in step 4 as `/var/lib/bhatti-ext4-backup`.
+data directory is preserved in step 4 as `/var/lib/ahvm-ext4-backup`.
 
 ```bash
-cp /var/lib/bhatti/state.db /root/state.db.backup
-cp -r /var/lib/bhatti/tls /root/tls.backup
-cp /var/lib/bhatti/age.key /root/age.key.backup 2>/dev/null || true
+cp /var/lib/ahvm/state.db /root/state.db.backup
+cp -r /var/lib/ahvm/tls /root/tls.backup
+cp /var/lib/ahvm/age.key /root/age.key.backup 2>/dev/null || true
 ```
 
 ### Step 3: Create and format btrfs image
@@ -153,16 +153,16 @@ cp /var/lib/bhatti/age.key /root/age.key.backup 2>/dev/null || true
 `fallocate` is instant (doesn't write data, just reserves space).
 
 ```bash
-fallocate -l 500G /var/lib/bhatti-btrfs.img
-mkfs.btrfs -f /var/lib/bhatti-btrfs.img
+fallocate -l 500G /var/lib/ahvm-btrfs.img
+mkfs.btrfs -f /var/lib/ahvm-btrfs.img
 ```
 
 ### Step 4: Copy data to btrfs
 
 ```bash
-mkdir -p /mnt/bhatti-new
-mount -o loop,noatime,compress=zstd:1 /var/lib/bhatti-btrfs.img /mnt/bhatti-new
-rsync -aHAX --sparse --info=progress2 /var/lib/bhatti/ /mnt/bhatti-new/
+mkdir -p /mnt/ahvm-new
+mount -o loop,noatime,compress=zstd:1 /var/lib/ahvm-btrfs.img /mnt/ahvm-new
+rsync -aHAX --sparse --info=progress2 /var/lib/ahvm/ /mnt/ahvm-new/
 ```
 
 This copies ~69GB. At NVMe RAID-1 read speeds, expect 2-4 minutes.
@@ -173,60 +173,60 @@ be smaller than the source.
 After rsync completes, verify key files:
 
 ```bash
-ls /mnt/bhatti-new/state.db /mnt/bhatti-new/config.yaml
-ls /mnt/bhatti-new/images/vmlinux-amd64
-ls /mnt/bhatti-new/sandboxes/ | wc -l   # should be 10
+ls /mnt/ahvm-new/state.db /mnt/ahvm-new/config.yaml
+ls /mnt/ahvm-new/images/vmlinux-amd64
+ls /mnt/ahvm-new/sandboxes/ | wc -l   # should be 10
 ```
 
 ### Step 5: Swap mount points
 
 ```bash
-umount /mnt/bhatti-new
-rmdir /mnt/bhatti-new
-mv /var/lib/bhatti /var/lib/bhatti-ext4-backup
-mkdir -p /var/lib/bhatti
-mount -o loop,noatime,compress=zstd:1 /var/lib/bhatti-btrfs.img /var/lib/bhatti
+umount /mnt/ahvm-new
+rmdir /mnt/ahvm-new
+mv /var/lib/ahvm /var/lib/ahvm-ext4-backup
+mkdir -p /var/lib/ahvm
+mount -o loop,noatime,compress=zstd:1 /var/lib/ahvm-btrfs.img /var/lib/ahvm
 ```
 
 Verify:
 
 ```bash
-df -T /var/lib/bhatti
+df -T /var/lib/ahvm
 # Filesystem     Type   Size  Used  Avail Use% Mounted on
-# /dev/loopX     btrfs  500G  ~23G  ~477G   5% /var/lib/bhatti
+# /dev/loopX     btrfs  500G  ~23G  ~477G   5% /var/lib/ahvm
 
-ls /var/lib/bhatti/state.db /var/lib/bhatti/config.yaml
+ls /var/lib/ahvm/state.db /var/lib/ahvm/config.yaml
 # Both should exist
 ```
 
 ### Step 6: Persist across reboots
 
 ```bash
-echo '/var/lib/bhatti-btrfs.img /var/lib/bhatti btrfs loop,noatime,compress=zstd:1 0 0' >> /etc/fstab
+echo '/var/lib/ahvm-btrfs.img /var/lib/ahvm btrfs loop,noatime,compress=zstd:1 0 0' >> /etc/fstab
 ```
 
-### Step 7: Start bhatti
+### Step 7: Start ahvm
 
 ```bash
-systemctl start bhatti
+systemctl start ahvm
 ```
 
 ### Verify
 
 ```bash
 # Version
-bhatti version
+ahvm version
 
 # All sandboxes recovered
-journalctl -u bhatti -n 50 --no-pager | grep -E 'recovered|recovery'
+journalctl -u ahvm -n 50 --no-pager | grep -E 'recovered|recovery'
 
 # Disk savings
-du -sh /var/lib/bhatti/
+du -sh /var/lib/ahvm/
 # Expected: significantly less than 69GB
 
 # Reflink works — create should be near-instant
-time bhatti create --name reflink-test
-bhatti destroy reflink-test
+time ahvm create --name reflink-test
+ahvm destroy reflink-test
 ```
 
 ### Rollback
@@ -234,11 +234,11 @@ bhatti destroy reflink-test
 If anything is wrong, full rollback takes under a minute:
 
 ```bash
-systemctl stop bhatti
-umount /var/lib/bhatti
-mv /var/lib/bhatti-ext4-backup /var/lib/bhatti
-sed -i '/bhatti-btrfs/d' /etc/fstab
-systemctl start bhatti
+systemctl stop ahvm
+umount /var/lib/ahvm
+mv /var/lib/ahvm-ext4-backup /var/lib/ahvm
+sed -i '/ahvm-btrfs/d' /etc/fstab
+systemctl start ahvm
 ```
 
 The ext4 backup can be deleted once btrfs is confirmed stable after a
@@ -246,19 +246,19 @@ few days of operation:
 
 ```bash
 # Only after confirming everything works:
-rm -rf /var/lib/bhatti-ext4-backup
+rm -rf /var/lib/ahvm-ext4-backup
 ```
 
-The btrfs image file (`/var/lib/bhatti-btrfs.img`) can be resized later
+The btrfs image file (`/var/lib/ahvm-btrfs.img`) can be resized later
 if 500GB is insufficient:
 
 ```bash
-systemctl stop bhatti
-umount /var/lib/bhatti
-truncate -s 800G /var/lib/bhatti-btrfs.img
-mount -o loop,noatime,compress=zstd:1 /var/lib/bhatti-btrfs.img /var/lib/bhatti
-btrfs filesystem resize max /var/lib/bhatti
-systemctl start bhatti
+systemctl stop ahvm
+umount /var/lib/ahvm
+truncate -s 800G /var/lib/ahvm-btrfs.img
+mount -o loop,noatime,compress=zstd:1 /var/lib/ahvm-btrfs.img /var/lib/ahvm
+btrfs filesystem resize max /var/lib/ahvm
+systemctl start ahvm
 ```
 
 ---
@@ -269,12 +269,12 @@ Run after the migration is confirmed stable. Requires Go toolchain on
 the host.
 
 ```bash
-cd /path/to/bhatti   # or git clone
+cd /path/to/ahvm   # or git clone
 sudo go test ./pkg/engine/firecracker/ -v -count=1 -timeout=0 \
     -run 'TestPerf' 2>&1 | tee /tmp/perf-btrfs.txt
 ```
 
-Key metrics to compare with the website (bhatti.sh):
+Key metrics to compare with the website (ahvm.sh):
 
 | Operation | Website claim | Expected on btrfs |
 |-----------|--------------|-------------------|
@@ -321,7 +321,7 @@ Commit: `a5a74ca`.
 
 ### 3. Destroy/stop routes used name instead of resolved ID
 
-**Symptom:** `bhatti destroy rory` returned 500. The engine destroy
+**Symptom:** `ahvm destroy rory` returned 500. The engine destroy
 succeeded (bridge cleaned up) but `DeleteSandbox("rory")` failed
 because it matches by ID column, not name.
 
@@ -342,7 +342,7 @@ DELETE FROM volume_attachments WHERE sandbox_id='80ddac6a6acf2095';
 
 ### 4. Rory's corrupt Diff snapshot
 
-**Symptom:** `bhatti shell rory` → FC panics with
+**Symptom:** `ahvm shell rory` → FC panics with
 `The number of available virtio descriptors 34618 is greater than queue size: 256!`
 
 **Cause:** This is the original April 1 rory incident. The thermal
@@ -357,7 +357,7 @@ The `rory-data` volume was safe throughout.
 
 ### 5. keep_hot didn't wake sandbox
 
-**Symptom:** `bhatti edit rory --keep-hot` updated the DB flag but
+**Symptom:** `ahvm edit rory --keep-hot` updated the DB flag but
 didn't bring the sandbox from cold to hot.
 
 **Fix:** PATCH handler now calls `ensureHot()` when setting
@@ -365,7 +365,7 @@ didn't bring the sandbox from cold to hot.
 
 ### 6. keep_hot sandboxes stay cold after daemon restart
 
-**Symptom:** After `systemctl restart bhatti`, keep_hot sandboxes
+**Symptom:** After `systemctl restart ahvm`, keep_hot sandboxes
 remained cold until manually accessed.
 
 **Fix:** Background goroutine auto-wakes all keep_hot sandboxes
@@ -377,6 +377,6 @@ after recovery. Commit: `0471a51`.
 
 | Phase | Action | Downtime | Risk |
 |-------|--------|----------|------|
-| A | `bhatti.sh/install` | ~2 min (service restart) | Near zero — backward-compatible |
+| A | `ahvm.sh/install` | ~2 min (service restart) | Near zero — backward-compatible |
 | B | btrfs migration | ~10-15 min (rsync) | Low — full rollback in <1 min |
 | C | Perf benchmarks | None (separate test) | None |

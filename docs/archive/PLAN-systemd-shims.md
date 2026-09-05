@@ -28,7 +28,7 @@ files" and "a thing you can reason about with a systemd mental model".
 ## Why this plan now
 
 The user-visible bug is small: status reports the wrong thing for one alias.
-But the debug ([github.com/sahil-shubham/bhatti/issues/12](https://github.com/sahil-shubham/bhatti/issues/12))
+But the debug ([github.com/mariobm/agent-house/issues/12](https://github.com/mariobm/agent-house/issues/12))
 showed:
 
 1. `systemctl status sshd` says inactive while `systemctl status ssh` says
@@ -36,7 +36,7 @@ showed:
 2. `systemctl stop sshd` is a **silent no-op** while the daemon keeps running.
    Demonstrated on the same VM as root: pidfile keyed by canonical name, lookup
    keyed by argument string, the two never meet.
-3. `systemctl stop ssh` from `bhatti exec` (non-root) silently exits 0 without
+3. `systemctl stop ssh` from `ahvm exec` (non-root) silently exits 0 without
    stopping anything because `svcStop` ignores `kill()` errors.
 4. `parseServiceFile` reads exactly one file. Drop-in directories
    (`<unit>.service.d/*.conf`) are silently ignored — that's where most of the
@@ -103,10 +103,10 @@ What this means for our fix shape:
 
 | # | Shim | Real systemd counterpart | Current fidelity | Severity of gaps |
 |---|------|--------------------------|------------------|------------------|
-| 1 | `runAgent()` (PID 1) | systemd PID 1 | Mounts, signals, zombie reap, `/run/{systemd,bhatti}` dirs, target-wants scan. **No tmpfiles.d, no sysusers.d, no generators, no targets/dependencies, no socket activation, no cgroup unit assignment.** | Medium. Most things work because postinst handles their own users/dirs. Snapshot/restore lifecycle is unique and not systemd-equivalent — that's by design. |
+| 1 | `runAgent()` (PID 1) | systemd PID 1 | Mounts, signals, zombie reap, `/run/{systemd,ahvm}` dirs, target-wants scan. **No tmpfiles.d, no sysusers.d, no generators, no targets/dependencies, no socket activation, no cgroup unit assignment.** | Medium. Most things work because postinst handles their own users/dirs. Snapshot/restore lifecycle is unique and not systemd-equivalent — that's by design. |
 | 2 | `/usr/bin/systemctl` shim | systemd's `systemctl` D-Bus client | start/stop/restart/reload/enable/disable/status/show/cat/mask/unmask/list-units/list-unit-files/preset/kill/is-active/is-enabled. **Name-keyed state, no alias merge, no drop-ins, no privilege boundary, silent kill failures, no failed-state tracking, no `Restart=` policy, no `Type=notify` sd_notify protocol, no socket activation runtime.** | **High.** This is the one Fastidious tripped on. See the "Why this plan now" list above. |
-| 3 | `/usr/bin/journalctl` shim | systemd-journald + journalctl | Reads `/var/log/bhatti/<unit>.log`. Supports `-u`, `-f`, `-n`. **No metadata indexing, no cursors, no `--since`/`--until`, no priority filtering, no boot rotation, no JSON output, no kernel ringbuffer, splits per-name not per-Unit (so alias bug bleeds in here too).** | Medium. Users mostly want `tail -f`; that works. The alias-split is the same bug class as #2. |
-| 4 | `/dev/log` syslog receiver | systemd-journald (or rsyslog) | Listens on unix datagram, parses `<priority>tag[pid]: msg`, appends to `/var/log/bhatti/<tag>.log`. **No structured fields, no priority filtering, no rate limiting, no rotation, no `_TRANSPORT=stdout` capture (only syslog).** | Low. Works for the "I want to see sshd.log" case. Tag-keying is independent of the systemctl Unit identity, so logs from a service started under one name go to a different file than logs sent to syslog by the same daemon — same identity-fragmentation bug as #2 and #3. |
+| 3 | `/usr/bin/journalctl` shim | systemd-journald + journalctl | Reads `/var/log/ahvm/<unit>.log`. Supports `-u`, `-f`, `-n`. **No metadata indexing, no cursors, no `--since`/`--until`, no priority filtering, no boot rotation, no JSON output, no kernel ringbuffer, splits per-name not per-Unit (so alias bug bleeds in here too).** | Medium. Users mostly want `tail -f`; that works. The alias-split is the same bug class as #2. |
+| 4 | `/dev/log` syslog receiver | systemd-journald (or rsyslog) | Listens on unix datagram, parses `<priority>tag[pid]: msg`, appends to `/var/log/ahvm/<tag>.log`. **No structured fields, no priority filtering, no rate limiting, no rotation, no `_TRANSPORT=stdout` capture (only syslog).** | Low. Works for the "I want to see sshd.log" case. Tag-keying is independent of the systemctl Unit identity, so logs from a service started under one name go to a different file than logs sent to syslog by the same daemon — same identity-fragmentation bug as #2 and #3. |
 | 5 | `/etc/resolv.conf` management (`applyDNS`, `ensureResolvConf`) | systemd-resolved + nss-resolve | Writes a static resolv.conf at boot from config drive or fallback. **No 127.0.0.53 stub resolver, no per-link DNS, no DNSSEC, no caching, no LLMNR/mDNS.** | Low. We deliberately keep this minimal; the rootfs pins out `systemd-resolved`. The gap is acceptable. |
 | 6 | Hostname (`Sethostname` + `/etc/hosts`) | systemd-hostnamed | Set once at boot from config. No D-Bus, no transient/static distinction, no `hostnamectl`. | Negligible. |
 | 7 | `/run/systemd/system` marker | systemd's runtime dir convention | Empty directory created at boot. Causes `deb-systemd-helper` to take the systemctl path instead of the no-op path. | Low. Works as intended. The dir being empty means we don't honour drop-ins placed at runtime — see C2. |
@@ -277,12 +277,12 @@ The result: `Resolve("ssh")` and `Resolve("sshd")` return the same pointer.
 
 ```go
 // before
-pidFile(name)            → /run/bhatti/services/<name>.pid
-serviceLogPath(name)     → /var/log/bhatti/<name>.log
+pidFile(name)            → /run/ahvm/services/<name>.pid
+serviceLogPath(name)     → /var/log/ahvm/<name>.log
 
 // after
-(u *Unit) PidPath()      → /run/bhatti/services/<u.Canonical>.pid
-(u *Unit) LogPath()      → /var/log/bhatti/<u.Canonical>.log
+(u *Unit) PidPath()      → /run/ahvm/services/<u.Canonical>.pid
+(u *Unit) LogPath()      → /var/log/ahvm/<u.Canonical>.log
 (u *Unit) WantsLink(target string) string  // /etc/systemd/system/<target>.wants/<u.Canonical>.service
 ```
 
@@ -334,10 +334,10 @@ for _, raw := range units {
 
 ### What stays the same
 
-- Pidfile path: `/run/bhatti/services/<canonical>.pid`. The on-disk format is
+- Pidfile path: `/run/ahvm/services/<canonical>.pid`. The on-disk format is
   unchanged; in practice the only files lohar wrote on the test VM were
   already keyed by canonical name.
-- Logfile path: `/var/log/bhatti/<canonical>.log`. Same reasoning.
+- Logfile path: `/var/log/ahvm/<canonical>.log`. Same reasoning.
 - Output format of `status`, `show`, `cat`, `list-units`, `list-unit-files`.
 
 ### Changes
@@ -453,7 +453,7 @@ which matches systemd's behaviour).
 ## C4 — Privilege boundary: systemctl as IPC client
 
 This closes the second-most-dangerous bug found in the issue #12 debug:
-`bhatti exec <vm> -- systemctl stop ssh` (default unprivileged user) silently
+`ahvm exec <vm> -- systemctl stop ssh` (default unprivileged user) silently
 exits 0 because `svcStop`'s `kill()` returns `EPERM` and lohar drops the error.
 The same pattern hides in `svcStart`/`svcReload`/`svcKill`/`svcRestart`.
 
@@ -516,7 +516,7 @@ existing scripts and parsing tools work.
 
 Read-only ops (status, show, cat, is-active, is-enabled, list-units,
 list-unit-files, journalctl read) keep their current in-process path. They
-don't need privilege, the IPC round-trip would slow down `bhatti exec` calls
+don't need privilege, the IPC round-trip would slow down `ahvm exec` calls
 that just want to check status, and the agent is already PID 1 reading the
 same files.
 
@@ -546,7 +546,7 @@ goroutine pool — these ops are fast.
 
 ### Snapshot/restore considerations
 
-The IPC endpoint listens on UDS at `/run/bhatti/control.sock` (already
+The IPC endpoint listens on UDS at `/run/ahvm/control.sock` (already
 exists); no changes to the existing exec/forward vsock listeners. Adding a
 new code path on the existing socket is structurally identical to adding a
 new exec verb, which already survives snapshot/restore correctly.
@@ -611,7 +611,7 @@ func runJournalctl(args []string) {
 This collapses the same alias-split bug that affects the systemctl shim:
 `journalctl -u sshd` and `journalctl -u ssh` now read the same file.
 
-The standalone `/var/log/bhatti/<tag>.log` files written by syslog (#4 in the
+The standalone `/var/log/ahvm/<tag>.log` files written by syslog (#4 in the
 inventory) are also reconciled — see C5.
 
 ### Changes
@@ -625,20 +625,20 @@ inventory) are also reconciled — see C5.
 
 ## C5 — Syslog tag → Unit canonical reconciliation
 
-Today, `startSyslogReceiver` writes to `/var/log/bhatti/<tag>.log` where
+Today, `startSyslogReceiver` writes to `/var/log/ahvm/<tag>.log` where
 `<tag>` is whatever syslog message tag the daemon used (typically the binary
 name — `sshd`, not `ssh`). lohar's `svcStart` writes to
-`/var/log/bhatti/<service-name>.log`. So a single daemon ends up with logs
+`/var/log/ahvm/<service-name>.log`. So a single daemon ends up with logs
 split across two files: one captured from stdout/stderr (named after the
 service), one received over /dev/log (named after the binary).
 
 Fix: in the syslog receiver, look up the tag in the Unit registry. If the
 tag matches a Unit's canonical name OR any alias, write to the canonical
 log path. If it doesn't match any known unit (kernel, login, custom daemons
-not managed by lohar), fall back to `/var/log/bhatti/<tag>.log` as today.
+not managed by lohar), fall back to `/var/log/ahvm/<tag>.log` as today.
 
 ```go
-logPath := filepath.Join("/var/log/bhatti", tag+".log")  // fallback
+logPath := filepath.Join("/var/log/ahvm", tag+".log")  // fallback
 if u, err := reg.Resolve(tag); err == nil {
     logPath = u.LogPath()
 }
@@ -823,7 +823,7 @@ func TestEnableCreatesAliasSymlink(t *testing.T)
 func TestSyslogReconciledToUnit(t *testing.T)
     // Register Unit "ssh" with alias "sshd".
     // Send syslog message tagged "sshd[123]: hello".
-    // Assert /var/log/bhatti/ssh.log contains "hello".
+    // Assert /var/log/ahvm/ssh.log contains "hello".
 ```
 
 ### Integration tests (engine package, on Pi)
@@ -836,9 +836,9 @@ func TestSystemctlAliasNotRegression(t *testing.T)
     // systemctl start ssh → starts. systemctl status sshd → active.
 
 func TestSystemctlPrivilegeBoundary(t *testing.T)
-    // bhatti exec (default uid 1000) systemctl stop ssh → exit non-zero,
+    // ahvm exec (default uid 1000) systemctl stop ssh → exit non-zero,
     // stderr contains "Access denied". Daemon still running.
-    // bhatti exec --user root systemctl stop ssh → exit 0, daemon stopped.
+    // ahvm exec --user root systemctl stop ssh → exit 0, daemon stopped.
 
 func TestRestartPolicyOnFailure(t *testing.T)
     // Install a custom unit with Restart=on-failure that exits 1.
@@ -918,7 +918,7 @@ Each Cn ships when:
 The series is "done" when a real `apt install openssh-server && apt install
 nginx && apt install redis-server && apt install postgresql` on a fresh VM
 produces: `systemctl is-active` returning `active` for every service, by every
-name the package's postinst registered, with `bhatti stop && bhatti start`
+name the package's postinst registered, with `ahvm stop && ahvm start`
 preserving state. After that, future-architectural-work items become the next
 batch.
 
@@ -992,7 +992,7 @@ which catches the daemon and its direct children but not anything that
   "another instance is already running". The user hunts orphans with `ps -ef
   | grep postgres` for 40 minutes.
 - A service that `setsid()`s in `ExecStartPre=` is invisible to `systemctl
-  stop` entirely. It runs forever, consuming resources, until `bhatti destroy`.
+  stop` entirely. It runs forever, consuming resources, until `ahvm destroy`.
 
 **Why this is what makes systemd *systemd*.** The cgroup-per-unit decision is
 the original Lennart-era choice that distinguished systemd from upstart,
@@ -1020,7 +1020,7 @@ alive.
 `Type=simple`. We report `active` the moment fork+exec succeeds.
 
 **Failure modes you'll spend hours on.**
-- `bhatti exec dev -- 'systemctl start postgres && psql -c "select 1"'`
+- `ahvm exec dev -- 'systemctl start postgres && psql -c "select 1"'`
   fails with "connection refused". The user verifies postgres is `active`,
   re-reads their script, blames psql, blames networking, eventually realises
   postgres wasn't actually ready when we said it was.
@@ -1054,7 +1054,7 @@ directory-listing order, starts everything in parallel.
   postgres has its socket open, crashes; once F6 (Restart=) lands, it
   thrashes. The user reads pgbouncer logs, postgres logs, network configs,
   spends two hours convinced their stack is broken before discovering boot
-  order is racy on bhatti specifically.
+  order is racy on ahvm specifically.
 - Custom service depends on a mount unit (`After=workspace.mount`); the mount
   isn't ready when the service starts; service fails on missing files. User
   blames the volume code.
@@ -1113,7 +1113,7 @@ directives, mkdir each as `/var/lib/<dir>`, `/var/cache/<dir>`,
 `/usr/lib/tmpfiles.d/*.conf` + `/etc/tmpfiles.d/*.conf` to create runtime
 directories declared by packages.
 
-**What lohar does today.** Hardcodes `/run/bhatti/services` and
+**What lohar does today.** Hardcodes `/run/ahvm/services` and
 `/run/systemd/system` and that's it. Packages that depend on `/run/sshd`
 happen to work because their postinst does its own `mkdir`; packages that
 rely on tmpfiles.d alone (some NixOS-derived units, some custom daemons)
@@ -1172,7 +1172,7 @@ benefit for our use case:
   `tmux new-session` and similar work today because they don't depend on
   logind.
 - **journald binary log format.** Plain-text per-unit logs in
-  `/var/log/bhatti/` are easier to operate, snapshot, and grep. We keep
+  `/var/log/ahvm/` are easier to operate, snapshot, and grep. We keep
   journalctl for compatibility, not for the format.
 - **PrivateTmp / ProtectSystem / sandboxing directives.** The VM is the
   sandbox; process-level hardening inside it is decoration. We honour
@@ -1209,7 +1209,7 @@ Each row: gap → fix → release item → test that proves it.
 | 3 | `svcStop` ignores kill() errors → silent success for non-root | High | Error propagation | C4 | `TestSvcStopErrorPropagation`, `TestSystemctlPrivilegeBoundary` |
 | 4 | Drop-in directories silently ignored | High | Drop-in loader | C2 | `TestRegistryDropInLoad`, `TestDropInOverride` |
 | 5 | `[Install] Alias=` symlinks not created on enable | Medium | Symlink creation | C3 | `TestEnableCreatesAliasSymlink` |
-| 6 | `bhatti exec` (non-root) systemctl ops silently succeed | High | Privilege boundary IPC | C4 | `TestSystemctlPrivilegeBoundary` |
+| 6 | `ahvm exec` (non-root) systemctl ops silently succeed | High | Privilege boundary IPC | C4 | `TestSystemctlPrivilegeBoundary` |
 | 7 | `journalctl -u sshd` and `-u ssh` read different files | Medium | Unit registry in journalctl | C4b | `TestServiceLogsByAlias` |
 | 8 | Syslog logs split between `<canonical>.log` and `<binary>.log` | Medium | Tag→Unit reconcile | C5 | `TestSyslogReconciledToUnit` |
 | 9 | `Restart=on-failure` ignored → crashed services stay dead | Medium | Watcher goroutine | C6 | `TestRestartOnFailure` |
@@ -1251,13 +1251,13 @@ format doesn't change. The CLI doesn't change. There's no rootfs rebuild
 required (the shim is the lohar
 binary; rebuilding lohar is `make build` + the existing release flow).
 
-Third, the systemctl shim is increasingly the surface bhatti users touch
+Third, the systemctl shim is increasingly the surface ahvm users touch
 when they "really use" their VM (apt install something, expect it to work).
 Each interaction either reinforces "this is a real Linux machine that happens
 to be a sandbox" or breaks the illusion. The bugs in this plan all live on
 the wrong side of that line.
 
-Fourth, building this shim is one of the better learning surfaces in bhatti.
+Fourth, building this shim is one of the better learning surfaces in ahvm.
 The Cn patches teach us systemd's data model (Unit identity, n:1 lookup,
 state-on-identity); the F-items teach us *why* systemd made the choices it
 did (cgroup-per-unit, sd_notify, dependency DAG). We get those lessons by

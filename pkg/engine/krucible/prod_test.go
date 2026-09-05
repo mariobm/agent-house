@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/oci"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/oci"
 )
 
 // TestKrucibleProductionImage boots a REAL OCI-derived rootfs (a full userland
@@ -27,9 +27,9 @@ func TestKrucibleProductionImage(t *testing.T) {
 	if !hasLibkrun() {
 		t.Skip("libkrun not installed; skipping")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
+	vmm := filepath.Join(repo, "ahvm-vmm")
 	if _, err := os.Stat(vmm); err != nil {
-		t.Skip("bhatti-vmm not built — run `make vmm`; skipping")
+		t.Skip("ahvm-vmm not built — run `make vmm`; skipping")
 	}
 	if !hasHypervisor() {
 		t.Skip("no hypervisor (/dev/kvm or HVF); skipping")

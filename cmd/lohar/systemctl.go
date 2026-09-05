@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 // systemctl shim — reads .service files and manages processes directly.
@@ -126,8 +126,8 @@ func runSystemctl(args []string) {
 	_ = quiet // TODO: suppress stdout when set
 
 	// IPC dispatch for privileged ops: if we're not PID 1 and a daemon is
-	// reachable on /run/bhatti/systemctl.sock, forward the request and
-	// replay its output. This is what stops `bhatti exec dev -- systemctl
+	// reachable on /run/ahvm/systemctl.sock, forward the request and
+	// replay its output. This is what stops `ahvm exec dev -- systemctl
 	// stop ssh` (running as the unprivileged lohar user) from silently
 	// no-op'ing — PID 1 runs the kill as root, errors actually surface,
 	// and a non-root caller gets a clean Access-denied response.
@@ -1490,7 +1490,7 @@ func startEnabledServices() {
 // --- journalctl shim ---
 
 // runJournalctl handles /usr/bin/journalctl invocations.
-// Reads service log files from /var/log/bhatti/<service>.log.
+// Reads service log files from /var/log/ahvm/<service>.log.
 func runJournalctl(args []string) {
 	var unit string
 	var follow bool

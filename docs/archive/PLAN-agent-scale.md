@@ -15,7 +15,7 @@ fits it (50 × 1GB = 50GB of 128GB, 50 vCPUs with cgroup limits on 24
 threads). But five things become painful:
 
 1. **Agent crashes silently.** hermes gateway dies at 3am, VM stays hot,
-   nobody notices until Slack goes quiet. `bhatti exec rory -- pgrep hermes`
+   nobody notices until Slack goes quiet. `ahvm exec rory -- pgrep hermes`
    is the only check. Doesn't scale past 3 agents.
 
 2. **Manual recovery.** The nohup hack (`nohup hermes gateway &`) doesn't
@@ -133,7 +133,7 @@ type createRequest struct {
 }
 ```
 
-`cmd/bhatti/sandbox_cmd.go` — CLI flag:
+`cmd/ahvm/sandbox_cmd.go` — CLI flag:
 ```
 --init-restart string   Restart policy for init (never|on-failure|always)
 ```
@@ -208,7 +208,7 @@ failure tracking).
 
 **CLI:**
 ```bash
-bhatti create --name rory \
+ahvm create --name rory \
   --init "hermes gateway run" \
   --init-restart on-failure \
   --health-cmd "pgrep -f 'hermes gateway'" \
@@ -276,7 +276,7 @@ slow activity responses.
 is 120s.
 
 **Changes:**
-1. Bump `TimeoutStopSec=300` in bhatti.service (install script change)
+1. Bump `TimeoutStopSec=300` in ahvm.service (install script change)
 2. Add progress logging to SnapshotAll:
 ```go
 slog.Info("snapshot-all: progress",
@@ -292,7 +292,7 @@ slog.Info("snapshot-all: progress",
 
 Make 50 agents reproducible, version-controllable, and diffable.
 
-### B.1 `bhatti.yaml` schema
+### B.1 `ahvm.yaml` schema
 
 ```yaml
 volumes:
@@ -328,7 +328,7 @@ sandboxes:
 **Design decisions:**
 
 - `env` is for non-sensitive values (committed to git). `secrets` is
-  a list of secret names — values managed via `bhatti secret set` and
+  a list of secret names — values managed via `ahvm secret set` and
   resolved at create time. The config drive gets the real values; the
   yaml never has them.
 - `init` supports multiline (YAML block scalar). Becomes `sh -c "..."`.
@@ -340,13 +340,13 @@ sandboxes:
 
 **What's NOT in the yaml:**
 - Secret values (managed separately)
-- Sandbox IDs (assigned by bhatti)
+- Sandbox IDs (assigned by ahvm)
 - IP addresses (assigned by the engine)
 - Snapshot names (created imperatively, referenced by name if needed)
 
-### B.2 `bhatti export`
+### B.2 `ahvm export`
 
-Dump current state as `bhatti.yaml`. This is the adoption path — run
+Dump current state as `ahvm.yaml`. This is the adoption path — run
 export, check it into git, now you have IaC without changing anything.
 
 **Implementation:** CLI command, no server changes. Calls existing APIs:
@@ -354,7 +354,7 @@ export, check it into git, now you have IaC without changing anything.
 ```go
 var exportCmd = &cobra.Command{
     Use:   "export",
-    Short: "Export current state as bhatti.yaml",
+    Short: "Export current state as ahvm.yaml",
     RunE: func(cmd *cobra.Command, args []string) error {
         // GET /volumes → build volumes section
         // GET /sandboxes → for each, get details, build sandbox section
@@ -365,21 +365,21 @@ var exportCmd = &cobra.Command{
 }
 ```
 
-The output is valid `bhatti.yaml` that `bhatti apply` can consume. It
+The output is valid `ahvm.yaml` that `ahvm apply` can consume. It
 won't have `secrets` references (it doesn't know which env vars came
 from secrets), but it captures everything else.
 
 **Edge case:** env vars that were set from secrets at create time are
 now baked into the sandbox config. `export` emits them as plain `env`
 entries. The user manually moves sensitive ones to the `secrets` list
-and runs `bhatti secret set` for each. This is a one-time migration.
+and runs `ahvm secret set` for each. This is a one-time migration.
 
-### B.3 `bhatti diff`
+### B.3 `ahvm diff`
 
 Show what `apply` would do, without doing it.
 
 ```
-$ bhatti diff
+$ ahvm diff
 + volume/uyir-data (5120MB)
 + sandbox/uyir (spc-agents-hermes, 2 vCPU, 4096MB, keep_hot)
 ~ sandbox/rory: memory 2048 → 4096 (requires stop/start)
@@ -387,15 +387,15 @@ $ bhatti diff
 - sandbox/cli-test-create: in cluster but not in yaml (destroy? use --prune)
 ```
 
-`+` = create, `~` = update, `-` = exists in bhatti but not in yaml
+`+` = create, `~` = update, `-` = exists in ahvm but not in yaml
 (only shown, never auto-deleted).
 
 **Implementation:** Parse yaml, fetch current state from API, compare.
 Pure CLI logic — no server changes.
 
-### B.4 `bhatti apply`
+### B.4 `ahvm apply`
 
-Read `bhatti.yaml`, diff against current state, execute changes.
+Read `ahvm.yaml`, diff against current state, execute changes.
 
 **Resolution order** (respects dependencies):
 1. Create missing volumes
@@ -426,7 +426,7 @@ to the sandbox.
 unless `--yes` is passed. Creates and live updates don't prompt.
 
 ```
-$ bhatti apply
+$ ahvm apply
 + volume/uyir-data (5120MB)
 + sandbox/uyir (spc-agents-hermes, 2 vCPU, 4096MB, keep_hot)
 ~ sandbox/rory: memory 2048 → 4096
@@ -437,10 +437,10 @@ Continue? [y/N] y
 
 Creating volume uyir-data (5120MB)... done
 Creating sandbox uyir... done (10.0.1.12)
-Publishing uyir:8080 → uyir-api.bhatti.sh... done
+Publishing uyir:8080 → uyir-api.ahvm.sh... done
 Destroying sandbox rory... done
 Creating sandbox rory (4096MB)... done (10.0.1.4)
-Publishing rory:8080 → rory-files.bhatti.sh... done
+Publishing rory:8080 → rory-files.ahvm.sh... done
 
 Applied: 2 created, 1 updated, 0 unchanged
 ```
@@ -455,15 +455,15 @@ Applied: 2 created, 1 updated, 0 unchanged
 
 ### B.5 Matching yaml names to existing sandboxes
 
-`apply` matches by sandbox name. If the yaml has `rory` and bhatti
-has a sandbox named `rory`, they're the same. If bhatti has a sandbox
+`apply` matches by sandbox name. If the yaml has `rory` and ahvm
+has a sandbox named `rory`, they're the same. If ahvm has a sandbox
 not in the yaml, it's unmanaged (shown in diff as `-`, never touched
 by apply unless `--prune`).
 
 **No state file.** Unlike Terraform, there's no `.tfstate`. The source
-of truth is bhatti's API. The yaml is the desired state. `diff` compares
+of truth is ahvm's API. The yaml is the desired state. `diff` compares
 them. This is simpler and avoids state file corruption, but it means
-renames are destroy + create (bhatti sees a new name and a missing old
+renames are destroy + create (ahvm sees a new name and a missing old
 name, not a rename).
 
 ---

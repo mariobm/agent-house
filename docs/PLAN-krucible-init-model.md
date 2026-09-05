@@ -1,9 +1,9 @@
 # krucible — the guest init model (lohar-as-PID-1 vs init-mediated)
 
 Status: **Design doc (2026-06-16).** Scopes what the "lohar → service" restructure concretely takes, after the cold-tier
-work surfaced friction between bhatti's `lohar-as-PID-1` model and libkrun's init-centric design. Companion:
+work surfaced friction between ahvm's `lohar-as-PID-1` model and libkrun's init-centric design. Companion:
 `docs/PLAN-krucible-cold-tier.md` (the cold tier + the block-root-vs-FUSE decision), `docs/internal/PLAN-krucible-v3.md` (P1's
-"lohar is the asset" decision), `docs/archive/v1/guest-agent.md` (retired; canonical: <https://bhatti.sh/docs/under-the-hood/lohar-the-blacksmith/>).
+"lohar is the asset" decision), `docs/archive/v1/guest-agent.md` (retired; canonical: <https://ahvm.sh/docs/under-the-hood/lohar-the-blacksmith/>).
 
 > Reference points: the libkrun upstream README (its security model + intended init usage) and the reference fork /
 > reference product (their init→real-init→agent-as-service shape). Studied for technique only; named generically here.
@@ -41,16 +41,16 @@ still gated on the systemd-shim product question (below). The M0/M1/M2 analysis 
 ## TL;DR (the reframing)
 
 The framing "demote lohar to a non-PID-1 *service*" **does not fit what lohar is.** lohar is not just an agent — it is
-bhatti's **PID 1 + a systemd-compatible service manager + the agent**, fused into one binary:
+ahvm's **PID 1 + a systemd-compatible service manager + the agent**, fused into one binary:
 
 - **PID-1 init**: mounts (`/proc`,`/sys`,`devtmpfs`,`devpts`,`tmpfs`×3,`cgroup2`,`binfmt_misc`), loopback, hostname/DNS,
   config-drive + volume mounts, signal handlers, **zombie reaping**, syslog, `reboot()` on shutdown.
 - **service manager**: a ~100 KB systemd shim (`systemctl.go`, `unit.go`, `tmpfiles.go`, `depgraph.go`, `conditions.go`,
-  `notify.go`, `statedirs.go`) that runs Docker/systemd-dependent workloads — bhatti's *replacement* for systemd.
+  `notify.go`, `statedirs.go`) that runs Docker/systemd-dependent workloads — ahvm's *replacement* for systemd.
 - **agent**: vsock listeners (control :1024, forward :1025) serving Exec/Shell/Files/Sessions/Tunnel.
 
 The other design (libkrun's init → a *real* init → a thin agent-as-service) works *because the agent is thin and a real
-distro init does service management.* bhatti deliberately went the other way: **lohar *is* the service manager**, so it is
+distro init does service management.* ahvm deliberately went the other way: **lohar *is* the service manager**, so it is
 inherently PID-1-shaped. There's even a hard `os.Getpid() != 1` refuse-guard (two Pi5s were powered off in this project's
 history — the W4 story). So:
 
@@ -115,7 +115,7 @@ This is the recommended near-term path; it's bounded and unlocks the cold tier.
 - **What stays untouched:** the entire systemd shim, the agent protocol (Exec/Shell/Files/Sessions/Tunnel), zombie
   reaping, signals, syslog. lohar remains the init + service-manager + agent.
 
-### bhatti engine (`pkg/engine/krucible`)
+### ahvm engine (`pkg/engine/krucible`)
 - **Build a root *image*, not a dir.** `mke2fs -t ext4 -d <rootfs tree> <image>` (the `configdrive.go` tooling already
   does this) producing a base; per-sandbox **`krun_create_disk_overlay`** qcow2 CoW over the base (the FC reflink-`cp`
   replacement, on any FS incl. APFS).
@@ -230,13 +230,13 @@ is therefore **FC-era workaround that libkrun now subsumes.** The discussion isn
 | `cgroup2` + `binfmt_misc` mounts | no (init doesn't) | **keep** — but only the workload/docker tier needs them |
 | **agent protocol** (exec/shell/files/sessions/tunnel/vsock) | **no** — nothing like it | **KEEP — the irreducible product** |
 | **service supervision** (the systemd shim) | **no** | **keep, but decouple** (separable concern; see below) |
-| bhatti config drive (token/files/secrets/volumes/DNS) | partial (init reads OCI `KRUN_CONFIG`, different contract) | **keep** (bhatti's contract) |
+| ahvm config drive (token/files/secrets/volumes/DNS) | partial (init reads OCI `KRUN_CONFIG`, different contract) | **keep** (ahvm's contract) |
 | syslog | partial | minor — keep |
 
 ### Where the value is
 Strip the FC-era plumbing and lohar's *unique, defensible* value is two things, of very different natures:
 1. **The agent** — exec/shell/files/sessions/tunnel over vsock, with sessions-as-the-model (decisions §4), scrollback,
-   detach-survival. This is the bhatti guest contract and the product. libkrun has nothing like it. **This is the core;
+   detach-survival. This is the ahvm guest contract and the product. libkrun has nothing like it. **This is the core;
    make it thin and sharp.**
 2. **Service supervision (the shim)** — a real, hard-won dependency-ordered/condition-gated/cgroup-placing supervisor
    (W9), so `apt install postgres|nginx|docker` works without booting systemd. Its rationale is documented and valid —
@@ -249,11 +249,11 @@ Strip the FC-era plumbing and lohar's *unique, defensible* value is two things, 
 - **agent → the thin core of lohar**, the workload the init execs (M1) — or a service (M2) once supervision is settled.
 - **service supervision → a tier concern, decoupled from the agent**: either keep the shim but as its own unit invoked by
   the workload tiers, **or** — now that the VMM handles the clock jump — reconsider *real systemd for the heavy tiers*
-  (the M2 shape bhatti already prototyped at +340ms, whose main objection — snapshot fragility — the VMM just defused).
+  (the M2 shape ahvm already prototyped at +340ms, whose main objection — snapshot fragility — the VMM just defused).
   The agent base tier needs neither.
 
 Net: libkrun doesn't make lohar *less* valuable — it lets lohar **stop pretending to be an OS** and be the thing only
-bhatti can provide (the agent), while the VMM does the OS plumbing it does better. The systemd shim stays justified, but as
+ahvm can provide (the agent), while the VMM does the OS plumbing it does better. The systemd shim stays justified, but as
 a *tier capability*, not a tax every sandbox's PID 1 carries.
 
 ---

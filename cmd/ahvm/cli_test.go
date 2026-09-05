@@ -11,27 +11,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // cliTest holds the test server + helpers for CLI integration tests.
-// The CLI binary talks to a real bhatti HTTP server — either local or remote
-// via Cloudflare tunnel. Config is loaded from ~/.bhatti/config.yaml.
+// The CLI binary talks to a real ahvm HTTP server — either local or remote
+// via Cloudflare tunnel. Config is loaded from ~/.ahvm/config.yaml.
 type cliTest struct {
 	t       *testing.T
-	bhatti  string // path to bhatti binary
+	ahvm    string // path to ahvm binary
 	baseURL string // daemon URL
 	token   string // auth token
 }
 
-// run executes a bhatti CLI command and returns stdout, stderr, exit code.
+// run executes a ahvm CLI command and returns stdout, stderr, exit code.
 func (c *cliTest) run(args ...string) (stdout, stderr string, exitCode int) {
 	c.t.Helper()
-	cmd := exec.Command(c.bhatti, args...)
+	cmd := exec.Command(c.ahvm, args...)
 	cmd.Env = append(os.Environ(),
-		"BHATTI_URL="+c.baseURL,
-		"BHATTI_TOKEN="+c.token,
+		"AHVM_URL="+c.baseURL,
+		"AHVM_TOKEN="+c.token,
 	)
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
@@ -48,7 +48,7 @@ func (c *cliTest) run(args ...string) (stdout, stderr string, exitCode int) {
 	return outBuf.String(), errBuf.String(), exitCode
 }
 
-// runJSON executes a bhatti CLI command with --json and unmarshals the output.
+// runJSON executes a ahvm CLI command with --json and unmarshals the output.
 func (c *cliTest) runJSON(v any, args ...string) (exitCode int) {
 	c.t.Helper()
 	fullArgs := append([]string{"--json"}, args...)
@@ -62,8 +62,8 @@ func (c *cliTest) runJSON(v any, args ...string) (exitCode int) {
 	return code
 }
 
-// setupCLITest builds the bhatti binary in a temp dir and loads connection
-// config from ~/.bhatti/config.yaml (api_url + auth_token). This lets CLI
+// setupCLITest builds the ahvm binary in a temp dir and loads connection
+// config from ~/.ahvm/config.yaml (api_url + auth_token). This lets CLI
 // tests run from any machine — the dev laptop, CI, or on the server itself.
 //
 // Skip conditions:
@@ -75,22 +75,22 @@ func setupCLITest(t *testing.T) *cliTest {
 	// Load config — same file the real CLI uses
 	cfg, err := pkg.LoadConfig()
 	if err != nil || cfg == nil {
-		t.Skip("no bhatti config found")
+		t.Skip("no ahvm config found")
 	}
 
 	baseURL := cfg.APIURL
 	token := cfg.AuthToken
 
 	// Allow env var overrides for CI
-	if v := os.Getenv("BHATTI_URL"); v != "" {
+	if v := os.Getenv("AHVM_URL"); v != "" {
 		baseURL = v
 	}
-	if v := os.Getenv("BHATTI_TOKEN"); v != "" {
+	if v := os.Getenv("AHVM_TOKEN"); v != "" {
 		token = v
 	}
 
 	if baseURL == "" || token == "" {
-		t.Skip("bhatti config missing api_url or auth_token")
+		t.Skip("ahvm config missing api_url or auth_token")
 	}
 
 	// Verify daemon is reachable
@@ -98,24 +98,24 @@ func setupCLITest(t *testing.T) *cliTest {
 	req, _ := http.NewRequest("GET", baseURL+"/health", nil)
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Skipf("bhatti daemon not reachable at %s: %v", baseURL, err)
+		t.Skipf("ahvm daemon not reachable at %s: %v", baseURL, err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
-		t.Skipf("bhatti daemon unhealthy: %d", resp.StatusCode)
+		t.Skipf("ahvm daemon unhealthy: %d", resp.StatusCode)
 	}
 
 	// Build the binary from source (tests the actual compiled code)
-	binPath := filepath.Join(t.TempDir(), "bhatti")
-	build := exec.Command("go", "build", "-o", binPath, "./cmd/bhatti/")
+	binPath := filepath.Join(t.TempDir(), "ahvm")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/ahvm/")
 	build.Dir = projectRoot(t)
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build bhatti: %s\n%v", out, err)
+		t.Fatalf("build ahvm: %s\n%v", out, err)
 	}
 
 	return &cliTest{
 		t:       t,
-		bhatti:  binPath,
+		ahvm:    binPath,
 		baseURL: baseURL,
 		token:   token,
 	}
@@ -124,7 +124,7 @@ func setupCLITest(t *testing.T) *cliTest {
 // projectRoot returns the repo root by walking up from the test file.
 func projectRoot(t *testing.T) string {
 	t.Helper()
-	// We're in cmd/bhatti/, go up two levels
+	// We're in cmd/ahvm/, go up two levels
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -275,8 +275,8 @@ func TestCLIFileWriteRead(t *testing.T) {
 
 	// Write via stdin piped to the binary
 	content := "hello from cli file write"
-	cmd := exec.Command(c.bhatti, "file", "write", "cli-test-file", "/workspace/test.txt")
-	cmd.Env = append(os.Environ(), "BHATTI_URL="+c.baseURL, "BHATTI_TOKEN="+c.token)
+	cmd := exec.Command(c.ahvm, "file", "write", "cli-test-file", "/workspace/test.txt")
+	cmd.Env = append(os.Environ(), "AHVM_URL="+c.baseURL, "AHVM_TOKEN="+c.token)
 	cmd.Stdin = strings.NewReader(content)
 	var outBuf strings.Builder
 	cmd.Stdout = &outBuf
@@ -686,7 +686,7 @@ func TestCLIVersion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("version exit %d", code)
 	}
-	if !strings.Contains(stdout, "bhatti") {
+	if !strings.Contains(stdout, "ahvm") {
 		t.Fatalf("version output: %s", stdout)
 	}
 	if !strings.Contains(stdout, "api:") {
@@ -711,7 +711,7 @@ func TestCompareVersions(t *testing.T) {
 		{"0.3.0", "0.4.0", -1},
 		{"0.4.0", "0.4.1", -1},
 		{"v1.2.3", "v1.2.4", -1},
-		{"0.4", "0.4.0", 0},   // missing patch = 0
+		{"0.4", "0.4.0", 0}, // missing patch = 0
 		{"0.4", "0.4.1", -1},
 	}
 	for _, tt := range tests {
@@ -721,5 +721,3 @@ func TestCompareVersions(t *testing.T) {
 		}
 	}
 }
-
-

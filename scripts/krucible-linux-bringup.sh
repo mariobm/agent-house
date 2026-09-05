@@ -7,12 +7,12 @@
 #   1. apt build deps + kernel-build deps + Go 1.25 + rustup
 #   2. build + install libkrunfw (the bundled guest kernel → libkrunfw.so)
 #   3. build libkrucible (our libkrun fork → libkrun.so) + install prefix
-#   4. build bhatti-vmm (cgo, links libkrun/libkrunfw — no codesigning on Linux)
+#   4. build ahvm-vmm (cgo, links libkrun/libkrunfw — no codesigning on Linux)
 #
 # This is the long pole: (2) is a Linux kernel build and (3) a Rust release
 # build — tens of minutes on a 4-core Pi. Run under nohup/tmux and tail the log.
 #
-# Layout: this script lives in the bhatti repo; libkrucible is a git submodule
+# Layout: this script lives in the ahvm repo; libkrucible is a git submodule
 # at ./libkrucible (`git submodule update --init` after clone). libkrunfw is
 # cloned from its public upstream and pinned to the version the guest kernel matches.
 #
@@ -92,18 +92,18 @@ ABI="$(grep -E '^ABI_VERSION' "$LIBKRUCIBLE/Makefile" | head -1 | sed 's/.*= *//
 cp "$LIBKRUCIBLE/target/release/libkrun.so" "$LIBDIR/libkrun.so.$VER"
 ( cd "$LIBDIR" && ln -sf "libkrun.so.$VER" "libkrun.so.$ABI" && ln -sf "libkrun.so.$ABI" libkrun.so )
 
-# --- 4. bhatti-vmm (cgo helper; no codesigning on Linux) ---
-log "building bhatti-vmm"
+# --- 4. ahvm-vmm (cgo helper; no codesigning on Linux) ---
+log "building ahvm-vmm"
 export PKG_CONFIG_PATH="$KPREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 export LD_LIBRARY_PATH="$LIBDIR:$PREFIX/lib64:$PREFIX/lib:${LD_LIBRARY_PATH:-}"
-CGO_ENABLED=1 go build -tags krucible -o "$REPO/bhatti-vmm" ./cmd/vmm
+CGO_ENABLED=1 go build -tags krucible -o "$REPO/ahvm-vmm" ./cmd/vmm
 
 cat <<EOF
 
 ==> done. krucible engine built for linux/$ARCH.
     libkrunfw:   $PREFIX (libkrunfw.so)
     libkrucible: $KPREFIX/lib (libkrun.so.$VER)
-    helper:      $REPO/bhatti-vmm
+    helper:      $REPO/ahvm-vmm
 
 Run the krucible suite (warm + agent + recovery; cold tier is macOS-gated):
   export LD_LIBRARY_PATH=$LIBDIR:$PREFIX/lib64:$PREFIX/lib

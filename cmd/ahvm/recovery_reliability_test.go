@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // ==========================================================================
@@ -36,7 +36,7 @@ func TestRecoverVolumeAttachments(t *testing.T) {
 	// Create a persistent volume and attach it
 	st.CreatePersistentVolume(store.PersistentVolume{
 		ID: "pv1", UserID: "usr_test", Name: "workspace",
-		SizeMB: 1024, FilePath: "/var/lib/bhatti/volumes/usr_test/workspace.ext4",
+		SizeMB: 1024, FilePath: "/var/lib/ahvm/volumes/usr_test/workspace.ext4",
 		Status: "ready", CreatedAt: time.Now(),
 	})
 	st.AttachPersistentVolume("usr_test", "workspace", "vol-sb", "/workspace", false)
@@ -62,7 +62,7 @@ func TestRecoverVolumeAttachments(t *testing.T) {
 	if v["name"] != "workspace" {
 		t.Errorf("volume name: %v, want 'workspace'", v["name"])
 	}
-	if v["file_path"] != "/var/lib/bhatti/volumes/usr_test/workspace.ext4" {
+	if v["file_path"] != "/var/lib/ahvm/volumes/usr_test/workspace.ext4" {
 		t.Errorf("volume file_path: %v", v["file_path"])
 	}
 	if v["mount"] != "/workspace" {

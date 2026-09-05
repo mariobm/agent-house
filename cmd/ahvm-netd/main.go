@@ -10,12 +10,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/sahil-shubham/bhatti/pkg/gateway"
+	"github.com/mariobm/agent-house/pkg/gateway"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 )
 
-// bhatti-netd --net-uds <path> --gw-ip 100.64.0.1 --prefix 24 --mac 52:54:00:00:00:01
+// ahvm-netd --net-uds <path> --gw-ip 100.64.0.1 --prefix 24 --mac 52:54:00:00:00:01
 //
 // netd LISTENS on the unixstream socket; libkrun's virtio-net backend CONNECTS
 // to it (net/unixstream.rs Unixstream::open → connect). The daemon spawns one
@@ -30,26 +30,26 @@ func main() {
 	flag.Parse()
 
 	if *netUDS == "" {
-		log.Fatal("bhatti-netd: --net-uds is required")
+		log.Fatal("ahvm-netd: --net-uds is required")
 	}
 	cfg, err := parseConfig(*gwIP, *prefix, *macStr)
 	if err != nil {
-		log.Fatalf("bhatti-netd: %v", err)
+		log.Fatalf("ahvm-netd: %v", err)
 	}
 
 	_ = os.Remove(*netUDS) // clear any stale socket from a prior incarnation
 	ln, err := net.Listen("unix", *netUDS)
 	if err != nil {
-		log.Fatalf("bhatti-netd: listen %s: %v", *netUDS, err)
+		log.Fatalf("ahvm-netd: listen %s: %v", *netUDS, err)
 	}
 	defer ln.Close()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	log.Printf("bhatti-netd: listening on %s (gw %s/%d, mac %s)", *netUDS, *gwIP, *prefix, *macStr)
+	log.Printf("ahvm-netd: listening on %s (gw %s/%d, mac %s)", *netUDS, *gwIP, *prefix, *macStr)
 	if err := serve(ctx, ln, cfg, *ctlUDS); err != nil && ctx.Err() == nil {
-		log.Fatalf("bhatti-netd: %v", err)
+		log.Fatalf("ahvm-netd: %v", err)
 	}
 }
 

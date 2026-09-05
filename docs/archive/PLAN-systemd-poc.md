@@ -11,7 +11,7 @@ and get numbers.
 ## Current State (measured on raspi-5a)
 
 ```
-bhatti version:     dev
+ahvm version:     dev
 kernel:             6.8.0-1052-raspi (host), vmlinux-arm64 (guest, 6.1.155)
 rootfs:             rootfs-minimal-arm64.ext4 (512MB, 161MB used, 291MB free)
 firecracker:        jailer mode (uid 10000)
@@ -77,7 +77,7 @@ What it skips:
 Cross-compile and deploy:
 ```bash
 # On mac (this repo)
-cd /Users/sahil/Projects/bhatti
+cd /Users/sahil/Projects/ahvm
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o lohar-arm64 ./cmd/lohar/
 scp lohar-arm64 user@100.119.145.44:/tmp/
 ```
@@ -92,17 +92,17 @@ Build directly on the Pi. No cross-compile needed — native arm64.
 ssh user@100.119.145.44
 
 # 1. Copy the existing minimal rootfs as our base
-sudo cp /var/lib/bhatti/images/rootfs-minimal-arm64.ext4 \
-        /var/lib/bhatti/images/rootfs-systemd-arm64.ext4
+sudo cp /var/lib/ahvm/images/rootfs-minimal-arm64.ext4 \
+        /var/lib/ahvm/images/rootfs-systemd-arm64.ext4
 
 # 2. Grow it to 1GB (systemd + deps need space, plus room for apt-get later)
-sudo truncate -s 1G /var/lib/bhatti/images/rootfs-systemd-arm64.ext4
-sudo e2fsck -f /var/lib/bhatti/images/rootfs-systemd-arm64.ext4
-sudo resize2fs /var/lib/bhatti/images/rootfs-systemd-arm64.ext4
+sudo truncate -s 1G /var/lib/ahvm/images/rootfs-systemd-arm64.ext4
+sudo e2fsck -f /var/lib/ahvm/images/rootfs-systemd-arm64.ext4
+sudo resize2fs /var/lib/ahvm/images/rootfs-systemd-arm64.ext4
 
 # 3. Mount and install systemd
 sudo mkdir -p /mnt/systemd-rootfs
-sudo mount /var/lib/bhatti/images/rootfs-systemd-arm64.ext4 /mnt/systemd-rootfs
+sudo mount /var/lib/ahvm/images/rootfs-systemd-arm64.ext4 /mnt/systemd-rootfs
 
 # Bind-mount for chroot
 sudo mount --bind /proc /mnt/systemd-rootfs/proc
@@ -119,7 +119,7 @@ apt-get install -y --no-install-recommends systemd systemd-sysv dbus
 # Create lohar.service
 cat > /etc/systemd/system/lohar.service << UNIT
 [Unit]
-Description=Bhatti Guest Agent
+Description=AHVM Guest Agent
 After=sysinit.target
 DefaultDependencies=no
 
@@ -163,7 +163,7 @@ PIN
 
 # Journal: volatile only, small cap
 mkdir -p /etc/systemd/journald.conf.d
-cat > /etc/systemd/journald.conf.d/bhatti.conf << JCONF
+cat > /etc/systemd/journald.conf.d/ahvm.conf << JCONF
 [Journal]
 Storage=volatile
 RuntimeMaxUse=8M
@@ -171,7 +171,7 @@ JCONF
 
 # Disable watchdogs (snapshot/restore causes time jumps)
 mkdir -p /etc/systemd/system.conf.d
-cat > /etc/systemd/system.conf.d/bhatti.conf << SCONF
+cat > /etc/systemd/system.conf.d/ahvm.conf << SCONF
 [Manager]
 RuntimeWatchdogSec=0
 ShutdownWatchdogSec=0
@@ -196,7 +196,7 @@ sudo umount /mnt/systemd-rootfs
 
 # 7. Write lohar hash stamp so the engine doesn't try to re-inject
 sha256sum /tmp/lohar-arm64 | awk '{print $1}' | \
-    sudo tee /var/lib/bhatti/images/rootfs-systemd-arm64.ext4.lohar-sha256
+    sudo tee /var/lib/ahvm/images/rootfs-systemd-arm64.ext4.lohar-sha256
 ```
 
 ---
@@ -219,14 +219,14 @@ bootArgs := fmt.Sprintf(
 Cross-compile and deploy:
 ```bash
 # On mac
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bhatti-arm64 ./cmd/bhatti/
-scp bhatti-arm64 user@100.119.145.44:/tmp/
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ahvm-arm64 ./cmd/ahvm/
+scp ahvm-arm64 user@100.119.145.44:/tmp/
 
 # On Pi
 ssh user@100.119.145.44
-sudo systemctl stop bhatti
-sudo cp /tmp/bhatti-arm64 /usr/local/bin/bhatti
-sudo systemctl start bhatti
+sudo systemctl stop ahvm
+sudo cp /tmp/ahvm-arm64 /usr/local/bin/ahvm
+sudo systemctl start ahvm
 ```
 
 ---
@@ -237,34 +237,34 @@ sudo systemctl start bhatti
 ssh user@100.119.145.44
 
 # A. Does systemd mode boot?
-bhatti create --name smoke-systemd --image systemd --cpus 1 --memory 2048
+ahvm create --name smoke-systemd --image systemd --cpus 1 --memory 2048
 
 # B. Is lohar responsive?
-bhatti exec smoke-systemd -- echo "hello from systemd mode"
+ahvm exec smoke-systemd -- echo "hello from systemd mode"
 
 # C. What does boot timing look like?
-bhatti file read smoke-systemd /tmp/boot-timing.txt
+ahvm file read smoke-systemd /tmp/boot-timing.txt
 
 # D. Is systemd running?
-bhatti exec smoke-systemd -- systemctl is-system-running
-bhatti exec smoke-systemd -- systemctl status lohar.service
-bhatti exec smoke-systemd -- systemd-analyze
+ahvm exec smoke-systemd -- systemctl is-system-running
+ahvm exec smoke-systemd -- systemctl status lohar.service
+ahvm exec smoke-systemd -- systemd-analyze
 
 # E. What's masked?
-bhatti exec smoke-systemd -- systemctl list-units --state=running
+ahvm exec smoke-systemd -- systemctl list-units --state=running
 
 # F. DNS works?
-bhatti exec smoke-systemd -- cat /etc/resolv.conf
-bhatti exec smoke-systemd -- curl -s ifconfig.me
+ahvm exec smoke-systemd -- cat /etc/resolv.conf
+ahvm exec smoke-systemd -- curl -s ifconfig.me
 
 # G. Compare with lohar PID 1
-bhatti create --name smoke-lohar --cpus 1 --memory 2048
-bhatti file read smoke-lohar /tmp/boot-timing.txt
-bhatti exec smoke-lohar -- echo "hello from lohar PID 1"
+ahvm create --name smoke-lohar --cpus 1 --memory 2048
+ahvm file read smoke-lohar /tmp/boot-timing.txt
+ahvm exec smoke-lohar -- echo "hello from lohar PID 1"
 
 # Clean up
-bhatti destroy smoke-systemd -y
-bhatti destroy smoke-lohar -y
+ahvm destroy smoke-systemd -y
+ahvm destroy smoke-lohar -y
 ```
 
 If smoke test passes, proceed to measurements.
@@ -279,25 +279,25 @@ If smoke test passes, proceed to measurements.
 echo "=== LOHAR PID 1 ===" | tee boot-lohar.txt
 for i in $(seq 1 20); do
     START=$(date +%s%N)
-    bhatti create --name "bl-$i" --cpus 1 --memory 2048
+    ahvm create --name "bl-$i" --cpus 1 --memory 2048
     END=$(date +%s%N)
     MS=$(( (END - START) / 1000000 ))
-    GUEST=$(bhatti file read "bl-$i" /tmp/boot-timing.txt 2>/dev/null)
+    GUEST=$(ahvm file read "bl-$i" /tmp/boot-timing.txt 2>/dev/null)
     echo "create $i: ${MS}ms | guest: $GUEST" | tee -a boot-lohar.txt
-    bhatti destroy "bl-$i" -y
+    ahvm destroy "bl-$i" -y
     sleep 1
 done
 
 echo "=== SYSTEMD ===" | tee boot-systemd.txt
 for i in $(seq 1 20); do
     START=$(date +%s%N)
-    bhatti create --name "bs-$i" --image systemd --cpus 1 --memory 2048
+    ahvm create --name "bs-$i" --image systemd --cpus 1 --memory 2048
     END=$(date +%s%N)
     MS=$(( (END - START) / 1000000 ))
-    GUEST=$(bhatti file read "bs-$i" /tmp/boot-timing.txt 2>/dev/null)
-    ANALYZE=$(bhatti exec "bs-$i" -- systemd-analyze 2>/dev/null | head -1)
+    GUEST=$(ahvm file read "bs-$i" /tmp/boot-timing.txt 2>/dev/null)
+    ANALYZE=$(ahvm exec "bs-$i" -- systemd-analyze 2>/dev/null | head -1)
     echo "create $i: ${MS}ms | guest: $GUEST | $ANALYZE" | tee -a boot-systemd.txt
-    bhatti destroy "bs-$i" -y
+    ahvm destroy "bs-$i" -y
     sleep 1
 done
 ```
@@ -309,26 +309,26 @@ for mode in "" "--image systemd"; do
     tag=$([ -z "$mode" ] && echo "lohar" || echo "systemd")
     echo "=== $tag snapshot test ===" | tee snap-$tag.txt
 
-    bhatti create --name "snap-$tag" --cpus 1 --memory 2048 $mode
-    bhatti exec "snap-$tag" -- sh -c 'nohup sh -c "while true; do date >> /tmp/tick.log; sleep 1; done" &'
+    ahvm create --name "snap-$tag" --cpus 1 --memory 2048 $mode
+    ahvm exec "snap-$tag" -- sh -c 'nohup sh -c "while true; do date >> /tmp/tick.log; sleep 1; done" &'
     sleep 3
-    bhatti exec "snap-$tag" -- wc -l /tmp/tick.log
+    ahvm exec "snap-$tag" -- wc -l /tmp/tick.log
 
-    bhatti stop "snap-$tag"
+    ahvm stop "snap-$tag"
     sleep 5
 
     START=$(date +%s%N)
-    bhatti start "snap-$tag"
+    ahvm start "snap-$tag"
     END=$(date +%s%N)
     MS=$(( (END - START) / 1000000 ))
     echo "resume: ${MS}ms" | tee -a snap-$tag.txt
 
-    bhatti exec "snap-$tag" -- cat /etc/resolv.conf | tee -a snap-$tag.txt
-    bhatti exec "snap-$tag" -- wc -l /tmp/tick.log | tee -a snap-$tag.txt
-    [ "$tag" = "systemd" ] && bhatti exec "snap-$tag" -- systemctl is-system-running 2>&1 | tee -a snap-$tag.txt
-    [ "$tag" = "systemd" ] && bhatti exec "snap-$tag" -- journalctl --no-pager -n 10 2>&1 | tee -a snap-$tag.txt
+    ahvm exec "snap-$tag" -- cat /etc/resolv.conf | tee -a snap-$tag.txt
+    ahvm exec "snap-$tag" -- wc -l /tmp/tick.log | tee -a snap-$tag.txt
+    [ "$tag" = "systemd" ] && ahvm exec "snap-$tag" -- systemctl is-system-running 2>&1 | tee -a snap-$tag.txt
+    [ "$tag" = "systemd" ] && ahvm exec "snap-$tag" -- journalctl --no-pager -n 10 2>&1 | tee -a snap-$tag.txt
 
-    bhatti destroy "snap-$tag" -y
+    ahvm destroy "snap-$tag" -y
 done
 ```
 
@@ -339,20 +339,20 @@ for mode in "" "--image systemd"; do
     tag=$([ -z "$mode" ] && echo "lohar" || echo "systemd")
     echo "=== $tag warm test ===" | tee warm-$tag.txt
 
-    bhatti create --name "warm-$tag" --cpus 1 --memory 2048 $mode
-    bhatti exec "warm-$tag" -- echo "warmup"
+    ahvm create --name "warm-$tag" --cpus 1 --memory 2048 $mode
+    ahvm exec "warm-$tag" -- echo "warmup"
     echo "waiting 35s for warm transition..."
     sleep 35
 
     START=$(date +%s%N)
-    bhatti exec "warm-$tag" -- echo "after warm"
+    ahvm exec "warm-$tag" -- echo "after warm"
     END=$(date +%s%N)
     MS=$(( (END - START) / 1000000 ))
     echo "warm resume+exec: ${MS}ms" | tee -a warm-$tag.txt
 
-    [ "$tag" = "systemd" ] && bhatti exec "warm-$tag" -- systemctl is-system-running 2>&1 | tee -a warm-$tag.txt
+    [ "$tag" = "systemd" ] && ahvm exec "warm-$tag" -- systemctl is-system-running 2>&1 | tee -a warm-$tag.txt
 
-    bhatti destroy "warm-$tag" -y
+    ahvm destroy "warm-$tag" -y
 done
 ```
 
@@ -363,11 +363,11 @@ for mode in "" "--image systemd"; do
     tag=$([ -z "$mode" ] && echo "lohar" || echo "systemd")
     echo "=== $tag memory ===" | tee mem-$tag.txt
 
-    bhatti create --name "mem-$tag" --cpus 1 --memory 2048 $mode
-    bhatti exec "mem-$tag" -- free -m | tee -a mem-$tag.txt
-    bhatti exec "mem-$tag" -- ps -eo pid,rss,comm --sort=-rss | head -15 | tee -a mem-$tag.txt
+    ahvm create --name "mem-$tag" --cpus 1 --memory 2048 $mode
+    ahvm exec "mem-$tag" -- free -m | tee -a mem-$tag.txt
+    ahvm exec "mem-$tag" -- ps -eo pid,rss,comm --sort=-rss | head -15 | tee -a mem-$tag.txt
 
-    bhatti destroy "mem-$tag" -y
+    ahvm destroy "mem-$tag" -y
 done
 ```
 
@@ -378,24 +378,24 @@ for mode in "" "--image systemd"; do
     tag=$([ -z "$mode" ] && echo "lohar" || echo "systemd")
     echo "=== $tag packages ===" | tee pkg-$tag.txt
 
-    bhatti create --name "pkg-$tag" --cpus 1 --memory 2048 --disk-size 4096 $mode
-    bhatti exec "pkg-$tag" -- sudo apt-get update -qq 2>&1 | tail -3
+    ahvm create --name "pkg-$tag" --cpus 1 --memory 2048 --disk-size 4096 $mode
+    ahvm exec "pkg-$tag" -- sudo apt-get update -qq 2>&1 | tail -3
 
     # openssh-server (the issue #12 case)
-    bhatti exec "pkg-$tag" -- sudo apt-get install -y --no-install-recommends openssh-server 2>&1 | tail -5 | tee -a pkg-$tag.txt
-    bhatti exec "pkg-$tag" -- cat /etc/resolv.conf | tee -a pkg-$tag.txt
-    echo "dns: $(bhatti exec "pkg-$tag" -- curl -sf ifconfig.me 2>&1 || echo FAILED)" | tee -a pkg-$tag.txt
-    [ "$tag" = "systemd" ] && echo "sshd: $(bhatti exec "pkg-$tag" -- sudo systemctl is-active ssh 2>&1)" | tee -a pkg-$tag.txt
+    ahvm exec "pkg-$tag" -- sudo apt-get install -y --no-install-recommends openssh-server 2>&1 | tail -5 | tee -a pkg-$tag.txt
+    ahvm exec "pkg-$tag" -- cat /etc/resolv.conf | tee -a pkg-$tag.txt
+    echo "dns: $(ahvm exec "pkg-$tag" -- curl -sf ifconfig.me 2>&1 || echo FAILED)" | tee -a pkg-$tag.txt
+    [ "$tag" = "systemd" ] && echo "sshd: $(ahvm exec "pkg-$tag" -- sudo systemctl is-active ssh 2>&1)" | tee -a pkg-$tag.txt
 
     # postgresql
-    bhatti exec "pkg-$tag" -- sudo apt-get install -y --no-install-recommends postgresql 2>&1 | tail -5 | tee -a pkg-$tag.txt
-    echo "pg: $(bhatti exec "pkg-$tag" -- sudo pg_isready 2>&1)" | tee -a pkg-$tag.txt
+    ahvm exec "pkg-$tag" -- sudo apt-get install -y --no-install-recommends postgresql 2>&1 | tail -5 | tee -a pkg-$tag.txt
+    echo "pg: $(ahvm exec "pkg-$tag" -- sudo pg_isready 2>&1)" | tee -a pkg-$tag.txt
 
     # nginx
-    bhatti exec "pkg-$tag" -- sudo apt-get install -y --no-install-recommends nginx 2>&1 | tail -5 | tee -a pkg-$tag.txt
-    echo "nginx: $(bhatti exec "pkg-$tag" -- curl -sf localhost 2>&1 | head -1 || echo FAILED)" | tee -a pkg-$tag.txt
+    ahvm exec "pkg-$tag" -- sudo apt-get install -y --no-install-recommends nginx 2>&1 | tail -5 | tee -a pkg-$tag.txt
+    echo "nginx: $(ahvm exec "pkg-$tag" -- curl -sf localhost 2>&1 | head -1 || echo FAILED)" | tee -a pkg-$tag.txt
 
-    bhatti destroy "pkg-$tag" -y
+    ahvm destroy "pkg-$tag" -y
 done
 ```
 
@@ -403,16 +403,16 @@ done
 
 ```bash
 # Image A
-bhatti create --name perf-bench --cpus 2 --memory 2048
+ahvm create --name perf-bench --cpus 2 --memory 2048
 bash bench/run.sh 20
 cp -r bench/results bench/results-lohar
-bhatti destroy perf-bench -y
+ahvm destroy perf-bench -y
 
 # Image B
-bhatti create --name perf-bench --image systemd --cpus 2 --memory 2048
+ahvm create --name perf-bench --image systemd --cpus 2 --memory 2048
 bash bench/run.sh 20
 cp -r bench/results bench/results-systemd
-bhatti destroy perf-bench -y
+ahvm destroy perf-bench -y
 ```
 
 ---
@@ -423,9 +423,9 @@ bhatti destroy perf-bench -y
 1. Edit cmd/lohar/main.go — add runAsAgent()         [mac, 15 min]
 2. Cross-compile lohar, scp to Pi                     [mac, 2 min]
 3. Edit create.go — init= switch                      [mac, 5 min]
-4. Cross-compile bhatti, scp to Pi                    [mac, 2 min]
+4. Cross-compile ahvm, scp to Pi                    [mac, 2 min]
 5. Build systemd rootfs on Pi (chroot + apt)          [Pi, 15 min]
-6. Restart bhatti on Pi                               [Pi, 1 min]
+6. Restart ahvm on Pi                               [Pi, 1 min]
 7. Smoke test (Part 4)                                [Pi, 5 min]
 8. Boot timing measurements (Part 5a)                 [Pi, 15 min]
 9. Snapshot/restore test (Part 5b)                    [Pi, 10 min]

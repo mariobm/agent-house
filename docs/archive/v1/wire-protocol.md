@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/under-the-hood/wire-protocol/>.
+> <https://ahvm.sh/docs/under-the-hood/wire-protocol/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -9,7 +9,7 @@
 
 # Wire Protocol
 
-All communication between the bhatti host and a guest VM happens over a binary framing protocol. The same protocol runs over vsock (cold boot), TCP over TAP (post-snapshot), or Unix sockets (testing). The protocol is engine-independent — the entire agent test suite runs on macOS over `net.Pipe()` without any VM.
+All communication between the ahvm host and a guest VM happens over a binary framing protocol. The same protocol runs over vsock (cold boot), TCP over TAP (post-snapshot), or Unix sockets (testing). The protocol is engine-independent — the entire agent test suite runs on macOS over `net.Pipe()` without any VM.
 
 ## Frame Format
 
@@ -205,4 +205,4 @@ All kill operations target the *process group* (negative PID), not just the sess
 
 ## Forward Compatibility
 
-`ReadFrame` in the client skips unknown frame types rather than erroring. This allows the protocol to be extended without breaking existing clients — a new frame type added to lohar won't crash an older bhatti host.
+`ReadFrame` in the client skips unknown frame types rather than erroring. This allows the protocol to be extended without breaking existing clients — a new frame type added to lohar won't crash an older ahvm host.

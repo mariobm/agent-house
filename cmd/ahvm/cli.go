@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sahil-shubham/bhatti/pkg"
+	"github.com/mariobm/agent-house/pkg"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -34,17 +34,17 @@ var (
 // The serve command is added in main() since it's defined alongside
 // the daemon code in main.go.
 var rootCmd = &cobra.Command{
-	Use:   "bhatti",
-	Short: "Firecracker microVM orchestrator",
-	Long: `bhatti creates isolated Linux VMs in seconds. Each sandbox has its own
+	Use:   "ahvm",
+	Short: "Agent House Virtual Machine orchestrator",
+	Long: `AHVM (Agent House Virtual Machine) creates isolated Linux VMs in seconds. Each sandbox has its own
 kernel, filesystem, and network. Paused sandboxes resume in under 3ms.
 
 Quick start:
-  bhatti setup                         # configure endpoint + API key
-  bhatti create --name dev             # create a sandbox
-  bhatti exec dev -- echo hello        # run a command
-  bhatti shell dev                     # interactive shell (Ctrl+\ to detach)
-  bhatti destroy dev                   # clean up`,
+  ahvm setup                         # configure endpoint + API key
+  ahvm create --name dev             # create a sandbox
+  ahvm exec dev -- echo hello        # run a command
+  ahvm shell dev                     # interactive shell (Ctrl+\ to detach)
+  ahvm destroy dev                   # clean up`,
 	SilenceUsage: true,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadConfig(cmd)
@@ -142,7 +142,7 @@ func runCLI() {
 //
 //	flag → config file → env var → default
 //
-// This means `bhatti setup` writes the config and it just works.
+// This means `ahvm setup` writes the config and it just works.
 // Env vars are the fallback for CI/scripts, not the override.
 func loadConfig(cmd *cobra.Command) {
 	cfg, _ := pkg.LoadConfig()
@@ -152,7 +152,7 @@ func loadConfig(cmd *cobra.Command) {
 		apiURL = v
 	} else if cfg != nil && cfg.APIURL != "" {
 		apiURL = cfg.APIURL
-	} else if v := os.Getenv("BHATTI_URL"); v != "" {
+	} else if v := os.Getenv("AHVM_URL"); v != "" {
 		apiURL = v
 	} else if cfg != nil {
 		// No explicit remote endpoint: prefer the daemon's local unix control
@@ -171,7 +171,7 @@ func loadConfig(cmd *cobra.Command) {
 		apiToken = v
 	} else if cfg != nil && cfg.AuthToken != "" {
 		apiToken = cfg.AuthToken
-	} else if v := os.Getenv("BHATTI_TOKEN"); v != "" {
+	} else if v := os.Getenv("AHVM_TOKEN"); v != "" {
 		apiToken = v
 	}
 }
@@ -238,15 +238,15 @@ func errorHint(msg string) string {
 	lower := strings.ToLower(msg)
 	switch {
 	case strings.Contains(lower, "not running"):
-		return "  Resume it first:\n    bhatti start <sandbox>"
+		return "  Resume it first:\n    ahvm start <sandbox>"
 	case strings.Contains(lower, "not found"):
-		return "  Check sandbox name:\n    bhatti ls"
+		return "  Check sandbox name:\n    ahvm ls"
 	case strings.Contains(lower, "already exists"):
-		return "  Use a different name or destroy the existing one:\n    bhatti destroy <sandbox>"
-	case strings.Contains(lower, "use 'bhatti start --force'"):
-		return "  Retry with force:\n    bhatti start --force <sandbox>"
+		return "  Use a different name or destroy the existing one:\n    ahvm destroy <sandbox>"
+	case strings.Contains(lower, "use 'ahvm start --force'"):
+		return "  Retry with force:\n    ahvm start --force <sandbox>"
 	case strings.Contains(lower, "limit") || strings.Contains(lower, "max sandbox"):
-		return "  Destroy unused sandboxes to free capacity:\n    bhatti ls\n    bhatti destroy <sandbox>"
+		return "  Destroy unused sandboxes to free capacity:\n    ahvm ls\n    ahvm destroy <sandbox>"
 	}
 	return ""
 }
@@ -255,7 +255,7 @@ func errorHint(msg string) string {
 // CLI invocation (resolveID + actual command = 2 API calls).
 var versionChecked bool
 
-// checkServerVersion reads the X-Bhatti-Version and X-Bhatti-Min-CLI
+// checkServerVersion reads the X-AHVM-Version and X-AHVM-Min-CLI
 // headers from the server response. If the CLI is outdated, it prints
 // a one-time warning to stderr. This is the push mechanism — the server
 // tells the CLI it's outdated through headers already present on every
@@ -266,14 +266,14 @@ func checkServerVersion(resp *http.Response) {
 	}
 	versionChecked = true
 
-	minCLI := resp.Header.Get("X-Bhatti-Min-CLI")
+	minCLI := resp.Header.Get("X-AHVM-Min-CLI")
 
 	// Hard warning: CLI is below the server's minimum required version.
 	// This is the ONLY case where we show an update notice — when the
-	// server explicitly requires a newer CLI via X-Bhatti-Min-CLI.
+	// server explicitly requires a newer CLI via X-AHVM-Min-CLI.
 	if minCLI != "" && compareVersions(version, minCLI) < 0 {
 		fmt.Fprintf(os.Stderr, "⚠ CLI version %s is below server minimum %s — please update:\n", version, minCLI)
-		fmt.Fprintf(os.Stderr, "  bhatti update\n\n")
+		fmt.Fprintf(os.Stderr, "  ahvm update\n\n")
 		return
 	}
 
@@ -614,7 +614,7 @@ func completeSandboxNames(cmd *cobra.Command, args []string, toComplete string) 
 // to silently miss sandbox names created by the "other" UID. Anchoring
 // to the *invoking* user keeps both views in sync.
 func completionCachePath() string {
-	return filepath.Join(os.TempDir(), fmt.Sprintf("bhatti-completions-%d", pkg.InvokingUID()))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("ahvm-completions-%d", pkg.InvokingUID()))
 }
 
 // --- Arg validators ---

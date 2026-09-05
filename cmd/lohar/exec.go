@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 type frameMsg struct {
@@ -24,7 +24,7 @@ type frameMsg struct {
 // file path. The process survives vsock connection close.
 func handleDetachedExec(conn net.Conn, req proto.ExecRequest) {
 	// Determine output file
-	outputFile := fmt.Sprintf("/tmp/bhatti-detach-%d.log", time.Now().UnixNano())
+	outputFile := fmt.Sprintf("/tmp/ahvm-detach-%d.log", time.Now().UnixNano())
 	if req.OutputFile != nil && *req.OutputFile != "" {
 		outputFile = *req.OutputFile
 	}

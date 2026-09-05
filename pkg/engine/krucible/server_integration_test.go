@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/server"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/server"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // TestKrucibleServerIntegration drives the FULL daemon stack (HTTP API + store +
@@ -118,7 +118,7 @@ func krucibleServer(t *testing.T) (*httptest.Server, doFunc) {
 	return ts, do
 }
 
-// TestKrucibleServerForward drives `bhatti forward` end to end through the full
+// TestKrucibleServerForward drives `ahvm forward` end to end through the full
 // daemon over a real VM (no mock): create -> start a guest HTTP server
 // (detached exec) -> POST /forward -> the daemon binds a host port and bridges
 // it to the guest over the vsock tunnel -> a GET to that host port returns the

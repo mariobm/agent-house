@@ -38,10 +38,10 @@ type Config struct {
 	EtcSystemdDir string
 
 	// PidDir holds runtime pidfiles + .failed markers. Production:
-	// /run/bhatti/services.
+	// /run/ahvm/services.
 	PidDir string
 
-	// LogDir holds per-unit log files. Production: /var/log/bhatti.
+	// LogDir holds per-unit log files. Production: /var/log/ahvm.
 	LogDir string
 
 	// CgroupRoot is the cgroup v2 hierarchy root. Production:
@@ -69,9 +69,9 @@ type Config struct {
 }
 
 // ProductionConfig returns the Config that PID-1 lohar uses inside a
-// real bhatti VM. The same values were package-level globals before
+// real ahvm VM. The same values were package-level globals before
 // the Config refactor; preserving the literal paths here matches
-// existing on-disk state (pidfiles in /run/bhatti/services, etc.).
+// existing on-disk state (pidfiles in /run/ahvm/services, etc.).
 func ProductionConfig() Config {
 	return Config{
 		ServiceDirs: []string{
@@ -80,8 +80,8 @@ func ProductionConfig() Config {
 			"/lib/systemd/system",
 		},
 		EtcSystemdDir: "/etc/systemd/system",
-		PidDir:        "/run/bhatti/services",
-		LogDir:        "/var/log/bhatti",
+		PidDir:        "/run/ahvm/services",
+		LogDir:        "/var/log/ahvm",
 		CgroupRoot:    "/sys/fs/cgroup",
 		DropInDirs: []string{
 			"/usr/lib/systemd/system",
@@ -388,12 +388,12 @@ func (r *Registry) WaitForWatchers() { r.watcherWG.Wait() }
 // in byKey) until the next access.
 //
 // Surfaced twice during the G1.3 kubelet spike:
-//   1. notFound cache: probe-then-write-then-start (k3s install).
-//      Pre-fix: "Unit k3s not found" on start.
-//   2. byKey cache: edit unit file in place, daemon-reload, restart.
-//      Pre-fix: cached parse still has Type=notify even though file
-//      now says Type=exec, so waitForNotifyReady fires for the
-//      wrong unit shape.
+//  1. notFound cache: probe-then-write-then-start (k3s install).
+//     Pre-fix: "Unit k3s not found" on start.
+//  2. byKey cache: edit unit file in place, daemon-reload, restart.
+//     Pre-fix: cached parse still has Type=notify even though file
+//     now says Type=exec, so waitForNotifyReady fires for the
+//     wrong unit shape.
 func (r *Registry) Reload() {
 	r.mu.Lock()
 	r.notFound = make(map[string]struct{})

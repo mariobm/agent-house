@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 // configEnv holds environment variables from the config drive, merged into
@@ -124,15 +124,15 @@ func runAgent() {
 	// /run/systemd/system: deb-systemd-helper checks for this to decide
 	// whether to use the systemctl enable/disable path. Without it,
 	// package installs silently skip service enablement.
-	// /run/bhatti/services: PID files for services managed by the shim.
+	// /run/ahvm/services: PID files for services managed by the shim.
 	os.MkdirAll("/run/systemd/system", 0755)
-	os.MkdirAll("/run/bhatti/services", 0755)
+	os.MkdirAll("/run/ahvm/services", 0755)
 
 	// --- Config drive ---
 
 	cfg := fetchConfig()
 	if cfg != nil {
-		hostname := "bhatti"
+		hostname := "ahvm"
 		if cfg.Hostname != "" {
 			hostname = cfg.Hostname
 		}
@@ -158,7 +158,7 @@ func runAgent() {
 		mountFsMounts(cfg.Mounts)
 		bp("config_applied")
 	} else {
-		applyHostname("bhatti")
+		applyHostname("ahvm")
 		ensureResolvConf()
 	}
 
@@ -227,24 +227,24 @@ func runAgent() {
 	fmt.Fprintln(os.Stderr, "lohar: ready")
 
 	// --- Bridge user --env into unit-file environment ---
-	// configEnv comes from the config drive (populated by `bhatti create
-	// --env KEY=VALUE`). Today it only reaches `bhatti exec` invocations
+	// configEnv comes from the config drive (populated by `ahvm create
+	// --env KEY=VALUE`). Today it only reaches `ahvm exec` invocations
 	// via the env-merge in exec.go. Units spawned by
 	// startEnabledServices() can't see it unless we materialise it as a
 	// file they can EnvironmentFile= from.
 	//
 	// Convention (per PLAN-tiers-systemd.md): write canonical KEY=VALUE
-	// lines to /run/bhatti/config-env. Tier units opt in with
-	//   EnvironmentFile=-/run/bhatti/config-env
+	// lines to /run/ahvm/config-env. Tier units opt in with
+	//   EnvironmentFile=-/run/ahvm/config-env
 	// The leading '-' makes the file optional, so minimal sandboxes
 	// without any --env flags still boot cleanly.
-	os.MkdirAll("/run/bhatti", 0755)
+	os.MkdirAll("/run/ahvm", 0755)
 	if len(configEnv) > 0 {
 		var b strings.Builder
 		for k, v := range configEnv {
 			fmt.Fprintf(&b, "%s=%s\n", k, v)
 		}
-		if err := os.WriteFile("/run/bhatti/config-env", []byte(b.String()), 0644); err != nil {
+		if err := os.WriteFile("/run/ahvm/config-env", []byte(b.String()), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "lohar: write config-env: %v\n", err)
 		}
 	}
@@ -275,13 +275,13 @@ func runAgent() {
 	// trace actually reflects what happened. Previously written
 	// right after tcp_listen, which truncated the visible boot to
 	// the first ~7ms and hid the slow phases.
-	os.WriteFile("/run/bhatti/boot-timing.txt", []byte(bootLog.String()), 0644)
+	os.WriteFile("/run/ahvm/boot-timing.txt", []byte(bootLog.String()), 0644)
 
 	// --- Boot profile ---
 
-	if _, err := os.Stat("/etc/bhatti/init.sh"); err == nil {
+	if _, err := os.Stat("/etc/ahvm/init.sh"); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		cmd := exec.CommandContext(ctx, "/bin/sh", "/etc/bhatti/init.sh")
+		cmd := exec.CommandContext(ctx, "/bin/sh", "/etc/ahvm/init.sh")
 		cmd.Stdout = os.Stderr
 		cmd.Stderr = os.Stderr
 		cmd.Env = buildEnv(map[string]string{"HOME": "/root"})
@@ -297,7 +297,7 @@ func runAgent() {
 
 	// --- Supplementary env ---
 
-	if data, err := os.ReadFile("/run/bhatti/env"); err == nil {
+	if data, err := os.ReadFile("/run/ahvm/env"); err == nil {
 		if configEnv == nil {
 			configEnv = make(map[string]string)
 		}
@@ -479,8 +479,8 @@ type SandboxConfig struct {
 	// in-cluster DNS responder. Prepended to /etc/resolv.conf so
 	// sandbox-name lookups resolve locally before the public DNS
 	// fallbacks. Empty string skips the install — backwards-compatible
-	// with hosts running an older bhatti daemon. G1.1 of
-	// PLAN-bhatti-v2.md.
+	// with hosts running an older ahvm daemon. G1.1 of
+	// PLAN-ahvm-v2.md.
 	DNSInternal string     `json:"dns_internal,omitempty"`
 	User        string     `json:"user"`
 	Net         *NetConfig `json:"net,omitempty"`
@@ -545,7 +545,7 @@ func fetchConfig() *SandboxConfig {
 // alongside the responder would just let glibc round-robin away from
 // our responder and miss sibling names. Forwarding (case 1) is what
 // makes both kinds of name resolve from a single nameserver line.
-// G1.1 of PLAN-bhatti-v2.md.
+// G1.1 of PLAN-ahvm-v2.md.
 func applyDNS(internal string, public []string) {
 	content := buildResolvConf(internal, public)
 	if content == "" {
@@ -572,7 +572,7 @@ func buildResolvConf(internal string, public []string) string {
 		// Comment line so a human reading the file knows what 10.0.N.1
 		// is. Some tools strip comments; that's fine — the nameserver
 		// line is what actually matters.
-		content += "# bhatti in-cluster DNS (per-user): resolves sibling sandbox\n"
+		content += "# ahvm in-cluster DNS (per-user): resolves sibling sandbox\n"
 		content += "# names (<sandbox>, <sandbox>.sb) and forwards everything else\n"
 		content += "# upstream, so it's the only resolver the sandbox needs.\n"
 		content += "nameserver " + internal + "\n"

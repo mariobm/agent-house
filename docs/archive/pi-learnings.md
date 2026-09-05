@@ -14,7 +14,7 @@ Researched: 2026-03-19
 Every tool in pi exposes a **pluggable operations interface** that separates
 the tool's logic (argument parsing, truncation, output formatting) from the
 I/O substrate (local filesystem, SSH, sandbox API). This is the integration
-point for bhatti.
+point for ahvm.
 
 ```typescript
 // Each tool has a *Operations interface:
@@ -52,11 +52,11 @@ interface FindOperations {
 
 The sandbox extension already demonstrates this pattern: it swaps in a
 `BashOperations` implementation that wraps commands in OS-level sandboxing.
-A bhatti-backed pi would implement these against the bhatti REST API.
+A ahvm-backed pi would implement these against the ahvm REST API.
 
-**Mapping to bhatti API:**
+**Mapping to ahvm API:**
 
-| Pi operation | Bhatti API |
+| Pi operation | AHVM API |
 |---|---|
 | `BashOperations.exec` | `POST /sandboxes/:id/exec` |
 | `ReadOperations.readFile` | `GET /sandboxes/:id/files?path=...` |
@@ -92,7 +92,7 @@ for (const running of runningCalls) {
 Tool calls are **prepared sequentially** (validation, beforeToolCall hooks)
 then **executed concurrently**. Results are collected in source order.
 
-**Implication:** bhatti's connection-per-operation model handles this
+**Implication:** ahvm's connection-per-operation model handles this
 naturally — each parallel tool call opens its own TCP connection to lohar.
 But the p99 latency under 5–10 concurrent connections matters, since the
 user sees the slowest one. A common real pattern: 5 parallel file reads.
@@ -122,7 +122,7 @@ bash is saved to a temp file and its path included in the response.
 // → reads lines 2001–4000 from the file
 ```
 
-**Implication for bhatti:** Bhatti's `FileRead` streams the **entire file**
+**Implication for ahvm:** AHVM's `FileRead` streams the **entire file**
 from guest to host. For a 100MB log file, that's 100MB through the wire
 protocol even though pi will truncate to 50KB. The truncation should happen
 inside the guest. Add `offset` (1-indexed line number) and `limit` (max
@@ -164,10 +164,10 @@ execute: async (id, { command, timeout }, signal, onUpdate) => {
 }
 ```
 
-**Implication:** Bhatti's `Exec` API buffers the entire stdout/stderr and
+**Implication:** AHVM's `Exec` API buffers the entire stdout/stderr and
 returns it in one JSON response. For a `npm install` that takes 30 seconds,
 the user sees nothing until completion. Pi expects streaming. This mismatch
-means a bhatti-backed pi would either need to poll or use a different
+means a ahvm-backed pi would either need to poll or use a different
 endpoint.
 
 ---
@@ -186,10 +186,10 @@ Pi's edit tool is the most complex:
 8. Write file back
 9. Generate unified diff for display
 
-All of this runs on the host side. In a bhatti-backed mode, steps 1 and 8
+All of this runs on the host side. In a ahvm-backed mode, steps 1 and 8
 are remote operations — **two sequential round trips per edit**.
 
-With bhatti's ~5ms file read + ~5ms file write, an edit takes ~10ms. Not
+With ahvm's ~5ms file read + ~5ms file write, an edit takes ~10ms. Not
 a problem today, but a guest-side edit primitive would halve it.
 
 ---
@@ -214,7 +214,7 @@ For bash, abort kills the **entire process tree** (`process.kill(-pid, SIGKILL)`
 This is important — a simple `SIGTERM` to the shell doesn't kill child
 processes.
 
-**Implication:** Bhatti's `KILL` frame sends `SIGTERM` to the session
+**Implication:** AHVM's `KILL` frame sends `SIGTERM` to the session
 process. For non-TTY exec, this may not kill grandchild processes. Consider
 sending `SIGKILL` to the process group (negative PID) for more reliable
 abort. Also, there's no abort mechanism for in-flight file operations —
@@ -238,7 +238,7 @@ Path resolution handles:
 - macOS NFD normalization (decomposed filenames)
 - Relative paths resolved against cwd
 
-**Implication:** Bhatti file operations use absolute paths. Pi's SDK
+**Implication:** AHVM file operations use absolute paths. Pi's SDK
 integration would resolve paths on the host side before calling the API.
 This works, but supporting relative-to-workspace resolution inside lohar
 would simplify the integration.
@@ -285,7 +285,7 @@ pendingMessages = await config.getSteeringMessages();
 This means the agent can be redirected without waiting for all parallel
 tool calls to complete. Steering messages skip the remaining queued tools.
 
-**Implication:** Bhatti's exec API is fire-and-forget per request. There's
+**Implication:** AHVM's exec API is fire-and-forget per request. There's
 no way to signal "abort all pending operations for this sandbox" in one
 call. The SDK integration would need to track in-flight requests and abort
 them individually. A batch-abort endpoint (`DELETE /sandboxes/:id/exec`
@@ -293,7 +293,7 @@ or similar) could help.
 
 ---
 
-## Summary: what bhatti should learn from pi
+## Summary: what ahvm should learn from pi
 
 ### Must-have for SDK integration
 
@@ -328,4 +328,4 @@ or similar) could help.
    (pi doesn't have this yet either, but Sprites does).
 
 10. **Document the operations mapping** — a "building a pi extension for
-    bhatti" guide showing which API calls map to which pi operations.
+    ahvm" guide showing which API calls map to which pi operations.

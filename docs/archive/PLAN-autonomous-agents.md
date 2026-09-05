@@ -1,15 +1,15 @@
-# Supporting Long-Running Autonomous Agents in Bhatti
+# Supporting Long-Running Autonomous Agents in AHVM
 
 ## The Problem
 
-Users want to run autonomous agents inside bhatti sandboxes — agents like Hermes and NanoClaw that:
+Users want to run autonomous agents inside ahvm sandboxes — agents like Hermes and NanoClaw that:
 
 1. **Maintain persistent connections** to external platforms (Slack WebSocket, Discord gateway, Telegram long-poll)
 2. **Execute scheduled tasks** (cron jobs, one-shot delays, interval-based work)
 3. **React to external events** (incoming Slack messages, webhooks, email)
 4. **Run indefinitely** — hours, days, weeks
 
-These conflict directly with bhatti's thermal cycle, which is designed to reclaim resources from idle VMs.
+These conflict directly with ahvm's thermal cycle, which is designed to reclaim resources from idle VMs.
 
 ## Why the Thermal Cycle Breaks Autonomous Agents
 
@@ -28,7 +28,7 @@ An autonomous agent scenario:
 ```
 1. User creates sandbox with init: "hermes gateway"
 2. Hermes starts, connects to Slack via WebSocket (Socket Mode)
-3. Hermes is now idle from bhatti's perspective — no API calls from host
+3. Hermes is now idle from ahvm's perspective — no API calls from host
 4. 30 seconds pass → thermal cycle pauses the VM (vCPUs frozen)
 5. WebSocket heartbeat fails → Slack disconnects the bot
 6. Bot is dead. User's Slack channel goes silent.
@@ -81,7 +81,7 @@ Without native support, users would:
 ```bash
 # Keep-alive loop that pings the sandbox every 20 seconds
 while true; do
-    bhatti exec my-agent -- true  # Updates lastActivity, prevents pause
+    ahvm exec my-agent -- true  # Updates lastActivity, prevents pause
     sleep 20
 done
 ```
@@ -129,7 +129,7 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 - `engine.SandboxSpec` gets a `KeepHot bool` field
 - SQLite migration adds `keep_hot INTEGER DEFAULT 0` to sandboxes table
 - Thermal cycle checks `sb.KeepHot` before evaluating transitions
-- CLI: `bhatti create --keep-hot`
+- CLI: `ahvm create --keep-hot`
 - API: `keep_hot` field in create request
 
 **Resource budget concern:** Even on a Pi 5 (8GB RAM), keeping 4-5 agent VMs hot at 512MB each is fine (2.5GB). The thermal cycle still manages all other sandboxes. Could add a per-user limit on `keep_hot` sandboxes.
@@ -175,7 +175,7 @@ The `keep_hot` flag solves the problem by brute force. For 50 autonomous agents 
 
 ```
                      ┌───────────────────────────────────────────┐
-                     │  bhatti daemon                            │
+                     │  ahvm daemon                            │
                      │                                          │
                      │  ┌──────────────────────────────────────┐ │
                      │  │  Event Router                        │ │
@@ -264,14 +264,14 @@ The `keep_hot` flag solves the problem by brute force. For 50 autonomous agents 
 
 ### Layer 3b: Lightweight Sidecar (Alternative to Full Router)
 
-Instead of building platform-specific connectors into bhatti, offer a generic pattern:
+Instead of building platform-specific connectors into ahvm, offer a generic pattern:
 
 ```
 ┌──────────────────────────────────────────────────┐
 │  Host                                            │
 │                                                  │
 │  ┌──────────────────────────────────────────────┐│
-│  │  bhatti-events (lightweight sidecar)         ││
+│  │  ahvm-events (lightweight sidecar)         ││
 │  │                                              ││
 │  │  Webhook listener on :9090                   ││
 │  │  Event queue (SQLite or in-memory)           ││
@@ -288,9 +288,9 @@ Instead of building platform-specific connectors into bhatti, offer a generic pa
 └──────────────────────────────────────────────────┘
 ```
 
-The `bhatti-events` sidecar:
+The `ahvm-events` sidecar:
 - Generic webhook receiver (HTTP POST → sandbox exec)
-- Built into `bhatti serve` as an optional module
+- Built into `ahvm serve` as an optional module
 - No platform-specific code — connectors are user-provided
 - Cron scheduler built-in (it's just a timer → exec dispatch)
 
@@ -306,7 +306,7 @@ Files to change:
 2. **`pkg/engine/engine.go`** — Add `KeepHot` to `SandboxSpec`
 3. **`pkg/server/routes.go`** — Accept `keep_hot` in create request, pass through
 4. **`pkg/server/server.go`** — Check `KeepHot` in `runThermalCycle`
-5. **`cmd/bhatti/cli.go`** — Add `--keep-hot` flag to create command
+5. **`cmd/ahvm/cli.go`** — Add `--keep-hot` flag to create command
 6. **`cmd/lohar/main.go`** — Pass `keep_hot` through config drive (informational)
 
 Thermal cycle change:
@@ -359,4 +359,4 @@ Optional built-in connectors, each a goroutine in the daemon:
 
 **Recommendation:** Ship Phase 1 immediately. It's the 80/20 solution — `keep_hot` is a one-line thermal cycle change that unblocks all existing autonomous agent frameworks. Phase 2 is the architecturally correct solution for scale. Phase 3 is nice-to-have polish.
 
-The key insight is that bhatti's thermal cycle is **an asset, not a liability** for autonomous agents — but only if the event/scheduling layer lives on the host side of the thermal boundary. Agents don't need to be always-on; they need to be always-reachable. The 50ms cold-wake makes that possible.
+The key insight is that ahvm's thermal cycle is **an asset, not a liability** for autonomous agents — but only if the event/scheduling layer lives on the host side of the thermal boundary. Agents don't need to be always-on; they need to be always-reachable. The 50ms cold-wake makes that possible.

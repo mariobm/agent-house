@@ -17,7 +17,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/oci"
+	"github.com/mariobm/agent-house/pkg/oci"
 )
 
 func main() {

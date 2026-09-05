@@ -1,4 +1,4 @@
-# Bhatti — ARM64 Host Setup
+# AHVM — ARM64 Host Setup
 
 Setting up an ARM64 Linux machine (Raspberry Pi 5, AWS Graviton, Ampere, etc.)
 to run Firecracker microVM sandboxes.
@@ -52,12 +52,12 @@ firecracker --version
 
 ```bash
 # Enable IP forwarding (so VMs can reach the internet via NAT)
-echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-bhatti.conf
-sudo sysctl -p /etc/sysctl.d/99-bhatti.conf
+echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-ahvm.conf
+sudo sysctl -p /etc/sysctl.d/99-ahvm.conf
 
-# Create bhatti data directories
-sudo mkdir -p /var/lib/bhatti/{images,sandboxes}
-sudo chown $(whoami):$(whoami) /var/lib/bhatti -R
+# Create ahvm data directories
+sudo mkdir -p /var/lib/ahvm/{images,sandboxes}
+sudo chown $(whoami):$(whoami) /var/lib/ahvm -R
 ```
 
 ## 4. Download Kernel
@@ -71,12 +71,12 @@ Pi 5 (Cortex-A76) and is missing features needed by Ubuntu 24.04.
 ```bash
 curl -fsSL \
   'https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6.0/aarch64/vmlinux-6.1.58' \
-  -o /var/lib/bhatti/images/vmlinux-arm64
+  -o /var/lib/ahvm/images/vmlinux-arm64
 
 # Verify
-file /var/lib/bhatti/images/vmlinux-arm64
+file /var/lib/ahvm/images/vmlinux-arm64
 # → Linux kernel ARM64 boot executable Image, little-endian, 4K pages
-ls -lh /var/lib/bhatti/images/vmlinux-arm64
+ls -lh /var/lib/ahvm/images/vmlinux-arm64
 # → ~31MB
 ```
 
@@ -92,7 +92,7 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
     ./cmd/lohar
 
 # Copy to Pi
-scp bin/lohar-linux-arm64 user@<PI_IP>:/var/lib/bhatti/lohar
+scp bin/lohar-linux-arm64 user@<PI_IP>:/var/lib/ahvm/lohar
 ```
 
 ## 6. Build Base Rootfs
@@ -105,14 +105,14 @@ agent baked in. Run **on the Pi** (needs root for mount/chroot).
 sudo apt-get update && sudo apt-get install -y debootstrap
 
 # Copy the build script and sandbox configs to the Pi (from your Mac)
-#   scp scripts/build-rootfs.sh user@<PI_IP>:/var/lib/bhatti/
-#   scp -r sandbox/ user@<PI_IP>:/var/lib/bhatti/sandbox/
+#   scp scripts/build-rootfs.sh user@<PI_IP>:/var/lib/ahvm/
+#   scp -r sandbox/ user@<PI_IP>:/var/lib/ahvm/sandbox/
 
 # Run the build
-sudo /var/lib/bhatti/build-rootfs.sh /var/lib/bhatti/lohar
+sudo /var/lib/ahvm/build-rootfs.sh /var/lib/ahvm/lohar
 ```
 
-The script creates `/var/lib/bhatti/images/rootfs-base-arm64.ext4` containing:
+The script creates `/var/lib/ahvm/images/rootfs-base-arm64.ext4` containing:
 - Ubuntu 24.04 minimal (debootstrap noble)
 - zsh, git, curl, wget, tmux, vim, htop, jq, socat, iproute2
 - Starship prompt
@@ -132,7 +132,7 @@ Verify everything works before writing any Go engine code.
 # Must run as root (or with KVM + CAP_NET_ADMIN access)
 sudo bash
 
-cd /var/lib/bhatti
+cd /var/lib/ahvm
 
 # Create a copy of the rootfs for this test VM
 cp images/rootfs-base-arm64.ext4 /tmp/test-rootfs.ext4
@@ -149,7 +149,7 @@ sleep 0.5
 curl --unix-socket /tmp/fc-test.sock -s -X PUT \
   http://localhost/boot-source \
   -d '{
-    "kernel_image_path": "/var/lib/bhatti/images/vmlinux-arm64",
+    "kernel_image_path": "/var/lib/ahvm/images/vmlinux-arm64",
     "boot_args": "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/lohar quiet loglevel=0"
   }'
 
@@ -221,7 +221,7 @@ After setup, the Pi looks like:
   firecracker          — VMM binary
   jailer               — (optional) sandboxing for firecracker itself
 
-/var/lib/bhatti/
+/var/lib/ahvm/
   lohar          — guest agent binary (copied into rootfs)
   images/
     vmlinux-arm64       — Linux kernel (~8MB)

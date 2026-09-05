@@ -13,9 +13,9 @@ var secretCmd = &cobra.Command{
 	Short: "Manage encrypted secrets",
 	Long: `Secrets are encrypted at rest (age) and scoped to your API key.
 They can be referenced in templates and injected into sandboxes at boot.`,
-	Example: `  bhatti secret set API_KEY sk-abc123
-  bhatti secret list
-  bhatti secret delete API_KEY`,
+	Example: `  ahvm secret set API_KEY sk-abc123
+  ahvm secret list
+  ahvm secret delete API_KEY`,
 }
 
 var secretSetCmd = &cobra.Command{

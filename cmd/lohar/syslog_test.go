@@ -46,8 +46,8 @@ func TestSyslogTagReconciledToCanonicalUnit(t *testing.T) {
 	// messages after its binary name (sshd), but the unit it belongs to
 	// has a different canonical name (ssh, with Alias=sshd.service in
 	// [Install]). Without reconciliation, the daemon's syslog output
-	// landed in /var/log/bhatti/sshd.log while svcStart's stdout/stderr
-	// capture wrote to /var/log/bhatti/ssh.log -- same daemon, two log
+	// landed in /var/log/ahvm/sshd.log while svcStart's stdout/stderr
+	// capture wrote to /var/log/ahvm/ssh.log -- same daemon, two log
 	// files, status -n5 showed the wrong slice.
 	//
 	// After C5: the receiver looks up the tag in the Unit registry. If

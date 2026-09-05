@@ -82,9 +82,9 @@ func TestCLIStreamingExecNDJSON(t *testing.T) {
 	}
 	t.Cleanup(func() { c.run("destroy", name, "-y") })
 
-	// BHATTI_FORCE_STREAM=1 bypasses the TTY check in tests
+	// AHVM_FORCE_STREAM=1 bypasses the TTY check in tests
 	stdout, stderr, code := c.runWithEnv(
-		[]string{"BHATTI_FORCE_STREAM=1"},
+		[]string{"AHVM_FORCE_STREAM=1"},
 		"exec", name, "--", "sh", "-c",
 		`echo line1; sleep 0.1; echo line2; sleep 0.1; echo line3`,
 	)
@@ -116,8 +116,8 @@ func TestCLIErrorExecOnStopped(t *testing.T) {
 	if !strings.Contains(stderr, "not running") {
 		t.Errorf("expected 'not running' in error, got:\n%s", stderr)
 	}
-	if !strings.Contains(stderr, "bhatti start") {
-		t.Errorf("expected recovery hint 'bhatti start' in error, got:\n%s", stderr)
+	if !strings.Contains(stderr, "ahvm start") {
+		t.Errorf("expected recovery hint 'ahvm start' in error, got:\n%s", stderr)
 	}
 }
 
@@ -254,7 +254,7 @@ func TestCLIInspectRichOutput(t *testing.T) {
 }
 
 // TestCLIInspectImageNonDefault locks in the fix for the direct-creation
-// path dropping req.Image on the floor. Before the fix, `bhatti inspect`
+// path dropping req.Image on the floor. Before the fix, `ahvm inspect`
 // always reported "minimal" regardless of --image, because the server
 // built engine.SandboxSpec without copying req.Image into spec.Image and
 // the storage layer fell back to "minimal".
@@ -1053,10 +1053,10 @@ func TestCLIInspectStoppedSandbox(t *testing.T) {
 // runWithEnv extends run() with extra environment variables.
 func (c *cliTest) runWithEnv(extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
 	c.t.Helper()
-	cmd := exec.Command(c.bhatti, args...)
+	cmd := exec.Command(c.ahvm, args...)
 	cmd.Env = append(os.Environ(),
-		"BHATTI_URL="+c.baseURL,
-		"BHATTI_TOKEN="+c.token,
+		"AHVM_URL="+c.baseURL,
+		"AHVM_TOKEN="+c.token,
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	var outBuf, errBuf strings.Builder

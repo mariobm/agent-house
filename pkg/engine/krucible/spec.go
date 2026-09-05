@@ -2,7 +2,7 @@
 // fork). Unlike the firecracker engine, libkrun is an in-process, blocking
 // library: krun_start_enter() turns the calling process INTO the VM and never
 // returns. So the daemon never links libkrun — instead it spawns one small
-// `bhatti vmm` helper (cmd/vmm) per sandbox, which links libkrun, becomes the
+// `ahvm vmm` helper (cmd/vmm) per sandbox, which links libkrun, becomes the
 // VM, and is controlled out-of-band (vsock UDS for the agent; shutdown
 // eventfd / control socket for lifecycle).
 //
@@ -115,7 +115,7 @@ type VMSpec struct {
 	LogLevel uint32 `json:"log_level"`
 
 	// NetUDS, if set, attaches a virtio-net device wired to the per-owner gateway
-	// (bhatti-netd) LISTENING on this unixstream socket (krun_add_net_unixstream).
+	// (ahvm-netd) LISTENING on this unixstream socket (krun_add_net_unixstream).
 	// Adding a net device disables libkrun's implicit TSI backend, so the guest's
 	// inet flows over eth0 through the gateway (egress policy + secret substitution
 	// + isolation live there). Empty = the legacy TSI backend. NetMAC is the guest

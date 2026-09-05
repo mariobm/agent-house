@@ -1,7 +1,7 @@
 # Exec API Hardening — Detached Exec, Idempotent Create, Timeout Fix
 
 Three related pain points discovered while building karkhana (the agent
-orchestrator that runs Claude turns inside bhatti sandboxes). All three
+orchestrator that runs Claude turns inside ahvm sandboxes). All three
 are API-level issues — the VM engine, guest agent protocol, and thermal
 cycle are uninvolved.
 
@@ -131,7 +131,7 @@ identical behavior.
 (lohar). Idempotent create is a server concern (sandbox_handlers).
 Timeout cap is a server concern (exec_handlers). Don't conflate them.
 
-**Minimal protocol changes.** The vsock framing protocol is bhatti's
+**Minimal protocol changes.** The vsock framing protocol is ahvm's
 most sensitive interface — it's baked into every running lohar binary
 inside every VM. Adding an optional JSON field to `ExecRequest` is safe.
 Adding new frame types is not necessary here.
@@ -208,7 +208,7 @@ non-destroyed) returns the existing sandbox with HTTP 200, not 409 or
 500. This makes the endpoint idempotent: calling it N times with the
 same name produces the same result.
 
-The response includes `X-Bhatti-Existing: true` header so callers can
+The response includes `X-AHVM-Existing: true` header so callers can
 distinguish "created" (201) from "already existed" (200) if they care.
 
 ### 2.2 Why 200 Not 409
@@ -265,7 +265,7 @@ With:
 if spec.Name != "" {
     existing, err := s.store.GetSandbox(user.ID, spec.Name)
     if err == nil && existing.Status != "destroyed" {
-        w.Header().Set("X-Bhatti-Existing", "true")
+        w.Header().Set("X-AHVM-Existing", "true")
         writeJSON(w, 200, existing)
         return
     }
@@ -290,7 +290,7 @@ if err := s.store.CreateSandbox(sb); err != nil {
         }
         existing, lookupErr := s.store.GetSandbox(user.ID, spec.Name)
         if lookupErr == nil {
-            w.Header().Set("X-Bhatti-Existing", "true")
+            w.Header().Set("X-AHVM-Existing", "true")
             writeJSON(w, 200, existing)
             return
         }
@@ -328,8 +328,8 @@ func TestDuplicateSandboxNameHTTP(t *testing.T) {
         body, _ := io.ReadAll(resp.Body)
         t.Fatalf("duplicate: expected 200, got %d: %s", resp.StatusCode, body)
     }
-    if resp.Header.Get("X-Bhatti-Existing") != "true" {
-        t.Error("missing X-Bhatti-Existing header")
+    if resp.Header.Get("X-AHVM-Existing") != "true" {
+        t.Error("missing X-AHVM-Existing header")
     }
     var sb2 store.Sandbox
     decodeJSON(t, resp, &sb2)
@@ -343,7 +343,7 @@ func TestDuplicateSandboxNameHTTP(t *testing.T) {
 
 - [ ] First `POST /sandboxes {"name":"foo"}` returns 201
 - [ ] Second `POST /sandboxes {"name":"foo"}` returns 200 with same ID
-- [ ] Response has `X-Bhatti-Existing: true` header on the second call
+- [ ] Response has `X-AHVM-Existing: true` header on the second call
 - [ ] Concurrent creates with same name: one wins with 201, other gets
       200 (no 500, no leaked VM)
 - [ ] Different users can have sandboxes with the same name (existing
@@ -428,7 +428,7 @@ case proto.EXEC_REQ:
 ```go
 func handleDetachedExec(conn net.Conn, req proto.ExecRequest) {
     // Determine output file
-    outputFile := fmt.Sprintf("/tmp/bhatti-detach-%d.log", time.Now().UnixNano())
+    outputFile := fmt.Sprintf("/tmp/ahvm-detach-%d.log", time.Now().UnixNano())
     if req.OutputFile != nil && *req.OutputFile != "" {
         outputFile = *req.OutputFile
     }
@@ -641,7 +641,7 @@ func (s *Server) handleSandboxExec(w http.ResponseWriter, r *http.Request, id st
         }
         outputFile := req.OutputFile
         if outputFile == "" {
-            outputFile = fmt.Sprintf("/tmp/bhatti-exec-%s.log", genID()[:8])
+            outputFile = fmt.Sprintf("/tmp/ahvm-exec-%s.log", genID()[:8])
         }
         pid, err := de.ExecDetached(r.Context(), sb.EngineID, req.Cmd, outputFile)
         if err != nil {

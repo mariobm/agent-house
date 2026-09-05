@@ -199,4 +199,3 @@ func createTestImage(t *testing.T, s *Store, userID, name string) ImageRecord {
 	}
 	return img
 }
-

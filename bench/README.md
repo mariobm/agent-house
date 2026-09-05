@@ -1,6 +1,6 @@
 # Bench
 
-`run.sh` measures end-to-end latency against a live bhatti daemon. Run it on
+`run.sh` measures end-to-end latency against a live ahvm daemon. Run it on
 the same host as the daemon (loopback) so results don't include geographic
 network latency.
 
@@ -23,19 +23,19 @@ line, raw, no header. The script also prints a percentile summary
 
 ```
 lifecycle/
-  create.txt              `bhatti create` returning. Includes VM boot, lohar
+  create.txt              `ahvm create` returning. Includes VM boot, lohar
                           becoming reachable. Excludes user init scripts.
-  stop.txt                `bhatti stop` returning. FC writes the snapshot.
+  stop.txt                `ahvm stop` returning. FC writes the snapshot.
                           Synchronous — measures full memory-to-disk write.
-  cold_resume.txt         `bhatti start` returning. ⚠ Misleading on its own
+  cold_resume.txt         `ahvm start` returning. ⚠ Misleading on its own
                           — see "the lazy-fault gotcha" below.
-  cold_resume_exec.txt    `bhatti start` followed by `bhatti exec true`.
+  cold_resume_exec.txt    `ahvm start` followed by `ahvm exec true`.
                           ✅ Realistic cold-start cost (includes page-in).
-  destroy.txt             `bhatti destroy` returning. Just file deletion.
+  destroy.txt             `ahvm destroy` returning. Just file deletion.
 
-exec/                     `bhatti exec` against a warm sandbox. Sub-tests
+exec/                     `ahvm exec` against a warm sandbox. Sub-tests
                           for true / echo / cat / ls / sha256sum / env.
-files/                    `bhatti file read/write/ls` at multiple sizes
+files/                    `ahvm file read/write/ls` at multiple sizes
                           (1k / 10k / 100k / 1M).
 api/                      Direct API hits — list, inspect, /health, curl
                           /sandboxes. SQLite + HTTP routing only.
@@ -58,17 +58,17 @@ documented here so future-us doesn't fall for them again.
 
 ### The lazy-fault gotcha — `cold_resume.txt` is misleading
 
-bhatti restores snapshots with Firecracker's `backend_type: "File"`, which
+ahvm restores snapshots with Firecracker's `backend_type: "File"`, which
 mmap's the snapshot file. Memory pages fault in **lazily on first access**.
 This means:
 
-- `bhatti start` returns when FC has set up the mmap (~60ms).
+- `ahvm start` returns when FC has set up the mmap (~60ms).
 - The first real workload triggers page faults that read from disk
   (~250ms more, depending on cache state).
 
-So `cold_resume.txt` (timing `bhatti start` only) reports ~60ms — but
+So `cold_resume.txt` (timing `ahvm start` only) reports ~60ms — but
 that's not a usable sandbox yet. The sandbox is "ready" only in the
-sense that `bhatti list` shows it as running.
+sense that `ahvm list` shows it as running.
 
 The realistic cold-start cost is in `cold_resume_exec.txt`
 (~310ms p50) or `publish_wake_cold.txt` (~360ms p50, includes the
@@ -157,13 +157,13 @@ awk 'NR<=10 {f+=$1; fc++} NR>=NR-9 {l+=$1; lc++}
 
 ## Reproducing the homepage numbers
 
-The numbers on `bhatti.sh` come from a clean run on a Hetzner AX102
+The numbers on `ahvm.sh` come from a clean run on a Hetzner AX102
 (Ryzen 9, NVMe, btrfs) with default daemon configuration. To
 reproduce:
 
 ```bash
-ssh your-bhatti-server
-cd /path/to/bhatti
+ssh your-ahvm-server
+cd /path/to/ahvm
 ./bench/run.sh                   # full bench, ~22 min
 # then read results/*.txt
 ```

@@ -227,38 +227,38 @@ This is the exact test that would have caught the v1.11.9 bug a year ago, and it
 sudo ./scripts/build-tier.sh computer amd64 ./bin/lohar-linux-amd64
 
 # 2. Side-import as computer-rc so we don't shadow production.
-bhatti image import dist/rootfs-computer-amd64.ext4 --as computer-rc
+ahvm image import dist/rootfs-computer-amd64.ext4 --as computer-rc
 
 # 3. Smoke: full restart cycle.
-bhatti create --name rc-c --image computer-rc --cpus 4 --memory 4096
+ahvm create --name rc-c --image computer-rc --cpus 4 --memory 4096
 sleep 5
-bhatti exec rc-c -- systemctl is-active kasmvnc                    # active
-bhatti exec rc-c -- bash -c 'cat /proc/$(pgrep -x Xkasmvnc)/cgroup' # expect: 0::/system.slice/kasmvnc.service, NOT 0::/
-bhatti exec rc-c -- sudo systemctl stop kasmvnc
+ahvm exec rc-c -- systemctl is-active kasmvnc                    # active
+ahvm exec rc-c -- bash -c 'cat /proc/$(pgrep -x Xkasmvnc)/cgroup' # expect: 0::/system.slice/kasmvnc.service, NOT 0::/
+ahvm exec rc-c -- sudo systemctl stop kasmvnc
 sleep 2
-bhatti exec rc-c -- pgrep -x Xkasmvnc                              # expect: empty (no orphan)
-bhatti exec rc-c -- sudo systemctl start kasmvnc
+ahvm exec rc-c -- pgrep -x Xkasmvnc                              # expect: empty (no orphan)
+ahvm exec rc-c -- sudo systemctl start kasmvnc
 sleep 3
-bhatti exec rc-c -- systemctl is-active kasmvnc                    # active
+ahvm exec rc-c -- systemctl is-active kasmvnc                    # active
 
 # 4. Restart cycle on the docker tier — should still work (regression check).
-bhatti create --name rc-d --image docker
+ahvm create --name rc-d --image docker
 sleep 5
-bhatti exec rc-d -- bash -c 'cat /proc/$(pgrep -x dockerd)/cgroup'  # expect: docker.service
-bhatti exec rc-d -- sudo systemctl restart docker
+ahvm exec rc-d -- bash -c 'cat /proc/$(pgrep -x dockerd)/cgroup'  # expect: docker.service
+ahvm exec rc-d -- sudo systemctl restart docker
 sleep 3
-bhatti exec rc-d -- systemctl is-active docker                     # active
-bhatti exec rc-d -- docker run --rm hello-world                    # works
+ahvm exec rc-d -- systemctl is-active docker                     # active
+ahvm exec rc-d -- docker run --rm hello-world                    # works
 
 # 5. Crash-and-restart on the browser tier.
-bhatti create --name rc-b --image browser
+ahvm create --name rc-b --image browser
 sleep 3
-bhatti exec rc-b -- sudo kill -9 $(pgrep -f headless_shell)
+ahvm exec rc-b -- sudo kill -9 $(pgrep -f headless_shell)
 sleep 4
-bhatti exec rc-b -- systemctl is-active headless-chrome            # active (Restart fired)
-bhatti exec rc-b -- bash -c 'cat /proc/$(pgrep -f headless_shell)/cgroup'  # headless-chrome.service
+ahvm exec rc-b -- systemctl is-active headless-chrome            # active (Restart fired)
+ahvm exec rc-b -- bash -c 'cat /proc/$(pgrep -f headless_shell)/cgroup'  # headless-chrome.service
 
-bhatti destroy rc-c rc-d rc-b
+ahvm destroy rc-c rc-d rc-b
 ```
 
 If all green: tag, release. CI rebuilds rootfs (no rootfs change is needed for this fix — just the kernel-cmdline `init=/usr/local/bin/lohar` automatically loads the new binary; existing units don't need to change).
@@ -267,7 +267,7 @@ If all green: tag, release. CI rebuilds rootfs (no rootfs change is needed for t
 
 ## Documentation
 
-> **All paths in this section are in the `bhatti.sh` sister repo, under `src/content/docs/docs/...`** — not the `bhatti` monorepo's `docs/` (which is the design-doc archive, including this plan). The website docs and the engineering docs are deliberately separate trees. If you're looking for these files in `/Users/sahil/Projects/bhatti/docs/`, you won't find them.
+> **All paths in this section are in the `ahvm.sh` sister repo, under `src/content/docs/docs/...`** — not the `ahvm` monorepo's `docs/` (which is the design-doc archive, including this plan). The website docs and the engineering docs are deliberately separate trees. If you're looking for these files in `/Users/sahil/Projects/ahvm/docs/`, you won't find them.
 
 The cgroup-placement mechanism itself is an implementation detail of the shim. But this release closes the loop on the v1.11.7→v1.11.10 migration: **every built-in tier is now shim-managed**, with the same operator UX. That uniformity is the actual headline, and several pages either don't say it explicitly enough or risk leading future contributors back to the `init.sh` pattern we just retired. The principle for this section: **document where someone could currently get the wrong impression**.
 
@@ -296,7 +296,7 @@ This is exactly the kind of "we considered X, picked Y, here's why" entry that t
 
 Update needed. The page already has a "common operator story" section that gestures at the shim model, but with all four built-in tiers now uniformly shim-managed it's worth being concrete about *which units live where*. Two additions:
 
-1. **A "Units shipped by each tier" reference table**, immediately after the four-tier overview table. One row per unit, columns for tier / unit name / Type / what it does. Lets a reader see at a glance that the shim isn't an abstract claim — it's how *every* tier's daemons are managed. Includes both daemons and the oneshot helpers (`kasmvnc-firstboot`, `bhatti-display-env`), because those participate in the same activation graph.
+1. **A "Units shipped by each tier" reference table**, immediately after the four-tier overview table. One row per unit, columns for tier / unit name / Type / what it does. Lets a reader see at a glance that the shim isn't an abstract claim — it's how *every* tier's daemons are managed. Includes both daemons and the oneshot helpers (`kasmvnc-firstboot`, `ahvm-display-env`), because those participate in the same activation graph.
 
 2. **Tighten the "common operator story" paragraph** to say explicitly that the model is uniform across tiers ("Every long-running process in every built-in tier is managed by lohar's systemctl shim. The same three commands — `systemctl status`, `journalctl -u`, `systemctl restart` — work the same way regardless of which tier you started from."). The current text gets close; this nails it.
 
@@ -304,12 +304,12 @@ No changes to the per-tier pages themselves — they each document their own uni
 
 ### `docs/contributing/adding-a-tier.md`
 
-Update needed. **This is the doc most likely to lead a future contributor astray.** Today it walks through the build-script skeleton (`apt-get install`, size default, CI matrix entry, install-script menu) and stops there. Nothing tells a new tier author what to do with a long-running daemon, and the deprecated bhatti repo `docs/tiers.md` they might fall back on still mentions `init.sh`. Without an update they'll write `init.sh` because it's what the existing pattern in their head suggests — and they'll hit the exact race + orphan + restart-fails sequence this plan is closing.
+Update needed. **This is the doc most likely to lead a future contributor astray.** Today it walks through the build-script skeleton (`apt-get install`, size default, CI matrix entry, install-script menu) and stops there. Nothing tells a new tier author what to do with a long-running daemon, and the deprecated ahvm repo `docs/tiers.md` they might fall back on still mentions `init.sh`. Without an update they'll write `init.sh` because it's what the existing pattern in their head suggests — and they'll hit the exact race + orphan + restart-fails sequence this plan is closing.
 
 Add a new section, **"Long-running daemons: ship them as systemd units"**, between "Create the tier script" and "Add size default." Cover:
 
 - The standard unit-file pattern: `Type=simple` (most things) or `Type=notify` (sd_notify-aware daemons like `dockerd`), `ExecStart=` pointing at the binary directly (no `/bin/sh -c` wrapper unless you genuinely need `${VAR}` expansion that's not satisfiable via `Environment=`), `Restart=on-failure`, `RestartSec=2s`.
-- The user-tunable knob convention: `Environment=` for defaults, `EnvironmentFile=-/run/bhatti/config-env` so `bhatti create --env KEY=value` overrides take effect. Reference the existing config-env bridge section in lohar internals.
+- The user-tunable knob convention: `Environment=` for defaults, `EnvironmentFile=-/run/ahvm/config-env` so `ahvm create --env KEY=value` overrides take effect. Reference the existing config-env bridge section in lohar internals.
 - Where to drop the unit: `/etc/systemd/system/<name>.service` in your tier's chroot, then symlink into `/etc/systemd/system/multi-user.target.wants/<name>.service` so `startEnabledServices` picks it up at boot.
 - A worked example using `headless-chrome.service` as the canonical short one (it's the simplest shipped unit: one Type=simple daemon with two env knobs and Restart=on-failure).
 - An **"Anti-patterns"** subsection naming three landmines explicitly:
@@ -324,7 +324,7 @@ Also add a one-line update to the **checklist** at the bottom of the page: "[ ] 
 
 **No changes.** Each tier page already documents its own unit layout correctly (we updated all three during the v1.11.8 / v1.11.9 work). The uniformity claim moves up to `tiers/index.md` where it belongs; the per-tier pages remain specific.
 
-### `bhatti.sh/public/agents.md`
+### `ahvm.sh/public/agents.md`
 
 **No changes.** Agent-facing flows don't touch the spawn mechanism. Restart behaviour is already documented as part of the tier docs; agents.md cross-links to those. (Path note: this lives under `public/`, not `src/content/docs/docs/`, because it's the served-flat `/agents.md` route, not a docs page.)
 
@@ -358,7 +358,7 @@ One PR, one tag (`v1.11.10`), in this commit order:
 
 5. **Verify on a fresh sandbox** (the loop we ran for v1.11.8 and v1.11.9). Update the integration test plan if anything new turns up.
 
-6. **`bhatti.sh` docs PR** (separate repo, separate PR). Four pages touched, in one commit, all paths under `src/content/docs/docs/`:
+6. **`ahvm.sh` docs PR** (separate repo, separate PR). Four pages touched, in one commit, all paths under `src/content/docs/docs/`:
    - `under-the-hood/lohar-the-blacksmith.mdx` — new "How services are spawned" section + reframed "What the shim doesn't do" footnote.
    - `under-the-hood/decisions.mdx` — new "Spawn helper instead of `clone3`" entry.
    - `managing/tiers/index.md` — new units-per-tier reference table + tightened uniformity paragraph.
@@ -392,4 +392,4 @@ One PR, one tag (`v1.11.10`), in this commit order:
 
 2. **Should we add a defensive `pkill -9 -x <daemon>` ExecStartPre to `kasmvnc.service` as belt-and-braces?** No — once the cgroup placement is correct, there are no orphans to kill. Adding a `pkill` would mask future placement regressions. Better to fail loud (start fails with "server already running") if the spawn-helper invariant ever breaks, and re-investigate.
 
-3. **Should we expose `lohar spawn` as a documented public verb for users to wrap their own commands?** No. It's an internal mechanism for the supervisor. Users who want cgroup-placed `bhatti exec` invocations can do that via `--cgroup` on the engine side, separately. The spawn helper stays "for systemctl shim use", not promised stable.
+3. **Should we expose `lohar spawn` as a documented public verb for users to wrap their own commands?** No. It's an internal mechanism for the supervisor. Users who want cgroup-placed `ahvm exec` invocations can do that via `--cgroup` on the engine side, separately. The spawn helper stays "for systemctl shim use", not promised stable.

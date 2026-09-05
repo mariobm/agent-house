@@ -14,7 +14,7 @@
 set -euo pipefail
 
 SIZE_MB=2048
-MOUNT="/mnt/bhatti-rootfs"
+MOUNT="/mnt/ahvm-rootfs"
 AGENT="${1:-}"
 SANDBOX_DIR="${SANDBOX_DIR:-}"
 
@@ -35,7 +35,7 @@ case "$HOST_ARCH" in
         ;;
 esac
 
-IMG="${IMG:-/var/lib/bhatti/images/rootfs-minimal-${DEB_ARCH}.ext4}"
+IMG="${IMG:-/var/lib/ahvm/images/rootfs-minimal-${DEB_ARCH}.ext4}"
 
 if [[ $EUID -ne 0 ]]; then
     echo "error: must run as root (need mount/chroot)" >&2

@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 func handleFileRead(conn net.Conn, payload []byte) {
@@ -161,7 +161,7 @@ func handleFileWrite(conn net.Conn, payload []byte) {
 
 	// Atomic write: write to a temp file, then rename.
 	// This ensures readers never see partial content.
-	tmpPath := req.Path + ".bhatti-tmp"
+	tmpPath := req.Path + ".ahvm-tmp"
 	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(mode))
 	if err != nil {
 		proto.WriteFrame(conn, proto.ERROR, []byte(err.Error()))

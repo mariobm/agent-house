@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg"
+	"github.com/mariobm/agent-house/pkg"
 	"github.com/spf13/cobra"
 )
 
@@ -18,24 +18,24 @@ import (
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Update bhatti to the latest version",
-	Long: `Update bhatti to the latest release. On a server, updates all
-components (bhatti, Firecracker, lohar, kernel, rootfs). On a CLI-only
+	Short: "Update ahvm to the latest version",
+	Long: `Update ahvm to the latest release. On a server, updates all
+components (ahvm, Firecracker, lohar, kernel, rootfs). On a CLI-only
 machine, updates just the binary.
 
 Use --cli-only to update only the binary on a server.
 Use --tiers to install additional rootfs tiers during the update.`,
-	Example: `  bhatti update                   # auto-detect CLI vs server
-  sudo bhatti update               # server update (requires root)
-  sudo bhatti update --tiers all   # server update + pull all tiers
-  bhatti update --cli-only         # binary only, even on a server`,
+	Example: `  ahvm update                   # auto-detect CLI vs server
+  sudo ahvm update               # server update (requires root)
+  sudo ahvm update --tiers all   # server update + pull all tiers
+  ahvm update --cli-only         # binary only, even on a server`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cliOnly, _ := cmd.Flags().GetBool("cli-only")
 		tiers, _ := cmd.Flags().GetString("tiers")
 
 		// Detect if this is a server by checking for config file
 		isServer := false
-		for _, p := range []string{"/etc/bhatti/config.yaml", "/var/lib/bhatti/config.yaml"} {
+		for _, p := range []string{"/etc/ahvm/config.yaml", "/var/lib/ahvm/config.yaml"} {
 			if _, err := os.Stat(p); err == nil {
 				isServer = true
 				break
@@ -45,7 +45,7 @@ Use --tiers to install additional rootfs tiers during the update.`,
 		// Fail fast: server update requires root, don't download the
 		// install script just to fail inside it.
 		if !cliOnly && isServer && os.Getuid() != 0 {
-			return fmt.Errorf("server update requires root\n  Re-run with: sudo bhatti update")
+			return fmt.Errorf("server update requires root\n  Re-run with: sudo ahvm update")
 		}
 
 		fmt.Printf("Current version: %s\n", version)
@@ -62,8 +62,8 @@ Use --tiers to install additional rootfs tiers during the update.`,
 		// "curl | bash" breaks sudo inside the script — curl and sudo
 		// both read from stdin, so the password prompt collides with
 		// the piped script data. Running from a file keeps stdin free.
-		scriptPath := filepath.Join(os.TempDir(), "bhatti-install.sh")
-		dl := exec.Command("curl", "-fsSL", "-o", scriptPath, "bhatti.sh/install")
+		scriptPath := filepath.Join(os.TempDir(), "ahvm-install.sh")
+		dl := exec.Command("curl", "-fsSL", "-o", scriptPath, "ahvm.sh/install")
 		dl.Stdout = os.Stdout
 		dl.Stderr = os.Stderr
 		if err := dl.Run(); err != nil {
@@ -80,10 +80,10 @@ Use --tiers to install additional rootfs tiers during the update.`,
 		// Only force CLI mode if --cli-only is set.
 		env := os.Environ()
 		if cliOnly {
-			env = append(env, "BHATTI_MODE=cli")
+			env = append(env, "AHVM_MODE=cli")
 		}
 		if tiers != "" {
-			env = append(env, "BHATTI_TIERS="+tiers)
+			env = append(env, "AHVM_TIERS="+tiers)
 		}
 		install.Env = env
 
@@ -93,11 +93,11 @@ Use --tiers to install additional rootfs tiers during the update.`,
 
 // --- version ---
 
-const githubRepo = "sahil-shubham/bhatti"
+const githubRepo = "sahil-shubham/ahvm"
 
 // checkLatestRelease queries GitHub for the latest release tag.
 // Returns empty string on any failure (timeout, network, parse error).
-// Caches the result to ~/.bhatti/.latest-version for 1 hour.
+// Caches the result to ~/.ahvm/.latest-version for 1 hour.
 func checkLatestRelease() string {
 	cacheDir := pkg.DefaultDataDir()
 	cachePath := filepath.Join(cacheDir, ".latest-version")
@@ -133,9 +133,9 @@ func checkLatestRelease() string {
 	}
 
 	// Write cache. If we're under sudo we MUST chown the dir+file back
-	// to the invoking user, otherwise a stray `sudo bhatti version` would
-	// leave ~/.bhatti owned by root and break every later non-sudo
-	// command (including `bhatti setup`) with EACCES.
+	// to the invoking user, otherwise a stray `sudo ahvm version` would
+	// leave ~/.ahvm owned by root and break every later non-sudo
+	// command (including `ahvm setup`) with EACCES.
 	createdDir := false
 	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
 		createdDir = true
@@ -157,14 +157,14 @@ func checkLatestRelease() string {
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version and check for updates",
-	Example: `  bhatti version
-  bhatti version --json`,
+	Example: `  ahvm version
+  ahvm version --json`,
 	Run: func(cmd *cobra.Command, args []string) {
 		serverVer := ""
 		// Quick probe to get server version from header
 		if resp, err := apiRequest("GET", "/sandboxes", nil); err == nil {
 			resp.Body.Close()
-			serverVer = resp.Header.Get("X-Bhatti-Version")
+			serverVer = resp.Header.Get("X-AHVM-Version")
 		}
 
 		// Check latest release (cached, 2s timeout)
@@ -186,7 +186,7 @@ var versionCmd = &cobra.Command{
 			}
 			outputJSON(out)
 		} else {
-			fmt.Printf("bhatti %s\n", version)
+			fmt.Printf("ahvm %s\n", version)
 			fmt.Printf("api: %s\n", apiURL)
 			if serverVer != "" && serverVer != "dev" {
 				fmt.Printf("server: %s\n", serverVer)
@@ -202,14 +202,14 @@ var versionCmd = &cobra.Command{
 				}
 
 				if compareVersions(normVersion, normLatest) < 0 {
-					fmt.Printf("\nUpdate available: %s \u2192 %s (bhatti update)\n", normVersion, normLatest)
+					fmt.Printf("\nUpdate available: %s \u2192 %s (ahvm update)\n", normVersion, normLatest)
 				} else if normServer != "" && compareVersions(normServer, normLatest) < 0 {
-					fmt.Printf("\nUpdate available for server: %s \u2192 %s (sudo bhatti update)\n", normServer, normLatest)
+					fmt.Printf("\nUpdate available for server: %s \u2192 %s (sudo ahvm update)\n", normServer, normLatest)
 				}
 			} else if version != "dev" && serverVer != "" && serverVer != "dev" {
 				// Fallback: no GitHub info, compare CLI vs server (existing behavior)
 				if compareVersions(version, serverVer) < 0 {
-					fmt.Printf("\nUpdate available: %s \u2192 %s (bhatti update)\n", version, serverVer)
+					fmt.Printf("\nUpdate available: %s \u2192 %s (ahvm update)\n", version, serverVer)
 				}
 			}
 		}
@@ -219,10 +219,10 @@ var versionCmd = &cobra.Command{
 // --- publish / unpublish ---
 
 var publishCmd = &cobra.Command{
-	Use:               "publish <sandbox> -p <port> [-a <alias>]",
-	Short:             "Publish a sandbox port with a public URL",
-	Example: `  bhatti publish dev -p 3000
-  bhatti publish dev -p 3000 -a my-app`,
+	Use:   "publish <sandbox> -p <port> [-a <alias>]",
+	Short: "Publish a sandbox port with a public URL",
+	Example: `  ahvm publish dev -p 3000
+  ahvm publish dev -p 3000 -a my-app`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -259,7 +259,7 @@ var publishCmd = &cobra.Command{
 			url, _ := result["url"].(string)
 			if strings.Contains(url, "no public proxy configured") {
 				fmt.Fprintf(os.Stderr, "Publishing requires a custom domain.\n")
-				fmt.Fprintf(os.Stderr, "  Setup: https://bhatti.sh/docs/managing/custom-domain\n\n")
+				fmt.Fprintf(os.Stderr, "  Setup: https://ahvm.sh/docs/managing/custom-domain\n\n")
 				fmt.Fprintf(os.Stderr, "In the meantime, use the proxy URL directly:\n")
 				port, _ := cmd.Flags().GetInt("port")
 				fmt.Fprintf(os.Stderr, "  %s/sandboxes/%s/proxy/%d/\n", strings.TrimRight(apiURL, "/"), id, port)
@@ -276,7 +276,7 @@ var publishCmd = &cobra.Command{
 var unpublishCmd = &cobra.Command{
 	Use:               "unpublish <sandbox> -p <port>",
 	Short:             "Unpublish a sandbox port",
-	Example: `  bhatti unpublish dev -p 3000`,
+	Example:           `  ahvm unpublish dev -p 3000`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -310,16 +310,16 @@ var completionCmd = &cobra.Command{
 	Long: `Generate a shell completion script for the named shell.
 
 Load once into the current session:
-  bash:        source <(bhatti completion bash)
-  zsh:         source <(bhatti completion zsh)
-  fish:        bhatti completion fish | source
-  powershell:  bhatti completion powershell | Out-String | Invoke-Expression
+  bash:        source <(ahvm completion bash)
+  zsh:         source <(ahvm completion zsh)
+  fish:        ahvm completion fish | source
+  powershell:  ahvm completion powershell | Out-String | Invoke-Expression
 
 Persist across sessions:
-  bash:        echo 'source <(bhatti completion bash)' >> ~/.bashrc
-  zsh:         echo 'source <(bhatti completion zsh)'  >> ~/.zshrc
-  fish:        bhatti completion fish > ~/.config/fish/completions/bhatti.fish
-  powershell:  bhatti completion powershell >> $PROFILE`,
+  bash:        echo 'source <(ahvm completion bash)' >> ~/.bashrc
+  zsh:         echo 'source <(ahvm completion zsh)'  >> ~/.zshrc
+  fish:        ahvm completion fish > ~/.config/fish/completions/ahvm.fish
+  powershell:  ahvm completion powershell >> $PROFILE`,
 	Args:      exactArgs(1),
 	ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
 	RunE: func(cmd *cobra.Command, args []string) error {

@@ -1,4 +1,4 @@
-# Bhatti v2 — Implementation Plan
+# AHVM v2 — Implementation Plan
 
 Continues from Parts 1–7 (protocol, lohar, client, images, FC engine,
 Pi tests, persistence). See `ARCHITECTURE.md` for the full system map.
@@ -33,24 +33,24 @@ Part 16 (deployment)      — needs Part 14 (CLI)
 
 | Before | After |
 |---|---|
-| `cmd/bhatti-agent/` | `cmd/lohar/` |
-| `bin/bhatti-agent-linux-arm64` | `bin/lohar-linux-arm64` |
-| `BHATTI_AGENT_TEST` | `LOHAR_TEST` |
-| `BHATTI_AGENT_SOCK` | `LOHAR_SOCK` |
-| `BHATTI_AGENT_FWD_SOCK` | `LOHAR_FWD_SOCK` |
-| `BHATTI_AGENT_BIN` | `LOHAR_BIN` |
-| log prefix `bhatti-agent:` | `lohar:` |
-| `init=/usr/local/bin/bhatti-agent` | `init=/usr/local/bin/lohar` |
+| `cmd/ahvm-agent/` | `cmd/lohar/` |
+| `bin/ahvm-agent-linux-arm64` | `bin/lohar-linux-arm64` |
+| `AHVM_AGENT_TEST` | `LOHAR_TEST` |
+| `AHVM_AGENT_SOCK` | `LOHAR_SOCK` |
+| `AHVM_AGENT_FWD_SOCK` | `LOHAR_FWD_SOCK` |
+| `AHVM_AGENT_BIN` | `LOHAR_BIN` |
+| log prefix `ahvm-agent:` | `lohar:` |
+| `init=/usr/local/bin/ahvm-agent` | `init=/usr/local/bin/lohar` |
 | `scripts/build-rootfs.sh` agent refs | updated |
 | `docs/pi-setup.md` | updated |
 
-Module path `github.com/sahilshubham/bhatti` and `pkg/agent/` package
-name stay. `bhatti` binary name stays.
+Module path `github.com/sahilshubham/ahvm` and `pkg/agent/` package
+name stay. `ahvm` binary name stays.
 
 ### 8.2 Verification
 
 ```bash
-grep -r "bhatti-agent\|bhatti_agent\|BHATTI_AGENT" --include='*.go' --include='*.sh' --include='*.md'
+grep -r "ahvm-agent\|ahvm_agent\|AHVM_AGENT" --include='*.go' --include='*.sh' --include='*.md'
 # Should return zero results after rename (excluding PLAN.md/git history)
 go build ./...
 go test ./... -count=1
@@ -66,7 +66,7 @@ go test ./... -count=1
 // pkg/engine/firecracker/network.go
 
 const (
-    bridgeName = "brbhatti0"
+    bridgeName = "brahvm0"
     bridgeIP   = "192.168.137.1"
     bridgeCIDR = "192.168.137.1/24"
     subnetCIDR = "192.168.137.0/24"
@@ -226,7 +226,7 @@ func Encrypt(plaintext []byte, recipient *age.X25519Recipient) ([]byte, error)
 func Decrypt(ciphertext []byte, identity *age.X25519Identity) ([]byte, error)
 ```
 
-Key stored at `~/.bhatti/age.key`. Generated on first run alongside the
+Key stored at `~/.ahvm/age.key`. Generated on first run alongside the
 SSH keypair.
 
 ### 10.3 Config Drive Structure
@@ -400,7 +400,7 @@ func main() {
         writeSecretFiles(cfg.Files)   // write files, set modes + ownership
         mountVolumes(cfg.Volumes)     // mount /dev/vdc etc.
     } else {
-        syscall.Sethostname([]byte("bhatti"))
+        syscall.Sethostname([]byte("ahvm"))
         ensureResolvConf()
     }
 
@@ -419,12 +419,12 @@ func main() {
 // loadConfigDrive mounts /dev/vdb and reads config.json.
 // Returns nil if /dev/vdb doesn't exist (backward compatible).
 func loadConfigDrive() *SandboxConfig {
-    os.MkdirAll("/run/bhatti/config", 0755)
-    if err := syscall.Mount("/dev/vdb", "/run/bhatti/config", "ext4",
+    os.MkdirAll("/run/ahvm/config", 0755)
+    if err := syscall.Mount("/dev/vdb", "/run/ahvm/config", "ext4",
         syscall.MS_RDONLY, ""); err != nil {
         return nil
     }
-    data, err := os.ReadFile("/run/bhatti/config/config.json")
+    data, err := os.ReadFile("/run/ahvm/config/config.json")
     if err != nil { return nil }
     var cfg SandboxConfig
     json.Unmarshal(data, &cfg)
@@ -463,7 +463,7 @@ func mountVolumes(volumes []VolumeMount) {
 // pkg/engine/engine.go — additions to SandboxSpec
 
 type SecretRef struct {
-    Name string `json:"name"`       // secret name in bhatti's store
+    Name string `json:"name"`       // secret name in ahvm's store
     Path string `json:"path"`       // file path OR env var name
     Mode string `json:"mode"`       // file mode (empty = env var)
 }
@@ -969,7 +969,7 @@ func runInitSession(script, user string) {
 
 Consumer watches init:
 ```
-bhatti exec attach my-sandbox init
+ahvm exec attach my-sandbox init
 ```
 
 ### 11.10 Engine Interface Changes
@@ -1156,7 +1156,7 @@ config.yaml.
 thermal state. Thermal state is only visible via `--verbose` in the CLI.
 
 Remove `POST /sandboxes/:id/stop` and `POST /sandboxes/:id/start`.
-Add CLI operator commands `bhatti sandbox suspend` / `bhatti sandbox resume`.
+Add CLI operator commands `ahvm sandbox suspend` / `ahvm sandbox resume`.
 
 ### 12.7 Tests
 
@@ -1269,9 +1269,9 @@ DELETE /sandboxes/:id/files?path=/workspace/temp.txt
 GET    /sandboxes/:id/files?path=/workspace/&ls=true
 HEAD   /sandboxes/:id/files?path=/workspace/package.json
 
-bhatti file read my-sandbox /workspace/package.json
-bhatti file write my-sandbox /workspace/config.yaml < config.yaml
-bhatti file ls my-sandbox /workspace/
+ahvm file read my-sandbox /workspace/package.json
+ahvm file write my-sandbox /workspace/config.yaml < config.yaml
+ahvm file ls my-sandbox /workspace/
 ```
 
 ### 13.4 Tests
@@ -1291,7 +1291,7 @@ bhatti file ls my-sandbox /workspace/
 Same binary as the daemon. Mode detection:
 
 ```go
-// cmd/bhatti/main.go
+// cmd/ahvm/main.go
 func main() {
     if len(os.Args) > 1 && os.Args[1] != "serve" {
         runCLI(os.Args[1:])
@@ -1301,27 +1301,27 @@ func main() {
 }
 ```
 
-CLI is a thin HTTP/WebSocket client. Config via `BHATTI_URL` (default
-`http://localhost:8080`) and `BHATTI_TOKEN`.
+CLI is a thin HTTP/WebSocket client. Config via `AHVM_URL` (default
+`http://localhost:8080`) and `AHVM_TOKEN`.
 
 ### 14.2 Output
 
 - `--format json` on all list/get commands. Default: human-readable table.
-- `bhatti exec` exit code = process exit code.
-- `bhatti exec --tty` passes raw terminal I/O. `Ctrl+\` detaches.
+- `ahvm exec` exit code = process exit code.
+- `ahvm exec --tty` passes raw terminal I/O. `Ctrl+\` detaches.
 - `SIGWINCH` on host → RESIZE frame to lohar.
-- Pipe-friendly: `echo hello | bhatti exec ID -- cat` works.
+- Pipe-friendly: `echo hello | ahvm exec ID -- cat` works.
 
 ### 14.3 Files
 
 ```
-cmd/bhatti/cli.go            — subcommand router, HTTP helpers, table formatter
-cmd/bhatti/cli_sandbox.go    — create, list, get, destroy, suspend, resume
-cmd/bhatti/cli_exec.go       — exec, exec list, exec attach, exec kill, shell
-cmd/bhatti/cli_file.go       — read, write, ls
-cmd/bhatti/cli_secret.go     — set, list, delete
-cmd/bhatti/cli_image.go      — pull, list, delete
-cmd/bhatti/cli_user.go       — create, list (Part 16)
+cmd/ahvm/cli.go            — subcommand router, HTTP helpers, table formatter
+cmd/ahvm/cli_sandbox.go    — create, list, get, destroy, suspend, resume
+cmd/ahvm/cli_exec.go       — exec, exec list, exec attach, exec kill, shell
+cmd/ahvm/cli_file.go       — read, write, ls
+cmd/ahvm/cli_secret.go     — set, list, delete
+cmd/ahvm/cli_image.go      — pull, list, delete
+cmd/ahvm/cli_user.go       — create, list (Part 16)
 ```
 
 Each file is ~50-80 lines. The CLI calls `http.NewRequest` / `json.Decode`
@@ -1356,8 +1356,8 @@ func Delete(storeDir, ref string) error { /* remove local file */ }
 ### 15.2 Storage
 
 ```
-/var/lib/bhatti/images/oci/
-  ghcr.io/sahilshubham/bhatti-sandbox/
+/var/lib/ahvm/images/oci/
+  ghcr.io/sahilshubham/ahvm-sandbox/
     latest.ext4
     node-dev.ext4
 ```
@@ -1386,13 +1386,13 @@ to local path via the store. Error if not pulled.
 
 ```ini
 [Unit]
-Description=Bhatti Sandbox Infrastructure
+Description=AHVM Sandbox Infrastructure
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bhatti serve
-WorkingDirectory=/var/lib/bhatti
+ExecStart=/usr/local/bin/ahvm serve
+WorkingDirectory=/var/lib/ahvm
 Restart=always
 RestartSec=5
 ExecStopPost=/bin/sh -c 'ip -o link show type tun | grep tap | cut -d: -f2 | xargs -r -n1 ip link del'
@@ -1422,13 +1422,13 @@ Admin sees all.
 
 ### 16.3 Remote Access + Per-Sandbox URLs
 
-Cloudflare Tunnel for HTTPS. Wildcard DNS for per-sandbox URLs. Bhatti
-resolves `<port>-<id>.bhatti.domain` in its HTTP handler → rewrite to
+Cloudflare Tunnel for HTTPS. Wildcard DNS for per-sandbox URLs. AHVM
+resolves `<port>-<id>.ahvm.domain` in its HTTP handler → rewrite to
 `/sandboxes/:id/proxy/:port/` → `ensureHot()` → proxy.
 
 ### 16.4 Install Script
 
-Downloads bhatti + lohar + firecracker, creates dirs, generates config +
+Downloads ahvm + lohar + firecracker, creates dirs, generates config +
 age key, pulls default image, installs systemd service.
 
 ---

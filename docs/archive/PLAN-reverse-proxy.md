@@ -1,11 +1,11 @@
-# Reverse Proxy — Public Ingress for Bhatti
+# Reverse Proxy — Public Ingress for AHVM
 
 ## Problem
 
 Today, every sandbox port is only accessible through the authenticated API:
 
 ```
-Browser → Cloudflare Tunnel → bhatti :8080 → /sandboxes/:id/proxy/:port/path → Engine.Tunnel() → lohar → localhost:port
+Browser → Cloudflare Tunnel → ahvm :8080 → /sandboxes/:id/proxy/:port/path → Engine.Tunnel() → lohar → localhost:port
 ```
 
 This requires a valid API key. If a user runs a web app inside a sandbox
@@ -15,36 +15,36 @@ is through the Cloudflare tunnel pointing at `:8080`, which demands
 
 Beyond the proxy problem, the Cloudflare tunnel is itself an imposition.
 Self-hosters shouldn't need a Cloudflare account, a tunnel daemon, or
-any external service to expose bhatti to the internet. If you have a
-domain and a public IP, bhatti should handle the rest.
+any external service to expose ahvm to the internet. If you have a
+domain and a public IP, ahvm should handle the rest.
 
-**Goal:** Give bhatti a subdomain zone (e.g. `bhatti.sh`), and it
+**Goal:** Give ahvm a subdomain zone (e.g. `ahvm.sh`), and it
 serves the API and public sandbox proxying directly. Published sandbox
-ports get subdomains under the zone (`my-app.bhatti.sh`). TLS
+ports get subdomains under the zone (`my-app.ahvm.sh`). TLS
 certificates are automatic. No Cloudflare tunnel, no external reverse
 proxy, no DNS-provider-specific configuration. The self-hoster's only
-job is pointing DNS at the bhatti host.
+job is pointing DNS at the ahvm host.
 
-**Why `*.bhatti.sh` instead of `*.deploy.bhatti.sh`?** Two-level
-wildcard certs (`*.deploy.bhatti.sh`) require paid certificates on most
+**Why `*.ahvm.sh` instead of `*.deploy.ahvm.sh`?** Two-level
+wildcard certs (`*.deploy.ahvm.sh`) require paid certificates on most
 CDNs (e.g. Cloudflare Advanced Certificate). Single-level wildcards
-(`*.bhatti.sh`) are covered by free Universal SSL. The API host
-(`api.bhatti.sh`) is checked first in routing, and reserved aliases
+(`*.ahvm.sh`) are covered by free Universal SSL. The API host
+(`api.ahvm.sh`) is checked first in routing, and reserved aliases
 prevent collisions with other subdomains like `www` or `mail`. Explicit
 DNS records always take precedence over wildcard records.
 
 The killer use case is **preview environments**. Deploy an app to a
-bhatti sandbox, share the URL, and pay zero resources when nobody's
-looking at it. Bhatti's thermal management snapshots the sandbox to
+ahvm sandbox, share the URL, and pay zero resources when nobody's
+looking at it. AHVM's thermal management snapshots the sandbox to
 disk when idle, restores it in ~50ms when a request arrives, serves
 the response, then sleeps again. Persistent deployments that cost
 nothing at rest.
 
 ### Why Not Caddy / Nginx / Traefik in Front?
 
-An external reverse proxy can't call `EnsureHot()`. Bhatti's first
+An external reverse proxy can't call `EnsureHot()`. AHVM's first
 external user (PR #2) built an external Caddy setup that routes
-directly to VM bridge IPs, bypassing bhatti's tunnel. To handle wake,
+directly to VM bridge IPs, bypassing ahvm's tunnel. To handle wake,
 they abused Caddy's `forward_auth` directive to hit `GET /sandboxes/:id`
 as a side effect — which triggers `EnsureHot()` — before Caddy proxies
 the real request. This has two problems:
@@ -54,7 +54,7 @@ the real request. This has two problems:
    paused by the thermal manager, or the app might not be listening yet.
    The user gets a 502.
 
-2. **Leaks the API key.** The bhatti API key must be baked into the Caddy
+2. **Leaks the API key.** The ahvm API key must be baked into the Caddy
    config. Every public request triggers an authenticated API call.
 
 With a built-in proxy, wake and proxy are a single code path in the same
@@ -72,7 +72,7 @@ of this plan fixes it.
 ## Current State
 
 ```
-Internet → Cloudflare Tunnel → bhatti :8080 (authenticated API, plain HTTP)
+Internet → Cloudflare Tunnel → ahvm :8080 (authenticated API, plain HTTP)
                                   ├─ /health, /metrics         (unauthenticated)
                                   ├─ /sandboxes/...            (authenticated)
                                   └─ /sandboxes/:id/proxy/:port (authenticated, reverse proxy)
@@ -90,26 +90,26 @@ Problems:
 
 ---
 
-## What Bhatti Manages vs. What It Doesn't
+## What AHVM Manages vs. What It Doesn't
 
-Bhatti takes a **subdomain zone**, not the whole domain.
+AHVM takes a **subdomain zone**, not the whole domain.
 
 ```
-bhatti.sh                          → project website (explicit A record, NOT bhatti's concern)
-www.bhatti.sh                      → project website (explicit A record, NOT bhatti's concern)
-mail.bhatti.sh                     → email (explicit A record, NOT bhatti's concern)
-api.bhatti.sh                      → authenticated API (managed by bhatti)
-my-app.bhatti.sh                   → public proxy to sandbox port (NEW)
-dashboard.bhatti.sh                → public proxy to different sandbox (NEW)
+ahvm.sh                          → project website (explicit A record, NOT ahvm's concern)
+www.ahvm.sh                      → project website (explicit A record, NOT ahvm's concern)
+mail.ahvm.sh                     → email (explicit A record, NOT ahvm's concern)
+api.ahvm.sh                      → authenticated API (managed by ahvm)
+my-app.ahvm.sh                   → public proxy to sandbox port (NEW)
+dashboard.ahvm.sh                → public proxy to different sandbox (NEW)
 ```
 
-The config gives bhatti two things:
-1. **API host** — where the authenticated API is served (e.g. `api.bhatti.sh`)
-2. **Proxy zone** — the parent domain for published sandbox ports (e.g. `bhatti.sh`)
+The config gives ahvm two things:
+1. **API host** — where the authenticated API is served (e.g. `api.ahvm.sh`)
+2. **Proxy zone** — the parent domain for published sandbox ports (e.g. `ahvm.sh`)
 
 The self-hoster's responsibilities are limited to DNS:
-1. Point `api.bhatti.sh` at the bhatti host's public IP
-2. Point `*.bhatti.sh` at the bhatti host's public IP
+1. Point `api.ahvm.sh` at the ahvm host's public IP
+2. Point `*.ahvm.sh` at the ahvm host's public IP
 3. That's it
 
 Explicit DNS records (www, mail, etc.) take precedence over the wildcard
@@ -501,7 +501,7 @@ func initReservedAliases(proxyZone string) {
         "_acme-challenge": true,
     }
     // Reserve the proxy zone's own label to prevent confusion.
-    // e.g., if proxyZone is "deploy.bhatti.sh", reserve "deploy".
+    // e.g., if proxyZone is "deploy.ahvm.sh", reserve "deploy".
     if proxyZone != "" {
         parts := strings.SplitN(proxyZone, ".", 2)
         if len(parts) > 0 {
@@ -535,7 +535,7 @@ func generateAlias(sandboxName string, port int, existingCount int) string {
         alias = "sandbox"
     }
     // Only append -p<port> when the sandbox already has other published ports.
-    // "my-app.deploy.bhatti.sh" is much nicer than "my-app-p3000.deploy.bhatti.sh".
+    // "my-app.deploy.ahvm.sh" is much nicer than "my-app-p3000.deploy.ahvm.sh".
     if existingCount > 0 {
         suffix := fmt.Sprintf("-p%d", port)
         maxBase := 63 - len(suffix)
@@ -773,8 +773,8 @@ type Server struct {
     // ... existing fields ...
 
     // Public proxy (set via options before first request)
-    proxyZone       string              // e.g. "deploy.bhatti.sh"
-    apiHost         string              // e.g. "api.bhatti.sh"
+    proxyZone       string              // e.g. "deploy.ahvm.sh"
+    apiHost         string              // e.g. "api.ahvm.sh"
     publicProxyAddr string              // e.g. "host:8443" (for URL generation)
     publicProxy     *PublicProxyHandler  // nil until configured
     resumeSem       chan struct{}        // bounds concurrent cold resumes
@@ -819,7 +819,7 @@ func New(eng engine.Engine, st *store.Store, dataDir string, opts ...ServerOptio
 ```
 
 **Update call sites.** Current callers pass `dataDir` as variadic:
-- `cmd/bhatti/main.go`: `server.New(eng, st, cfg.DataDir)` — unchanged
+- `cmd/ahvm/main.go`: `server.New(eng, st, cfg.DataDir)` — unchanged
 - `pkg/server/server_test.go`: `server.New(mockEngine, st)` → `server.New(mockEngine, st, "")`
 - Any other test files — add `""` as third arg
 
@@ -1188,7 +1188,7 @@ type DomainConfig struct {
 
 ### 2.4 Starting the Listener
 
-**File:** `cmd/bhatti/main.go` — after the API server starts
+**File:** `cmd/ahvm/main.go` — after the API server starts
 
 ```go
 if cfg.PublicProxyListen != "" {
@@ -1216,7 +1216,7 @@ func (s *Server) ResumeSem() chan struct{} { return s.resumeSem }
 
 ### 2.5 CLI Commands
 
-**File:** `cmd/bhatti/cli.go`
+**File:** `cmd/ahvm/cli.go`
 
 ```go
 var publishCmd = &cobra.Command{
@@ -1268,7 +1268,7 @@ rootCmd.AddCommand(publishCmd, unpublishCmd)
 
 ### 2.6 Orphan Cleanup on Startup
 
-**File:** `cmd/bhatti/main.go` — after `recoverVMs` and volume cleanup
+**File:** `cmd/ahvm/main.go` — after `recoverVMs` and volume cleanup
 
 ```go
 if n, err := st.CleanupOrphanedPublishRules(); err != nil {
@@ -1300,8 +1300,8 @@ if n, err := st.CleanupOrphanedPublishRules(); err != nil {
 - `TestPublishRequestBodyLimit` — POST with >50MB body, returns 413
 - `TestPublishUnknownAliasNoState` — probe 1000 random aliases, verify
   rate limiter map doesn't grow
-- `TestPublishCLI` — `bhatti publish dev -p 3000 -a my-app` → URL,
-  `bhatti unpublish dev -p 3000` → removed
+- `TestPublishCLI` — `ahvm publish dev -p 3000 -a my-app` → URL,
+  `ahvm unpublish dev -p 3000` → removed
 
 ---
 
@@ -1347,7 +1347,7 @@ When `proxyZone` is empty, this block is skipped — existing behavior unchanged
 
 ### 3.2 TLS with autocert
 
-**File:** `cmd/bhatti/main.go`
+**File:** `cmd/ahvm/main.go`
 
 When `cfg.Domain` is set, start `:443` + `:80` instead of `:8080`:
 
@@ -1399,7 +1399,7 @@ if cfg.Domain != nil {
         IdleTimeout:       120 * time.Second,
     }
     go func() {
-        slog.Info("bhatti listening",
+        slog.Info("ahvm listening",
             "api", "https://"+dom.APIHost,
             "proxy", "https://*."+dom.ProxyZone,
         )
@@ -1486,7 +1486,7 @@ Let's Encrypt limits: 50 certs per registered domain per week. For the
 create 50+ aliases per day. **Per-alias autocert will hit rate limits
 within hours.**
 
-The recommended TLS strategy is a **wildcard cert** for `*.deploy.bhatti.sh`:
+The recommended TLS strategy is a **wildcard cert** for `*.deploy.ahvm.sh`:
 
 **Option A: Bring your own wildcard cert (recommended, zero dependencies).**
 Get a wildcard cert from any CA (Let's Encrypt via DNS-01, Cloudflare
@@ -1496,10 +1496,10 @@ first-request latency.
 
 ```yaml
 domain:
-  api_host: "api.bhatti.sh"
-  proxy_zone: "deploy.bhatti.sh"
-  tls_cert: "/etc/bhatti/wildcard.pem"     # covers *.deploy.bhatti.sh + api.bhatti.sh
-  tls_key: "/etc/bhatti/wildcard-key.pem"
+  api_host: "api.ahvm.sh"
+  proxy_zone: "deploy.ahvm.sh"
+  tls_cert: "/etc/ahvm/wildcard.pem"     # covers *.deploy.ahvm.sh + api.ahvm.sh
+  tls_key: "/etc/ahvm/wildcard-key.pem"
 ```
 
 **Option B: Per-alias autocert (fallback for simple setups).**
@@ -1510,9 +1510,9 @@ subsequent requests use the cached cert.
 
 ```yaml
 domain:
-  api_host: "api.bhatti.sh"
-  proxy_zone: "deploy.bhatti.sh"
-  acme_email: "admin@bhatti.sh"  # per-alias certs, 50/week limit
+  api_host: "api.ahvm.sh"
+  proxy_zone: "deploy.ahvm.sh"
+  acme_email: "admin@ahvm.sh"  # per-alias certs, 50/week limit
 ```
 
 - Cert cache at `<data_dir>/certs/`. Survives restart.
@@ -1520,7 +1520,7 @@ domain:
   `tls_cert`: "per-alias TLS is rate-limited to 50 new aliases/week.
   For preview environments, use a wildcard cert."
 
-**Option C (future): Automated wildcard via DNS-01.** Bhatti could
+**Option C (future): Automated wildcard via DNS-01.** AHVM could
 do the DNS-01 challenge itself if given DNS provider credentials.
 Out of scope for v1 — too many DNS providers to support.
 
@@ -1530,14 +1530,14 @@ Out of scope for v1 — too many DNS providers to support.
 - `TestHostPolicyAllowsPublishedAlias` → nil
 - `TestHostPolicyUsesCache` — cached alias doesn't hit SQLite
 - `TestHostPolicyRejectsUnknown` → error (no SQLite query)
-- `TestHostBasedRouting` — request with `Host: my-app.deploy.bhatti.sh` hits proxy
-- `TestAPIHostRouting` — request with `Host: api.bhatti.sh` goes through auth
+- `TestHostBasedRouting` — request with `Host: my-app.deploy.ahvm.sh` hits proxy
+- `TestAPIHostRouting` — request with `Host: api.ahvm.sh` goes through auth
 - `TestUnknownHostReturns404`
 - `TestHTTPSRedirect` — `:80` → 301 to HTTPS
 - `TestLocalhostListenerInDomainMode` — `curl 127.0.0.1:8080/health` works
   when domain mode is active
 - `TestWildcardCertServesBothAPIAndProxy` — single wildcard cert serves
-  `api.bhatti.sh` and `*.deploy.bhatti.sh`
+  `api.ahvm.sh` and `*.deploy.ahvm.sh`
 
 ---
 
@@ -1585,9 +1585,9 @@ No tunnel FD leak on any code path.
 
 **Alias namespace:** Aliases are globally unique. On a multi-tenant
 system, user A can squat on alias "google". This is acceptable for
-bhatti's target deployment (single-tenant / small-team self-hosted).
+ahvm's target deployment (single-tenant / small-team self-hosted).
 If multi-tenancy becomes important, scope aliases per-user with URL
-structure `<alias>.<user>.deploy.bhatti.sh`.
+structure `<alias>.<user>.deploy.ahvm.sh`.
 
 ---
 
@@ -1693,16 +1693,16 @@ public_proxy_listen: ":8443"  # development/testing only
 ```yaml
 # Recommended: wildcard cert
 domain:
-  api_host: "api.bhatti.sh"
-  proxy_zone: "deploy.bhatti.sh"
-  tls_cert: "/etc/bhatti/wildcard.pem"
-  tls_key: "/etc/bhatti/wildcard-key.pem"
+  api_host: "api.ahvm.sh"
+  proxy_zone: "deploy.ahvm.sh"
+  tls_cert: "/etc/ahvm/wildcard.pem"
+  tls_key: "/etc/ahvm/wildcard-key.pem"
 
 # Fallback: per-alias autocert (< 50 aliases/week)
 domain:
-  api_host: "api.bhatti.sh"
-  proxy_zone: "deploy.bhatti.sh"
-  acme_email: "admin@bhatti.sh"
+  api_host: "api.ahvm.sh"
+  proxy_zone: "deploy.ahvm.sh"
+  acme_email: "admin@ahvm.sh"
 ```
 
 ### Dependency Graph
@@ -1721,13 +1721,13 @@ Phase 2 (domain + TLS) — reuses 100% of Phase 1 code
 
 1. Deploy Phase 2 code (domain not yet in config, `:8080` still works)
 2. Add domain config, open ports 80/443 on firewall
-3. Point `api.bhatti.sh` A record to agni-01 IP
-4. Point `*.deploy.bhatti.sh` A record to agni-01 IP
-5. Restart bhatti → starts on `:443` + `:80` + `127.0.0.1:8080`
-6. Verify `curl https://api.bhatti.sh/health`
+3. Point `api.ahvm.sh` A record to agni-01 IP
+4. Point `*.deploy.ahvm.sh` A record to agni-01 IP
+5. Restart ahvm → starts on `:443` + `:80` + `127.0.0.1:8080`
+6. Verify `curl https://api.ahvm.sh/health`
 7. Verify `curl localhost:8080/health` (internal listener still works)
 8. Kill `cloudflared`
-9. CLI configs unchanged (`api_url: https://api.bhatti.sh`)
+9. CLI configs unchanged (`api_url: https://api.ahvm.sh`)
 10. Internal monitoring unchanged (still hits `localhost:8080`)
 
 ---
@@ -1758,8 +1758,8 @@ Phase 2 (domain + TLS) — reuses 100% of Phase 1 code
 | `pkg/server/server.go` | `ServerOption`, proxy fields, `HostPolicy` (cache-aware), Host routing, `initReservedAliases` | 1+2 |
 | `pkg/server/routes.go` | Publish handlers, destroy cleanup + cache invalidation | 1 |
 | `pkg/server/public_proxy.go` | **New.** `PublicProxyHandler`, `routeCache`, `singleflight` resume, LRU rate limiter, observability counters, request timeouts | 1+2 |
-| `cmd/bhatti/main.go` | Path listener, domain listener, `autocert`, localhost listener in domain mode, orphan cleanup | 1+2 |
-| `cmd/bhatti/cli.go` | `publish`, `unpublish` | 1 |
+| `cmd/ahvm/main.go` | Path listener, domain listener, `autocert`, localhost listener in domain mode, orphan cleanup | 1+2 |
+| `cmd/ahvm/cli.go` | `publish`, `unpublish` | 1 |
 
 ---
 

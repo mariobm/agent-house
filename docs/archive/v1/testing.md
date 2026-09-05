@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/contributing/testing/>.
+> <https://ahvm.sh/docs/contributing/testing/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -124,7 +124,7 @@ Test the HTTP layer against real Docker (macOS) or real Firecracker (Linux).
 - Secret CRUD
 - Volume CRUD
 
-### Daemon Recovery Tests (`cmd/bhatti/`)
+### Daemon Recovery Tests (`cmd/ahvm/`)
 
 Test `recoverVMs()` without any actual VMs. Use a mock `VMStateProvider` to verify recovery logic:
 
@@ -137,7 +137,7 @@ Test `recoverVMs()` without any actual VMs. Use a mock `VMStateProvider` to veri
 - Type coercion: `float64` from JSON vs `int` from SQLite
 - Multiple sandboxes recovered in one pass
 
-### CLI Tests (`cmd/bhatti/`)
+### CLI Tests (`cmd/ahvm/`)
 
 Integration tests against a running Firecracker daemon:
 
@@ -172,7 +172,7 @@ go test -v -timeout=120s ./pkg/server/
 go test -v -timeout=30s ./pkg/store/
 
 # Recovery + CLI tests
-go test -v -timeout=30s ./cmd/bhatti/
+go test -v -timeout=30s ./cmd/ahvm/
 
 # Firecracker integration tests (Linux, root, KVM required)
 sudo go test -v -timeout=600s ./pkg/engine/firecracker/

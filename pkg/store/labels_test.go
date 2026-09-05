@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Tests for sandbox labels (G1.6 of PLAN-bhatti-v2.md). The store layer
+// Tests for sandbox labels (G1.6 of PLAN-ahvm-v2.md). The store layer
 // is the lowest tier — JSON marshal/unmarshal, transactional merge for
 // PATCH, and the filtered list helper.
 
@@ -79,7 +79,7 @@ func TestSandboxLabels_EmptyMapIsBenign(t *testing.T) {
 }
 
 // TestSandboxLabels_FilterAND covers the selector contract used by
-// `bhatti ls --label k1=v1 --label k2=v2`. All filter pairs must match
+// `ahvm ls --label k1=v1 --label k2=v2`. All filter pairs must match
 // (AND), and extra labels on a sandbox don't break the match.
 func TestSandboxLabels_FilterAND(t *testing.T) {
 	s := testStore(t)
@@ -155,9 +155,9 @@ func TestSandboxLabels_UpdateMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"pool": "workers",   // preserved
-		"env":  "staging",   // overwritten
-		"team": "platform",  // added
+		"pool": "workers",  // preserved
+		"env":  "staging",  // overwritten
+		"team": "platform", // added
 		// tier — removed
 	}
 	if len(got.Labels) != len(want) {

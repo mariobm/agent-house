@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/under-the-hood/decisions/>.
+> <https://ahvm.sh/docs/under-the-hood/decisions/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -91,7 +91,7 @@ The init script from the config drive is also a session (ID: `"init"`), so the h
 
 **Context:** The host writes files into the VM via the agent. Multiple operations can be concurrent (e.g., an AI agent sending 5 parallel file writes). Readers should never see partial content.
 
-**Decision:** Lohar writes to a temp file (`path.bhatti-tmp`), fsyncs it, then renames it over the target atomically:
+**Decision:** Lohar writes to a temp file (`path.ahvm-tmp`), fsyncs it, then renames it over the target atomically:
 
 ```go
 f := os.Create(tmpPath)
@@ -173,9 +173,9 @@ The `Agent` pointer is safe to use after release because it's only replaced duri
 
 **Decision:** Use `modernc.org/sqlite` — a pure-Go translation of SQLite's C code. Zero CGO, cross-compiles from macOS to Linux ARM64 with `CGO_ENABLED=0`.
 
-**Why:** The bhatti binary is cross-compiled on a Mac and deployed to a Pi. With CGO, this requires a cross-compiler toolchain (arm64 gcc), careful library management, and different build commands per platform. With pure-Go SQLite, `GOOS=linux GOARCH=arm64 go build` produces a static binary that just works.
+**Why:** The ahvm binary is cross-compiled on a Mac and deployed to a Pi. With CGO, this requires a cross-compiler toolchain (arm64 gcc), careful library management, and different build commands per platform. With pure-Go SQLite, `GOOS=linux GOARCH=arm64 go build` produces a static binary that just works.
 
-**Tradeoff:** `modernc.org/sqlite` is ~10% slower than the C-based driver. For bhatti's workload (metadata CRUD, not analytics), this is irrelevant. The binary size increases by ~3MB (the translated C code is large). Worth it for the build simplicity.
+**Tradeoff:** `modernc.org/sqlite` is ~10% slower than the C-based driver. For ahvm's workload (metadata CRUD, not analytics), this is irrelevant. The binary size increases by ~3MB (the translated C code is large). Worth it for the build simplicity.
 
 ---
 
@@ -183,7 +183,7 @@ The `Agent` pointer is safe to use after release because it's only replaced duri
 
 **Context:** VMs need network access (internet + inter-VM). Two main approaches: per-VM NAT with iptables rules, or a shared bridge.
 
-**Decision:** Shared bridge (`brbhatti0`) on `192.168.137.0/24` with a single masquerade rule for the subnet. Guest IP configured via kernel `ip=` command-line parameter.
+**Decision:** Shared bridge (`brahvm0`) on `192.168.137.0/24` with a single masquerade rule for the subnet. Guest IP configured via kernel `ip=` command-line parameter.
 
 **Why per-VM NAT was rejected:** Each VM would need its own iptables rules (DNAT for inbound, SNAT for outbound). With 50 VMs, that's 100+ iptables rules to manage, debug, and clean up on crash. A bridge with one masquerade rule is simpler and scales better.
 

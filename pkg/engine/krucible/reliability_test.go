@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // These are the krucible-internal cold-tier hardening tests (migration plan P1)
@@ -241,7 +241,7 @@ func TestKrucibleCheckpointDuplicateNameRefused(t *testing.T) {
 // TestKrucibleConcurrentCheckpointAndDestroy guards launchMu serialization on the
 // checkpoint path (FC `ConcurrentCheckpointAndStop`): a checkpoint racing a
 // destroy must not panic, deadlock, or leak a helper — one serializes after the
-// other and the sandbox ends up gone with no orphaned bhatti-vmm.
+// other and the sandbox ends up gone with no orphaned ahvm-vmm.
 func TestKrucibleConcurrentCheckpointAndDestroy(t *testing.T) {
 	eng := newBlockRootEngine(t).(*Engine)
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)

@@ -53,9 +53,9 @@ cat > "$WORK/spec.json" <<EOF
 {"rootfs_dir":"$ROOT","vcpus":1,"mem_mib":512,"pid1":true,"exec_path":"/init.krun","vsock_control_uds":"$UDS","log_level":2}
 EOF
 
-echo "==> boot bhatti-vmm"
+echo "==> boot ahvm-vmm"
 DYLD_FALLBACK_LIBRARY_PATH="$LIBDIR" LD_LIBRARY_PATH="$LIBDIR" \
-  ./bhatti-vmm "$WORK/spec.json" > "$WORK/vmm.log" 2>&1 &
+  ./ahvm-vmm "$WORK/spec.json" > "$WORK/vmm.log" 2>&1 &
 VMM_PID=$!
 cleanup() { kill "$VMM_PID" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -63,7 +63,7 @@ trap cleanup EXIT
 for _ in $(seq 1 50); do [ -S "$UDS" ] && break; sleep 0.1; done
 sleep 1
 if ! kill -0 "$VMM_PID" 2>/dev/null; then
-  echo "ERROR: bhatti-vmm exited early; log:" >&2; tail -20 "$WORK/vmm.log" >&2; exit 1
+  echo "ERROR: ahvm-vmm exited early; log:" >&2; tail -20 "$WORK/vmm.log" >&2; exit 1
 fi
 
 echo "==> probe agent"

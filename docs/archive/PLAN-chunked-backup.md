@@ -125,7 +125,7 @@ In-process `sync.Mutex` per volume name inside the server. Prevents
 concurrent backup of the same volume (cron fires while manual backup
 still running).
 
-No S3-level locking — single bhatti daemon per host. If multi-node is
+No S3-level locking — single ahvm daemon per host. If multi-node is
 added later, S3-based locking (write a lock file, check for stale
 locks) can be added without changing the chunking logic.
 

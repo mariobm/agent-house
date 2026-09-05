@@ -65,25 +65,25 @@ var createCmd = &cobra.Command{
 	Long: `Create a new sandbox VM. Each sandbox is an isolated Linux environment
 with its own kernel, filesystem, and network.`,
 	Example: `  # Basic sandbox
-  bhatti create --name dev
+  ahvm create --name dev
 
   # Custom resources
-  bhatti create --name ml --cpus 4 --memory 4096
+  ahvm create --name ml --cpus 4 --memory 4096
 
   # With environment variables and init script
-  bhatti create --name api --env API_KEY=sk-abc --init "npm install"
+  ahvm create --name api --env API_KEY=sk-abc --init "npm install"
 
   # From a custom image
-  bhatti create --name py --image python-3.12
+  ahvm create --name py --image python-3.12
 
   # With a persistent volume
-  bhatti create --name work --volume workspace:/workspace
+  ahvm create --name work --volume workspace:/workspace
 
   # Autonomous agent (stays hot, never paused)
-  bhatti create --name agent --init "hermes gateway" --keep-hot
+  ahvm create --name agent --init "hermes gateway" --keep-hot
 
   # Locked-down egress: deny by default, allow only specific hosts/CIDRs
-  bhatti create --name locked --egress deny --allow-host api.openai.com --allow-cidr 1.1.1.1/32`,
+  ahvm create --name locked --egress deny --allow-host api.openai.com --allow-cidr 1.1.1.1/32`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()
@@ -253,7 +253,7 @@ with its own kernel, filesystem, and network.`,
 		sbName, _ := sb["name"].(string)
 		addToCompletionCache(sbName)
 
-		existing := resp.Header.Get("X-Bhatti-Existing") == "true"
+		existing := resp.Header.Get("X-AHVM-Existing") == "true"
 
 		if isJSON(cmd) {
 			outputJSON(sb)
@@ -283,7 +283,7 @@ with its own kernel, filesystem, and network.`,
 			if ipVal != "" {
 				fmt.Printf("  IP:    %s\n", ipVal)
 			}
-			fmt.Printf("  Shell: bhatti shell %s\n", sbName)
+			fmt.Printf("  Shell: ahvm shell %s\n", sbName)
 		}
 		return nil
 	},
@@ -329,13 +329,13 @@ var editCmd = &cobra.Command{
 	Long: `Update mutable settings on an existing sandbox. Supports renaming
 and toggling keep_hot to control thermal management.`,
 	Example: `  # Prevent a sandbox from being paused/snapshotted
-  bhatti edit my-agent --keep-hot
+  ahvm edit my-agent --keep-hot
 
   # Re-enable thermal transitions
-  bhatti edit my-agent --allow-cold
+  ahvm edit my-agent --allow-cold
 
   # Rename a sandbox
-  bhatti edit dev --name dev-old`,
+  ahvm edit dev --name dev-old`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -384,7 +384,7 @@ and toggling keep_hot to control thermal management.`,
 		}
 
 		// Keep the local completion cache in sync. The cache is also
-		// rebuilt on every `bhatti ls`, so this is just for users who
+		// rebuilt on every `ahvm ls`, so this is just for users who
 		// rename and immediately tab-complete.
 		if newName != "" && newName != args[0] {
 			removeFromCompletionCache(args[0])
@@ -419,9 +419,9 @@ var stopCmd = &cobra.Command{
 	Use:   "stop <sandbox>",
 	Short: "Snapshot and stop a sandbox",
 	Long: `Pause the sandbox and save a snapshot to disk. Resume later with
-'bhatti start'. Stopped sandboxes use zero CPU and memory.`,
-	Example: `  bhatti stop dev
-  bhatti start dev     # resume later`,
+'ahvm start'. Stopped sandboxes use zero CPU and memory.`,
+	Example: `  ahvm stop dev
+  ahvm start dev     # resume later`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -451,8 +451,8 @@ var startCmd = &cobra.Command{
 	Short: "Resume a stopped sandbox",
 	Long: `Resume a sandbox from its snapshot. Continues exactly where it left off.
 Use --force to retry after a failed restore.`,
-	Example: `  bhatti start dev
-  bhatti start dev --force`,
+	Example: `  ahvm start dev
+  ahvm start dev --force`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -486,8 +486,8 @@ var inspectCmd = &cobra.Command{
 	Use:     "inspect <sandbox>",
 	Short:   "Show sandbox details",
 	Aliases: []string{"info"},
-	Example: `  bhatti inspect dev
-  bhatti inspect dev --json`,
+	Example: `  ahvm inspect dev
+  ahvm inspect dev --json`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -584,10 +584,10 @@ var listCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List sandboxes",
-	Example: `  bhatti list
-  bhatti ls            # alias
-  bhatti ls --json
-  bhatti ls -o wide    # show resources and image`,
+	Example: `  ahvm list
+  ahvm ls            # alias
+  ahvm ls --json
+  ahvm ls -o wide    # show resources and image`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setupTiming(cmd)
 		defer printTiming()
@@ -700,8 +700,8 @@ var destroyCmd = &cobra.Command{
 	Short:   "Destroy a sandbox",
 	Long: `Permanently destroy a sandbox and all its data. This cannot be undone.
 Persistent volumes are detached but not deleted.`,
-	Example: `  bhatti destroy dev
-  bhatti rm dev        # alias`,
+	Example: `  ahvm destroy dev
+  ahvm rm dev        # alias`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {

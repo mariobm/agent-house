@@ -13,11 +13,11 @@ import (
 // This file configures eth0 via rtnetlink directly — no `ip` binary and no
 // kernel IP autoconfig (CONFIG_IP_PNP is off in our kernels), so it works in the
 // minimal box rootfs and in imported OCI images alike. Used by the virtio-net /
-// gateway path (DESIGN-bhatti-v2-networking §0c); lohar reads the addressing
+// gateway path (DESIGN-ahvm-v2-networking §0c); lohar reads the addressing
 // from the config drive.
 
 // configureEth0 brings up the interface and configures it point-to-point to the
-// bhatti-netd gateway: the guest link is a dedicated line to netd, not a shared
+// ahvm-netd gateway: the guest link is a dedicated line to netd, not a shared
 // segment, so the guest sees ONLY the gateway. It assigns ipCIDR's address as a
 // /32 host address, adds an on-link host route to the gateway, and a default
 // route via it. Everything — internet AND siblings — is therefore sent to the

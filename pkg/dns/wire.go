@@ -1,7 +1,7 @@
-// Package dns implements a minimal DNS responder for bhatti's per-user
+// Package dns implements a minimal DNS responder for ahvm's per-user
 // sandbox networks. Subset of RFC 1035: A and PTR record lookups, with
 // AAAA queries returning NOERROR/no-answers (we don't ship IPv6).
-// G1.1 of PLAN-bhatti-v2.md.
+// G1.1 of PLAN-ahvm-v2.md.
 //
 // The wire format implementation is hand-rolled rather than using
 // miekg/dns. The substrate accumulates dependencies slowly by design
@@ -150,10 +150,10 @@ func ParseMessage(buf []byte) (*Message, error) {
 // and any error. Compression pointers are followed; cycles abort.
 func parseName(buf []byte, offset int) (string, int, error) {
 	var (
-		parts          []string
-		curOffset      = offset
-		nextOffset     = -1 // set when we follow a pointer; final offset is past the pointer, not where it points
-		followedHops   = 0
+		parts           []string
+		curOffset       = offset
+		nextOffset      = -1 // set when we follow a pointer; final offset is past the pointer, not where it points
+		followedHops    = 0
 		maxFollowedHops = 16 // arbitrary cycle guard
 	)
 	for {

@@ -1,6 +1,6 @@
 # Sandbox Guardrails — Defaults, Docs, and Don'ts
 
-Issue [#12](https://github.com/sahil-shubham/bhatti/issues/12) (Fastidious):
+Issue [#12](https://github.com/mariobm/agent-house/issues/12) (Fastidious):
 user couldn't get sandboxes working with defaults, had to dig through docs
 to find `--cpus` and `--memory`, and installing `openssh` completely broke
 a VM. Three problems with a common root: **the system doesn't surface its
@@ -35,7 +35,7 @@ source.
 
 ### 2. No concept of "things that will break your VM"
 
-Bhatti VMs are not standard Linux boxes. They have a fundamental
+AHVM VMs are not standard Linux boxes. They have a fundamental
 architectural constraint that users don't know about:
 
 > **Lohar is PID 1, not systemd.**
@@ -92,7 +92,7 @@ user can't install anything else, can't `curl`, can't `wget`, can't do any
 network operation. The VM appears "completely broken."
 
 **Why this is not a bug but an architecture constraint:** lohar-as-PID-1 is
-the reason bhatti boots in 3.5 seconds instead of 6-8 seconds, has
+the reason ahvm boots in 3.5 seconds instead of 6-8 seconds, has
 deterministic startup, and uses minimal memory. It's a fundamental design
 choice. But users need to know about it.
 
@@ -113,14 +113,14 @@ and the CLI flag help text.
 
 ### B. Show effective defaults in `create` output
 
-When a user runs `bhatti create --name dev`, they get back:
+When a user runs `ahvm create --name dev`, they get back:
 
 ```
 sb_a1b2c3    dev    192.168.137.2
 ```
 
 No indication of how much CPU or memory was allocated. The user has to
-`bhatti inspect dev` or read docs to know. Compare to Docker:
+`ahvm inspect dev` or read docs to know. Compare to Docker:
 
 ```
 $ docker run -d ubuntu
@@ -171,7 +171,7 @@ The nuclear option: have lohar intercept or wrap `apt-get install` and
 warn about known-dangerous packages before they install. This is complex
 and fragile, but even a simpler version could help:
 
-**Simple version:** Ship a `/etc/apt/apt.conf.d/99bhatti-warn` that uses
+**Simple version:** Ship a `/etc/apt/apt.conf.d/99ahvm-warn` that uses
 apt's `DPkg::Pre-Install-Pkgs` hook to check if `systemd-resolved` or
 `systemd-sysv` is in the install set, and prints a warning.
 
@@ -210,11 +210,11 @@ about `--disk-size` will hit ENOSPC after a few `apt-get install` commands.
 **Options:**
 - Auto-resize the rootfs to a comfortable default (e.g., 2 GB for all
   tiers) unless the user explicitly passes `--disk-size`
-- Print the available disk space in `bhatti inspect` output
+- Print the available disk space in `ahvm inspect` output
 - Warn in the `create` output when the rootfs is small:
   `⚠ disk: 512 MB (use --disk-size to increase)`
 
-### G. `bhatti create` should show what happened
+### G. `ahvm create` should show what happened
 
 Currently `create` returns a one-line table. Many CLI tools (Docker,
 Kubernetes, Terraform) show a summary of what was provisioned:
@@ -228,8 +228,8 @@ Created sandbox "dev"
   Disk:     512 MB (minimal tier)
   Image:    rootfs-minimal-arm64
 
-  shell:    bhatti shell dev
-  exec:     bhatti exec dev -- <command>
+  shell:    ahvm shell dev
+  exec:     ahvm exec dev -- <command>
 ```
 
 This tells the user exactly what they got, whether it's enough for their
@@ -275,7 +275,7 @@ main():
   6. Set up eth0 from kernel ip= parameter (if kernel didn't already)
   7. Install signal handlers (SIGTERM → sync → poweroff)
   8. Listen on vsock + TCP ports 1024/1025
-  9. Run /etc/bhatti/init.sh boot profile (if present)
+  9. Run /etc/ahvm/init.sh boot profile (if present)
   10. Run --init script as TTY session (if configured)
   11. Block forever (select{})
 
@@ -286,7 +286,7 @@ installSignalHandlers():
 
 Steps 1-3 are filesystem mounts that every init system does.
 Step 4 is one ioctl call.
-Step 5 is config injection (bhatti-specific, ~60 lines).
+Step 5 is config injection (ahvm-specific, ~60 lines).
 Step 6 is network setup that the kernel already handles via `ip=`.
 Steps 7-11 are agent duties, not init duties.
 
@@ -327,7 +327,7 @@ we exercise and whether it matters:
 | DNS | Write static /etc/resolv.conf | Partially — resolved would manage it (but more robustly) |
 | Agent token | Unmount config drive after reading | Same — ExecStartPre unmounts it |
 | Agent uptime | Can't be killed (IS PID 1) | `RefuseManualStop=yes` in unit file. But if lohar crashes, systemd RESTARTS it — actually more resilient |
-| Boot profile | Run /etc/bhatti/init.sh as root | Same — `ExecStartPre` or a separate oneshot unit |
+| Boot profile | Run /etc/ahvm/init.sh as root | Same — `ExecStartPre` or a separate oneshot unit |
 | Shutdown | SIGTERM → sync → poweroff | `ExecStop=sync; poweroff` or let systemd handle it natively |
 
 **The DNS point is the only one where we have more control with lohar.**
@@ -348,37 +348,37 @@ production, but the failure mode is strictly worse with lohar-as-PID-1.
 
 **With lohar-as-PID-1 (current):**
 ```bash
-bhatti exec dev -- sudo apt-get install -y python3 python3-pip
+ahvm exec dev -- sudo apt-get install -y python3 python3-pip
 # ✅ Works (no systemd deps)
 
-bhatti exec dev -- sudo apt-get install -y openssh-server
+ahvm exec dev -- sudo apt-get install -y openssh-server
 # ❌ Installs systemd-resolved → DNS breaks → VM bricked
 
-bhatti exec dev -- sudo apt-get install -y postgresql
+ahvm exec dev -- sudo apt-get install -y postgresql
 # ⚠️ Installs but postgresql doesn't start (postinst calls systemctl)
 # User must manually: sudo -u postgres pg_ctlcluster 16 main start
 
-bhatti exec dev -- sudo apt-get install -y nginx
+ahvm exec dev -- sudo apt-get install -y nginx
 # ⚠️ Installs but nginx doesn't start
 # User must manually: sudo nginx
 
-bhatti exec dev -- sudo apt-get install -y redis-server
+ahvm exec dev -- sudo apt-get install -y redis-server
 # ⚠️ Installs but redis doesn't start
 # User must manually: sudo redis-server --daemonize yes
 ```
 
 **With systemd:**
 ```bash
-bhatti exec dev -- sudo apt-get install -y openssh-server
+ahvm exec dev -- sudo apt-get install -y openssh-server
 # ✅ Installs, resolved manages DNS, sshd starts automatically
 
-bhatti exec dev -- sudo apt-get install -y postgresql
+ahvm exec dev -- sudo apt-get install -y postgresql
 # ✅ Installs, systemctl starts postgresql, pg_isready works
 
-bhatti exec dev -- sudo apt-get install -y nginx
+ahvm exec dev -- sudo apt-get install -y nginx
 # ✅ Installs, systemctl starts nginx, curl localhost works
 
-bhatti exec dev -- sudo apt-get install -y redis-server
+ahvm exec dev -- sudo apt-get install -y redis-server
 # ✅ Installs, systemctl starts redis, redis-cli ping works
 ```
 
@@ -391,13 +391,13 @@ package installs but the service doesn't run, leaving users confused.
 
 **With lohar-as-PID-1:**
 ```bash
-bhatti create --name api --keep-hot --init 'cd /workspace && node server.js'
+ahvm create --name api --keep-hot --init 'cd /workspace && node server.js'
 # ✅ Works for the happy path
 
 # But:
 # - If server.js crashes, it stays dead. No restart.
 # - If you want to add redis alongside it, destroy and recreate:
-bhatti create --name api --keep-hot --init '
+ahvm create --name api --keep-hot --init '
   redis-server --daemonize yes
   until redis-cli ping 2>/dev/null; do sleep 0.1; done
   cd /workspace && node server.js
@@ -409,12 +409,12 @@ bhatti create --name api --keep-hot --init '
 
 **With systemd:**
 ```bash
-bhatti create --name api --keep-hot
-bhatti exec api -- sudo apt-get install -y redis-server
+ahvm create --name api --keep-hot
+ahvm exec api -- sudo apt-get install -y redis-server
 # Redis starts automatically, restarts on crash
 
 # Create a systemd service for the app:
-bhatti exec api -- sudo tee /etc/systemd/system/myapp.service <<'EOF'
+ahvm exec api -- sudo tee /etc/systemd/system/myapp.service <<'EOF'
 [Unit]
 Description=My App
 After=redis.service
@@ -431,7 +431,7 @@ RestartSec=1
 WantedBy=multi-user.target
 EOF
 
-bhatti exec api -- sudo systemctl enable --now myapp
+ahvm exec api -- sudo systemctl enable --now myapp
 # Node starts, restarts on crash, starts after redis
 # journalctl -u myapp shows logs
 # systemctl status myapp shows health
@@ -445,7 +445,7 @@ the ability to add services without recreating the sandbox.
 
 **Current (lohar-as-PID-1):**
 ```bash
-# /etc/bhatti/init.sh in docker tier:
+# /etc/ahvm/init.sh in docker tier:
 dockerd > /var/log/dockerd.log 2>&1 &
 for i in $(seq 1 100); do
     [ -S /var/run/docker.sock ] && break
@@ -484,7 +484,7 @@ for i in $(seq 1 30); do xdpyinfo && break; sleep 0.1; done
 dbus-daemon --system --fork
 pulseaudio --start
 startxfce4 &
-echo "DISPLAY=:99" > /run/bhatti/env
+echo "DISPLAY=:99" > /run/ahvm/env
 ```
 
 Problems:
@@ -503,20 +503,20 @@ disappears entirely.
 ```
 VM running: node server.js on port 3000, redis on 6379
   → thermal manager snapshots to disk (cold)
-  → user runs: bhatti exec dev -- curl localhost:3000
+  → user runs: ahvm exec dev -- curl localhost:3000
   → VM restored from snapshot
   → node and redis resume exactly where they were (memory snapshot)
   → curl works immediately
 ```
 
-This is bhatti's killer feature and it works beautifully with
+This is ahvm's killer feature and it works beautifully with
 lohar-as-PID-1. Processes survive.
 
 **With systemd:**
 ```
 VM running: same setup, systemd managing both services
   → thermal manager snapshots to disk (cold)
-  → user runs: bhatti exec dev -- curl localhost:3000
+  → user runs: ahvm exec dev -- curl localhost:3000
   → VM restored from snapshot
   → node and redis resume (same as above — memory snapshot)
   → systemd also resumes, sees a clock jump
@@ -539,13 +539,13 @@ to the init system.
 
 ### The daemon problem (restated)
 
-This is the deeper concern beneath issue #12. Bhatti VMs deliberately
+This is the deeper concern beneath issue #12. AHVM VMs deliberately
 have no systemd, but real users need to run daemons — web servers,
 databases, background workers. The current story has gaps.
 
 ### What Exists Today
 
-**Tier boot profiles** (`/etc/bhatti/init.sh`) — baked into the rootfs
+**Tier boot profiles** (`/etc/ahvm/init.sh`) — baked into the rootfs
 at image build time, run by lohar at boot. This is how our own tiers
 solve it:
 
@@ -573,12 +573,12 @@ Pattern: background with `&`, readiness poll, move on. It works because
 we write it and test it.
 
 **`--init` flag** — user-specified init script. Runs as an attachable TTY
-session with ID `"init"`. Users can `bhatti shell dev` → attach to the
+session with ID `"init"`. Users can `ahvm shell dev` → attach to the
 init session to see output.
 
 ```bash
-bhatti create --name api --init "cd /workspace && node server.js"
-bhatti create --name agent --init "hermes gateway" --keep-hot
+ahvm create --name api --init "cd /workspace && node server.js"
+ahvm create --name agent --init "hermes gateway" --keep-hot
 ```
 
 **`--keep-hot`** — prevents thermal transitions (pause/snapshot) for
@@ -596,9 +596,9 @@ tier, it stays dead until the VM is destroyed and recreated.
 their app server, they have to write a shell script that backgrounds all
 three, polls all three, and hopes nothing crashes. No dependency ordering.
 
-**No daemon health visibility.** `bhatti ps dev` shows TTY sessions, not
+**No daemon health visibility.** `ahvm ps dev` shows TTY sessions, not
 daemon processes. There's no way to ask "is my postgres still running?"
-without `bhatti exec dev -- pgrep postgres`.
+without `ahvm exec dev -- pgrep postgres`.
 
 **No documented pattern.** The `--init` flag docs in cli-reference.md say:
 
@@ -612,7 +612,7 @@ wants to run a web server has to figure out the `&` + readiness poll
 pattern by reading our tier scripts.
 
 **No way to add daemons after create.** The boot profile runs once at
-VM boot. If a user installs postgres after creation (via `bhatti exec`),
+VM boot. If a user installs postgres after creation (via `ahvm exec`),
 there's no way to register it as a managed service. They'd have to
 destroy the sandbox, create a custom image, and start over.
 
@@ -625,12 +625,12 @@ Services" guide. Show concrete examples:
 
 ```bash
 # Single daemon
-bhatti create --name api --keep-hot --init '
+ahvm create --name api --keep-hot --init '
   cd /workspace && node server.js
 '
 
 # Multiple daemons
-bhatti create --name stack --keep-hot --init '
+ahvm create --name stack --keep-hot --init '
   postgres -D /var/lib/postgresql/data &
   redis-server --daemonize yes
   # Wait for deps
@@ -661,12 +661,12 @@ done
 
 Usage:
 ```bash
-bhatti create --name api --keep-hot --init '
+ahvm create --name api --keep-hot --init '
   supervise node server.js
 '
 
 # Multiple supervised daemons
-bhatti create --name stack --keep-hot --init '
+ahvm create --name stack --keep-hot --init '
   supervise postgres -D /var/lib/postgresql/data &
   supervise redis-server &
   until pg_isready; do sleep 0.5; done
@@ -711,12 +711,12 @@ Extend the agent protocol with a `SERVICE_START` / `SERVICE_STOP` /
 policies, health checks, and log capture.
 
 ```bash
-bhatti service add dev --name postgres --cmd "postgres -D /data" --restart always
-bhatti service add dev --name redis --cmd "redis-server" --restart on-failure
-bhatti service add dev --name app --cmd "node server.js" \
+ahvm service add dev --name postgres --cmd "postgres -D /data" --restart always
+ahvm service add dev --name redis --cmd "redis-server" --restart on-failure
+ahvm service add dev --name app --cmd "node server.js" \
     --restart always --depends-on postgres,redis
-bhatti service list dev
-bhatti service logs dev postgres
+ahvm service list dev
+ahvm service logs dev postgres
 ```
 
 Lohar would maintain a service table in memory, restart crashed processes
@@ -736,7 +736,7 @@ ambiguity (is a service a session? a different thing?).
 trivial `supervise` wrapper. This unblocks users immediately and gives us
 a clear story:
 
-> *"Bhatti sandboxes don't have systemd. Use `--init` with `supervise` to
+> *"AHVM sandboxes don't have systemd. Use `--init` with `supervise` to
 > run daemons. For complex multi-service setups, write a shell init
 > script that backgrounds each daemon — the same pattern our Docker and
 > computer tiers use internally."*
@@ -759,7 +759,7 @@ The init system landscape, ordered from lightest to heaviest:
 Minimal PID 1 for containers. Reaps zombies, forwards signals. Nothing
 else. Used by Docker's `--init` flag.
 
-**What it solves for bhatti:** Zombie reaping (lohar's acknowledged gap).
+**What it solves for ahvm:** Zombie reaping (lohar's acknowledged gap).
 **What it doesn't solve:** Service management, package compatibility,
 restart-on-crash, logging. Packages that call `systemctl` still fail.
 
@@ -915,7 +915,7 @@ made it a better PID 1?
 4. Make resolv.conf immutable to prevent openssh breakage
 5. Accept that packages requiring systemd won't work, document it
 
-This path is defensible IF bhatti's primary users are AI agents and
+This path is defensible IF ahvm's primary users are AI agents and
 CI pipelines that never install packages interactively. But issue #12
 is from a human user who expected `apt-get install openssh-server` to
 work. The question is: is that user representative?
@@ -929,7 +929,7 @@ access between sandboxes. The lack of systemd creates gotchas that
 we haven't hit in volume only because we haven't had volume yet. As
 more users onboard, these failures will become support tickets.
 
-**Judgment call:** bhatti is marketed as "isolated Linux environments"
+**Judgment call:** ahvm is marketed as "isolated Linux environments"
 that feel like real VMs. Real VMs have init systems. Real VMs let you
 install packages. The lohar-as-PID-1 model creates a constant stream
 of "why doesn't X work" moments for any user who treats the sandbox
@@ -987,14 +987,14 @@ what systemd already does. And systemd is *already on the rootfs*
 3. Read config drive → apply hostname, DNS, env, files, volumes
 4. Set up eth0 from kernel ip= parameter
 5. Listen on vsock + TCP (agent protocol)
-6. Run /etc/bhatti/init.sh boot profile
+6. Run /etc/ahvm/init.sh boot profile
 7. Run --init script as attachable session
 8. Block forever (PID 1 must not exit)
 ```
 
 Steps 1, 2, and 8 are things systemd does natively. Step 4 is handled
 by the kernel's `ip=` parameter before init even runs. Steps 3, 6, 7
-are bhatti-specific — but they can be systemd services.
+are ahvm-specific — but they can be systemd services.
 
 The only thing that REQUIRES lohar to be PID 1 is... nothing. The agent
 duties (step 5: listen, exec, sessions, files, port forwarding) are
@@ -1020,7 +1020,7 @@ That's **310ms total** — kernel boot through systemd reaching
 default.target — on their CI x86_64 hardware with a stock Ubuntu 24.04
 rootfs.
 
-**Current bhatti boot breakdown (measured, Pi 5 ARM64):**
+**Current ahvm boot breakdown (measured, Pi 5 ARM64):**
 
 ```
   Host-side (rootfs copy, FC start, API config):  ~130ms
@@ -1073,7 +1073,7 @@ a fuller service set than we'd need.
 | **the reference runtime** | Agent IS PID 1 | PID 1 (via libkrun init.c) | <200ms (published) | No |
 | **Sprites** (fly.io) | Custom init | Built-in service manager | Not published | Filesystem only (no memory) |
 | **AWS Lambda** | Custom init | Runtime Interface | ~100-200ms (kernel to handler) | Yes (SnapStart) |
-| **Bhatti** | lohar | PID 1 | 365ms e2e (28ms init) | Yes (full memory) |
+| **AHVM** | lohar | PID 1 | 365ms e2e (28ms init) | Yes (full memory) |
 
 **the reference runtime deep dive (from source review):**
 
@@ -1102,7 +1102,7 @@ environments. Packages are installed via `apk add` (Alpine) or are
 baked into OCI images, and services are managed by crun's container
 lifecycle, not by an init system.
 
-**Why the reference runtime's approach doesn't apply to bhatti:**
+**Why the reference runtime's approach doesn't apply to ahvm:**
 - the reference runtime runs OCI containers inside VMs — services are container
   lifecycle, not init system
 - the reference runtime uses Alpine, not Ubuntu — no systemd dependency chain
@@ -1224,7 +1224,7 @@ we're just not bypassing it with `init=`.
 - **Service supervision for free.** `Restart=always`, `RestartSec=`,
   `WatchdogSec=`, `Type=notify` — the entire restart/health/dependency
   system that would take us weeks to reimplement.
-- **Every Ubuntu tutorial works.** Users don't have to learn "bhatti is
+- **Every Ubuntu tutorial works.** Users don't have to learn "ahvm is
   different." It's just Ubuntu in a VM.
 - **journald for logging.** `journalctl -u myapp` instead of grepping
   random log files.
@@ -1259,11 +1259,11 @@ Compat mode: init=/sbin/init             (systemd, dev sandboxes)
    ```
 
 2. **Ship a `lohar.service` systemd unit in the rootfs.** It reads the
-   config drive, applies bhatti config, and starts the agent:
+   config drive, applies ahvm config, and starts the agent:
 
    ```ini
    [Unit]
-   Description=Bhatti Guest Agent
+   Description=AHVM Guest Agent
    After=network-online.target
    Wants=network-online.target
 
@@ -1298,7 +1298,7 @@ Compat mode: init=/sbin/init             (systemd, dev sandboxes)
    step reads the config drive and writes:
    - `/etc/hostname`
    - `/etc/hosts`
-   - env vars to `/etc/bhatti/env` (sourced by lohar.service and init scripts)
+   - env vars to `/etc/ahvm/env` (sourced by lohar.service and init scripts)
    - files from config drive
    - volume mounts via systemd mount units or direct mount calls
 
@@ -1314,7 +1314,7 @@ This is the question that needs empirical answers. The concern:
   t=30s   Thermal manager pauses vCPUs (warm)
   t=5min  Thermal manager snapshots to disk (cold)
   ...
-  t=2hrs  User runs bhatti exec dev -- echo hi
+  t=2hrs  User runs ahvm exec dev -- echo hi
           → restore snapshot
           → systemd sees clock jump of 2 hours
           → what happens?
@@ -1410,11 +1410,11 @@ packages that depend on systemd just work.
 
 **SSH access to VMs.** With systemd mode, `apt-get install openssh-server`
 would work and sshd would start. But the intended access path is still
-`bhatti shell` / `bhatti exec` — SSH is a bonus, not the primary interface.
+`ahvm shell` / `ahvm exec` — SSH is a bonus, not the primary interface.
 
 **Full container orchestration.** Users who need 5+ services with complex
 dependency graphs should use the Docker tier and `docker compose`. That's
-the right tool for that job — bhatti provides the VM, Docker provides the
+the right tool for that job — ahvm provides the VM, Docker provides the
 orchestration.
 
 **Removing the fast path.** `init=/usr/local/bin/lohar` stays forever.

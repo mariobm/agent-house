@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/under-the-hood/lohar-the-blacksmith/>.
+> <https://ahvm.sh/docs/under-the-hood/lohar-the-blacksmith/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -69,7 +69,7 @@ Boot to agent-ready takes ~3.5 seconds on a Pi 5. The host polls with `exec true
 
 ## Config Drive
 
-A 1MB ext4 image attached as `/dev/vdb`, mounted read-only at `/run/bhatti/config`. Contains a single `config.json`:
+A 1MB ext4 image attached as `/dev/vdb`, mounted read-only at `/run/ahvm/config`. Contains a single `config.json`:
 
 ```json
 {
@@ -91,7 +91,7 @@ A 1MB ext4 image attached as `/dev/vdb`, mounted read-only at `/run/bhatti/confi
 
 This is built on the host during `Create()` using `mkfs.ext4` + mount + write + umount. It's attached to Firecracker as a read-only virtio-blk drive before boot.
 
-The config drive is how bhatti avoids the exec-after-boot pattern for configuration injection. Everything — hostname, environment variables, secrets, volumes, DNS, init scripts — is available before the agent starts listening. No race conditions, no retries.
+The config drive is how ahvm avoids the exec-after-boot pattern for configuration injection. Everything — hostname, environment variables, secrets, volumes, DNS, init scripts — is available before the agent starts listening. No race conditions, no retries.
 
 ## PTY Allocation
 
@@ -142,7 +142,7 @@ Every TTY exec creates a *session* — a persistent handle to a running process 
 
 The previous client (if still connected) gets an `EXIT` frame and is disconnected.
 
-**Init scripts are sessions.** The `init` field from the config drive runs as a TTY session with the well-known ID `"init"`. The host can attach to it to monitor progress: `bhatti ps dev` shows it, and it appears in `SessionList` responses.
+**Init scripts are sessions.** The `init` field from the config drive runs as a TTY session with the well-known ID `"init"`. The host can attach to it to monitor progress: `ahvm ps dev` shows it, and it appears in `SessionList` responses.
 
 ### Ring Buffer
 
@@ -161,7 +161,7 @@ type ringBuffer struct {
 
 ## Piped Exec (Non-TTY)
 
-For one-shot commands (`bhatti exec dev -- npm install`):
+For one-shot commands (`ahvm exec dev -- npm install`):
 
 1. Create `exec.Command` with `Setpgid: true` (own process group)
 2. Create stdin/stdout/stderr pipes

@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sahil-shubham/bhatti/pkg/agent"
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/oci"
-	"github.com/sahil-shubham/bhatti/pkg/secrets"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/oci"
+	"github.com/mariobm/agent-house/pkg/secrets"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {
@@ -550,7 +550,7 @@ func (s *Server) handleSnapshotResume(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 
-	snapDir := filepath.Dir(snap.MemPath) // e.g. /var/lib/bhatti/snapshots/usr_alice/dev-ready
+	snapDir := filepath.Dir(snap.MemPath) // e.g. /var/lib/ahvm/snapshots/usr_alice/dev-ready
 
 	sandboxName := req.Name
 	if sandboxName == "" {
@@ -759,7 +759,7 @@ func (s *Server) handleImageImport(w http.ResponseWriter, r *http.Request, user 
 	}
 
 	// Write streamed tarball to temp file (don't hold multi-GB in memory)
-	tmpFile, err := os.CreateTemp("", "bhatti-import-*.tar")
+	tmpFile, err := os.CreateTemp("", "ahvm-import-*.tar")
 	if err != nil {
 		errRespInternal(w, r, "create temp file", err)
 		return

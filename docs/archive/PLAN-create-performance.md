@@ -2,7 +2,7 @@
 
 ## The Problem
 
-`bhatti create` takes **~1.5 seconds** when it works, but frequently
+`ahvm create` takes **~1.5 seconds** when it works, but frequently
 times out at **30 seconds** with `agent not ready: context deadline
 exceeded`. The failure pattern is bimodal — no middle ground.
 
@@ -77,7 +77,7 @@ not, it times out at 30s and leaves another orphan.
    (is 1.5s = 1 attempt or 2 attempts?)
 4. Whether the orphaned resources also leak IP pool allocations,
    causing address exhaustion
-5. Whether a bhatti server restart cleans up orphaned TAPs (the
+5. Whether a ahvm server restart cleans up orphaned TAPs (the
    `cleanupOrphanedTapDevices` function exists but may not cover
    all cases)
 
@@ -121,7 +121,7 @@ defer func() {
 }()
 ```
 
-Also add a startup recovery path: on `bhatti serve` start, compare
+Also add a startup recovery path: on `ahvm serve` start, compare
 running FC processes and existing TAPs against the DB/in-memory VM
 map. Kill/remove anything orphaned. The `cleanupOrphanedTapDevices`
 function exists but may not be called on the right path.
@@ -385,7 +385,7 @@ func main() {
     fmt.Fprintln(os.Stderr, "lohar: ready")
 
     // Boot profile
-    if _, err := os.Stat("/etc/bhatti/init.sh"); err == nil {
+    if _, err := os.Stat("/etc/ahvm/init.sh"); err == nil {
         bp("boot_profile_start")
         cmd.Run()
         bp("boot_profile_done")
@@ -394,7 +394,7 @@ func main() {
 
 To read these after boot:
 ```bash
-bhatti exec <sandbox> -- sudo cat /dev/null
+ahvm exec <sandbox> -- sudo cat /dev/null
 # FC stderr is captured in the stderrBuf ring buffer.
 # Alternatively, read the FC log file.
 ```
@@ -403,7 +403,7 @@ Actually, the FC log goes to a file (`logRef` in the jail). The lohar
 stderr goes to FC's captured stderr. We need to surface it.
 
 **Better approach:** Write boot timing to a file inside the VM that
-can be read via `bhatti exec` or `bhatti file read`:
+can be read via `ahvm exec` or `ahvm file read`:
 
 ```go
 func main() {
@@ -418,13 +418,13 @@ func main() {
     // ... all the boot phases ...
 
     bp("tcp_listen")
-    // Write boot timing to a file accessible via bhatti file read
+    // Write boot timing to a file accessible via ahvm file read
     os.WriteFile("/tmp/boot-timing.txt", []byte(bootLog.String()), 0644)
 ```
 
 Then after create:
 ```bash
-bhatti file read <sandbox> /tmp/boot-timing.txt
+ahvm file read <sandbox> /tmp/boot-timing.txt
 ```
 
 ### Phase 5: Server-side handler (`pkg/server/sandbox_handlers.go`)
@@ -573,7 +573,7 @@ lohar (lazy-load config drive, defer heavy mounts, etc).
 - All instrumentation uses `slog.Debug` — invisible at default log
   level (`INFO`). Enable with `--log-level debug` or env var.
 - The lohar boot timing writes to `/tmp/boot-timing.txt` — readable
-  after create via `bhatti file read`, no protocol changes needed.
+  after create via `ahvm file read`, no protocol changes needed.
 - Zero behavioral changes. Every log line is fire-and-forget.
 - The `phase()` helper is 3 lines of code, inlined per function.
   No new packages, no interfaces, no config.
@@ -587,9 +587,9 @@ The orphaned TAP/FC leak is the #1 issue. A burst of failed creates
 into permanent creation failures until server restart.
 
 1. Audit and fix the defer chain in `Create()` for TAP + FC + IP cleanup
-2. Add startup recovery: clean orphaned TAPs/FCs on `bhatti serve` start
+2. Add startup recovery: clean orphaned TAPs/FCs on `ahvm serve` start
 3. Add `Destroy()` fallback cleanup by TAP name convention
-4. Test: create 10 sandboxes, kill bhatti mid-create, restart, verify
+4. Test: create 10 sandboxes, kill ahvm mid-create, restart, verify
    no orphans remain
 
 ### Priority 2: Reduce WaitReady overhead
@@ -624,10 +624,10 @@ SIZE_MB=8192 sudo ./scripts/build-tier.sh docker amd64 ./lohar
 
 Or save a pre-resized golden image:
 ```bash
-bhatti create --name base --image docker --disk-size 8192
-bhatti image save base --name docker-8g
-bhatti destroy base
-# Now: bhatti create --image docker-8g (no resize needed)
+ahvm create --name base --image docker --disk-size 8192
+ahvm image save base --name docker-8g
+ahvm destroy base
+# Now: ahvm create --image docker-8g (no resize needed)
 ```
 
 This saves ~700ms per create.
@@ -701,7 +701,7 @@ random MAC. But the host's ARP cache still maps `10.0.1.7 → old MAC`
 as `STALE`:
 
 ```
-$ ip neigh show 10.0.1.7 dev brbhatti-1
+$ ip neigh show 10.0.1.7 dev brahvm-1
 10.0.1.7 lladdr 02:66:65:ec:55:b4 STALE
 ```
 
@@ -735,7 +735,7 @@ transitions to 3/forwarding when FC connects virtio-net).
 
 ## Memory Footprint
 
-**Bhatti server**: **26 MB RSS** (12.5 MB heap, 13.5 MB binary/libs).
+**AHVM server**: **26 MB RSS** (12.5 MB heap, 13.5 MB binary/libs).
 22 threads, 30 FDs, 5 sockets.
 
 **Firecracker VMs** (all 8 are `keep_hot=1`, across 2 users):

@@ -316,7 +316,7 @@ func TestClientWaitReady(t *testing.T) {
 
 func TestClientWaitReadyTimeout(t *testing.T) {
 	// Point at a socket that doesn't exist — should timeout.
-	client := NewTestClient("/tmp/nonexistent-bhatti-ctrl.sock", "/tmp/nonexistent-bhatti-fwd.sock")
+	client := NewTestClient("/tmp/nonexistent-ahvm-ctrl.sock", "/tmp/nonexistent-ahvm-fwd.sock")
 	err := client.WaitReady(context.Background(), 200*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error")

@@ -23,15 +23,15 @@ setup_file() {
     export RELEASE="$FAKE_ROOT/release"
     mkdir -p "$RELEASE"
 
-    # PATH for tests that must NOT find an existing bhatti. Critically
-    # excludes /usr/local/bin (and anywhere else bhatti might live) so
-    # the script's installed_bhatti_version() probe returns empty and
+    # PATH for tests that must NOT find an existing ahvm. Critically
+    # excludes /usr/local/bin (and anywhere else ahvm might live) so
+    # the script's installed_ahvm_version() probe returns empty and
     # we exercise the fresh-install path instead of the major-version
-    # upgrade prompt against whatever real bhatti the dev has.
+    # upgrade prompt against whatever real ahvm the dev has.
     export TEST_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
     # install_bundle needs zstd/tar/find; add their dirs (e.g. Homebrew's
     # /opt/homebrew/bin on macOS) so the restricted PATH can reach them without
-    # pulling in wherever a real bhatti might live.
+    # pulling in wherever a real ahvm might live.
     for _tool in zstd tar find; do
         _tp=$(command -v "$_tool" 2>/dev/null) || continue
         _td=$(dirname "$_tp")
@@ -50,7 +50,7 @@ setup_file() {
     esac
     export OS="$os" ARCH="$arch"
     export VERSION_SMOKE="v0.0.0-smoke"
-    export BUNDLE_ASSET="bhatti-${VERSION_SMOKE}-${os}-${arch}.tar.zst"
+    export BUNDLE_ASSET="ahvm-${VERSION_SMOKE}-${os}-${arch}.tar.zst"
 
     # Sanity: every external command install.sh needs in CLI mode must
     # be reachable via TEST_PATH. If a runner ships them somewhere
@@ -65,19 +65,19 @@ setup_file() {
     fi
 
     # Build a fake v2 bundle matching the release layout: a top-level
-    # bhatti-<ver>-<os>-<arch>/ dir with bin/bhatti (+ lib/ + kernel/), tar.zst'd.
-    # install_bundle downloads + extracts this and runs `bin/bhatti version` as
-    # its self-check, so bin/bhatti must quack like real bhatti.
-    local dir="bhatti-${VERSION_SMOKE}-${os}-${arch}"
+    # ahvm-<ver>-<os>-<arch>/ dir with bin/ahvm (+ lib/ + kernel/), tar.zst'd.
+    # install_bundle downloads + extracts this and runs `bin/ahvm version` as
+    # its self-check, so bin/ahvm must quack like real ahvm.
+    local dir="ahvm-${VERSION_SMOKE}-${os}-${arch}"
     local btree="$RELEASE/.build/$dir"
     mkdir -p "$btree/bin" "$btree/lib" "$btree/kernel"
-    cat > "$btree/bin/bhatti" <<'EOF'
+    cat > "$btree/bin/ahvm" <<'EOF'
 #!/bin/bash
 case "$1" in
-    version) echo "bhatti v0.0.0-smoke" ;;
+    version) echo "ahvm v0.0.0-smoke" ;;
 esac
 EOF
-    chmod +x "$btree/bin/bhatti"
+    chmod +x "$btree/bin/ahvm"
     : > "$btree/lib/libkrun.so"
     local karch=x86_64; [ "$arch" = "arm64" ] && karch=aarch64
     : > "$btree/kernel/Image-lean-6.12.0-${karch}"
@@ -107,7 +107,7 @@ setup() {
     # a system-owned dir would require passwordless sudo here, which
     # is fragile across local dev environments.
     BIN_DEST_DIR=$(mktemp -d)
-    BIN_DEST="$BIN_DEST_DIR/bhatti"
+    BIN_DEST="$BIN_DEST_DIR/ahvm"
 }
 
 # Bats footgun fix — see the longer explanation in install_test.bats.
@@ -129,39 +129,39 @@ teardown() {
 
 @test "smoke: fresh CLI install lands a working binary" {
     run env -i HOME="$HOME" PATH="$TEST_PATH" \
-        BHATTI_MODE=cli \
-        BHATTI_TEST_VERSION="v0.0.0-smoke" \
-        BHATTI_TEST_RELEASE_URL="file://$RELEASE" \
-        BHATTI_TEST_BIN_DEST="$BIN_DEST" \
+        AHVM_MODE=cli \
+        AHVM_TEST_VERSION="v0.0.0-smoke" \
+        AHVM_TEST_RELEASE_URL="file://$RELEASE" \
+        AHVM_TEST_BIN_DEST="$BIN_DEST" \
         QUIET=1 \
         bash scripts/install.sh
     [ "$status" -eq 0 ] || { echo "install.sh failed: $output"; return 1; }
 
     [ -x "$BIN_DEST" ]
-    [ "$("$BIN_DEST" version)" = "bhatti v0.0.0-smoke" ]
+    [ "$("$BIN_DEST" version)" = "ahvm v0.0.0-smoke" ]
 }
 
 # ── 2. Idempotent re-install ──────────────────────────────────────
-# `bhatti update` should be cheap when there's nothing to update. This
-# test puts $BIN_DEST on PATH so installed_bhatti_version() can find
+# `ahvm update` should be cheap when there's nothing to update. This
+# test puts $BIN_DEST on PATH so installed_ahvm_version() can find
 # it; in real life the user has /usr/local/bin in PATH already.
 
 @test "smoke: re-running install.sh at the same version is a fast no-op" {
-    # First install (fresh path: bhatti not on PATH)
+    # First install (fresh path: ahvm not on PATH)
     env -i HOME="$HOME" PATH="$TEST_PATH" \
-        BHATTI_MODE=cli BHATTI_TEST_VERSION="v0.0.0-smoke" \
-        BHATTI_TEST_RELEASE_URL="file://$RELEASE" \
-        BHATTI_TEST_BIN_DEST="$BIN_DEST" \
+        AHVM_MODE=cli AHVM_TEST_VERSION="v0.0.0-smoke" \
+        AHVM_TEST_RELEASE_URL="file://$RELEASE" \
+        AHVM_TEST_BIN_DEST="$BIN_DEST" \
         QUIET=1 \
         bash scripts/install.sh
 
     # Second run: PATH starts with our just-installed binary so
-    # installed_bhatti_version() finds it and the script reports the
+    # installed_ahvm_version() finds it and the script reports the
     # "already installed" short-circuit instead of re-downloading.
     run env -i HOME="$HOME" PATH="$BIN_DEST_DIR:$TEST_PATH" \
-        BHATTI_MODE=cli BHATTI_TEST_VERSION="v0.0.0-smoke" \
-        BHATTI_TEST_RELEASE_URL="file://$RELEASE" \
-        BHATTI_TEST_BIN_DEST="$BIN_DEST" \
+        AHVM_MODE=cli AHVM_TEST_VERSION="v0.0.0-smoke" \
+        AHVM_TEST_RELEASE_URL="file://$RELEASE" \
+        AHVM_TEST_BIN_DEST="$BIN_DEST" \
         bash scripts/install.sh
     [ "$status" -eq 0 ] || { echo "second run failed: $output"; return 1; }
     output_contains "already installed"
@@ -174,23 +174,23 @@ teardown() {
 # rather than the script no-op-ing.
 
 @test "smoke: install.sh replaces an older binary on update" {
-    # Pre-stage a v0.0.0-old binary so installed_bhatti_version() reads "v0.0.0-old"
+    # Pre-stage a v0.0.0-old binary so installed_ahvm_version() reads "v0.0.0-old"
     cat > "$BIN_DEST" <<'EOF'
 #!/bin/bash
-case "$1" in version) echo "bhatti v0.0.0-old" ;; esac
+case "$1" in version) echo "ahvm v0.0.0-old" ;; esac
 EOF
     chmod +x "$BIN_DEST"
 
     run env -i HOME="$HOME" PATH="$BIN_DEST_DIR:$TEST_PATH" \
-        BHATTI_MODE=cli BHATTI_TEST_VERSION="v0.0.0-smoke" \
-        BHATTI_TEST_RELEASE_URL="file://$RELEASE" \
-        BHATTI_TEST_BIN_DEST="$BIN_DEST" \
+        AHVM_MODE=cli AHVM_TEST_VERSION="v0.0.0-smoke" \
+        AHVM_TEST_RELEASE_URL="file://$RELEASE" \
+        AHVM_TEST_BIN_DEST="$BIN_DEST" \
         QUIET=1 \
         bash scripts/install.sh
     [ "$status" -eq 0 ] || { echo "install.sh failed: $output"; return 1; }
 
     # The v0.0.0-old binary must have been replaced with v0.0.0-smoke.
-    [ "$("$BIN_DEST" version)" = "bhatti v0.0.0-smoke" ]
+    [ "$("$BIN_DEST" version)" = "ahvm v0.0.0-smoke" ]
     # And install.sh's rollback hint left a .old behind for the user.
     [ -f "${BIN_DEST}.old" ]
 }
@@ -213,9 +213,9 @@ EOF
     echo "tampered with" > "$tampered_release/$BUNDLE_ASSET"
 
     run env -i HOME="$HOME" PATH="$TEST_PATH" \
-        BHATTI_MODE=cli BHATTI_TEST_VERSION="v0.0.0-smoke" \
-        BHATTI_TEST_RELEASE_URL="file://$tampered_release" \
-        BHATTI_TEST_BIN_DEST="$BIN_DEST" \
+        AHVM_MODE=cli AHVM_TEST_VERSION="v0.0.0-smoke" \
+        AHVM_TEST_RELEASE_URL="file://$tampered_release" \
+        AHVM_TEST_BIN_DEST="$BIN_DEST" \
         QUIET=1 \
         bash scripts/install.sh
 
@@ -240,9 +240,9 @@ EOF
     : > "$empty_release/checksums-sha256.txt"   # manifest present, asset missing
 
     run env -i HOME="$HOME" PATH="$TEST_PATH" \
-        BHATTI_MODE=cli BHATTI_TEST_VERSION="v0.0.0-smoke" \
-        BHATTI_TEST_RELEASE_URL="file://$empty_release" \
-        BHATTI_TEST_BIN_DEST="$BIN_DEST" \
+        AHVM_MODE=cli AHVM_TEST_VERSION="v0.0.0-smoke" \
+        AHVM_TEST_RELEASE_URL="file://$empty_release" \
+        AHVM_TEST_BIN_DEST="$BIN_DEST" \
         QUIET=1 \
         bash scripts/install.sh
 

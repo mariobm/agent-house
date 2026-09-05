@@ -51,7 +51,7 @@ fork solves exec-after-restore exactly this way: capture the FUSE server's logic
 state (nodeid→`(dev,ino)` via volfs, open handles, the inode counter, writeback
 flags), and on restore rebuild the map on a fresh server (volfs makes inodes
 addressable by `(dev,ino)` with no held fd) and reopen handles — the guest's
-cached node-ids resolve and exec works. This **keeps bhatti's design intact**
+cached node-ids resolve and exec works. This **keeps ahvm's design intact**
 (virtio-fs + lohar-as-PID-1); the block-root detour and its PID-1 boot friction
 were self-inflicted. The port is tractable: libkrucible's macOS passthrough is
 volfs-compatible (the hard part — inode identity — ports directly); the
@@ -87,7 +87,7 @@ independently-tested layers on libkrucible:
 | 5d | device-manager `snapshot/restore_devices` + MMIO transport queue rebuild | ⬜ |
 | 6 | `VmCheckpoint` + `Vmm::checkpoint`/`restore` + `save/restore_vcpu_states` | ⬜ |
 | 7 | `SNAPSHOT <dir>` control verb + `krun_set_snapshot` eager `build_restore_ctx` | ⬜ |
-| 8 | bhatti `pkg/bundle`, engine `Snapshot`/`Stop`/`Start`, `RunSnapshotSuite` | ⬜ |
+| 8 | ahvm `pkg/bundle`, engine `Snapshot`/`Stop`/`Start`, `RunSnapshotSuite` | ⬜ |
 
 Everything above 5b is a tractable port from the reference fork (Apache-2.0; device models, GIC, memory, queue all line
 up). **One thing is not a port: virtio-fs.** That's the architectural fork in the road this doc resolves.
@@ -145,13 +145,13 @@ distinct capability, gated by its own tests.
 
 ---
 
-## 2. Bundle format (the `.bhatti` cold-storage unit)
+## 2. Bundle format (the `.ahvm` cold-storage unit)
 
 A self-contained directory (the unit `Stop`/`Snapshot` writes and `Start`/`ResumeFromBundle` reads). Survives the VMM
 helper exiting and a daemon restart.
 
 ```
-<sandbox>.bhatti/
+<sandbox>.ahvm/
   manifest.json     # compatibility gate + layout (below)
   memory.img        # eager guest RAM, region-ordered (snapshot::write_guest_memory)
   checkpoint.bin    # VmCheckpoint: VmState (GIC distributor) + Vec<VcpuState> + VmDevicesState
@@ -244,8 +244,8 @@ The snapshot work is **owned libkrucible code** now. To keep the merge tax bound
 - **Additive-first.** New capability lives in new files where possible (`snapshot.rs`, `persist.rs`, the hvf state block),
   minimizing conflicts with upstream churn. Touch existing files (vstate, queue, device_manager) surgically.
 - **`REBASE.md` + green-at-SHA CI.** libkrucible gets a `cargo test` gate (the serialize roundtrips + a loopback
-  snapshot/restore on HVF). Bumping the bhatti submodule SHA is gated on green-at-SHA.
-- **The bhatti suite is the oracle.** `RunSnapshotSuite` passing on libkrucible is the port-correctness proof; never weaken
+  snapshot/restore on HVF). Bumping the ahvm submodule SHA is gated on green-at-SHA.
+- **The ahvm suite is the oracle.** `RunSnapshotSuite` passing on libkrucible is the port-correctness proof; never weaken
   an assertion to make a port pass.
 
 ---
@@ -258,12 +258,12 @@ The snapshot work is **owned libkrucible code** now. To keep the merge tax bound
 4. `SNAPSHOT <dir>` verb + `krun_set_snapshot` eager `build_restore_ctx` (7).
 5. **Engine block root:** build an ext4/qcow2 base (lohar + userland), `krun_create_disk_overlay` in `Create`,
    `krun_set_root_disk`. A cold-capable profile alongside the virtio-fs warm profile.
-6. bhatti `pkg/bundle` + engine `Snapshot`/`Stop`/`Start` + `RunSnapshotSuite` (8). Drive to a green
+6. ahvm `pkg/bundle` + engine `Snapshot`/`Stop`/`Start` + `RunSnapshotSuite` (8). Drive to a green
    **cold-wake-survives-daemon-restart** on Mac/HVF.
 7. (Later, optional) virtio-fs FUSE persist as its own capability + gate.
 
 P3 gate (unchanged from v3 §8): cold-wake works and survives a daemon restart on Mac (+ x86-Linux when the cluster is in
-the loop); the bhatti suite is green on libkrucible.
+the loop); the ahvm suite is green on libkrucible.
 
 ---
 
@@ -274,7 +274,7 @@ the loop); the bhatti suite is green on libkrucible.
 2. **Single vs split disks** — rootfs overlay only, or a separate persistent data disk (so `/workspace` survives a base
    rebump)? (Defer; rootfs overlay first.)
 3. **`feature_hash` contents** — minimal arm64 set for Tier 1 (exact-match) now; the full classify model is Tier 2.
-4. **Bundle disk storage** — copy the overlay into the `.bhatti` dir, or content-address the base + store only the overlay
+4. **Bundle disk storage** — copy the overlay into the `.ahvm` dir, or content-address the base + store only the overlay
    delta (fork fan-out dedup)? (Defer past Tier 1; copy/ref the overlay for now.)
 5. **Warm→cold transition** — `Stop` pauses then `SNAPSHOT`s then exits the helper; confirm the overlay is fsync'd into the
    bundle atomically with the memory image (crash-consistency).

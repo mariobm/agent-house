@@ -49,10 +49,10 @@ var execCmd = &cobra.Command{
 	Short: "Execute a command in a sandbox",
 	Long: `Execute a command inside a sandbox. The exit code is forwarded.
 Sleeping sandboxes wake automatically.`,
-	Example: `  bhatti exec dev -- echo hello
-  bhatti exec dev echo hello           # -- is optional
-  bhatti exec dev -- sudo apt-get install -y ripgrep
-  bhatti exec dev --timeout 60 -- long-running-script.sh`,
+	Example: `  ahvm exec dev -- echo hello
+  ahvm exec dev echo hello           # -- is optional
+  ahvm exec dev -- sudo apt-get install -y ripgrep
+  ahvm exec dev --timeout 60 -- long-running-script.sh`,
 	Args:              minimumArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -83,8 +83,8 @@ Sleeping sandboxes wake automatically.`,
 			reqBody["detach"] = true
 		}
 
-		// B2: stream when stdout is a TTY (or BHATTI_FORCE_STREAM=1)
-		stream := (term.IsTerminal(int(os.Stdout.Fd())) || os.Getenv("BHATTI_FORCE_STREAM") == "1") &&
+		// B2: stream when stdout is a TTY (or AHVM_FORCE_STREAM=1)
+		stream := (term.IsTerminal(int(os.Stdout.Fd())) || os.Getenv("AHVM_FORCE_STREAM") == "1") &&
 			!isJSON(cmd) && !detach
 
 		if stream {
@@ -174,9 +174,9 @@ var shellCmd = &cobra.Command{
 	Aliases: []string{"sh"},
 	Short:   "Open an interactive shell",
 	Long: `Open an interactive terminal inside the sandbox. Ctrl+\ to detach —
-the shell keeps running. Reconnect with 'bhatti shell' again.`,
-	Example: `  bhatti shell dev
-  bhatti sh dev        # alias`,
+the shell keeps running. Reconnect with 'ahvm shell' again.`,
+	Example: `  ahvm shell dev
+  ahvm sh dev        # alias`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -343,7 +343,7 @@ the shell keeps running. Reconnect with 'bhatti shell' again.`,
 				if sessionID != "" {
 					fmt.Fprintf(os.Stderr, " (session %s still running)", sessionID)
 				}
-				fmt.Fprintf(os.Stderr, "\r\nreconnect: bhatti shell %s\r\n", args[0])
+				fmt.Fprintf(os.Stderr, "\r\nreconnect: ahvm shell %s\r\n", args[0])
 			}
 		}
 		return nil
@@ -355,8 +355,8 @@ the shell keeps running. Reconnect with 'bhatti shell' again.`,
 var psCmd = &cobra.Command{
 	Use:   "ps <id|name>",
 	Short: "List sessions in a sandbox",
-	Example: `  bhatti ps dev
-  bhatti ps dev --json`,
+	Example: `  ahvm ps dev
+  ahvm ps dev --json`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -395,8 +395,8 @@ var psCmd = &cobra.Command{
 var portsCmd = &cobra.Command{
 	Use:   "ports <sandbox>",
 	Short: "List listening ports in a sandbox",
-	Example: `  bhatti ports dev
-  bhatti ports dev --json`,
+	Example: `  ahvm ports dev
+  ahvm ports dev --json`,
 	Args:              exactArgs(1),
 	ValidArgsFunction: completeSandboxNames,
 	RunE: func(cmd *cobra.Command, args []string) error {

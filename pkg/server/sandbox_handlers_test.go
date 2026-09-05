@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // ==========================================================================
@@ -221,7 +221,7 @@ func TestPatchSandbox_RenameAndKeepHot(t *testing.T) {
 // store methods that key on the primary key (UpdateSandboxStatus,
 // UpdateSandboxEngine, GetSandboxByID, saveVMState). With a name as the
 // key, the UPDATE matches zero rows, returns no error, and silently leaves
-// the store out of sync with the engine — surfacing as `bhatti list`
+// the store out of sync with the engine — surfacing as `ahvm list`
 // showing a running VM as stopped.
 
 func TestStartByName_PersistsStatus(t *testing.T) {

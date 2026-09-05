@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 // Session represents a running or recently-completed exec session.
@@ -20,11 +20,11 @@ type Session struct {
 	ID         string
 	Argv       []string
 	TTY        bool
-	Master     *os.File     // PTY master fd (TTY only)
+	Master     *os.File // PTY master fd (TTY only)
 	Cmd        *exec.Cmd
-	Scrollback *ringBuffer  // 64KB (TTY only)
-	Attached   net.Conn     // currently attached connection (nil = detached)
-	ExitCode   *int         // nil = still running
+	Scrollback *ringBuffer // 64KB (TTY only)
+	Attached   net.Conn    // currently attached connection (nil = detached)
+	ExitCode   *int        // nil = still running
 	MaxIdle    time.Duration
 	CreatedAt  time.Time
 	mu         sync.Mutex
@@ -119,7 +119,7 @@ func (s *Session) cancelIdleTimer() {
 type ringBuffer struct {
 	buf  []byte
 	size int
-	w    int  // next write position
+	w    int // next write position
 	full bool
 }
 

@@ -1,15 +1,15 @@
 //go:build krucible
 
-// Command vmm is bhatti's per-VM libkrun helper.
+// Command vmm is ahvm's per-VM libkrun helper.
 //
-// It links libkrun (the only bhatti component that does), reads a VMSpec, and
+// It links libkrun (the only ahvm component that does), reads a VMSpec, and
 // calls krun_start_enter — at which point THIS PROCESS BECOMES THE VM and never
 // returns (libkrun exit()s it with the workload's code when the guest shuts
-// down). The bhatti daemon spawns one of these per sandbox and controls it
+// down). The ahvm daemon spawns one of these per sandbox and controls it
 // out-of-band: the agent (lohar) over the bridged vsock UDS, and lifecycle via
 // the shutdown eventfd / control socket (P2+).
 //
-// This is the proven S0 spike (originally C), promoted into bhatti in Go+cgo.
+// This is the proven S0 spike (originally C), promoted into ahvm in Go+cgo.
 //
 // Build: `make vmm` — cgo + libkrun via pkg-config; on macOS codesigned with
 // the com.apple.security.hypervisor entitlement (required for HVF). At runtime
@@ -33,7 +33,7 @@ import (
 	"strconv"
 	"unsafe"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine/krucible"
+	"github.com/mariobm/agent-house/pkg/engine/krucible"
 )
 
 // defaultExtCmdline mirrors libkrun's bundled block-root cmdline for the
@@ -231,7 +231,7 @@ func run(spec krucible.VMSpec) {
 		fail("krun_add_vsock: %d", int(r))
 	}
 
-	// virtio-net wired to the per-owner gateway (bhatti-netd) over a unixstream
+	// virtio-net wired to the per-owner gateway (ahvm-netd) over a unixstream
 	// socket. Adding this disables the implicit TSI backend (see libkrun.h). The
 	// guest gets eth0; lohar configures its IP/gw/dns from the config drive.
 	if spec.NetUDS != "" {

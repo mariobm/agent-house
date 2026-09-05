@@ -7,9 +7,9 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 LIBKRUCIBLE ?= libkrucible
 KRUCIBLE_PREFIX ?= $(abspath $(LIBKRUCIBLE)/_install)
 
-# Build the bhatti binary with version injection
+# Build the ahvm binary with version injection
 build:
-	go build -ldflags="-s -w -X main.version=$(VERSION)" -o bhatti ./cmd/bhatti/
+	go build -ldflags="-s -w -X main.version=$(VERSION)" -o ahvm ./cmd/ahvm/
 
 # Build lohar (guest agent) for Linux
 lohar:
@@ -24,19 +24,19 @@ krucible:
 
 vmm:
 	PKG_CONFIG_PATH="$(KRUCIBLE_PREFIX)/lib/pkgconfig:$$PKG_CONFIG_PATH" \
-		CGO_ENABLED=1 go build -tags krucible -ldflags="-X main.version=$(VERSION)" -o bhatti-vmm ./cmd/vmm/
+		CGO_ENABLED=1 go build -tags krucible -ldflags="-X main.version=$(VERSION)" -o ahvm-vmm ./cmd/vmm/
 	@if [ "$$(uname -s)" = "Darwin" ]; then \
-		codesign --force --entitlements cmd/vmm/hvf-entitlements.plist -s - bhatti-vmm && \
-		echo "codesigned bhatti-vmm for HVF"; \
+		codesign --force --entitlements cmd/vmm/hvf-entitlements.plist -s - ahvm-vmm && \
+		echo "codesigned ahvm-vmm for HVF"; \
 	fi
-	@echo "Built bhatti-vmm (links libkrucible if built, else system libkrun)"
+	@echo "Built ahvm-vmm (links libkrucible if built, else system libkrun)"
 
 # Build the per-owner network gateway (krucible net backend). Pure Go (gVisor);
 # the daemon spawns it per owner when krucible_net_backend is set. Runs on the
-# host, so build it for the host platform like `bhatti`.
+# host, so build it for the host platform like `ahvm`.
 netd:
-	go build -ldflags="-s -w" -o bhatti-netd ./cmd/bhatti-netd/
-	@echo "Built bhatti-netd"
+	go build -ldflags="-s -w" -o ahvm-netd ./cmd/ahvm-netd/
+	@echo "Built ahvm-netd"
 
 test:
 	go test ./... -count=1 -timeout 120s
@@ -45,15 +45,15 @@ test:
 release:
 	@mkdir -p dist
 	GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=$(VERSION)" \
-		-o dist/bhatti-darwin-arm64 ./cmd/bhatti/
+		-o dist/ahvm-darwin-arm64 ./cmd/ahvm/
 	GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=$(VERSION)" \
-		-o dist/bhatti-darwin-amd64 ./cmd/bhatti/
+		-o dist/ahvm-darwin-amd64 ./cmd/ahvm/
 	GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=$(VERSION)" \
-		-o dist/bhatti-linux-amd64 ./cmd/bhatti/
+		-o dist/ahvm-linux-amd64 ./cmd/ahvm/
 	GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.version=$(VERSION)" \
-		-o dist/bhatti-linux-arm64 ./cmd/bhatti/
+		-o dist/ahvm-linux-arm64 ./cmd/ahvm/
 	@echo "Built $(VERSION) for 4 platforms in dist/"
 
 clean:
-	rm -f bhatti lohar bhatti-vmm bhatti-netd
+	rm -f ahvm lohar ahvm-vmm ahvm-netd
 	rm -rf dist/

@@ -44,7 +44,7 @@ case "$ARCH" in
 esac
 
 IMG="${IMG:-dist/rootfs-${TIER}-${ARCH}.ext4}"
-MOUNT="/mnt/bhatti-${TIER}-$$"
+MOUNT="/mnt/ahvm-${TIER}-$$"
 
 mkdir -p dist
 

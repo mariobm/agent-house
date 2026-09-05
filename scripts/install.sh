@@ -1,5 +1,5 @@
 #!/bin/bash
-# scripts/install.sh — Unified bhatti installer.
+# scripts/install.sh — Unified ahvm installer.
 #
 # Detects platform and existing installation to do the right thing:
 #   Linux / macOS (fresh)  → prompt: CLI or self-hosted server
@@ -10,42 +10,42 @@
 # service manager (systemd on Linux, launchd on macOS).
 #
 # Usage:
-#   curl -fsSL bhatti.sh/install | bash              # CLI or prompted
-#   curl -fsSL bhatti.sh/install | sudo bash          # server (prompted for tier)
+#   curl -fsSL ahvm.sh/install | bash              # CLI or prompted
+#   curl -fsSL ahvm.sh/install | sudo bash          # server (prompted for tier)
 #
 # Environment variables (for CI / non-interactive use):
-#   BHATTI_MODE=cli|server     — skip install type prompt
-#   BHATTI_TIER=minimal|browser|docker|computer — skip tier prompt (server only)
-#   BHATTI_TIERS=all|tier1,tier2,...  — install additional tiers on update (server only)
-#   BHATTI_VERSION=v2.x.y      — install/update to this exact tag instead of
+#   AHVM_MODE=cli|server     — skip install type prompt
+#   AHVM_TIER=minimal|browser|docker|computer — skip tier prompt (server only)
+#   AHVM_TIERS=all|tier1,tier2,...  — install additional tiers on update (server only)
+#   AHVM_VERSION=v2.x.y      — install/update to this exact tag instead of
 #                                latest. Useful for validating an `-rc` prerelease
 #                                before promoting it (the `releases/latest` API call
 #                                that the script normally uses skips prereleases).
 #                                The tag must exist as a public release/prerelease;
 #                                draft releases require auth and are not reachable
 #                                via the plain HTTPS asset URLs this script uses.
-#   BHATTI_ALLOW_MAJOR_CUTOVER=1 — allow installing v2 over a v1 (Firecracker)
+#   AHVM_ALLOW_MAJOR_CUTOVER=1 — allow installing v2 over a v1 (Firecracker)
 #                                server. v2 is a different VMM (krucible), so this
 #                                is a fresh install, NOT an in-place upgrade: v1
 #                                data/snapshots are not migrated. Refused by default.
 #
 # Platforms: Linux (KVM) and macOS (Apple Silicon, HVF) both install either the
-# CLI or a full self-hosted server from one self-contained bundle (bhatti-vmm +
-# bhatti-netd + libkrun + lean kernel). To use v1 (Firecracker), see the pinned
-# install line at https://bhatti.sh/v1/docs/quickstart/.
+# CLI or a full self-hosted server from one self-contained bundle (ahvm-vmm +
+# ahvm-netd + libkrun + lean kernel). To use v1 (Firecracker), see the pinned
+# install line at https://ahvm.sh/v1/docs/quickstart/.
 
 # Skip script-mode hardening (set -e, traps) when sourced by the bats
 # test suite — those flags clobber bats' own ERR trap and result
 # tracking, causing failed assertions to be reported as "missing" tests
-# instead of "not ok". When BHATTI_TEST=1, this file is purely a
+# instead of "not ok". When AHVM_TEST=1, this file is purely a
 # function library; the smoke test runs the script as a real process,
 # where these protections DO apply.
-if [ "${BHATTI_TEST:-}" != "1" ]; then
+if [ "${AHVM_TEST:-}" != "1" ]; then
     set -euo pipefail
 fi
 
-GITHUB_REPO="sahil-shubham/bhatti"
-DATA_DIR="/var/lib/bhatti"
+GITHUB_REPO="sahil-shubham/ahvm"
+DATA_DIR="/var/lib/ahvm"
 # Order matters: drives the order in user-facing hints ("outdated on disk:
 # computer, browser" follows ALL_KNOWN_TIERS order, not insertion order).
 ALL_KNOWN_TIERS="minimal browser docker computer"
@@ -61,9 +61,9 @@ CURL_NET_OPTS=(--connect-timeout 15 --retry 3 --retry-delay 2 --retry-connrefuse
 # fake-release tree instead of GitHub. Not user-facing; intentionally
 # undocumented in --help. The smoke test is the keystone of "if CI
 # passes, install actually works" — these are how it does its job.
-#   BHATTI_TEST_VERSION       — skip the GitHub API call, use this version
-#   BHATTI_TEST_RELEASE_URL   — base URL for asset downloads (file:// or http://)
-#   BHATTI_TEST_BIN_DEST      — override /usr/local/bin/bhatti install path
+#   AHVM_TEST_VERSION       — skip the GitHub API call, use this version
+#   AHVM_TEST_RELEASE_URL   — base URL for asset downloads (file:// or http://)
+#   AHVM_TEST_BIN_DEST      — override /usr/local/bin/ahvm install path
 
 # ── Formatting ────────────────────────────────────────
 
@@ -151,8 +151,8 @@ _err_trap() {
 }
 # Clean up temp files on any exit (including staged downloads)
 _cleanup() {
-    rm -f /tmp/bhatti.tmp
-    rm -f "${BHATTI_STAGE_FILE:-}" 2>/dev/null || true
+    rm -f /tmp/ahvm.tmp
+    rm -f "${AHVM_STAGE_FILE:-}" 2>/dev/null || true
     rm -f "$DATA_DIR"/images/*.zst.tmp 2>/dev/null || true
     if [ -n "${SUDO_KEEPALIVE_PID:-}" ]; then
         kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
@@ -162,7 +162,7 @@ _cleanup() {
 # Same reasoning as set -euo pipefail above: don't install ERR/EXIT
 # traps when sourced by tests — they fight with bats' bats_error_trap
 # and obscure real test failures.
-if [ "${BHATTI_TEST:-}" != "1" ]; then
+if [ "${AHVM_TEST:-}" != "1" ]; then
     trap '_err_trap $LINENO' ERR
     trap '_cleanup' EXIT
 fi
@@ -216,7 +216,7 @@ need_sudo() {
         sudo -v < /dev/tty || die "could not obtain sudo privileges"
     else
         sudo -v || die "could not obtain sudo privileges" \
-                       "Re-run with: curl -fsSL bhatti.sh/install | sudo bash"
+                       "Re-run with: curl -fsSL ahvm.sh/install | sudo bash"
     fi
     SUDO_PRIMED=1
     # Keepalive: refresh the sudo timestamp every 50s while the script
@@ -289,7 +289,7 @@ curl_to() { curl "${CURL_NET_OPTS[@]}" -sSL -w '%{http_code}' -o "$2" "$1" > "$3
 download_large() {
     local url="$1" dest="$2"
     local http_code hc_file
-    hc_file=$(mktemp "${TMPDIR:-/tmp}/bhatti-hc.XXXXXX") || hc_file="${dest}.hc"
+    hc_file=$(mktemp "${TMPDIR:-/tmp}/ahvm-hc.XXXXXX") || hc_file="${dest}.hc"
 
     spin_file "Downloading $(basename "$dest" .tmp)" "$dest" -- curl_to "$url" "$dest" "$hc_file" || {
         rm -f "$dest" "$hc_file" 2>/dev/null || true
@@ -388,7 +388,7 @@ is_up_to_date() {
 # sidecar for its own skip-if-fresh check. The do_server_update() outer
 # gate must use the same predicate, otherwise it can short-circuit before
 # install_rootfs() ever gets a chance to look — which is exactly the bug
-# that hid stale tier images behind `bhatti update --tiers <X>`.
+# that hid stale tier images behind `ahvm update --tiers <X>`.
 all_rootfs_up_to_date() {
     local tier rootfs cks_file expected stored
     for tier in "$@"; do
@@ -408,7 +408,7 @@ all_rootfs_up_to_date() {
 # excluding any tier in the args (caller passes the just-updated set).
 # Used by the post-update hint so a user with a leftover stale tier
 # image gets a visible nudge — the same UX gap that hid the original
-# `bhatti update --tiers <X>` bug.
+# `ahvm update --tiers <X>` bug.
 stale_rootfs_tiers() {
     local skip=" $* " result="" tier
     for tier in $ALL_KNOWN_TIERS; do
@@ -468,23 +468,23 @@ check_disk_space() {
 
 resolve_latest_version() {
     # Test override: skip the GitHub API call, use whatever URL/version
-    # the smoke test set up. See the BHATTI_TEST_* block at the top.
-    if [ -n "${BHATTI_TEST_VERSION:-}" ]; then
-        VERSION="$BHATTI_TEST_VERSION"
-        RELEASE_URL="${BHATTI_TEST_RELEASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${VERSION}}"
+    # the smoke test set up. See the AHVM_TEST_* block at the top.
+    if [ -n "${AHVM_TEST_VERSION:-}" ]; then
+        VERSION="$AHVM_TEST_VERSION"
+        RELEASE_URL="${AHVM_TEST_RELEASE_URL:-https://github.com/${GITHUB_REPO}/releases/download/${VERSION}}"
         return 0
     fi
 
     # Production override: caller pinned a specific tag (e.g.
-    #   sudo BHATTI_VERSION=v1.11.4-rc.1 bhatti update
+    #   sudo AHVM_VERSION=v1.11.4-rc.1 ahvm update
     # to validate a prerelease on a single host before promoting it to
     # latest). Bypasses the `releases/latest` API call which only sees
     # non-prerelease tags. The asset URL pattern is the standard GitHub
     # release download URL; if the tag exists and is non-draft the
     # downloads will work, otherwise install_* helpers fail loudly with
     # the URL they tried.
-    if [ -n "${BHATTI_VERSION:-}" ]; then
-        VERSION="$BHATTI_VERSION"
+    if [ -n "${AHVM_VERSION:-}" ]; then
+        VERSION="$AHVM_VERSION"
         RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}"
         return 0
     fi
@@ -540,12 +540,12 @@ crosses_major() {
 
 # Returns: none | cli | server
 detect_install_type() {
-    if [ -f "/etc/bhatti/config.yaml" ]; then
+    if [ -f "/etc/ahvm/config.yaml" ]; then
         echo "server"
     elif [ -d "$DATA_DIR" ] && [ -f "$DATA_DIR/config.yaml" ]; then
         # Pre-v1.6 installs kept config in the data dir
         echo "server"
-    elif command -v bhatti >/dev/null 2>&1; then
+    elif command -v ahvm >/dev/null 2>&1; then
         echo "cli"
     else
         echo "none"
@@ -569,7 +569,7 @@ detect_tier() {
     # Primary: parse firecracker_rootfs from config.yaml
     local config_file="${1:-}"
     if [ -z "$config_file" ]; then
-        config_file="/etc/bhatti/config.yaml"
+        config_file="/etc/ahvm/config.yaml"
         [ -f "$config_file" ] || config_file="$DATA_DIR/config.yaml"  # pre-v1.6 fallback
     fi
     if [ -f "$config_file" ]; then
@@ -604,11 +604,11 @@ detect_tier() {
 # tool isn't installed. They must always exit 0 — a missing
 # binary is expected state, not an error.
 
-# Get installed bhatti version (empty if not installed or dev build)
-installed_bhatti_version() {
-    command -v bhatti >/dev/null 2>&1 || { echo ""; return 0; }
+# Get installed ahvm version (empty if not installed or dev build)
+installed_ahvm_version() {
+    command -v ahvm >/dev/null 2>&1 || { echo ""; return 0; }
     local ver
-    ver=$(bhatti version 2>/dev/null | awk '/^bhatti/{print $2}') || true
+    ver=$(ahvm version 2>/dev/null | awk '/^ahvm/{print $2}') || true
     [ "$ver" = "dev" ] && { echo ""; return 0; }
     echo "$ver"
 }
@@ -618,7 +618,7 @@ installed_bhatti_version() {
 # Used to hard-block an in-place v1→v2 crossing (a different VMM; not upgradeable).
 is_firecracker_install() {
     command -v firecracker >/dev/null 2>&1 && return 0
-    local cfg="/etc/bhatti/config.yaml"
+    local cfg="/etc/ahvm/config.yaml"
     [ -f "$cfg" ] || cfg="$DATA_DIR/config.yaml"
     [ -f "$cfg" ] || return 1
     grep -q '^engine:[[:space:]]*krucible' "$cfg" && return 1
@@ -645,20 +645,20 @@ ensure_zstd() {
 }
 
 # install_bundle downloads the per-platform v2 runtime bundle
-# (bhatti-<ver>-<os>-<arch>.tar.zst = CLI + bhatti-vmm + bhatti-netd + libkrun +
+# (ahvm-<ver>-<os>-<arch>.tar.zst = CLI + ahvm-vmm + ahvm-netd + libkrun +
 # lean kernel), verifies it, installs the CLI to /usr/local/bin, and — when the
 # first arg is 1 — lays the krucible runtime under $DATA_DIR/runtime (consumed by
 # generate_config, and sets RUNTIME_DIR). One self-contained bundle IS the v2
 # install; there are no separate vmm/libkrun/kernel assets to chase.
 install_bundle() {
     local want_runtime="${1:-0}"
-    local asset="bhatti-${VERSION}-${OS}-${ARCH}.tar.zst"
+    local asset="ahvm-${VERSION}-${OS}-${ARCH}.tar.zst"
     ensure_zstd
 
     local tmp stage
-    tmp=$(mktemp "${TMPDIR:-/tmp}/bhatti-bundle.XXXXXX") || die "could not create temp file"
-    BHATTI_STAGE_FILE="$tmp"
-    stage=$(mktemp -d "${TMPDIR:-/tmp}/bhatti-stage.XXXXXX") || die "could not create temp dir"
+    tmp=$(mktemp "${TMPDIR:-/tmp}/ahvm-bundle.XXXXXX") || die "could not create temp file"
+    AHVM_STAGE_FILE="$tmp"
+    stage=$(mktemp -d "${TMPDIR:-/tmp}/ahvm-stage.XXXXXX") || die "could not create temp dir"
 
     download "${RELEASE_URL}/${asset}" "$tmp"
     verify_checksum "$tmp" "$asset"
@@ -666,30 +666,30 @@ install_bundle() {
     rm -f "$tmp"
 
     local root
-    # -mindepth 1 so we don't match $stage itself (it's named bhatti-stage.XXXX,
-    # which also matches bhatti-*) — we want the extracted bhatti-<ver>-... subdir.
-    root=$(find "$stage" -mindepth 1 -maxdepth 1 -type d -name 'bhatti-*' | head -1)
-    if [ -z "$root" ] || [ ! -x "$root/bin/bhatti" ]; then
-        die "unexpected bundle layout (no bin/bhatti in ${asset})"
+    # -mindepth 1 so we don't match $stage itself (it's named ahvm-stage.XXXX,
+    # which also matches ahvm-*) — we want the extracted ahvm-<ver>-... subdir.
+    root=$(find "$stage" -mindepth 1 -maxdepth 1 -type d -name 'ahvm-*' | head -1)
+    if [ -z "$root" ] || [ ! -x "$root/bin/ahvm" ]; then
+        die "unexpected bundle layout (no bin/ahvm in ${asset})"
     fi
 
     if [ "$OS" = "darwin" ]; then
         xattr -dr com.apple.quarantine "$root" 2>/dev/null || true
     fi
-    "$root/bin/bhatti" version >/dev/null 2>&1 \
-        || die "downloaded bhatti failed to execute (wrong platform or corrupt download)"
+    "$root/bin/ahvm" version >/dev/null 2>&1 \
+        || die "downloaded ahvm failed to execute (wrong platform or corrupt download)"
 
     # Install the CLI.
-    local dest="${BHATTI_TEST_BIN_DEST:-/usr/local/bin/bhatti}"
+    local dest="${AHVM_TEST_BIN_DEST:-/usr/local/bin/ahvm}"
     local dest_dir; dest_dir=$(dirname "$dest")
     if [ ! -d "$dest_dir" ] || [ ! -w "$dest_dir" ] || { [ -e "$dest" ] && [ ! -w "$dest" ]; }; then
-        need_sudo "install bhatti to ${dest}"
+        need_sudo "install ahvm to ${dest}"
     else
         SUDO=""
     fi
     [ -d "$dest_dir" ] || $SUDO mkdir -p "$dest_dir"
     { [ -f "$dest" ] && $SUDO cp "$dest" "${dest}.old" 2>/dev/null; } || true
-    $SUDO install -m 0755 "$root/bin/bhatti" "$dest" || die "failed to install bhatti to ${dest}"
+    $SUDO install -m 0755 "$root/bin/ahvm" "$dest" || die "failed to install ahvm to ${dest}"
 
     # Runtime (server / local daemon): vmm + netd + libkrun + lean kernel.
     if [ "$want_runtime" = "1" ]; then
@@ -705,11 +705,11 @@ install_bundle() {
     rm -rf "$stage"
 }
 
-install_bhatti_binary() {
-    local binary="bhatti-${OS}-${ARCH}"
-    # BHATTI_TEST_BIN_DEST lets the smoke test redirect the install away
-    # from /usr/local/bin so it doesn't clobber a developer's real bhatti.
-    local dest="${BHATTI_TEST_BIN_DEST:-/usr/local/bin/bhatti}"
+install_ahvm_binary() {
+    local binary="ahvm-${OS}-${ARCH}"
+    # AHVM_TEST_BIN_DEST lets the smoke test redirect the install away
+    # from /usr/local/bin so it doesn't clobber a developer's real ahvm.
+    local dest="${AHVM_TEST_BIN_DEST:-/usr/local/bin/ahvm}"
     local dest_dir
     dest_dir=$(dirname "$dest")
 
@@ -718,9 +718,9 @@ install_bhatti_binary() {
     # invoking user, which avoids the EACCES we'd hit if we tried to
     # download straight into a root-owned /usr/local/bin.
     local tmp
-    tmp=$(mktemp "${TMPDIR:-/tmp}/bhatti.XXXXXX") \
+    tmp=$(mktemp "${TMPDIR:-/tmp}/ahvm.XXXXXX") \
         || die "could not create temp file"
-    BHATTI_STAGE_FILE="$tmp"  # picked up by _cleanup on exit
+    AHVM_STAGE_FILE="$tmp"  # picked up by _cleanup on exit
 
     download "${RELEASE_URL}/${binary}" "$tmp"
     chmod +x "$tmp"
@@ -754,7 +754,7 @@ install_bhatti_binary() {
         need_priv=1
     fi
     if [ "$need_priv" -eq 1 ]; then
-        need_sudo "install bhatti to ${dest}"
+        need_sudo "install ahvm to ${dest}"
     else
         SUDO=""
     fi
@@ -785,7 +785,7 @@ install_bhatti_binary() {
         fi
     fi
     rm -f "$tmp"
-    BHATTI_STAGE_FILE=""
+    AHVM_STAGE_FILE=""
 }
 
 install_rootfs() {
@@ -870,17 +870,17 @@ generate_config() {
     # on x86_64). block-root + external lean kernel is the v2 boot path.
     local kernel
     kernel=$(find "$rt/kernel" -maxdepth 1 -type f \( -name 'Image-lean-*' -o -name 'vmlinux-lean-*' \) 2>/dev/null | head -1)
-    mkdir -p /etc/bhatti
-    cat > /etc/bhatti/config.yaml << EOF
+    mkdir -p /etc/ahvm
+    cat > /etc/ahvm/config.yaml << EOF
 engine: krucible
 listen: :8080
 data_dir: ${DATA_DIR}
-# Secure per-owner network gateway (bhatti-netd) is ON by default: the guest is
+# Secure per-owner network gateway (ahvm-netd) is ON by default: the guest is
 # isolated from the host, egress is policed, and same-owner siblings are
 # reachable. Set 'krucible_net_backend: false' for the legacy shared-netstack
 # (TSI) path (a sandbox can then reach the host's loopback — not recommended).
-krucible_vmm: ${rt}/bin/bhatti-vmm
-krucible_netd: ${rt}/bin/bhatti-netd
+krucible_vmm: ${rt}/bin/ahvm-vmm
+krucible_netd: ${rt}/bin/ahvm-netd
 krucible_libdir: ${rt}/lib
 krucible_kernel_image: ${kernel}
 krucible_base_image: ${DATA_DIR}/images/rootfs-${tier}-${ARCH}.ext4
@@ -889,14 +889,14 @@ EOF
     # Clean up pre-v1.6 config location
     if [ -f "$DATA_DIR/config.yaml" ]; then
         rm -f "$DATA_DIR/config.yaml"
-        info "Migrated config to /etc/bhatti/config.yaml"
+        info "Migrated config to /etc/ahvm/config.yaml"
     fi
 }
 
 create_admin_user() {
     heading "Creating admin user"
     step_start
-    ADMIN_KEY=$(bhatti user create --name admin --max-sandboxes 50 2>&1 \
+    ADMIN_KEY=$(ahvm user create --name admin --max-sandboxes 50 2>&1 \
         | grep "API key:" | awk '{print $NF}') || true
 
     if [ -n "${ADMIN_KEY:-}" ]; then
@@ -914,22 +914,22 @@ create_admin_user() {
             fi
 
             if [ -n "$user_home" ] && [ -d "$user_home" ]; then
-                mkdir -p "$user_home/.bhatti"
-                cat > "$user_home/.bhatti/config.yaml" << EOF
+                mkdir -p "$user_home/.ahvm"
+                cat > "$user_home/.ahvm/config.yaml" << EOF
 api_url: http://localhost:8080
 auth_token: ${ADMIN_KEY}
 EOF
-                chown -R "$SUDO_USER:$user_group" "$user_home/.bhatti"
+                chown -R "$SUDO_USER:$user_group" "$user_home/.ahvm"
             fi
         fi
 
-        # Root's own CLI config so `sudo bhatti` works. Root's home differs by OS
+        # Root's own CLI config so `sudo ahvm` works. Root's home differs by OS
         # (/var/root on macOS, /root on Linux) and macOS has a read-only /, so we
         # never hardcode /root. Best-effort — must not abort an otherwise-good install.
         local root_home
         root_home=$(eval echo ~root 2>/dev/null) || root_home=""
-        if [ -n "$root_home" ] && [ -d "$root_home" ] && mkdir -p "$root_home/.bhatti" 2>/dev/null; then
-            cat > "$root_home/.bhatti/config.yaml" << EOF
+        if [ -n "$root_home" ] && [ -d "$root_home" ] && mkdir -p "$root_home/.ahvm" 2>/dev/null; then
+            cat > "$root_home/.ahvm/config.yaml" << EOF
 api_url: http://localhost:8080
 auth_token: ${ADMIN_KEY}
 EOF
@@ -941,15 +941,15 @@ EOF
 }
 
 write_systemd_unit() {
-    cat > "$DATA_DIR/bhatti.service" << 'UNIT'
+    cat > "$DATA_DIR/ahvm.service" << 'UNIT'
 [Unit]
-Description=Bhatti Sandbox Infrastructure
+Description=AHVM Sandbox Infrastructure
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bhatti serve
-WorkingDirectory=/var/lib/bhatti
+ExecStart=/usr/local/bin/ahvm serve
+WorkingDirectory=/var/lib/ahvm
 Environment=HOME=/root
 Restart=always
 RestartSec=5
@@ -963,26 +963,26 @@ UNIT
 }
 
 # write_launchd_daemon — the macOS equivalent of the systemd unit. A LaunchDaemon
-# that runs `bhatti serve`. HVF works for the daemon; the notarized bhatti-vmm
+# that runs `ahvm serve`. HVF works for the daemon; the notarized ahvm-vmm
 # carries the com.apple.security.hypervisor entitlement. Logs to the data dir.
 write_launchd_daemon() {
-    local plist=/Library/LaunchDaemons/sh.bhatti.plist
+    local plist=/Library/LaunchDaemons/sh.ahvm.plist
     cat > "$plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>sh.bhatti</string>
+    <key>Label</key><string>sh.ahvm</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/bhatti</string>
+        <string>/usr/local/bin/ahvm</string>
         <string>serve</string>
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
     <key>WorkingDirectory</key><string>${DATA_DIR}</string>
-    <key>StandardOutPath</key><string>${DATA_DIR}/bhatti.log</string>
-    <key>StandardErrorPath</key><string>${DATA_DIR}/bhatti.log</string>
+    <key>StandardOutPath</key><string>${DATA_DIR}/ahvm.log</string>
+    <key>StandardErrorPath</key><string>${DATA_DIR}/ahvm.log</string>
 </dict>
 </plist>
 EOF
@@ -993,13 +993,13 @@ EOF
 # OS-aware: systemd on Linux, launchd on macOS. Best-effort; a failure prints
 # where to look rather than aborting a finished install.
 start_service() {
-    local plist=/Library/LaunchDaemons/sh.bhatti.plist
+    local plist=/Library/LaunchDaemons/sh.ahvm.plist
     if [ "$OS" = "darwin" ]; then
         launchctl bootout system "$plist" 2>/dev/null || true
         launchctl bootstrap system "$plist" 2>/dev/null \
             || launchctl load "$plist" 2>/dev/null || true
     elif command -v systemctl >/dev/null 2>&1; then
-        systemctl enable --now bhatti 2>/dev/null || return 1
+        systemctl enable --now ahvm 2>/dev/null || return 1
     else
         return 1
     fi
@@ -1012,10 +1012,10 @@ start_service() {
 }
 
 # prompt_and_install_server — shared by the Linux and macOS fresh-install flows:
-# prompt for a tier (unless BHATTI_TIER is set), then do a self-host install
+# prompt for a tier (unless AHVM_TIER is set), then do a self-host install
 # (handling the "all" tiers case). do_server_install is OS-aware.
 prompt_and_install_server() {
-    local tier="${BHATTI_TIER:-}"
+    local tier="${AHVM_TIER:-}"
     if [ -z "$tier" ]; then
         echo ""
         echo "  Rootfs tier:"
@@ -1049,10 +1049,10 @@ prompt_and_install_server() {
 
 do_cli_install() {
     local current
-    current=$(installed_bhatti_version)
+    current=$(installed_ahvm_version)
 
     if [ -n "$current" ] && [ "v${current#v}" = "${VERSION}" ]; then
-        success "bhatti ${VERSION} is already installed"
+        success "ahvm ${VERSION} is already installed"
         return 0
     fi
 
@@ -1063,7 +1063,7 @@ do_cli_install() {
             printf '  %s⚠  Major version upgrade: %s → %s%s\n' "$RED" "$current" "$VERSION" "$RESET"
             echo "  Review release notes: https://github.com/${GITHUB_REPO}/releases/tag/${VERSION}"
             echo ""
-            if [ "${BHATTI_FORCE:-}" != "1" ]; then
+            if [ "${AHVM_FORCE:-}" != "1" ]; then
                 printf "  Continue? [y/N]: "
                 read -r confirm < /dev/tty 2>/dev/null || confirm="n"
                 case "$confirm" in
@@ -1072,32 +1072,32 @@ do_cli_install() {
                 esac
             fi
         fi
-        heading "Updating bhatti ${current} → ${VERSION}"
+        heading "Updating ahvm ${current} → ${VERSION}"
     else
-        heading "Installing bhatti ${VERSION} (${OS}/${ARCH})"
+        heading "Installing ahvm ${VERSION} (${OS}/${ARCH})"
     fi
 
     install_bundle    # v2 self-contained bundle; CLI only for a client install
 
     echo ""
-    success "bhatti ${VERSION} → /usr/local/bin/bhatti"
+    success "ahvm ${VERSION} → /usr/local/bin/ahvm"
     if [ -z "$current" ]; then
         echo ""
         echo "  Quick start:"
-        echo "    bhatti setup     # configure API endpoint + key"
+        echo "    ahvm setup     # configure API endpoint + key"
         # Shell completions hint
         local shell_name
         shell_name=$(basename "${SHELL:-}" 2>/dev/null || true)
         case "$shell_name" in
             zsh)  echo ""
                   echo "  Shell completions:"
-                  echo "    echo 'source <(bhatti completion zsh)' >> ~/.zshrc" ;;
+                  echo "    echo 'source <(ahvm completion zsh)' >> ~/.zshrc" ;;
             bash) echo ""
                   echo "  Shell completions:"
-                  echo "    echo 'source <(bhatti completion bash)' >> ~/.bashrc" ;;
+                  echo "    echo 'source <(ahvm completion bash)' >> ~/.bashrc" ;;
             fish) echo ""
                   echo "  Shell completions:"
-                  echo "    bhatti completion fish > ~/.config/fish/completions/bhatti.fish" ;;
+                  echo "    ahvm completion fish > ~/.config/fish/completions/ahvm.fish" ;;
         esac
     fi
 }
@@ -1107,11 +1107,11 @@ do_server_install() {
 
     [ "$(id -u)" -eq 0 ] || die "server installation requires root" \
                                 "Re-run with:" \
-                                "  sudo bhatti update" \
-                                "  curl -fsSL bhatti.sh/install | sudo bash"
+                                "  sudo ahvm update" \
+                                "  curl -fsSL ahvm.sh/install | sudo bash"
 
     # Preflight — hypervisor per OS. Linux: KVM (/dev/kvm). macOS: HVF on Apple
-    # Silicon (no /dev/kvm; the notarized bhatti-vmm carries the hypervisor
+    # Silicon (no /dev/kvm; the notarized ahvm-vmm carries the hypervisor
     # entitlement, so it runs without any extra device).
     if [ "$OS" = "darwin" ]; then
         [ "$ARCH" = "arm64" ] || die "self-hosting on macOS requires Apple Silicon (arm64)" \
@@ -1126,16 +1126,16 @@ do_server_install() {
     fi
     command -v curl >/dev/null 2>&1 || die "curl is required"
 
-    heading "Installing bhatti ${VERSION} (server, ${tier} tier) on $(hostname) (${HOST_ARCH})"
+    heading "Installing ahvm ${VERSION} (server, ${tier} tier) on $(hostname) (${HOST_ARCH})"
 
     mkdir -p "$DATA_DIR"/{images,sandboxes,volumes,snapshots}
 
     # v2 (krucible): one self-contained bundle brings the CLI + the whole runtime
-    # (bhatti-vmm, bhatti-netd, libkrun, lean kernel). No Firecracker.
-    heading "Installing bhatti ${VERSION} + runtime"
+    # (ahvm-vmm, ahvm-netd, libkrun, lean kernel). No Firecracker.
+    heading "Installing ahvm ${VERSION} + runtime"
     step_start
     install_bundle 1
-    success "bhatti ${VERSION} + krucible runtime ($(step_elapsed))"
+    success "ahvm ${VERSION} + krucible runtime ($(step_elapsed))"
 
     install_rootfs "$tier"
     generate_config "$tier"
@@ -1147,7 +1147,7 @@ do_server_install() {
     else
         write_systemd_unit
         if command -v systemctl >/dev/null 2>&1; then
-            cp "$DATA_DIR/bhatti.service" /etc/systemd/system/bhatti.service
+            cp "$DATA_DIR/ahvm.service" /etc/systemd/system/ahvm.service
             systemctl daemon-reload
         fi
     fi
@@ -1155,18 +1155,18 @@ do_server_install() {
     local elapsed=$(( SECONDS - _total_start ))
     echo ""
     echo "============================================"
-    echo "  bhatti ${VERSION} installed (${elapsed}s)"
+    echo "  ahvm ${VERSION} installed (${elapsed}s)"
     echo "  tier: ${tier}"
     echo ""
     echo "  Manage users:"
-    echo "    sudo bhatti user create --name alice"
-    echo "    sudo bhatti user list"
+    echo "    sudo ahvm user create --name alice"
+    echo "    sudo ahvm user list"
     echo ""
     if [ -f "$DATA_DIR/age.key" ]; then
         echo "  ⚠  BACK UP: $DATA_DIR/age.key"
         echo "     If lost, all encrypted secrets become unrecoverable."
     else
-        echo "  ⚠  When you first use 'bhatti secret set', an encryption"
+        echo "  ⚠  When you first use 'ahvm secret set', an encryption"
         echo "     key is created at $DATA_DIR/age.key — back it up."
     fi
     echo ""
@@ -1178,30 +1178,30 @@ do_server_install() {
     done
     if [ -n "$other_tiers" ]; then
         echo "  Other tiers available: ${other_tiers}"
-        echo "  Install with: sudo bhatti update --tiers all"
+        echo "  Install with: sudo ahvm update --tiers all"
     fi
     echo ""
     echo "  Uninstall:"
-    echo "    curl -fsSL bhatti.sh/uninstall | sudo bash"
+    echo "    curl -fsSL ahvm.sh/uninstall | sudo bash"
     echo "============================================"
 
     # Always start the service on fresh install — the user just installed
     # everything. OS-aware (systemd on Linux, launchd on macOS).
     echo ""
     if start_service; then
-        success "bhatti service started and healthy"
+        success "ahvm service started and healthy"
     else
         printf '  %s⚠  Service not responding on :8080 yet%s\n' "$RED" "$RESET"
         if [ "$OS" = "darwin" ]; then
             echo "  Check logs:"
-            echo "    tail -n 40 ${DATA_DIR}/bhatti.log"
+            echo "    tail -n 40 ${DATA_DIR}/ahvm.log"
             echo "  Or run it in the foreground:"
-            echo "    bhatti serve"
+            echo "    ahvm serve"
         else
             echo "  Check logs:"
-            echo "    sudo journalctl -u bhatti --no-pager -n 20"
+            echo "    sudo journalctl -u ahvm --no-pager -n 20"
             echo ""
-            journalctl -u bhatti --no-pager -n 5 2>/dev/null || true
+            journalctl -u ahvm --no-pager -n 5 2>/dev/null || true
         fi
     fi
 
@@ -1218,8 +1218,8 @@ do_server_install() {
 do_server_update() {
     [ "$(id -u)" -eq 0 ] || die "server update requires root" \
                                 "Re-run with:" \
-                                "  sudo bhatti update" \
-                                "  curl -fsSL bhatti.sh/install | sudo bash"
+                                "  sudo ahvm update" \
+                                "  curl -fsSL ahvm.sh/install | sudo bash"
 
     local tier current
     # shellcheck disable=SC2119
@@ -1227,18 +1227,18 @@ do_server_update() {
     # function's $1 is an optional test hook, production calls use the
     # canonical config path.
     tier=$(detect_tier)
-    current=$(installed_bhatti_version)
+    current=$(installed_ahvm_version)
 
     # Determine which tiers to install.
-    # Default: only the configured tier. BHATTI_TIERS overrides:
+    # Default: only the configured tier. AHVM_TIERS overrides:
     #   all            → every known tier
     #   tier1,tier2    → specific list
     local tiers_to_install="$tier"
-    if [ -n "${BHATTI_TIERS:-}" ]; then
-        if [ "${BHATTI_TIERS}" = "all" ]; then
+    if [ -n "${AHVM_TIERS:-}" ]; then
+        if [ "${AHVM_TIERS}" = "all" ]; then
             tiers_to_install="$ALL_KNOWN_TIERS"
         else
-            tiers_to_install=$(echo "$BHATTI_TIERS" | tr ',' ' ')
+            tiers_to_install=$(echo "$AHVM_TIERS" | tr ',' ' ')
         fi
         # Always include the configured tier
         case "$tiers_to_install" in
@@ -1252,7 +1252,7 @@ do_server_update() {
     # install_*() function does its own checksum-based skip when called.
     # Rootfs files MUST go through a checksum check (all_rootfs_up_to_date)
     # because a stale .ext4 from a previous version can satisfy -f and
-    # short-circuit `bhatti update --tiers <X>` for that tier — the gate
+    # short-circuit `ahvm update --tiers <X>` for that tier — the gate
     # would skip install_rootfs() before its own skip-check ran.
     # v2 runtime closure (from `install_bundle 1`): the CLI, the per-VM vmm helper,
     # the per-owner net gateway, libkrun, and the lean kernel. lohar is baked into
@@ -1260,9 +1260,9 @@ do_server_update() {
     # firecracker/lohar/vmlinux — never matched on v2, so update never short-circuited.)
     local rt="$DATA_DIR/runtime"
     local all_present=true
-    [ -f "/usr/local/bin/bhatti" ]              || all_present=false
-    [ -f "$rt/bin/bhatti-vmm" ]                 || all_present=false
-    [ -f "$rt/bin/bhatti-netd" ]                || all_present=false
+    [ -f "/usr/local/bin/ahvm" ]              || all_present=false
+    [ -f "$rt/bin/ahvm-vmm" ]                 || all_present=false
+    [ -f "$rt/bin/ahvm-netd" ]                || all_present=false
     ls "$rt"/lib/libkrun.* >/dev/null 2>&1      || all_present=false
     ls "$rt"/kernel/*-lean-* >/dev/null 2>&1    || all_present=false
 
@@ -1273,7 +1273,7 @@ do_server_update() {
 
     if [ -n "$current" ] && [ "v${current#v}" = "${VERSION}" ] \
        && [ "$all_present" = true ] && [ "$rootfs_fresh" = true ]; then
-        success "bhatti ${VERSION} (server, ${tier} tier) is already up to date"
+        success "ahvm ${VERSION} (server, ${tier} tier) is already up to date"
         return 0
     fi
 
@@ -1288,16 +1288,16 @@ do_server_update() {
         echo ""
         echo "    1. Drain + back up this server (sandboxes, volumes, secrets)."
         echo "    2. Install v2 fresh (on a clean host, or after removing v1):"
-        echo "         curl -fsSL bhatti.sh/install | sudo bash"
+        echo "         curl -fsSL ahvm.sh/install | sudo bash"
         echo ""
         echo "  To keep running Firecracker instead, pin v1:"
-        echo "    curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/firecracker/scripts/install.sh | sudo BHATTI_VERSION=v1.11.12 bash"
+        echo "    curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/firecracker/scripts/install.sh | sudo AHVM_VERSION=v1.11.12 bash"
         echo ""
-        if [ "${BHATTI_ALLOW_MAJOR_CUTOVER:-}" = "1" ]; then
-            info "BHATTI_ALLOW_MAJOR_CUTOVER=1 set — proceeding with a fresh v2 install over v1 (v1 data is NOT migrated)"
+        if [ "${AHVM_ALLOW_MAJOR_CUTOVER:-}" = "1" ]; then
+            info "AHVM_ALLOW_MAJOR_CUTOVER=1 set — proceeding with a fresh v2 install over v1 (v1 data is NOT migrated)"
         else
             die "refusing in-place v1→v2 upgrade (different VMM)" \
-                "Set BHATTI_ALLOW_MAJOR_CUTOVER=1 to install v2 over this host anyway (v1 data is NOT migrated)."
+                "Set AHVM_ALLOW_MAJOR_CUTOVER=1 to install v2 over this host anyway (v1 data is NOT migrated)."
         fi
     fi
 
@@ -1310,8 +1310,8 @@ do_server_update() {
         echo "  This may include breaking changes. Review the release notes:"
         echo "    https://github.com/${GITHUB_REPO}/releases/tag/${VERSION}"
         echo ""
-        if [ "${BHATTI_FORCE:-}" = "1" ]; then
-            info "BHATTI_FORCE=1 set, proceeding"
+        if [ "${AHVM_FORCE:-}" = "1" ]; then
+            info "AHVM_FORCE=1 set, proceeding"
         else
             printf "  Continue? [y/N]: "
             read -r confirm < /dev/tty 2>/dev/null || confirm="n"
@@ -1322,7 +1322,7 @@ do_server_update() {
         fi
     fi
 
-    heading "Updating bhatti server (${tier} tier)"
+    heading "Updating ahvm server (${tier} tier)"
     if [ -n "$current" ]; then
         info "${current} → ${VERSION}"
     fi
@@ -1330,20 +1330,20 @@ do_server_update() {
     # Stop the service if running (restart after update). OS-aware.
     local was_running=false
     if [ "$OS" = "darwin" ]; then
-        if launchctl print system/sh.bhatti >/dev/null 2>&1; then
+        if launchctl print system/sh.ahvm >/dev/null 2>&1; then
             was_running=true
-            heading "Stopping bhatti service"
-            launchctl bootout system /Library/LaunchDaemons/sh.bhatti.plist 2>/dev/null || true
+            heading "Stopping ahvm service"
+            launchctl bootout system /Library/LaunchDaemons/sh.ahvm.plist 2>/dev/null || true
         fi
-    elif command -v systemctl >/dev/null 2>&1 && systemctl is-active bhatti >/dev/null 2>&1; then
+    elif command -v systemctl >/dev/null 2>&1 && systemctl is-active ahvm >/dev/null 2>&1; then
         was_running=true
-        heading "Stopping bhatti service"
-        systemctl stop bhatti
+        heading "Stopping ahvm service"
+        systemctl stop ahvm
     fi
 
-    heading "Installing bhatti ${VERSION} + runtime"
+    heading "Installing ahvm ${VERSION} + runtime"
     install_bundle 1
-    success "bhatti ${VERSION} + krucible runtime"
+    success "ahvm ${VERSION} + krucible runtime"
 
     for t in $tiers_to_install; do
         install_rootfs "$t"
@@ -1355,12 +1355,12 @@ do_server_update() {
     fi
 
     # Migrate config from old location if needed (pre-v1.6, Linux only)
-    if [ "$OS" != "darwin" ] && [ -f "$DATA_DIR/config.yaml" ] && [ ! -f "/etc/bhatti/config.yaml" ]; then
-        mkdir -p /etc/bhatti
-        mv "$DATA_DIR/config.yaml" /etc/bhatti/config.yaml
-        info "Migrated config to /etc/bhatti/config.yaml"
+    if [ "$OS" != "darwin" ] && [ -f "$DATA_DIR/config.yaml" ] && [ ! -f "/etc/ahvm/config.yaml" ]; then
+        mkdir -p /etc/ahvm
+        mv "$DATA_DIR/config.yaml" /etc/ahvm/config.yaml
+        info "Migrated config to /etc/ahvm/config.yaml"
     fi
-    # INVARIANT: do_server_update NEVER overwrites /etc/bhatti/config.yaml.
+    # INVARIANT: do_server_update NEVER overwrites /etc/ahvm/config.yaml.
     # The operator's config is preserved across updates. Only
     # do_server_install generates a fresh config. If the config schema
     # changes, handle it via migration logic, not regeneration.
@@ -1369,24 +1369,24 @@ do_server_update() {
     # Always refresh the service definition + ensure it's enabled (OS-aware).
     if [ "$OS" = "darwin" ]; then
         if [ "$was_running" = true ]; then
-            heading "Restarting bhatti service"
-            launchctl bootstrap system /Library/LaunchDaemons/sh.bhatti.plist 2>/dev/null \
-                || launchctl load /Library/LaunchDaemons/sh.bhatti.plist 2>/dev/null || true
+            heading "Restarting ahvm service"
+            launchctl bootstrap system /Library/LaunchDaemons/sh.ahvm.plist 2>/dev/null \
+                || launchctl load /Library/LaunchDaemons/sh.ahvm.plist 2>/dev/null || true
         fi
     else
-        cp "$DATA_DIR/bhatti.service" /etc/systemd/system/bhatti.service
+        cp "$DATA_DIR/ahvm.service" /etc/systemd/system/ahvm.service
         systemctl daemon-reload
-        systemctl enable bhatti 2>/dev/null || true
+        systemctl enable ahvm 2>/dev/null || true
         if [ "$was_running" = true ]; then
-            heading "Restarting bhatti service"
-            systemctl start bhatti
+            heading "Restarting ahvm service"
+            systemctl start ahvm
         fi
     fi
 
     echo ""
     echo "============================================"
     local elapsed=$(( SECONDS - _total_start ))
-    echo "  bhatti updated to ${VERSION} (${elapsed}s)"
+    echo "  ahvm updated to ${VERSION} (${elapsed}s)"
     echo "  tiers: $(echo "$tiers_to_install" | tr ' ' ', ')"
     # Status of every "other" tier (not in this update), in two buckets:
     #   stale on disk — user has a tier image from a previous release
@@ -1404,26 +1404,26 @@ do_server_update() {
         echo ""
         [ -n "$stale" ]   && echo "  outdated on disk: ${stale// /, }"
         [ -n "$missing" ] && echo "  not installed:    ${missing// /, }"
-        echo "  update with:      sudo bhatti update --tiers all"
+        echo "  update with:      sudo ahvm update --tiers all"
     fi
     if [ "$was_running" = true ]; then
         echo "  systemd service: restarted"
     else
-        # Detect non-systemd bhatti serve process
+        # Detect non-systemd ahvm serve process
         local serve_pid
-        serve_pid=$(pgrep -x bhatti 2>/dev/null | head -1 || true)
+        serve_pid=$(pgrep -x ahvm 2>/dev/null | head -1 || true)
         if [ -n "$serve_pid" ]; then
             echo ""
-            echo "  ⚠  bhatti serve is running (PID ${serve_pid})"
+            echo "  ⚠  ahvm serve is running (PID ${serve_pid})"
             echo "     Restart it to use ${VERSION}"
         else
             echo ""
-            echo "  Service enabled. Start with: sudo systemctl start bhatti"
+            echo "  Service enabled. Start with: sudo systemctl start ahvm"
         fi
     fi
-    if [ -f /usr/local/bin/bhatti.old ]; then
+    if [ -f /usr/local/bin/ahvm.old ]; then
         echo ""
-        echo "  Rollback: sudo mv /usr/local/bin/bhatti.old /usr/local/bin/bhatti"
+        echo "  Rollback: sudo mv /usr/local/bin/ahvm.old /usr/local/bin/ahvm"
     fi
     echo "============================================"
 }
@@ -1452,16 +1452,16 @@ main() {
                     do_cli_install
                     ;;
                 none)
-                    local mode="${BHATTI_MODE:-}"
+                    local mode="${AHVM_MODE:-}"
 
                     if [ -z "$mode" ]; then
                         if [ "$OS" = "linux" ] && [ "$(id -u)" -eq 0 ] && [ -e /dev/kvm ]; then
                             # Root + KVM: they ran `curl | sudo bash` on a capable
                             # box — default to self-host.
                             echo ""
-                            echo "  Install bhatti as:"
-                            echo "    1) Self-host — run bhatti on this machine"
-                            echo "    2) CLI only — connect to a remote bhatti server"
+                            echo "  Install ahvm as:"
+                            echo "    1) Self-host — run ahvm on this machine"
+                            echo "    2) CLI only — connect to a remote ahvm server"
                             echo ""
                             printf "  Choice [1]: "
                             read -r mode_choice < /dev/tty 2>/dev/null || mode_choice="1"
@@ -1471,12 +1471,12 @@ main() {
                             esac
                         else
                             echo ""
-                            echo "  Install bhatti as:"
-                            echo "    1) CLI — connect to a remote bhatti server"
+                            echo "  Install ahvm as:"
+                            echo "    1) CLI — connect to a remote ahvm server"
                             if [ "$OS" = "darwin" ]; then
                                 echo "    2) Self-host — run sandboxes locally on this Mac (Apple Silicon)"
                             else
-                                echo "    2) Self-host — run bhatti on this machine (requires root + KVM)"
+                                echo "    2) Self-host — run ahvm on this machine (requires root + KVM)"
                             fi
                             echo ""
                             printf "  Choice [1]: "
@@ -1490,12 +1490,12 @@ main() {
 
                     case "$mode" in
                         server)
-                            # Self-host writes /etc/bhatti, /usr/local/bin, and the
+                            # Self-host writes /etc/ahvm, /usr/local/bin, and the
                             # data dir — root on both OSes (macOS HVF itself needs no
                             # root, but these paths do).
                             [ "$(id -u)" -eq 0 ] || die "self-host installation requires root" \
                                                         "Re-run with:" \
-                                                        "  curl -fsSL bhatti.sh/install | sudo bash"
+                                                        "  curl -fsSL ahvm.sh/install | sudo bash"
                             prompt_and_install_server
                             ;;
                         *)
@@ -1529,12 +1529,12 @@ Flags:
   -h, --help          Show this help
 
 Environment variables (equivalent, for piped installs):
-  BHATTI_TIER, BHATTI_TIERS, BHATTI_MODE, BHATTI_FORCE=1
+  AHVM_TIER, AHVM_TIERS, AHVM_MODE, AHVM_FORCE=1
 
 Examples:
-  curl -fsSL bhatti.sh/install | bash                             # CLI (auto-detected)
-  curl -fsSL bhatti.sh/install | sudo bash                        # server (prompted)
-  curl -fsSL bhatti.sh/install | sudo bash -s -- --tiers all      # flags via pipe
+  curl -fsSL ahvm.sh/install | bash                             # CLI (auto-detected)
+  curl -fsSL ahvm.sh/install | sudo bash                        # server (prompted)
+  curl -fsSL ahvm.sh/install | sudo bash -s -- --tiers all      # flags via pipe
   sudo ./scripts/install.sh --tier computer                       # server, computer tier
   sudo ./scripts/install.sh --tiers all                           # update + pull all tiers
 EOF
@@ -1543,13 +1543,13 @@ EOF
 parse_flags() {
     while [ $# -gt 0 ]; do
         case "$1" in
-            --tier)    BHATTI_TIER="$2"; shift 2 ;;
-            --tier=*)  BHATTI_TIER="${1#--tier=}"; shift ;;
-            --tiers)   BHATTI_TIERS="$2"; shift 2 ;;
-            --tiers=*) BHATTI_TIERS="${1#--tiers=}"; shift ;;
-            --mode)    BHATTI_MODE="$2"; shift 2 ;;
-            --mode=*)  BHATTI_MODE="${1#--mode=}"; shift ;;
-            --force)   BHATTI_FORCE=1; shift ;;
+            --tier)    AHVM_TIER="$2"; shift 2 ;;
+            --tier=*)  AHVM_TIER="${1#--tier=}"; shift ;;
+            --tiers)   AHVM_TIERS="$2"; shift 2 ;;
+            --tiers=*) AHVM_TIERS="${1#--tiers=}"; shift ;;
+            --mode)    AHVM_MODE="$2"; shift 2 ;;
+            --mode=*)  AHVM_MODE="${1#--mode=}"; shift ;;
+            --force)   AHVM_FORCE=1; shift ;;
             --quiet)   QUIET=1; shift ;;
             --verbose) set -x; shift ;;
             --help|-h) usage; exit 0 ;;
@@ -1559,7 +1559,7 @@ parse_flags() {
 }
 
 # Allow sourcing for tests without executing main
-if [ "${BHATTI_TEST:-}" != "1" ]; then
+if [ "${AHVM_TEST:-}" != "1" ]; then
     parse_flags "$@"
     main
 fi

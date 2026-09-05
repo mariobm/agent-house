@@ -1,12 +1,11 @@
 # agent-house fork notes
 
-Fork of [sahil-shubham/bhatti](https://github.com/sahil-shubham/bhatti) (v2/krucible),
-merged as base at upstream `0e70b75`.
+Agent House's VM platform fork, merged as base at upstream `0e70b75`.
 
 ## Remotes
 
 - `origin` — ours (private `mariobm/agent-house`), push here.
-- `upstream` — `https://github.com/sahil-shubham/bhatti.git`, pull-only.
+- `upstream` — `https://github.com/mariobm/agent-house.git`, pull-only.
   Sync with: `git fetch upstream && git merge upstream/main`
 
 ## Policy

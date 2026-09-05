@@ -7,7 +7,7 @@ import (
 )
 
 type TemplateMountSpec struct {
-	VolumeName string `json:"volume_name"` // empty = "bhatti-{sandbox_name}-workspace"
+	VolumeName string `json:"volume_name"` // empty = "ahvm-{sandbox_name}-workspace"
 	Target     string `json:"target"`
 	ReadOnly   bool   `json:"readonly"`
 	AutoCreate bool   `json:"auto_create"` // create volume if missing

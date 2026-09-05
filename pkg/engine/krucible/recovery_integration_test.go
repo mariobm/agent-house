@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // recoveryEngine builds a block-root engine bound to a FIXED data dir, so a
@@ -30,9 +30,9 @@ func recoveryEngine(t *testing.T, dataDir, baseRootfs string) *Engine {
 	if _, err := exec.LookPath("mke2fs"); err != nil {
 		t.Skip("mke2fs not found; skipping")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
+	vmm := filepath.Join(repo, "ahvm-vmm")
 	if _, err := os.Stat(vmm); err != nil {
-		t.Skip("bhatti-vmm not built — run `make vmm`; skipping")
+		t.Skip("ahvm-vmm not built — run `make vmm`; skipping")
 	}
 	eng, err := New(Config{
 		DataDir: dataDir, BaseRootfs: baseRootfs, VMMBinary: vmm,

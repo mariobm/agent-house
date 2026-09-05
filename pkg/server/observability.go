@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // StartMetricsSnapshots starts a background goroutine that records

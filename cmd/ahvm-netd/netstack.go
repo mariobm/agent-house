@@ -1,5 +1,5 @@
-// Command bhatti-netd is the per-owner userspace network gateway (Approach A,
-// DESIGN-bhatti-v2-networking.md §0c). It embeds a gVisor netstack on the
+// Command ahvm-netd is the per-owner userspace network gateway (Approach A,
+// DESIGN-ahvm-v2-networking.md §0c). It embeds a gVisor netstack on the
 // owner's guests' virtio-net links (libkrun unixstream frames, via
 // pkg/gateway.FrameConn) and is their router / DNS / egress-policer / L7 secret-
 // substituter / inbound port-proxy / control door / audit chokepoint.
@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/sahil-shubham/bhatti/pkg/gateway"
+	"github.com/mariobm/agent-house/pkg/gateway"
 
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
-	"github.com/sahil-shubham/bhatti/pkg/gateway"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/gateway"
 )
 
 // VolumeMount describes a named volume to mount into a sandbox.

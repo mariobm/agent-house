@@ -1,4 +1,4 @@
-/bhatti
+/ahvm
 bin/
 dist/
 *.db
@@ -9,9 +9,9 @@ pi-session-*.html
 .worktrees/
 docs/PLAN-learning.md
 docs/internal/
-/bhatti-vmm
-/bhatti-netd
-/bhatti-vmm-krucible
+/ahvm-vmm
+/ahvm-netd
+/ahvm-vmm-krucible
 /krucible-mkimage
 bench/results-krucible-mac/
-/cmd/bhatti-netd/bhatti-netd
+/cmd/ahvm-netd/ahvm-netd

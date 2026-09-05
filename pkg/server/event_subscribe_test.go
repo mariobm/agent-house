@@ -9,11 +9,11 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // Tests for the EventRecorder's in-process pub/sub fan-out.
-// G1.5 of PLAN-bhatti-v2.md. The recorder still persists events to
+// G1.5 of PLAN-ahvm-v2.md. The recorder still persists events to
 // SQLite in batches; what's new is that Record() also fans out to any
 // in-process Subscribe()-rs.
 
@@ -385,7 +385,7 @@ func TestSubscribe_ConcurrentRecordSubscribeCancel(t *testing.T) {
 			defer prodWG.Done()
 			for j := 0; j < eventsPerProducer; j++ {
 				rec.Record(store.Event{
-					Type:     "x.y",
+					Type:      "x.y",
 					SandboxID: fmt.Sprintf("sb_%d_%d", pid, j),
 				})
 			}

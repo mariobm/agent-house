@@ -1,15 +1,15 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/contributing/kernel/>.
+> <https://ahvm.sh/docs/contributing/kernel/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
 ---
 
-# Bhatti Kernel Configuration
+# AHVM Kernel Configuration
 
-Bhatti ships a custom Linux kernel built from the Firecracker CI configuration
+AHVM ships a custom Linux kernel built from the Firecracker CI configuration
 with additional flags enabled for Docker, VPN, FUSE, and security features.
 One kernel is used for all rootfs tiers (minimal, browser, docker).
 
@@ -98,7 +98,7 @@ need to learn multiple MACs.
 **VXLAN** (Virtual eXtensible LAN) encapsulates Layer 2 frames in UDP packets,
 creating virtual overlay networks. Docker uses VXLAN for multi-host overlay
 networks (`docker network create --driver overlay`). Also used by Kubernetes
-(flannel, calico in VXLAN mode) and Podman. Inside a bhatti VM, VXLAN enables
+(flannel, calico in VXLAN mode) and Podman. Inside a ahvm VM, VXLAN enables
 Docker Compose services that span multiple bridge networks.
 
 **When not using Docker:** These are just kernel drivers that register virtual
@@ -256,7 +256,7 @@ runs as root, AppArmor prevents it from accessing sensitive host paths.
 
 Without AppArmor compiled into the kernel, Docker falls back to no MAC
 enforcement. Containers still have namespace isolation but lack the additional
-confinement layer. For a bhatti VM where the VM itself is the isolation
+confinement layer. For a ahvm VM where the VM itself is the isolation
 boundary, this is defense-in-depth rather than strictly necessary.
 
 **Landlock** is a newer (Linux 5.13+), lightweight sandboxing mechanism that
@@ -306,7 +306,7 @@ of kernel text for zero benefit.
 
 ```bash
 #!/bin/bash
-# scripts/build-kernel.sh — Build the bhatti kernel
+# scripts/build-kernel.sh — Build the ahvm kernel
 # Usage: ./scripts/build-kernel.sh [arch]
 # arch: x86_64 (default) or aarch64
 
@@ -399,9 +399,9 @@ The kernel version tracks the Firecracker CI config version. When Firecracker
 updates their CI kernel (e.g., from 6.1.155 to 6.1.160 for a CVE fix), we
 rebuild with their new config + our flag additions.
 
-The bhatti release includes the kernel: bhatti v0.4.0 ships with kernel
+The ahvm release includes the kernel: ahvm v0.4.0 ships with kernel
 6.1.155. The kernel is not independently versioned — it's an artifact of
-the bhatti build, like the lohar binary.
+the ahvm build, like the lohar binary.
 
 ## Verification
 
@@ -423,6 +423,6 @@ done
 Or boot a VM and check `/proc/config.gz`:
 
 ```bash
-bhatti exec test-vm -- sh -c 'zcat /proc/config.gz | grep CONFIG_IP_NF_RAW'
+ahvm exec test-vm -- sh -c 'zcat /proc/config.gz | grep CONFIG_IP_NF_RAW'
 # CONFIG_IP_NF_RAW=y
 ```

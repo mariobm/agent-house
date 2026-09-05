@@ -7,20 +7,20 @@
 # Access via KasmVNC web client on port 6080.
 #
 # First-time usage:
-#   bhatti create --name desktop --image computer --cpus 2 --memory 4096 --disk-size 8192
-#   bhatti publish desktop -p 6080
-#   bhatti exec desktop -- vnc-creds      # ← prints username + per-sandbox password
+#   ahvm create --name desktop --image computer --cpus 2 --memory 4096 --disk-size 8192
+#   ahvm publish desktop -p 6080
+#   ahvm exec desktop -- vnc-creds      # ← prints username + per-sandbox password
 #   # Open the published URL in your browser, log in with those creds.
 #
-# For AI agents (DISPLAY is pre-set for uid 1000 via /run/bhatti/env):
-#   bhatti exec desktop -- screenshot                       # → /tmp/screen.png
-#   bhatti exec desktop -- screenshot --base64              # → base64 PNG to stdout
-#   bhatti exec desktop -- xdotool mousemove 640 360 click 1
-#   bhatti exec desktop -- xdotool type "hello world"
-#   bhatti exec desktop -- xdotool key Return
-#   bhatti exec desktop -- chromium-browser https://example.com
+# For AI agents (DISPLAY is pre-set for uid 1000 via /run/ahvm/env):
+#   ahvm exec desktop -- screenshot                       # → /tmp/screen.png
+#   ahvm exec desktop -- screenshot --base64              # → base64 PNG to stdout
+#   ahvm exec desktop -- xdotool mousemove 640 360 click 1
+#   ahvm exec desktop -- xdotool type "hello world"
+#   ahvm exec desktop -- xdotool key Return
+#   ahvm exec desktop -- chromium-browser https://example.com
 #
-# Tunables (set via `bhatti create --env KEY=value,KEY=value`):
+# Tunables (set via `ahvm create --env KEY=value,KEY=value`):
 #   DISPLAY_WIDTH    default 1280
 #   DISPLAY_HEIGHT   default 720
 #   DISPLAY_DEPTH    default 24
@@ -37,7 +37,7 @@
 #                                  + computes default KASM_THREADS
 #   * kasmvnc.service            — the X server + RFB→WebSocket gateway
 #   * xfce-session.service       — XFCE desktop session
-#   * bhatti-display-env.service — exposes DISPLAY=:99 to `bhatti exec`
+#   * ahvm-display-env.service — exposes DISPLAY=:99 to `ahvm exec`
 #
 # Deliberately NOT started: dbus-daemon (long-lived inotify watches +
 # epoll sets don't survive snapshot/restore cleanly on ARM64 — see
@@ -207,14 +207,14 @@ chmod 755 "$MOUNT/usr/local/bin/screen-size"
 #
 # The systemd-managed services get DISPLAY from their own Environment=
 # directives; these files cover ssh-like interactive sessions and the
-# `bhatti exec` path (which also picks up DISPLAY via /run/bhatti/env
-# written by bhatti-display-env.service below).
+# `ahvm exec` path (which also picks up DISPLAY via /run/ahvm/env
+# written by ahvm-display-env.service below).
 # ==========================================================================
 echo 'export DISPLAY=:99' >> "$MOUNT/etc/environment"
-cat > "$MOUNT/etc/profile.d/bhatti-display.sh" << 'PROF'
+cat > "$MOUNT/etc/profile.d/ahvm-display.sh" << 'PROF'
 export DISPLAY=:99
 PROF
-chmod 644 "$MOUNT/etc/profile.d/bhatti-display.sh"
+chmod 644 "$MOUNT/etc/profile.d/ahvm-display.sh"
 echo 'export DISPLAY=:99' >> "$MOUNT/home/lohar/.bashrc"
 chown 1000:1000 "$MOUNT/home/lohar/.bashrc"
 
@@ -233,20 +233,20 @@ MimeType=text/html;text/xml;application/xhtml+xml;
 DESKTOP
 
 # ==========================================================================
-# Systemd units (replacing the legacy /etc/bhatti/init.sh)
+# Systemd units (replacing the legacy /etc/ahvm/init.sh)
 #
 # Activation graph at boot:
 #   kasmvnc-firstboot.service ──┐
 #                               ├──> kasmvnc.service ──> xfce-session.service
 #                               │
 #                               └──> (none — leaf)
-#   bhatti-display-env.service   (no After=, runs in first wave)
+#   ahvm-display-env.service   (no After=, runs in first wave)
 #
 # kasmvnc-firstboot generates per-sandbox credentials (idempotent via
 # ConditionPathExists=!) and computes the KASM_THREADS default by
-# appending to /run/bhatti/config-env, but ONLY if the user didn't pass
-# their own value via `bhatti create --env`. User-supplied values appear
-# in /run/bhatti/config-env before firstboot writes its append, so the
+# appending to /run/ahvm/config-env, but ONLY if the user didn't pass
+# their own value via `ahvm create --env`. User-supplied values appear
+# in /run/ahvm/config-env before firstboot writes its append, so the
 # grep guard preserves user precedence.
 # ==========================================================================
 
@@ -271,11 +271,11 @@ ExecStart=/bin/sh -c '\
     chmod 600 /root/.kasmpasswd; \
     printf "username: kasm_user\npassword: %s\n" "$PW" > /root/.vnc/cleartext; \
     chmod 600 /root/.vnc/cleartext; \
-    mkdir -p /run/bhatti; \
-    if ! grep -q "^KASM_THREADS=" /run/bhatti/config-env 2>/dev/null; then \
+    mkdir -p /run/ahvm; \
+    if ! grep -q "^KASM_THREADS=" /run/ahvm/config-env 2>/dev/null; then \
         NPROC=$(nproc 2>/dev/null || echo 1); \
         THREADS=$([ "$NPROC" -gt 1 ] && echo $((NPROC - 1)) || echo 1); \
-        echo "KASM_THREADS=$THREADS" >> /run/bhatti/config-env; \
+        echo "KASM_THREADS=$THREADS" >> /run/ahvm/config-env; \
     fi'
 
 [Install]
@@ -290,7 +290,7 @@ UNIT
 # (`curl -I http://127.0.0.1:6080`).
 #
 # Defaults live in Environment=; EnvironmentFile=- picks up
-# `bhatti create --env DISPLAY_WIDTH=…` overrides. Shell-style $VAR
+# `ahvm create --env DISPLAY_WIDTH=…` overrides. Shell-style $VAR
 # expansion happens inside the shim's /bin/sh -c wrapper.
 cat > "$MOUNT/etc/systemd/system/kasmvnc.service" << 'UNIT'
 [Unit]
@@ -305,7 +305,7 @@ Environment=DISPLAY_HEIGHT=720
 Environment=DISPLAY_DEPTH=24
 Environment=KASM_FRAMERATE=60
 Environment=KASM_THREADS=1
-EnvironmentFile=-/run/bhatti/config-env
+EnvironmentFile=-/run/ahvm/config-env
 ExecStartPre=/bin/sh -c 'rm -f /tmp/.X99-lock /tmp/.X11-unix/X99'
 ExecStart=/bin/sh -c '/usr/bin/Xkasmvnc :99 \
     -geometry ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} -depth ${DISPLAY_DEPTH} \
@@ -346,21 +346,21 @@ RestartSec=2s
 WantedBy=multi-user.target
 UNIT
 
-# --- bhatti-display-env.service ---
+# --- ahvm-display-env.service ---
 #
-# Writes DISPLAY=:99 to /run/bhatti/env so the lohar agent's env-merge
+# Writes DISPLAY=:99 to /run/ahvm/env so the lohar agent's env-merge
 # (cmd/lohar/main.go, post-startEnabledServices) picks it up and exposes
-# DISPLAY to every `bhatti exec` invocation. Oneshot with no After=
+# DISPLAY to every `ahvm exec` invocation. Oneshot with no After=
 # dependency — runs in the first activation wave, completes before any
 # wave is considered done.
-cat > "$MOUNT/etc/systemd/system/bhatti-display-env.service" << 'UNIT'
+cat > "$MOUNT/etc/systemd/system/ahvm-display-env.service" << 'UNIT'
 [Unit]
-Description=Expose DISPLAY=:99 to bhatti exec via /run/bhatti/env
+Description=Expose DISPLAY=:99 to ahvm exec via /run/ahvm/env
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'mkdir -p /run/bhatti && echo DISPLAY=:99 > /run/bhatti/env'
+ExecStart=/bin/sh -c 'mkdir -p /run/ahvm && echo DISPLAY=:99 > /run/ahvm/env'
 
 [Install]
 WantedBy=multi-user.target
@@ -368,21 +368,21 @@ UNIT
 
 # Enable all four via wants/ symlinks (deb-systemd-helper isn't involved
 # for our own units — we just create the symlink directly).
-for unit in kasmvnc-firstboot.service kasmvnc.service xfce-session.service bhatti-display-env.service; do
+for unit in kasmvnc-firstboot.service kasmvnc.service xfce-session.service ahvm-display-env.service; do
     ln -sf "/etc/systemd/system/$unit" \
         "$MOUNT/etc/systemd/system/multi-user.target.wants/$unit"
 done
 
 # --- Drop the legacy init.sh path entirely ---
-rm -f "$MOUNT/etc/bhatti/init.sh"
+rm -f "$MOUNT/etc/ahvm/init.sh"
 
 # ==========================================================================
 # vnc-creds helper: prints the per-sandbox username + password.
 #
 # Reads /root/.vnc/cleartext via sudo (lohar/uid 1000 has passwordless sudo).
 # This is the documented first-time-user discovery path:
-#   bhatti exec <name> -- vnc-creds          # human-readable
-#   bhatti exec <name> -- vnc-creds --json   # machine-readable for agents
+#   ahvm exec <name> -- vnc-creds          # human-readable
+#   ahvm exec <name> -- vnc-creds --json   # machine-readable for agents
 # ==========================================================================
 cat > "$MOUNT/usr/local/bin/vnc-creds" << 'BIN'
 #!/bin/sh
@@ -405,7 +405,7 @@ if [ "${1:-}" = "--json" ]; then
     printf '{"username":"%s","password":"%s"}\n' "$USER_LINE" "$PASS_LINE"
 else
     printf 'username: %s\npassword: %s\n' "$USER_LINE" "$PASS_LINE"
-    printf '\nUse these creds at the URL printed by `bhatti publish <name> -p 6080`.\n'
+    printf '\nUse these creds at the URL printed by `ahvm publish <name> -p 6080`.\n'
 fi
 BIN
 chmod 755 "$MOUNT/usr/local/bin/vnc-creds"

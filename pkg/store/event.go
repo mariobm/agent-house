@@ -258,7 +258,7 @@ func (s *Store) LatestMetricsSnapshot() (MetricsSnapshot, error) {
 }
 
 // SumMetricsSnapshots returns column sums across all snapshots since the given time.
-// Used by `bhatti admin status` to compute totals like "84,521 requests".
+// Used by `ahvm admin status` to compute totals like "84,521 requests".
 func (s *Store) SumMetricsSnapshots(since time.Time) (MetricsSnapshot, error) {
 	var m MetricsSnapshot
 	err := s.db.QueryRow(`SELECT

@@ -13,9 +13,9 @@ var snapshotCmd = &cobra.Command{
 	Short: "Manage named VM snapshots",
 	Long: `Snapshots capture the entire VM state: memory, CPU, disk. Resume
 produces an exact continuation — processes running, files open.`,
-	Example: `  bhatti snapshot create dev --name dev-ready
-  bhatti snapshot resume dev-ready --name dev-2
-  bhatti snapshot list`,
+	Example: `  ahvm snapshot create dev --name dev-ready
+  ahvm snapshot resume dev-ready --name dev-2
+  ahvm snapshot list`,
 }
 
 var snapshotCreateCmd = &cobra.Command{

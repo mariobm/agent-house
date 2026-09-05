@@ -21,7 +21,7 @@ Grounded in what's actually OS-gated in libkrucible today:
 
 **Sequencing (all gated on home-cluster access):**
 1. **Warm-Linux bring-up** — **DONE (2026-06-17):** `scripts/krucible-linux-bringup.sh` builds libkrunfw + libkrucible +
-   bhatti-vmm on a node; **agent + warm-tier (pause/resume) + VM-level recovery suites are green on raspi-5a
+   ahvm-vmm on a node; **agent + warm-tier (pause/resume) + VM-level recovery suites are green on raspi-5a
    (linux/arm64/KVM) and asus-i5 (linux/amd64/KVM).** krucible's first runs off macOS. (The KVM warm-resume clock fix is
    still a TODO — the pause/resume suite passes without it; revisit for long-pause clock continuity.)
 2. **Cold-x86-Linux** — port the linux checkpoint/restore (bounded; the reference has it, device persist is shared). `RunSnapshotSuite` green on x86 KVM.
@@ -46,8 +46,8 @@ for *why the server earns its keep*, not as a plan to split it.
 
 ## 2b. (rationale, retained) The CLI / daemon / HTTPS topology for a library VMM
 
-Today: `bhatti` CLI → HTTP (`localhost:8080`) → **daemon** (`pkg/server`) which owns the engine, the store (registry),
-the thermal manager, and the public proxy; the daemon spawns one `bhatti-vmm` helper per sandbox (only the helper links
+Today: `ahvm` CLI → HTTP (`localhost:8080`) → **daemon** (`pkg/server`) which owns the engine, the store (registry),
+the thermal manager, and the public proxy; the daemon spawns one `ahvm-vmm` helper per sandbox (only the helper links
 libkrun). This client/server shape is inherited from Firecracker (out-of-process VMM + HTTP API + jailer + TAP network).
 
 libkrun being an **in-process library** doesn't remove the daemon — but it changes *what the daemon is for* and shrinks it.
@@ -64,24 +64,24 @@ libkrun being an **in-process library** doesn't remove the daemon — but it cha
 ### What shrinks or disappears (FC-isms removed by libkrun + TSI)
 - **All host network plumbing** — TAP/bridge/iptables/IP-pool/per-user-DNS (`network.go`, `dns.go`, `subnet`, `ippool`,
   the global firewall) → **deleted** on the krucible path (TSI: no L2). This is the single biggest daemon simplification.
-- **FC-process + jailer management** → spawn a `bhatti-vmm` helper (plus Track-J later). Simpler.
+- **FC-process + jailer management** → spawn a `ahvm-vmm` helper (plus Track-J later). Simpler.
 - **Per-user bridge/subnet multi-tenancy** → capability tokens (no network half).
 
 ### What the library nature *newly enables* (NEW)
-- **A daemonless CLI-direct mode.** Because the VMM is in-process in the helper, a `bhatti run`/`bhatti sbx` can spawn a
+- **A daemonless CLI-direct mode.** Because the VMM is in-process in the helper, a `ahvm run`/`ahvm sbx` can spawn a
   helper directly, exec/attach, and tear down — **no daemon, no HTTP** — for local one-shot / ephemeral / CI sandboxes
   (the "put your agent in a VM and let it be" shape). The daemon stays for the persistent, multi-sandbox, proxy,
   multi-tenant *platform*. Same helper binary, two front-ends.
-- **One binary, two roles** (release §9b of the plan): `bhatti` is the CLI *and* the daemon *and* (via a hidden `vmm`
+- **One binary, two roles** (release §9b of the plan): `ahvm` is the CLI *and* the daemon *and* (via a hidden `vmm`
   subcommand that `dlopen`s libkrun) the helper. Pure-Go control plane; cgo only when it's the helper.
 
 ### The reframed topology
 ```
-            ┌─ bhatti CLI ──HTTP──► bhatti daemon (server) ──► registry, thermal, public proxy, auth
+            ┌─ ahvm CLI ──HTTP──► ahvm daemon (server) ──► registry, thermal, public proxy, auth
             │                              │ spawns
-  one binary ┤                              └─► bhatti vmm (helper, dlopen libkrun)  ── per sandbox
+  one binary ┤                              └─► ahvm vmm (helper, dlopen libkrun)  ── per sandbox
             │
-            └─ bhatti run (CLI-direct) ───────► bhatti vmm (helper)   ── local, daemonless, ephemeral
+            └─ ahvm run (CLI-direct) ───────► ahvm vmm (helper)   ── local, daemonless, ephemeral
 ```
 Net: the daemon is **leaner** (loses the network/jailer/FC bulk), still essential for the *platform*; and a *daemonless*
 path becomes a first-class local/CI mode. Decisions to make: where the daemonless registry lives (a lockfile + per-VM
@@ -92,7 +92,7 @@ state dir), and whether `share`/publish is daemon-only (yes — it needs the res
 ## 3. Leftover actionables (prioritized backlog)
 
 **A. Finish/​harden the cold tier (P3 closeout)**
-- Bundle integrity: fsync + atomic rename of the `.bhatti` bundle; refuse a half-written/tampered bundle (magic + length
+- Bundle integrity: fsync + atomic rename of the `.ahvm` bundle; refuse a half-written/tampered bundle (magic + length
   + hash). Add `RunSnapshotSuite` cases `BundleSelfContained` + `RejectsTampered`.
 - Manifest gate: enforce `arch` match (refuse cross-arch) + an exact `feature_hash` for Tier 1; the classify/refuse model
   for Tier 2.
@@ -108,7 +108,7 @@ state dir), and whether `share`/publish is daemon-only (yes — it needs the res
 **C. Daemon slimming** — delete/neutralize the FC network plumbing on the krucible path (`network.go`, `dns.go`,
 `subnet`, `ippool`) — unused by TSI; keep them FC-only or remove from the krucible build.
 
-**D. CLI-direct mode** — `bhatti run --engine=krucible <cmd>`: spawn a helper, exec, tear down, daemonless.
+**D. CLI-direct mode** — `ahvm run --engine=krucible <cmd>`: spawn a helper, exec, tear down, daemonless.
 
 **E. Linux** — §1: warm-cluster bring-up → cold-x86 port → Tier-3 Pi.
 
@@ -148,7 +148,7 @@ it). Tiers: a **base** (agent only) and a **workload** tier (systemd-shim or rea
 | 4 | **`apt install`** postgres / nginx / redis → service starts, survives | the workload tier (systemd-shim or real-systemd) |
 | 5 | **Stateful snapshot/restore**: a running process + open files + in-RAM state survive `stop`/`start` | cold tier on a real stateful workload |
 | 6 | **Multi-sandbox + capability tokens**: N sandboxes, scoped tokens, per-token exec/egress audit | the daemon platform + auth |
-| 7 | **Daemonless `bhatti run`**: one-shot ephemeral sandbox, no daemon | the CLI-direct mode |
+| 7 | **Daemonless `ahvm run`**: one-shot ephemeral sandbox, no daemon | the CLI-direct mode |
 
 Each becomes an integration test (scripted, self-verifying) on the home cluster + Mac. The bar: the same use cases that
 work on FC today work on krucible, plus the krucible-only wins (faster fs, sub-second cold-wake).
@@ -199,7 +199,7 @@ is the guest's loopback). krucible sandboxes are currently **outbound-only islan
 the FC-style plumbing we shed):
 1. **Host↔guest forward** — **DONE (2026-06-16):** new engine-agnostic `pkg/forward` (host TCP listener → `Tunnel`
    bridge, raw bytes, wake-on-connect hook); server `POST/GET/DELETE /sandboxes/:id/forward` (binds 127.0.0.1, torn
-   down on Destroy); CLI `bhatti forward <id> <guestPort> [hostPort]`. Real-VM tests (engine + full-daemon, no mock):
+   down on Destroy); CLI `ahvm forward <id> <guestPort> [hostPort]`. Real-VM tests (engine + full-daemon, no mock):
    a guest HTTP server is reached from the host through the forward. *The mesh building block.*
 2. **Inter-sandbox connectivity** — the server assigns each sandbox a stable host endpoint (vsock-forwarded to a guest
    port) and brokers **name resolution** (inject `<name>.sb → gateway` — the krucible-native replacement for the FC DNS
@@ -240,10 +240,10 @@ the move that unblocks §6b's first brick.
    `TestKrucibleConfigDrive` (real VM): env reaches exec, files materialize, token enforced. virtio-fs path stays
    config-less. (`VMSpec.ConfigDrive`; survives cold Stop/Start.)
 2. **Env precedence + dynamic env** — keep the resolved precedence (env < secrets); per-exec merge already exists
-   (`configEnv`); units read `/run/bhatti/config-env`. Add a path to set env *after* boot via the agent (agents mutate
+   (`configEnv`); units read `/run/ahvm/config-env`. Add a path to set env *after* boot via the agent (agents mutate
    sandbox env without a reboot).
 3. **Secret hygiene under the cold tier (important)** — the cold bundle's `memory.img` contains guest RAM, which
-   contains secrets (lohar copies env into RAM + `/run/bhatti/config-env` on tmpfs). So **the bundle is as sensitive as
+   contains secrets (lohar copies env into RAM + `/run/ahvm/config-env` on tmpfs). So **the bundle is as sensitive as
    the live VM** — it must be protected/encrypted-at-rest and shredded on Destroy, same as the config-drive file. Decide:
    keep secrets out of the snapshotted RAM where possible (e.g. fetch-on-demand from the agent vs. bake into env), and
    never leave the config-drive image world-readable. This is a design constraint to honor, not an afterthought.
@@ -281,7 +281,7 @@ conflicted; agents don't deadlock), lightweight **bookmarks** (movable pointers)
 move the bookmark back), **timeline-per-session** (one bookmark per run, merge or discard), **proposal + diff + approve**
 (human-in-the-loop with an audit trail), `main` = promoted state.
 
-**How it maps onto bhatti (granularity is the key call):** that runtime versions at the *file* level; bhatti's volumes are
+**How it maps onto ahvm (granularity is the key call):** that runtime versions at the *file* level; ahvm's volumes are
 *block* devices (which is what buys cold/fork + portability). So we do **not** replace block volumes with a file-FS — we
 **adopt the model + workflows at the granularity each tier supports:**
 - **Now (VM-native, cheap): the whole-sandbox checkpoint *is* a "Change."** It rides the cold/fork tier already built and
@@ -290,7 +290,7 @@ move the bookmark back), **timeline-per-session** (one bookmark per run, merge o
   `fork <checkpoint>` = branch; promote = move the bookmark. Fork-on-write isolation = the CoW-rootfs-from-base we already
   do, with a bookmark on top.
 - **Later (file-level): a "workspace repo" tier** for the agent's code/output dir — diffs + approval gates + merge, on
-  bhatti's file API + a content-addressed store (the chunked-CDC dedup is half of it). This is the full file-level model
+  ahvm's file API + a content-addressed store (the chunked-CDC dedup is half of it). This is the full file-level model
   (and the eventual home of the deferred sync/Mutagen idea).
 
 **Two version stores, matching the ladder:** local **CoW** (clonefile/reflink/btrfs-subvol/qcow2-overlay — the primitive
@@ -369,5 +369,5 @@ GIC) is the next Linux milestone (§1, E2/E3).
 2. **Production rootfs base** — build from an OCI image (like the FC path) or a from-scratch minimal userland? Tier split.
 3. **Is `publish`/share ever daemonless?** (Lean: no — it needs the resident proxy; CLI-direct is exec/attach only.)
 4. **Linux warm clock fix** — `KVM_SET_CLOCK` vs kvmclock PV; confirm against the arm64 Pi arch-timer behavior.
-5. **One-binary release** — when to collapse `cmd/vmm` into the hidden `bhatti vmm` `dlopen` subcommand (§9b) vs keep the
+5. **One-binary release** — when to collapse `cmd/vmm` into the hidden `ahvm vmm` `dlopen` subcommand (§9b) vs keep the
    separate dev helper.

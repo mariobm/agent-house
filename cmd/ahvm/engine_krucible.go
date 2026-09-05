@@ -7,44 +7,44 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/sahil-shubham/bhatti/pkg"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/engine/krucible"
+	"github.com/mariobm/agent-house/pkg"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine/krucible"
 )
 
 // newKrucibleEngine builds the libkrun-backed engine. Pure Go — it spawns the
-// cgo bhatti-vmm helper, so this compiles and runs on macOS and Linux. The
+// cgo ahvm-vmm helper, so this compiles and runs on macOS and Linux. The
 // helper + libs are autodetected when not set in config.
 func newKrucibleEngine(cfg *pkg.Config) (engine.Engine, error) {
 	vmm := cfg.KrucibleVMM
 	if vmm == "" {
 		if exe, err := os.Executable(); err == nil {
-			cand := filepath.Join(filepath.Dir(exe), "bhatti-vmm")
+			cand := filepath.Join(filepath.Dir(exe), "ahvm-vmm")
 			if _, err := os.Stat(cand); err == nil {
 				vmm = cand
 			}
 		}
 		if vmm == "" {
-			if p, err := exec.LookPath("bhatti-vmm"); err == nil {
+			if p, err := exec.LookPath("ahvm-vmm"); err == nil {
 				vmm = p
 			}
 		}
 	}
 
-	// bhatti-netd: the per-owner network gateway (pure Go), the DEFAULT in v2.
+	// ahvm-netd: the per-owner network gateway (pure Go), the DEFAULT in v2.
 	// Autodetected next to the binary / on PATH (same discovery as vmm). If the
 	// net backend is on but the helper is missing, fail fast with a clear message
 	// rather than silently falling back to the insecure shared-netstack (TSI).
 	netd := cfg.KrucibleNetd
 	if netd == "" && cfg.NetBackendEnabled() {
 		if exe, err := os.Executable(); err == nil {
-			cand := filepath.Join(filepath.Dir(exe), "bhatti-netd")
+			cand := filepath.Join(filepath.Dir(exe), "ahvm-netd")
 			if _, err := os.Stat(cand); err == nil {
 				netd = cand
 			}
 		}
 		if netd == "" {
-			if p, err := exec.LookPath("bhatti-netd"); err == nil {
+			if p, err := exec.LookPath("ahvm-netd"); err == nil {
 				netd = p
 			}
 		}
@@ -54,8 +54,8 @@ func newKrucibleEngine(cfg *pkg.Config) (engine.Engine, error) {
 		// The secure gateway is the default, but the daemon is built at startup on
 		// hosts that may not have the runtime (dev builds, the unit-test gate). Don't
 		// refuse to start — fall back to TSI with a LOUD warning. A correct install
-		// ships bhatti-netd next to the binary, so this never fires in production.
-		slog.Warn("bhatti-netd not found — the secure network gateway is DISABLED and the " +
+		// ships ahvm-netd next to the binary, so this never fires in production.
+		slog.Warn("ahvm-netd not found — the secure network gateway is DISABLED and the " +
 			"guest is NOT isolated from the host (legacy TSI). Install the runtime bundle or run " +
 			"`make netd`; set krucible_net_backend: false to silence this warning.")
 		netBackend = false

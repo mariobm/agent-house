@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg"
+	"github.com/mariobm/agent-house/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -22,10 +22,10 @@ var userCmd = &cobra.Command{
 	Short: "Manage users (requires DB access)",
 	Long: `User management operates directly on the local SQLite database.
 Run on the server, not remotely.`,
-	Example: `  sudo bhatti user create --name alice --max-sandboxes 10
-  sudo bhatti user list
-  sudo bhatti user rotate-key alice
-  sudo bhatti user delete alice`,
+	Example: `  sudo ahvm user create --name alice --max-sandboxes 10
+  sudo ahvm user list
+  sudo ahvm user rotate-key alice
+  sudo ahvm user delete alice`,
 }
 
 var userCreateCmd = &cobra.Command{
@@ -86,9 +86,9 @@ var userCreateCmd = &cobra.Command{
 		fmt.Println()
 		fmt.Println("This key will not be shown again. Save it now.")
 		fmt.Printf("\nQuick start:\n")
-		fmt.Printf("  export BHATTI_URL=%s\n", apiURL)
-		fmt.Printf("  export BHATTI_TOKEN=%s\n", apiKey)
-		fmt.Printf("  bhatti create --name my-sandbox\n")
+		fmt.Printf("  export AHVM_URL=%s\n", apiURL)
+		fmt.Printf("  export AHVM_TOKEN=%s\n", apiKey)
+		fmt.Printf("  ahvm create --name my-sandbox\n")
 		return nil
 	},
 }
@@ -213,10 +213,10 @@ func init() {
 // Resolution order for data_dir:
 //  1. --data-dir flag (explicit)
 //  2. config file's data_dir field (from LoadConfig)
-//  3. ~/.bhatti (default)
+//  3. ~/.ahvm (default)
 //
-// On a server, LoadConfig finds /etc/bhatti/config.yaml which has
-// data_dir: /var/lib/bhatti, so the correct state.db is used without
+// On a server, LoadConfig finds /etc/ahvm/config.yaml which has
+// data_dir: /var/lib/ahvm, so the correct state.db is used without
 // any hardcoded fallbacks.
 func openLocalStore() *store.Store {
 	// Check --data-dir flag first

@@ -28,10 +28,10 @@ some are outright incorrect.
 |-----|-------------|---------------------------|
 | `thermal-management.md` §Diff Snapshots | Diff snapshots are used for warm→cold, `track_dirty_pages: true` | **Diff snapshots are completely disabled.** All snapshots are Full. `track_dirty_pages: false`. The rory incident killed this. (`engine.go:508-510`) |
 | `thermal-management.md` §Why TCP | "Cold boot uses vsock (slightly faster)" | **All connections use TCP, including cold boot.** `Create()` calls `agent.NewTCPClientWithAuth()` directly (`engine.go:589`). Vsock is still configured for FC but the agent client never uses it. |
-| `networking.md` entire doc | Describes a single shared bridge `brbhatti0` on `192.168.137.0/24` | **Per-user bridges** with `subnetFromIndex()`. Each user gets their own bridge and /24 subnet. `userNetworks map[string]*UserNetwork` (`engine.go:70,228-246`) |
+| `networking.md` entire doc | Describes a single shared bridge `brahvm0` on `192.168.137.0/24` | **Per-user bridges** with `subnetFromIndex()`. Each user gets their own bridge and /24 subnet. `userNetworks map[string]*UserNetwork` (`engine.go:70,228-246`) |
 | `architecture.md` §Project Structure | Lists `docker/docker.go` | **Docker engine is gone.** The `pkg/engine/docker/` directory doesn't exist. |
 | `architecture.md` §Project Structure | Missing files | Missing: `jail.go`, `ringbuffer.go`, `public_proxy.go`, `pkg/backup/*`, `pkg/oci/*` |
-| `architecture.md` diagram | Shows single bridge `brbhatti0` | Per-user bridges (same as networking.md) |
+| `architecture.md` diagram | Shows single bridge `brahvm0` | Per-user bridges (same as networking.md) |
 
 ### Moderate (docs are incomplete, missing new features)
 
@@ -174,7 +174,7 @@ model.
 This is the most stale doc. Almost everything needs updating.
 
 Current problems:
-- Entire doc describes single bridge `brbhatti0` on `192.168.137.0/24`
+- Entire doc describes single bridge `brahvm0` on `192.168.137.0/24`
 - Code now has per-user bridges with dynamic subnets
 - No mention of `setupGlobalFirewall()` or what the 6 global rules are
 - No mention of per-user bridge creation/cleanup lifecycle
@@ -197,7 +197,7 @@ Rewrite goals:
 
 ### What to learn
 
-This is the core of bhatti — what Firecracker does, how snapshots work,
+This is the core of ahvm — what Firecracker does, how snapshots work,
 and why you disabled diff snapshots.
 
 **Read your code:**
@@ -354,7 +354,7 @@ Atomic writes, WAL mode, ext4 images, age encryption — the data layer.
   Without fsync before rename, the renamed file could be empty after crash.
 - rename() is atomic on POSIX. Reader sees old file or new file, never half.
 - SQLite WAL: writes go to a log. Readers see a consistent snapshot without
-  blocking writers. Critical for bhatti because thermal manager writes while
+  blocking writers. Critical for ahvm because thermal manager writes while
   API reads.
 - Config drive: a 1MB ext4 image with a JSON config file. Mounted read-only
   in the VM. Contains hostname, token, env vars, files, volume mounts, init
@@ -403,7 +403,7 @@ everything connects end-to-end.
 **Read your code:**
 - `pkg/server/server.go` — `runThermalCycle`, `SnapshotAll`, `ensureHot`
 - `pkg/engine/firecracker/engine.go` — `EnsureHot`, `Pause`, `Resume`
-- `cmd/bhatti/main.go` — recovery, graceful shutdown
+- `cmd/ahvm/main.go` — recovery, graceful shutdown
 
 **Study:**
 - Go Memory Model (1 page):
@@ -513,7 +513,7 @@ diagram and doesn't mention jailer, balloon, per-user bridges, or backup.
 You'll know you own this when:
 
 1. Someone reads your rewritten docs and they sound like a person wrote them
-2. You can trace `bhatti exec dev -- echo hello` from keystroke to output
+2. You can trace `ahvm exec dev -- echo hello` from keystroke to output
    and explain every step without looking at code
 3. You can look at a bug report and immediately know which file to open
 4. You can explain the rory incident — what happened, why, and how you

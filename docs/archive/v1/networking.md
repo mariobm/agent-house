@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/under-the-hood/networking/>.
+> <https://ahvm.sh/docs/under-the-hood/networking/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -21,7 +21,7 @@ Internet ◄──NAT────┤                                  │
                     │       │                          │
                     │  iptables MASQUERADE             │
                     │       │                          │
-                    │  brbhatti0 (bridge)              │
+                    │  brahvm0 (bridge)              │
                     │  192.168.137.1/24                │
                     │       │                          │
                     │  ┌────┴────┬────────┐           │
@@ -36,7 +36,7 @@ Internet ◄──NAT────┤                                  │
                     └─────┘  └─────┘  └─────┘
 ```
 
-All VMs share one bridge (`brbhatti0`) and one masquerade rule. VMs can reach the internet and each other.
+All VMs share one bridge (`brahvm0`) and one masquerade rule. VMs can reach the internet and each other.
 
 ## IP Pool
 
@@ -103,7 +103,7 @@ Alternatives considered:
 
 `ensureBridge()` runs on every engine startup and is idempotent:
 
-1. Create bridge `brbhatti0` (ignore "already exists")
+1. Create bridge `brahvm0` (ignore "already exists")
 2. Assign `192.168.137.1/24` (ignore "already set")
 3. Bring bridge up
 4. Enable IP forwarding (`/proc/sys/net/ipv4/ip_forward`)
@@ -145,7 +145,7 @@ After snapshot/restore:
 - **Guest-initiated TCP has stale conntrack.** The host's iptables conntrack table has stale entries for the guest IP. Guest-initiated SYN packets get stuck in kernel retransmit backoff for 30+ seconds. This doesn't affect normal operation (the host always initiates connections to the agent), but it means `ping` and outbound TCP from the guest may be slow immediately after restore. An ARP flush helps:
 
 ```bash
-ip neigh flush dev brbhatti0
+ip neigh flush dev brahvm0
 ```
 
 ## Reverse Proxy
@@ -154,12 +154,12 @@ Two proxy paths exist:
 
 **Authenticated proxy** (API users):
 ```
-Browser → bhatti :8080 → /sandboxes/:id/proxy/:port/path → Engine.Tunnel() → lohar → localhost:port
+Browser → ahvm :8080 → /sandboxes/:id/proxy/:port/path → Engine.Tunnel() → lohar → localhost:port
 ```
 
 **Public proxy** (published ports, no auth):
 ```
-Browser → Cloudflare → bhatti :443 → Host: my-app.bhatti.sh → alias lookup → EnsureHot() → Tunnel() → lohar → localhost:port
+Browser → Cloudflare → ahvm :443 → Host: my-app.ahvm.sh → alias lookup → EnsureHot() → Tunnel() → lohar → localhost:port
 ```
 
 Both use `httputil.ReverseProxy` with a custom `tunnelTransport` that wraps `Engine.Tunnel()` as an `http.RoundTripper`. This gives proper hop-by-hop header removal, chunked transfer encoding, and streaming support (`FlushInterval: -1` flushes every chunk for SSE). A `context.AfterFunc` guard ensures tunnel FDs are cleaned up on client disconnect.

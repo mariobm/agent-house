@@ -1,10 +1,10 @@
-# Bhatti v0.3 — Images, Volumes, and Snapshots
+# AHVM v0.3 — Images, Volumes, and Snapshots
 
 v0.1 shipped multi-tenant security: per-user auth, network isolation,
 guest hardening, encrypted secrets, rate limiting, and observability.
 v0.2 shipped CLI improvements (cobra migration, --timing, --json, --timeout).
 
-v0.3 adds the storage and state primitives that make bhatti useful for
+v0.3 adds the storage and state primitives that make ahvm useful for
 real workloads: persistent data, custom environments, and checkpoint/resume.
 
 ---
@@ -47,8 +47,8 @@ An image is an immutable ext4 file used as a rootfs source. Sandboxes
 get copy-on-write clones. The image itself is never modified.
 
 ```
-/var/lib/bhatti/images/
-  base-amd64.ext4                   admin-built, ships with bhatti
+/var/lib/ahvm/images/
+  base-amd64.ext4                   admin-built, ships with ahvm
   python-3.12.ext4                  pulled from docker.io/library/python:3.12
   usr_alice/
     ml-ready.ext4                   saved by alice from a running sandbox
@@ -56,9 +56,9 @@ get copy-on-write clones. The image itself is never modified.
 
 Sources:
 - **Admin-built**: `build-rootfs.sh` with different package lists
-- **OCI pull**: `bhatti image pull python:3.12` converts a Docker image
-- **Save-as-image**: `bhatti image save <sandbox> --name ml-ready`
-- **Import**: `bhatti image import --file custom.ext4 --name my-env`
+- **OCI pull**: `ahvm image pull python:3.12` converts a Docker image
+- **Save-as-image**: `ahvm image save <sandbox> --name ml-ready`
+- **Import**: `ahvm image import --file custom.ext4 --name my-env`
 
 Scoping: admin images are global (no user prefix). User-saved images
 are private (stored under `usr_{id}/`). Users see both admin and their
@@ -77,7 +77,7 @@ sandbox directory. Survives sandbox destroy. Attachable to sandboxes
 by name.
 
 ```
-/var/lib/bhatti/volumes/
+/var/lib/ahvm/volumes/
   usr_alice/
     workspace.ext4                  5GB, her project files
     shared-data.ext4                20GB, team dataset
@@ -187,7 +187,7 @@ registers, device state, plus references to the block devices that were
 attached. Firecracker's existing snapshot/restore mechanism.
 
 ```
-/var/lib/bhatti/snapshots/
+/var/lib/ahvm/snapshots/
   usr_alice/
     dev-ready/
       mem.snap                      memory snapshot
@@ -245,16 +245,16 @@ Firecracker uses raw block devices, not overlay filesystems.
 | Layers shared across containers | Each VM has independent rootfs |
 
 A Docker image cannot be directly booted by Firecracker. It must be
-converted to a flat ext4 filesystem image with bhatti's guest agent
+converted to a flat ext4 filesystem image with ahvm's guest agent
 injected.
 
 ### The conversion pipeline
 
 ```
-Docker Registry                        Bhatti
+Docker Registry                        AHVM
 ─────────────                          ──────
 manifest.json ───┐
-layer-0.tar.gz ──┤    bhatti image     /var/lib/bhatti/images/
+layer-0.tar.gz ──┤    ahvm image     /var/lib/ahvm/images/
 layer-1.tar.gz ──┼──► pull python:3.12 ──► python-3.12.ext4
 layer-2.tar.gz ──┤      (one-time)         (flat ext4, cached)
 layer-3.tar.gz ──┘
@@ -339,7 +339,7 @@ umount /mnt
   use `e2fsprogs`' `mke2fs` + `e2cp` to populate without mounting, but
   this is slower and doesn't handle symlinks/permissions as cleanly.
 
-**4. Inject bhatti components.**
+**4. Inject ahvm components.**
 The image needs lohar and a few directory stubs for the boot process:
 
 ```go
@@ -378,7 +378,7 @@ ensureUser(mountpoint, "lohar", 1000)
   image is based on musl (Alpine) vs glibc (Debian/Ubuntu), commands in
   the image work fine because they were compiled against the image's libc.
   But if the user tries to run binaries copied from the host, they'll fail.
-  This is expected container behavior, not a bhatti-specific issue.
+  This is expected container behavior, not a ahvm-specific issue.
 
 - **resolv.conf symlink**: many images have `/etc/resolv.conf` as a symlink
   to `/run/systemd/resolve/stub-resolv.conf` (Ubuntu's systemd-resolved).
@@ -407,7 +407,7 @@ ensureUser(mountpoint, "lohar", 1000)
 
 - **Images that expect root**: some images have `User: ""` (default) or
   `User: "root"` in their OCI config, meaning the container was designed
-  to run everything as root. In bhatti, exec runs as uid 1000. If the
+  to run everything as root. In ahvm, exec runs as uid 1000. If the
   image writes to `/usr/local/lib`, `/etc`, or other root-owned paths,
   it will get permission denied.
 
@@ -421,7 +421,7 @@ ensureUser(mountpoint, "lohar", 1000)
      sudo — permission errors may occur for system-level operations"
 
   This is the biggest compatibility gap between Docker (runs as root by
-  default) and bhatti (runs as uid 1000 by default). It's solvable but
+  default) and ahvm (runs as uid 1000 by default). It's solvable but
   must be handled during conversion, not at runtime.
 
 **5. Extract and store OCI config metadata.**
@@ -452,7 +452,7 @@ table). When a sandbox is created from this image:
 
 **Layer sharing.** Docker stores each layer once and shares it across
 images. `python:3.12` and `python:3.12-slim` might share 80% of their
-layers. In bhatti, each is an independent ext4 file. No sharing.
+layers. In ahvm, each is an independent ext4 file. No sharing.
 
 Impact: ~1-3GB per cached image. With 20 images, 30-60GB of image
 storage. On 1.8TB NVMe, this is 2-3% of capacity. Not a problem for
@@ -464,23 +464,23 @@ layers as separate read-only block devices. But this adds complexity to
 lohar and limits layers per image. Not worth it for v0.3.
 
 **Incremental updates.** Pulling `python:3.12.4` after having `3.12.3`
-in Docker only downloads the changed layers. In bhatti, it re-downloads
+in Docker only downloads the changed layers. In ahvm, it re-downloads
 everything and re-converts.
 
-Mitigation: the conversion result is cached. `bhatti image pull python:3.12`
+Mitigation: the conversion result is cached. `ahvm image pull python:3.12`
 checks if the image digest has changed since last pull. If not, no-op. If
 yes, re-pulls and re-converts. This is a full re-download but it's a
 background operation, not in the sandbox creation path.
 
 **Build workflow.** Docker has `Dockerfile` for declarative image building.
-bhatti doesn't replicate this. Users either pull existing images or
+ahvm doesn't replicate this. Users either pull existing images or
 customize by running commands in a sandbox and saving.
 
 This is a feature, not a limitation. Dockerfiles are a build tool.
-Bhatti's model — boot a sandbox, run commands, save the result — is
+AHVM's model — boot a sandbox, run commands, save the result — is
 more interactive and more natural for dev environments. If users want
 Dockerfile-style builds, they run `docker build` externally and
-`bhatti image pull` the result.
+`ahvm image pull` the result.
 
 ### Kernel compatibility
 
@@ -489,7 +489,7 @@ of options compiled in — filesystems, network modules, security modules,
 device drivers. Containers get all of this for free.
 
 Firecracker VMs run a minimal guest kernel. The kernel shipped with
-bhatti has a stripped-down config optimized for fast boot:
+ahvm has a stripped-down config optimized for fast boot:
 
 **What's in the kernel:**
 - ext4 (rootfs, volumes)
@@ -532,20 +532,20 @@ For private registries:
 
 ```bash
 # Docker Hub (private repos)
-bhatti image pull myorg/private-image:latest --auth user:token
+ahvm image pull myorg/private-image:latest --auth user:token
 
 # GitHub Container Registry
-bhatti image pull ghcr.io/myorg/my-image:latest --auth user:ghp_...
+ahvm image pull ghcr.io/myorg/my-image:latest --auth user:ghp_...
 
 # AWS ECR
-bhatti image pull 123456.dkr.ecr.us-east-1.amazonaws.com/my-image:latest
+ahvm image pull 123456.dkr.ecr.us-east-1.amazonaws.com/my-image:latest
 # (uses AWS credential chain automatically if aws-cli is configured)
 ```
 
 For v0.3: support `--auth user:token` flag and `~/.docker/config.json`.
 Don't implement the full Docker credential helper ecosystem — it's a
 rabbit hole. Users who need ECR/GCR auth can `docker pull` + `docker save`
-+ `bhatti image import` as a workaround.
++ `ahvm image import` as a workaround.
 
 ### Async Pull: Task System
 
@@ -651,7 +651,7 @@ return the existing task ID instead of starting a duplicate.
 
 ## Save-as-Image: Checkpoint the Filesystem
 
-When a user runs `bhatti image save <sandbox> --name my-env`:
+When a user runs `ahvm image save <sandbox> --name my-env`:
 
 1. **Pause the VM** — ensure filesystem consistency (no in-flight writes)
 2. **Copy the rootfs** — `cp` the sandbox's rootfs.ext4 to the images
@@ -683,7 +683,7 @@ This is distinct from a snapshot, which captures the entire VM state.
 ### Storage layout
 
 ```
-/var/lib/bhatti/volumes/
+/var/lib/ahvm/volumes/
   {user_id}/
     {name}.ext4             the volume data
 ```
@@ -989,7 +989,7 @@ indefinitely. Copy-everything is the correct starting point.
 **Critical implementation detail**: Firecracker's `vm.snap` records the
 original `path_on_host` for every block device. On snapshot load,
 Firecracker opens those exact paths. If the rootfs was at
-`/var/lib/bhatti/sandboxes/abc/rootfs.ext4` when checkpointed, `vm.snap`
+`/var/lib/ahvm/sandboxes/abc/rootfs.ext4` when checkpointed, `vm.snap`
 contains that path — NOT the copied snapshot path.
 
 The resume procedure must reconfigure drives BEFORE loading the snapshot:
@@ -1262,7 +1262,7 @@ func injectLoharIntoRootfs(rootfsPath, dataDir string) error {
     }
     // Use debugfs to write without mounting (no loop device needed)
     // Or mount briefly:
-    mnt, _ := os.MkdirTemp("", "bhatti-inject-*")
+    mnt, _ := os.MkdirTemp("", "ahvm-inject-*")
     defer os.RemoveAll(mnt)
     if err := exec.Command("mount", "-o", "loop", rootfsPath, mnt).Run(); err != nil {
         return err
@@ -1378,7 +1378,7 @@ f.Truncate(4 << 20)  // 4MB
 Also migrate `createConfigDrive` from mount/umount to `mke2fs -d`:
 ```go
 func createConfigDrive(path string, cfg SandboxConfig) error {
-    tmpDir, _ := os.MkdirTemp("", "bhatti-config-*")
+    tmpDir, _ := os.MkdirTemp("", "ahvm-config-*")
     defer os.RemoveAll(tmpDir)
 
     data, _ := json.MarshalIndent(cfg, "", "  ")
@@ -1450,7 +1450,7 @@ CREATE TABLE volumes_v2 (
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     size_mb INTEGER NOT NULL,
-    file_path TEXT NOT NULL,              -- /var/lib/bhatti/volumes/{user_id}/{name}.ext4
+    file_path TEXT NOT NULL,              -- /var/lib/ahvm/volumes/{user_id}/{name}.ext4
     status TEXT NOT NULL DEFAULT 'ready', -- 'creating' (mkfs in progress) or 'ready'
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, name)
@@ -1789,7 +1789,7 @@ In `Destroy()`:
 ```go
 // Release volume attachments (but don't delete volume files)
 // The server layer calls store.DetachAllVolumes(sandboxID)
-// Volume files in /var/lib/bhatti/volumes/ are untouched
+// Volume files in /var/lib/ahvm/volumes/ are untouched
 ```
 
 No change to `Destroy()` itself — `os.RemoveAll(sandboxDir)` only
@@ -1878,7 +1878,7 @@ func (s *Store) DeleteVolume(userID, name string) error {
 **Startup reconciliation for orphaned files** (called from engine init):
 ```go
 func reconcileOrphanedVolumeFiles(dataDir string, store *Store) {
-    // Walk /var/lib/bhatti/volumes/*/  and check each .ext4 file
+    // Walk /var/lib/ahvm/volumes/*/  and check each .ext4 file
     // against the store. Files with no store record are orphans.
     filepath.WalkDir(filepath.Join(dataDir, "volumes"), func(path string, d fs.DirEntry, err error) error {
         if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".ext4") {
@@ -1898,13 +1898,13 @@ func reconcileOrphanedVolumeFiles(dataDir string, store *Store) {
 #### 1.5 CLI Changes
 
 ```
-bhatti volume create --name workspace --size 5120
-bhatti volume list
-bhatti volume delete workspace
-bhatti volume resize workspace --size 10240
+ahvm volume create --name workspace --size 5120
+ahvm volume list
+ahvm volume delete workspace
+ahvm volume resize workspace --size 10240
 
-bhatti create --name dev --volume workspace:/workspace
-bhatti create --name dev --volume datasets:/data:ro   # read-only
+ahvm create --name dev --volume workspace:/workspace
+ahvm create --name dev --volume datasets:/data:ro   # read-only
 ```
 
 The `--volume` flag format: `name:mount[:ro]`
@@ -2029,7 +2029,7 @@ CREATE TABLE images (
     user_id TEXT NOT NULL DEFAULT '',     -- '' = admin/global image
     name TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT '',      -- 'admin', 'oci:docker.io/library/python:3.12', 'saved:sandbox-abc'
-    file_path TEXT NOT NULL,             -- /var/lib/bhatti/images/{name}.ext4 or usr_{id}/{name}.ext4
+    file_path TEXT NOT NULL,             -- /var/lib/ahvm/images/{name}.ext4 or usr_{id}/{name}.ext4
     size_mb INTEGER NOT NULL DEFAULT 0,
     oci_digest TEXT NOT NULL DEFAULT '',         -- OCI manifest digest (sha256:...) for no-op pull detection
     oci_config_json TEXT NOT NULL DEFAULT '{}',  -- extracted OCI config (env, workdir, cmd, etc.)
@@ -2103,11 +2103,11 @@ func WithPlatform(os, arch string) Option  // MUST default to runtime.GOARCH
 
 **Platform resolution**: Docker Hub serves multi-platform manifests.
 `crane.Pull("python:3.12")` defaults to the build host's architecture.
-If bhatti is compiled for amd64, it pulls amd64 images. But if someone
-runs the CLI on an arm64 Mac (for `bhatti image pull`), crane pulls
+If ahvm is compiled for amd64, it pulls amd64 images. But if someone
+runs the CLI on an arm64 Mac (for `ahvm image pull`), crane pulls
 arm64 — which won't run on an amd64 Firecracker host. The default
 platform must be the TARGET host architecture (the Firecracker VM arch),
-not the build/CLI architecture. For `bhatti image pull` run remotely
+not the build/CLI architecture. For `ahvm image pull` run remotely
 via API, the server knows its own `runtime.GOARCH`. For CLI-initiated
 pulls, the pull should happen server-side, not client-side.
 
@@ -2125,7 +2125,7 @@ func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts
     config := extractConfig(cfgFile)
 
     // 3. Create temp dir for flattening
-    tmpDir, _ := os.MkdirTemp("", "bhatti-oci-*")
+    tmpDir, _ := os.MkdirTemp("", "ahvm-oci-*")
     defer os.RemoveAll(tmpDir)
 
     // 4. Flatten layers
@@ -2136,7 +2136,7 @@ func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts
         }
     }
 
-    // 5. Inject bhatti components
+    // 5. Inject ahvm components
     if err := injectLohar(tmpDir, loharPath); err != nil {
         return nil, fmt.Errorf("inject lohar: %w", err)
     }
@@ -2186,7 +2186,7 @@ func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts
 // content in the same directory. But we handle the general case.
 func extractLayer(layer v1.Layer, targetDir string) error {
     // Stage this layer's files in a temp dir
-    stageDir, _ := os.MkdirTemp("", "bhatti-layer-*")
+    stageDir, _ := os.MkdirTemp("", "ahvm-layer-*")
     defer os.RemoveAll(stageDir)
 
     reader, _ := layer.Uncompressed()
@@ -2424,7 +2424,7 @@ func validateImage(rootDir string) []string {
                 exists(rootDir, "bin/bash") || exists(rootDir, "usr/bin/bash")
     if !hasShell {
         warnings = append(warnings, "image has no /bin/sh — exec commands will fail. "+
-            "This image may be a 'scratch' or 'distroless' image which is not compatible with bhatti")
+            "This image may be a 'scratch' or 'distroless' image which is not compatible with ahvm")
     }
 
     // Check for FUSE
@@ -2432,11 +2432,11 @@ func validateImage(rootDir string) []string {
         warnings = append(warnings, "image contains FUSE tools — FUSE is not supported in the Firecracker guest kernel")
     }
 
-    // Check sudo availability (bhatti runs exec as uid 1000, not root)
+    // Check sudo availability (ahvm runs exec as uid 1000, not root)
     hasSudo := exists(rootDir, "usr/bin/sudo") || exists(rootDir, "bin/sudo")
     if !hasSudo {
         warnings = append(warnings, "image does not have sudo — commands that need root will fail. "+
-            "Install sudo in the image or use 'bhatti image save' from a sandbox with sudo configured")
+            "Install sudo in the image or use 'ahvm image save' from a sandbox with sudo configured")
     }
 
     return warnings
@@ -2513,7 +2513,7 @@ with a 1MB floor.
 **Known `mke2fs -d` limitations:**
 - **Hard links**: preserved only in e2fsprogs >= 1.45. Ubuntu 18.04
   ships 1.44, which copies hard links as independent files. Ubuntu 20.04+
-  (1.45.5) is fine. Since bhatti targets Ubuntu 22.04+, this is OK.
+  (1.45.5) is fine. Since ahvm targets Ubuntu 22.04+, this is OK.
   Add a version check during build/startup:
   ```go
   func checkE2fsprogsVersion() error {
@@ -2523,7 +2523,7 @@ with a 1MB floor.
   ```
 - **Extended attributes (xattr)**: NOT copied by `mke2fs -d`. Some
   Docker images use `security.capability` xattrs on binaries like
-  `ping` (to grant `CAP_NET_RAW` without setuid). In bhatti VMs, ping
+  `ping` (to grant `CAP_NET_RAW` without setuid). In ahvm VMs, ping
   uses the guest kernel's network stack and lohar runs exec as uid 1000
   — ping won't work regardless (needs CAP_NET_RAW). This is acceptable.
   Document: "images using file capabilities (xattr) for privilege
@@ -2581,12 +2581,12 @@ if err = copyRootfs(baseImage, rootfsPath); err != nil {
 // once all image creation paths inject lohar at build time. Instead:
 //   - OCI pull: injectLohar() during conversion (already in pipeline)
 //   - save-as-image: SaveImage() copies the rootfs which already has the
-//     current lohar (it's a running sandbox from this bhatti version)
+//     current lohar (it's a running sandbox from this ahvm version)
 //   - import: injectLohar() during import
-//   - upgrade path: `bhatti image rebuild` re-injects lohar into all
-//     cached images. Run after upgrading bhatti.
+//   - upgrade path: `ahvm image rebuild` re-injects lohar into all
+//     cached images. Run after upgrading ahvm.
 // The tradeoff: saved images pin lohar to the version at save time.
-// This is acceptable — `bhatti image rebuild` is the explicit upgrade
+// This is acceptable — `ahvm image rebuild` is the explicit upgrade
 // path. Doing it implicitly on every boot is too expensive.
 
 // Resize if requested
@@ -2806,7 +2806,7 @@ CREATE TABLE snapshots (
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     source_sandbox TEXT NOT NULL,       -- sandbox ID it was created from
-    mem_path TEXT NOT NULL,             -- /var/lib/bhatti/snapshots/{user_id}/{name}/mem.snap
+    mem_path TEXT NOT NULL,             -- /var/lib/ahvm/snapshots/{user_id}/{name}/mem.snap
     vm_path TEXT NOT NULL,
     rootfs_path TEXT NOT NULL,          -- copied rootfs at snapshot time
     config_path TEXT NOT NULL,          -- copied config drive

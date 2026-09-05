@@ -1,4 +1,4 @@
-# Bhatti v4 — Hardening, SDK Readiness, Performance, Test Coverage
+# AHVM v4 — Hardening, SDK Readiness, Performance, Test Coverage
 
 Parts 1–20 are done: wire protocol, lohar agent, FC engine, sessions,
 thermals, filesystem, CLI, deployment, install. 229 tests on real
@@ -13,7 +13,7 @@ suitable for agentic frameworks (pi, Claude Code, etc.). Four phases:
 4. **Test coverage** — fill gaps in proxy, recovery, benchmarks
 
 Phase 2 comes before Phase 3 because external users hit the API first.
-If `bhatti exec dev -- npm install` produces 30 seconds of silence
+If `ahvm exec dev -- npm install` produces 30 seconds of silence
 before dumping output, or a 10MB file read transfers 10MB through the
 wire protocol before the consumer truncates to 50KB, the first impression
 is broken. Diff snapshots and allocation pools are invisible to users —
@@ -589,7 +589,7 @@ standard library since Go 1.21, and the project uses Go 1.25.
 ### 42.2 Logger Setup
 
 ```go
-// cmd/bhatti/main.go
+// cmd/ahvm/main.go
 
 func setupLogger(level string, jsonOutput bool) {
     var lvl slog.Level
@@ -697,7 +697,7 @@ slog.Debug("agent dial", "id", id, "transport", "tcp", "addr", guestIP)
 
 Lohar already logs to stderr which Firecracker captures. Replace
 `fmt.Fprintf(os.Stderr, ...)` and `logf()` with slog. Guest logs are
-debug-level — only visible when bhatti daemon is run with `--log-level=debug`.
+debug-level — only visible when ahvm daemon is run with `--log-level=debug`.
 
 ```go
 // Before:
@@ -716,7 +716,7 @@ slog.Info("init session started", "pid", cmd.Process.Pid)
 | `cmd/lohar/handler.go` | 1 | 1 |
 | `cmd/lohar/tty.go` | 0 | 2 |
 | `cmd/lohar/main.go` | 0 | ~5 |
-| `cmd/bhatti/main.go` | ~3 | 0 |
+| `cmd/ahvm/main.go` | ~3 | 0 |
 
 ### 42.5 Verification
 
@@ -769,7 +769,7 @@ func isStaticPath(path string) bool {
 ### 43.2 Graceful Shutdown
 
 ```go
-// cmd/bhatti/main.go — serve command
+// cmd/ahvm/main.go — serve command
 
 httpServer := &http.Server{
     Addr:    cfg.ListenAddr,
@@ -816,14 +816,14 @@ slog.Info("shutdown complete")
 # Phase 2 — SDK Readiness
 
 Driven by research into pi's agentic tool patterns (see `docs/pi-learnings.md`).
-These changes make bhatti usable as a backend for coding agent frameworks.
+These changes make ahvm usable as a backend for coding agent frameworks.
 
 ## Part 35 — Streaming Exec (NDJSON)
 
 ### 35.1 Motivation
 
 Pi's `BashOperations.exec` takes an `onData` callback that receives output
-chunks as they arrive. Bhatti's current `POST /exec` buffers the entire
+chunks as they arrive. AHVM's current `POST /exec` buffers the entire
 stdout/stderr and returns it all at once. For a `npm install` that takes
 30 seconds, the consumer sees nothing until completion.
 
@@ -1003,9 +1003,9 @@ func (e *Engine) ExecStream(ctx context.Context, id string, cmd []string, onEven
 
 ```typescript
 // How a pi BashOperations would consume the NDJSON stream:
-const bhattiBashOps: BashOperations = {
+const ahvmBashOps: BashOperations = {
   async exec(command, cwd, { onData, signal, timeout }) {
-    const resp = await fetch(`${BHATTI_URL}/sandboxes/${id}/exec`, {
+    const resp = await fetch(`${AHVM_URL}/sandboxes/${id}/exec`, {
       method: "POST",
       headers: {
         "Accept": "application/x-ndjson",
@@ -1044,11 +1044,11 @@ const bhattiBashOps: BashOperations = {
 
 ### 35.8 CLI Integration
 
-The `bhatti exec` command can use the streaming endpoint to show live output
+The `ahvm exec` command can use the streaming endpoint to show live output
 instead of waiting for completion:
 
 ```go
-// cmd/bhatti/cli.go — cmdExec
+// cmd/ahvm/cli.go — cmdExec
 
 // Request streaming
 req.Header.Set("Accept", "application/x-ndjson")
@@ -1096,7 +1096,7 @@ os.Exit(exitCode)
 ### 36.1 Motivation
 
 Pi's read tool truncates to 2000 lines / 50KB (whichever comes first).
-Bhatti's `FileRead` currently transfers the **entire file** from guest to
+AHVM's `FileRead` currently transfers the **entire file** from guest to
 host. A 100MB log file transfers 100MB through the wire protocol even
 though the consumer truncates to 50KB. Server-side truncation avoids
 2000x wasted bandwidth.
@@ -1286,8 +1286,8 @@ ln -sf /usr/bin/fdfind /usr/local/bin/fd
 After rootfs rebuild:
 
 ```bash
-bhatti exec <sandbox> -- rg --version
-bhatti exec <sandbox> -- fd --version
+ahvm exec <sandbox> -- rg --version
+ahvm exec <sandbox> -- fd --version
 ```
 
 ---
@@ -1296,7 +1296,7 @@ bhatti exec <sandbox> -- fd --version
 
 ### 38.1 Motivation
 
-Pi's tools all support `AbortSignal` for cancellation. Bhatti's file
+Pi's tools all support `AbortSignal` for cancellation. AHVM's file
 operations can't be cancelled mid-stream. A `FileRead` of a 100MB file
 runs to completion even if the client disconnects.
 
@@ -1345,7 +1345,7 @@ Note: `dialControl(ctx)` depends on Part 40 (context-aware dial).
 ### 39.1 Motivation
 
 Pi kills the **entire process tree** on abort:
-`process.kill(-child.pid, SIGKILL)`. Bhatti's KILL frame sends `SIGTERM`
+`process.kill(-child.pid, SIGKILL)`. AHVM's KILL frame sends `SIGTERM`
 to the session's direct process. Child processes (e.g., a shell running
 `npm install` which spawns `node`) survive.
 
@@ -1684,7 +1684,7 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 
 **`pkg/server/proxy_route_test.go`:**
 
-- `TestProxyHTTPGet` — mock HTTP server, proxy through bhatti, verify
+- `TestProxyHTTPGet` — mock HTTP server, proxy through ahvm, verify
   response body and headers.
 - `TestProxyHTTPPost` — POST with body, verify forwarded correctly.
 - `TestProxyHTTPHeaders` — custom headers round-trip.
@@ -1793,7 +1793,7 @@ All on real Firecracker VMs (`pkg/engine/firecracker/perf_test.go`):
 ### What changed from the original plan
 
 1. **Phase 2 (SDK) and Phase 3 (performance) swapped.** External users hit
-   the API first. If `bhatti exec` produces 30s of silence or file reads
+   the API first. If `ahvm exec` produces 30s of silence or file reads
    transfer 100MB to truncate to 50KB, the first impression is broken.
    Diff snapshots are invisible; streaming exec is not.
 
