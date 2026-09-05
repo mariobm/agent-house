@@ -1418,6 +1418,37 @@ func TestAgentFileConcurrentReadWrite(t *testing.T) {
 	}
 }
 
+func TestAgentFileWriteRejectsDataBeyondDeclaredSize(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	filePath := filepath.Join(t.TempDir(), "oversized.txt")
+	conn := dialControl(t, ctrl)
+	defer conn.Close()
+
+	proto.SendJSON(conn, proto.FILE_WRITE_REQ, map[string]any{
+		"path": filePath, "mode": "0644", "size": 1,
+	})
+	proto.WriteFrame(conn, proto.STDIN, []byte("payload larger than declared"))
+
+	msgType, payload, err := proto.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if msgType != proto.ERROR {
+		t.Fatalf("response type = 0x%02x, want ERROR", msgType)
+	}
+	if !strings.Contains(string(payload), "exceeds declared size") {
+		t.Fatalf("unexpected error: %s", payload)
+	}
+	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+		t.Fatalf("destination created after rejected write: %v", err)
+	}
+	if _, err := os.Stat(filePath + ".bhatti-tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temporary file left after rejected write: %v", err)
+	}
+}
+
 func TestAgentFileConcurrentWritesSameFile(t *testing.T) {
 	ctrl, _, cleanup := startTestAgent(t)
 	defer cleanup()

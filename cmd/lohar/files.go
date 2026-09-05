@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -175,13 +176,28 @@ func handleFileWrite(conn net.Conn, payload []byte) {
 			writeErr = fmt.Errorf("connection lost after %d/%d bytes", written, req.Size)
 			break
 		}
-		if msgType == proto.STDIN {
-			n, err := f.Write(data)
-			written += int64(n)
-			if err != nil {
-				writeErr = err
-				break
-			}
+		if msgType != proto.STDIN {
+			writeErr = fmt.Errorf("expected file data, got frame type 0x%02x", msgType)
+			break
+		}
+		if len(data) == 0 {
+			writeErr = fmt.Errorf("empty file data frame before declared size was reached")
+			break
+		}
+		remaining := req.Size - written
+		if int64(len(data)) > remaining {
+			writeErr = fmt.Errorf("file data exceeds declared size by %d bytes", int64(len(data))-remaining)
+			break
+		}
+		n, err := f.Write(data)
+		written += int64(n)
+		if err != nil {
+			writeErr = err
+			break
+		}
+		if n != len(data) {
+			writeErr = io.ErrShortWrite
+			break
 		}
 	}
 
@@ -302,4 +318,3 @@ func handleFileList(conn net.Conn, payload []byte) {
 
 	proto.SendJSON(conn, proto.FILE_LS_RESP, files)
 }
-
