@@ -1,0 +1,17 @@
+/bhatti
+bin/
+dist/
+*.db
+.build-ctx/
+.DS_Store
+pi-session-*.html
+/lohar
+.worktrees/
+docs/PLAN-learning.md
+docs/internal/
+/bhatti-vmm
+/bhatti-netd
+/bhatti-vmm-krucible
+/krucible-mkimage
+bench/results-krucible-mac/
+/cmd/bhatti-netd/bhatti-netd

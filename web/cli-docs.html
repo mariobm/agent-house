@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>bhatti — CLI Reference</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>" />
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111;
+      --border: #222;
+      --text: #e0e0e0;
+      --text-muted: #888;
+      --accent: #3b82f6;
+      --code-bg: #161616;
+      --code-border: #2a2a2a;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .layout {
+      display: flex;
+      min-height: 100vh;
+    }
+    .sidebar {
+      width: 260px;
+      border-right: 1px solid var(--border);
+      padding: 24px 16px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+    .sidebar h2 {
+      font-size: 14px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin: 16px 0 8px;
+    }
+    .sidebar h2:first-child { margin-top: 0; }
+    .sidebar a {
+      display: block;
+      padding: 4px 8px;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 14px;
+      border-radius: 4px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .sidebar a:hover { background: var(--surface); color: var(--accent); }
+    .sidebar a.sub { padding-left: 24px; color: var(--text-muted); font-size: 13px; }
+    .content {
+      flex: 1;
+      max-width: 800px;
+      padding: 40px;
+    }
+    h1 {
+      font-size: 32px;
+      margin-bottom: 8px;
+    }
+    h1 small {
+      font-size: 16px;
+      color: var(--text-muted);
+      font-weight: normal;
+    }
+    .subtitle {
+      color: var(--text-muted);
+      margin-bottom: 32px;
+      font-size: 16px;
+    }
+    .command {
+      margin-bottom: 48px;
+      padding-bottom: 32px;
+      border-bottom: 1px solid var(--border);
+    }
+    .command:last-child { border-bottom: none; }
+    .command h2 {
+      font-size: 22px;
+      margin-bottom: 4px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .command h2 a { color: var(--accent); text-decoration: none; }
+    .command h2 a:hover { text-decoration: underline; }
+    .aliases {
+      color: var(--text-muted);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .description {
+      margin: 12px 0;
+      white-space: pre-wrap;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 6px;
+      padding: 16px;
+      overflow-x: auto;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 13px;
+      margin: 12px 0;
+      line-height: 1.5;
+    }
+    code {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 13px;
+      background: var(--code-bg);
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 14px;
+    }
+    th {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 2px solid var(--border);
+      color: var(--text-muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 13px;
+    }
+    td:last-child {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    .required { color: #ef4444; font-size: 11px; }
+    .default-val { color: var(--text-muted); }
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .content { padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar">
+      <h2>bhatti CLI</h2>
+      <a href="#bhatti">bhatti</a>
+      <a href="#bhatti-completion" >bhatti completion</a>
+      <a href="#bhatti-create" >bhatti create</a>
+      <a href="#bhatti-destroy" >bhatti destroy</a>
+      <a href="#bhatti-edit" >bhatti edit</a>
+      <a href="#bhatti-exec" >bhatti exec</a>
+      <a href="#bhatti-file" style="margin-top: 8px;">bhatti file</a>
+      <a class="sub" href="#bhatti-file-ls">ls</a>
+      <a class="sub" href="#bhatti-file-read">read</a>
+      <a class="sub" href="#bhatti-file-write">write</a>
+      <a href="#bhatti-image" style="margin-top: 8px;">bhatti image</a>
+      <a class="sub" href="#bhatti-image-delete">delete</a>
+      <a class="sub" href="#bhatti-image-import">import</a>
+      <a class="sub" href="#bhatti-image-list">list</a>
+      <a class="sub" href="#bhatti-image-pull">pull</a>
+      <a class="sub" href="#bhatti-image-save">save</a>
+      <a class="sub" href="#bhatti-image-share">share</a>
+      <a class="sub" href="#bhatti-image-unshare">unshare</a>
+      <a href="#bhatti-inspect" >bhatti inspect</a>
+      <a href="#bhatti-list" >bhatti list</a>
+      <a href="#bhatti-ps" >bhatti ps</a>
+      <a href="#bhatti-publish" >bhatti publish</a>
+      <a href="#bhatti-secret" style="margin-top: 8px;">bhatti secret</a>
+      <a class="sub" href="#bhatti-secret-delete">delete</a>
+      <a class="sub" href="#bhatti-secret-list">list</a>
+      <a class="sub" href="#bhatti-secret-set">set</a>
+      <a href="#bhatti-serve" >bhatti serve</a>
+      <a href="#bhatti-setup" >bhatti setup</a>
+      <a href="#bhatti-shell" >bhatti shell</a>
+      <a href="#bhatti-snapshot" style="margin-top: 8px;">bhatti snapshot</a>
+      <a class="sub" href="#bhatti-snapshot-create">create</a>
+      <a class="sub" href="#bhatti-snapshot-delete">delete</a>
+      <a class="sub" href="#bhatti-snapshot-list">list</a>
+      <a class="sub" href="#bhatti-snapshot-resume">resume</a>
+      <a href="#bhatti-start" >bhatti start</a>
+      <a href="#bhatti-stop" >bhatti stop</a>
+      <a href="#bhatti-unpublish" >bhatti unpublish</a>
+      <a href="#bhatti-update" >bhatti update</a>
+      <a href="#bhatti-user" style="margin-top: 8px;">bhatti user</a>
+      <a class="sub" href="#bhatti-user-create">create</a>
+      <a class="sub" href="#bhatti-user-delete">delete</a>
+      <a class="sub" href="#bhatti-user-list">list</a>
+      <a class="sub" href="#bhatti-user-rotate-key">rotate-key</a>
+      <a href="#bhatti-version" >bhatti version</a>
+      <a href="#bhatti-volume" style="margin-top: 8px;">bhatti volume</a>
+      <a class="sub" href="#bhatti-volume-backup">backup</a>
+      <a class="sub" href="#bhatti-volume-backup-delete">backup-delete</a>
+      <a class="sub" href="#bhatti-volume-backup-list">backup-list</a>
+      <a class="sub" href="#bhatti-volume-create">create</a>
+      <a class="sub" href="#bhatti-volume-delete">delete</a>
+      <a class="sub" href="#bhatti-volume-list">list</a>
+      <a class="sub" href="#bhatti-volume-resize">resize</a>
+      <a class="sub" href="#bhatti-volume-restore">restore</a>
+    </nav>
+    <main class="content">
+      <h1>bhatti <small>CLI Reference</small></h1>
+      <p class="subtitle">Auto-generated from command definitions. Always up to date.</p>
+      <section class="command" id="bhatti">
+        <h2><a href="#bhatti">bhatti</a></h2>
+        <p>Firecracker microVM orchestrator</p>
+        <div class="description">bhatti creates isolated Linux VMs in seconds. Each sandbox has its own
+kernel, filesystem, and network. Paused sandboxes resume in under 3ms.</div>
+      </section>
+      <section class="command" id="bhatti-completion">
+        <h2><a href="#bhatti-completion">bhatti completion</a></h2>
+        <p>Generate shell completion script</p>
+      </section>
+      <section class="command" id="bhatti-create">
+        <h2><a href="#bhatti-create">bhatti create</a></h2>
+        <p>Create a new sandbox</p>
+        <div class="description">Create a new sandbox VM. Each sandbox is an isolated Linux environment
+with its own kernel, filesystem, and network.</div>
+        <pre>  bhatti create --name dev
+  bhatti create --name ml --cpus 4 --memory 4096
+  bhatti create --name api --env API_KEY=sk-abc --init &#34;npm install&#34;
+  bhatti create --name py --image python-3.12
+  bhatti create --name work --volume workspace:/workspace
+  bhatti create --name agent --init &#34;hermes gateway&#34; --keep-hot</pre>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--cpus</td>
+            <td><span class="default-val">1</span></td>
+            <td>Number of vCPUs</td>
+          </tr>
+          <tr>
+            <td>--disk-size</td>
+            <td><span class="default-val">0</span></td>
+            <td>Rootfs disk size in MB (0 = use image size)</td>
+          </tr>
+          <tr>
+            <td>--env</td>
+            <td>—</td>
+            <td>Environment variables (K=V,K=V)</td>
+          </tr>
+          <tr>
+            <td>--image</td>
+            <td>—</td>
+            <td>Rootfs image name</td>
+          </tr>
+          <tr>
+            <td>--init</td>
+            <td>—</td>
+            <td>Init script</td>
+          </tr>
+          <tr>
+            <td>--keep-hot</td>
+            <td><span class="default-val">false</span></td>
+            <td>Prevent thermal transitions (for autonomous agents)</td>
+          </tr>
+          <tr>
+            <td>--memory</td>
+            <td><span class="default-val">0</span></td>
+            <td>Memory in MB (0 = server default: 2048)</td>
+          </tr>
+          <tr>
+            <td>--name</td>
+            <td>—</td>
+            <td>Sandbox name</td>
+          </tr>
+          <tr>
+            <td>--template</td>
+            <td>—</td>
+            <td>Template name or ID</td>
+          </tr>
+          <tr>
+            <td>--volume</td>
+            <td><span class="default-val">[]</span></td>
+            <td>Persistent volume (name:mount[:ro])</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-destroy">
+        <h2><a href="#bhatti-destroy">bhatti destroy</a></h2>
+        <div class="aliases">aliases: rm</div>
+        <p>Destroy a sandbox</p>
+        <div class="description">Permanently destroy a sandbox and all its data. Persistent volumes
+are detached but not deleted.</div>
+        <pre>  bhatti destroy dev</pre>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--yes, -y</td>
+            <td><span class="default-val">false</span></td>
+            <td>Skip confirmation</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-edit">
+        <h2><a href="#bhatti-edit">bhatti edit</a></h2>
+        <p>Update sandbox settings</p>
+        <div class="description">Update mutable settings on an existing sandbox. Currently supports
+toggling keep_hot to control thermal management.</div>
+        <pre>  bhatti edit my-agent --keep-hot
+  bhatti edit my-agent --allow-cold</pre>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--allow-cold</td>
+            <td><span class="default-val">false</span></td>
+            <td>Re-enable thermal transitions</td>
+          </tr>
+          <tr>
+            <td>--keep-hot</td>
+            <td><span class="default-val">false</span></td>
+            <td>Prevent thermal transitions</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-exec">
+        <h2><a href="#bhatti-exec">bhatti exec</a></h2>
+        <p>Execute a command in a sandbox</p>
+        <div class="description">Execute a command inside a sandbox. The exit code is forwarded.
+Sleeping sandboxes wake automatically.</div>
+        <pre>  bhatti exec dev -- echo hello
+  bhatti exec dev -- sudo apt-get install -y ripgrep
+  bhatti exec dev --timeout 60 -- long-running-script.sh</pre>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--timeout</td>
+            <td><span class="default-val">0</span></td>
+            <td>Exec timeout in seconds (default: 300, max: 3600)</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-file">
+        <h2><a href="#bhatti-file">bhatti file</a></h2>
+        <p>Read, write, and list files in a sandbox</p>
+        <pre>  bhatti file read dev /workspace/app.js
+  echo &#39;hello&#39; | bhatti file write dev /workspace/greeting.txt
+  bhatti file ls dev /workspace/</pre>
+      </section>
+      <section class="command" id="bhatti-file-ls">
+        <h2><a href="#bhatti-file-ls">bhatti file ls</a></h2>
+        <p>List files in a sandbox directory</p>
+      </section>
+      <section class="command" id="bhatti-file-read">
+        <h2><a href="#bhatti-file-read">bhatti file read</a></h2>
+        <p>Read a file from a sandbox</p>
+      </section>
+      <section class="command" id="bhatti-file-write">
+        <h2><a href="#bhatti-file-write">bhatti file write</a></h2>
+        <p>Write a file to a sandbox (reads from stdin)</p>
+      </section>
+      <section class="command" id="bhatti-image">
+        <h2><a href="#bhatti-image">bhatti image</a></h2>
+        <p>Manage rootfs images</p>
+        <div class="description">Images are ext4 filesystem snapshots used as sandbox root filesystems.
+Pull public images from registries with &#39;image pull&#39;.</div>
+        <pre>  bhatti image pull python:3.12
+  bhatti image save dev --name my-custom-env
+  bhatti image list</pre>
+      </section>
+      <section class="command" id="bhatti-image-delete">
+        <h2><a href="#bhatti-image-delete">bhatti image delete</a></h2>
+        <p>Delete an image</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--yes, -y</td>
+            <td><span class="default-val">false</span></td>
+            <td>Skip confirmation</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-image-import">
+        <h2><a href="#bhatti-image-import">bhatti image import</a></h2>
+        <p>Import a local Docker image as a bhatti rootfs</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--name</td>
+            <td>—</td>
+            <td>Image name (default: derived from ref)</td>
+          </tr>
+          <tr>
+            <td>--tar</td>
+            <td>—</td>
+            <td>Import from tarball path instead of Docker</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-image-list">
+        <h2><a href="#bhatti-image-list">bhatti image list</a></h2>
+        <p>List available images</p>
+      </section>
+      <section class="command" id="bhatti-image-pull">
+        <h2><a href="#bhatti-image-pull">bhatti image pull</a></h2>
+        <p>Pull an OCI/Docker image from a public registry</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--auth</td>
+            <td>—</td>
+            <td>Registry auth (user:token)</td>
+          </tr>
+          <tr>
+            <td>--name</td>
+            <td>—</td>
+            <td>Image name (default: derived from ref)</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-image-save">
+        <h2><a href="#bhatti-image-save">bhatti image save</a></h2>
+        <p>Save a sandbox&#39;s rootfs as an image</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--name</td>
+            <td>—</td>
+            <td>Image name (required)</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-image-share">
+        <h2><a href="#bhatti-image-share">bhatti image share</a></h2>
+        <p>Share an image with other users (requires DB access)</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--list</td>
+            <td><span class="default-val">false</span></td>
+            <td>List current shares</td>
+          </tr>
+          <tr>
+            <td>--user</td>
+            <td><span class="default-val">[]</span></td>
+            <td>User name(s) to share with</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-image-unshare">
+        <h2><a href="#bhatti-image-unshare">bhatti image unshare</a></h2>
+        <p>Revoke image access from users (requires DB access)</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--user</td>
+            <td><span class="default-val">[]</span></td>
+            <td>User name(s) to unshare from</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-inspect">
+        <h2><a href="#bhatti-inspect">bhatti inspect</a></h2>
+        <div class="aliases">aliases: info</div>
+        <p>Show sandbox details</p>
+        <pre>  bhatti inspect dev</pre>
+      </section>
+      <section class="command" id="bhatti-list">
+        <h2><a href="#bhatti-list">bhatti list</a></h2>
+        <div class="aliases">aliases: ls</div>
+        <p>List sandboxes</p>
+        <pre>  bhatti list</pre>
+      </section>
+      <section class="command" id="bhatti-ps">
+        <h2><a href="#bhatti-ps">bhatti ps</a></h2>
+        <p>List sessions in a sandbox</p>
+        <pre>  bhatti ps dev</pre>
+      </section>
+      <section class="command" id="bhatti-publish">
+        <h2><a href="#bhatti-publish">bhatti publish</a></h2>
+        <p>Publish a sandbox port with a public URL</p>
+        <pre>  bhatti publish dev -p 3000
+  bhatti publish dev -p 3000 -a my-app</pre>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--alias, -a</td>
+            <td>—</td>
+            <td>Custom alias (auto-generated if omitted)</td>
+          </tr>
+          <tr>
+            <td>--port, -p</td>
+            <td><span class="default-val">0</span></td>
+            <td>Port to publish (required)</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-secret">
+        <h2><a href="#bhatti-secret">bhatti secret</a></h2>
+        <p>Manage encrypted secrets</p>
+        <div class="description">Secrets are encrypted at rest (age) and scoped to your API key.
+They can be referenced in templates and injected into sandboxes at boot.</div>
+        <pre>  bhatti secret set API_KEY sk-abc123
+  bhatti secret list
+  bhatti secret delete API_KEY</pre>
+      </section>
+      <section class="command" id="bhatti-secret-delete">
+        <h2><a href="#bhatti-secret-delete">bhatti secret delete</a></h2>
+        <p>Delete a secret</p>
+      </section>
+      <section class="command" id="bhatti-secret-list">
+        <h2><a href="#bhatti-secret-list">bhatti secret list</a></h2>
+        <p>List secrets</p>
+      </section>
+      <section class="command" id="bhatti-secret-set">
+        <h2><a href="#bhatti-secret-set">bhatti secret set</a></h2>
+        <p>Create or update a secret</p>
+      </section>
+      <section class="command" id="bhatti-serve">
+        <h2><a href="#bhatti-serve">bhatti serve</a></h2>
+        <p>Start the daemon</p>
+        <div class="description">Start the bhatti daemon. Requires root, KVM, and a config at /var/lib/bhatti/config.yaml.</div>
+      </section>
+      <section class="command" id="bhatti-setup">
+        <h2><a href="#bhatti-setup">bhatti setup</a></h2>
+        <p>Configure CLI endpoint and API key</p>
+        <div class="description">Interactive setup for remote CLI users. Prompts for the API endpoint
+and API key, saves to ~/.bhatti/config.yaml, and tests the connection.</div>
+      </section>
+      <section class="command" id="bhatti-shell">
+        <h2><a href="#bhatti-shell">bhatti shell</a></h2>
+        <div class="aliases">aliases: sh</div>
+        <p>Open an interactive shell</p>
+        <div class="description">Open an interactive terminal inside the sandbox. Ctrl+\ to detach —
+the shell keeps running. Reconnect with &#39;bhatti shell&#39; again.</div>
+        <pre>  bhatti shell dev</pre>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--new</td>
+            <td><span class="default-val">false</span></td>
+            <td>Force a new session (don't reattach)</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-snapshot">
+        <h2><a href="#bhatti-snapshot">bhatti snapshot</a></h2>
+        <p>Manage named VM snapshots</p>
+        <div class="description">Snapshots capture the entire VM state: memory, CPU, disk. Resume
+produces an exact continuation — processes running, files open.</div>
+        <pre>  bhatti snapshot create dev --name dev-ready
+  bhatti snapshot resume dev-ready --name dev-2
+  bhatti snapshot list</pre>
+      </section>
+      <section class="command" id="bhatti-snapshot-create">
+        <h2><a href="#bhatti-snapshot-create">bhatti snapshot create</a></h2>
+        <p>Checkpoint a running sandbox</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--name</td>
+            <td>—</td>
+            <td>Snapshot name (required)</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-snapshot-delete">
+        <h2><a href="#bhatti-snapshot-delete">bhatti snapshot delete</a></h2>
+        <p>Delete a snapshot</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--yes, -y</td>
+            <td><span class="default-val">false</span></td>
+            <td>Skip confirmation</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-snapshot-list">
+        <h2><a href="#bhatti-snapshot-list">bhatti snapshot list</a></h2>
+        <p>List snapshots</p>
+      </section>
+      <section class="command" id="bhatti-snapshot-resume">
+        <h2><a href="#bhatti-snapshot-resume">bhatti snapshot resume</a></h2>
+        <p>Resume a sandbox from a snapshot</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--name</td>
+            <td>—</td>
+            <td>New sandbox name</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-start">
+        <h2><a href="#bhatti-start">bhatti start</a></h2>
+        <p>Resume a stopped sandbox</p>
+        <div class="description">Resume a sandbox from its snapshot. Continues exactly where it left off.</div>
+        <pre>  bhatti start dev</pre>
+      </section>
+      <section class="command" id="bhatti-stop">
+        <h2><a href="#bhatti-stop">bhatti stop</a></h2>
+        <p>Snapshot and stop a sandbox</p>
+        <div class="description">Pause the sandbox and save a snapshot to disk. Resume later with
+&#39;bhatti start&#39;. Stopped sandboxes use zero CPU and memory.</div>
+        <pre>  bhatti stop dev</pre>
+      </section>
+      <section class="command" id="bhatti-unpublish">
+        <h2><a href="#bhatti-unpublish">bhatti unpublish</a></h2>
+        <p>Unpublish a sandbox port</p>
+        <pre>  bhatti unpublish dev -p 3000</pre>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--port, -p</td>
+            <td><span class="default-val">0</span></td>
+            <td>Port to unpublish (required)</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-update">
+        <h2><a href="#bhatti-update">bhatti update</a></h2>
+        <p>Update bhatti CLI to the latest version</p>
+      </section>
+      <section class="command" id="bhatti-user">
+        <h2><a href="#bhatti-user">bhatti user</a></h2>
+        <p>Manage users (requires DB access)</p>
+        <div class="description">User management operates directly on the local SQLite database. Run on the server, not remotely.</div>
+      </section>
+      <section class="command" id="bhatti-user-create">
+        <h2><a href="#bhatti-user-create">bhatti user create</a></h2>
+        <p>Create a new user</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--max-cpus</td>
+            <td><span class="default-val">4</span></td>
+            <td>Max CPUs per sandbox</td>
+          </tr>
+          <tr>
+            <td>--max-memory</td>
+            <td><span class="default-val">4096</span></td>
+            <td>Max memory MB per sandbox</td>
+          </tr>
+          <tr>
+            <td>--max-sandboxes</td>
+            <td><span class="default-val">5</span></td>
+            <td>Max sandboxes for this user</td>
+          </tr>
+          <tr>
+            <td>--name</td>
+            <td>—</td>
+            <td>User name (required)</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-user-delete">
+        <h2><a href="#bhatti-user-delete">bhatti user delete</a></h2>
+        <p>Delete a user</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--yes, -y</td>
+            <td><span class="default-val">false</span></td>
+            <td>Skip confirmation</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-user-list">
+        <h2><a href="#bhatti-user-list">bhatti user list</a></h2>
+        <p>List users</p>
+      </section>
+      <section class="command" id="bhatti-user-rotate-key">
+        <h2><a href="#bhatti-user-rotate-key">bhatti user rotate-key</a></h2>
+        <p>Rotate a user&#39;s API key</p>
+      </section>
+      <section class="command" id="bhatti-version">
+        <h2><a href="#bhatti-version">bhatti version</a></h2>
+        <p>Print version and API endpoint</p>
+      </section>
+      <section class="command" id="bhatti-volume">
+        <h2><a href="#bhatti-volume">bhatti volume</a></h2>
+        <p>Manage persistent volumes</p>
+        <div class="description">Persistent volumes are ext4 filesystems that survive sandbox destruction.
+Attach them with &#39;--volume name:/mount&#39; on create.</div>
+        <pre>  bhatti volume create --name workspace --size 5120
+  bhatti create --name dev --volume workspace:/workspace
+  bhatti volume resize workspace --size 10240</pre>
+      </section>
+      <section class="command" id="bhatti-volume-backup">
+        <h2><a href="#bhatti-volume-backup">bhatti volume backup</a></h2>
+        <p>Backup a volume to S3-compatible storage</p>
+      </section>
+      <section class="command" id="bhatti-volume-backup-delete">
+        <h2><a href="#bhatti-volume-backup-delete">bhatti volume backup-delete</a></h2>
+        <p>Delete a volume backup</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--yes, -y</td>
+            <td><span class="default-val">false</span></td>
+            <td>Skip confirmation</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-volume-backup-list">
+        <h2><a href="#bhatti-volume-backup-list">bhatti volume backup-list</a></h2>
+        <p>List backups for a volume</p>
+      </section>
+      <section class="command" id="bhatti-volume-create">
+        <h2><a href="#bhatti-volume-create">bhatti volume create</a></h2>
+        <p>Create a persistent volume</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--name</td>
+            <td>—</td>
+            <td>Volume name (required)</td>
+          </tr>
+          <tr>
+            <td>--size</td>
+            <td><span class="default-val">0</span></td>
+            <td>Size in MB (required)</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-volume-delete">
+        <h2><a href="#bhatti-volume-delete">bhatti volume delete</a></h2>
+        <p>Delete a persistent volume</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--yes, -y</td>
+            <td><span class="default-val">false</span></td>
+            <td>Skip confirmation</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-volume-list">
+        <h2><a href="#bhatti-volume-list">bhatti volume list</a></h2>
+        <p>List persistent volumes</p>
+      </section>
+      <section class="command" id="bhatti-volume-resize">
+        <h2><a href="#bhatti-volume-resize">bhatti volume resize</a></h2>
+        <p>Resize a persistent volume (grow only)</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--size</td>
+            <td><span class="default-val">0</span></td>
+            <td>New size in MB (must be larger)</td>
+          </tr>
+        </table>
+      </section>
+      <section class="command" id="bhatti-volume-restore">
+        <h2><a href="#bhatti-volume-restore">bhatti volume restore</a></h2>
+        <p>Restore a volume from a backup</p>
+        <table>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr>
+            <td>--backup-id</td>
+            <td>—</td>
+            <td>Backup ID to restore from (required)</td>
+          </tr>
+        </table>
+      </section>
+
+      <p style="color: var(--text-muted); margin-top: 48px; font-size: 13px;">
+        Generated from <code>github.com/sahil-shubham/bhatti</code> command definitions.
+      </p>
+    </main>
+  </div>
+</body>
+</html>

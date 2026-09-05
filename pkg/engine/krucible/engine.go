@@ -1,0 +1,1197 @@
+package krucible
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/sahil-shubham/bhatti/pkg/agent"
+	"github.com/sahil-shubham/bhatti/pkg/configdrive"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/sahil-shubham/bhatti/pkg/gateway"
+)
+
+// Config holds paths and defaults for the krucible engine. All pure Go — the
+// engine spawns the cgo `bhatti-vmm` helper and talks to lohar over sockets.
+type Config struct {
+	DataDir    string // sandboxes live under DataDir/sandboxes/<id>
+	BaseRootfs string // host dir tree (virtiofs root): /init.krun=lohar + mountpoints
+	// BaseImage is a prebuilt ext4 root image (e.g. from oci.PullAndConvert: a
+	// real userland with /init.krun -> lohar). When set with BlockRoot, sandboxes
+	// CoW-clone it directly instead of building one from BaseRootfs via mke2fs.
+	// This is the production rootfs path.
+	BaseImage string
+	VMMBinary string // path to the bhatti-vmm helper (built with `make vmm`)
+	LibDir    string // dir with libkrun/libkrunfw (DYLD_FALLBACK_LIBRARY_PATH / LD_LIBRARY_PATH)
+	// SocketDir holds the per-VM vsock UDS. It must be SHORT: AF_UNIX paths cap
+	// at ~104 bytes (macOS) / 108 (Linux), and macOS $TMPDIR/DataDir can be deep.
+	// Empty defaults to /tmp/bhatti-kr.
+	SocketDir     string
+	DefaultVcpus  uint8
+	DefaultMemMiB uint32
+	// BlockRoot boots sandboxes from an ext4 block image (CoW-cloned per
+	// sandbox from a base built once from BaseRootfs) instead of a virtio-fs
+	// host dir. Required for the cold tier (Stop/Start): the block image is the
+	// self-contained, snapshot-surviving rootfs (see docs/PLAN-krucible-cold-tier.md).
+	BlockRoot bool
+	// KernelImage, if set, boots an external kernel (e.g. a lean one) instead of
+	// libkrunfw's bundled kernel. Block-root only (the cmdline roots on
+	// /dev/vda). arm64 = raw `Image`, x86 = ELF vmlinux.
+	KernelImage string
+	// NetBackend switches the guest off TSI onto a virtio-net device wired to a
+	// per-sandbox userspace gateway (bhatti-netd). Requires NetdBinary. Egress
+	// policy + host-isolation + (later) secret substitution live in the gateway.
+	NetBackend bool
+	// NetdBinary is the path to the bhatti-netd gateway helper (built from
+	// cmd/bhatti-netd). Required when NetBackend is set.
+	NetdBinary string
+}
+
+// maxUnixPath is the conservative AF_UNIX sun_path cap (macOS = 104).
+const maxUnixPath = 104
+
+// Per-owner virtio-net gateway addressing. One bhatti-netd serves all of an
+// owner's sandboxes on 100.64.<subnetIdx>.0/24 as an L2 switch: gw=.1, guests=
+// .2, .3, ... Siblings on the same netd reach each other; different owners get
+// separate netds (isolation). Sandboxes with no owner (UserID unset) get their
+// own isolated netd, so single-sandbox behavior is unchanged.
+const (
+	netGatewayMAC = "52:54:00:00:00:01"
+	netPrefixLen  = 24
+)
+
+func netGatewayIPFor(subnetIdx int) string { return fmt.Sprintf("100.64.%d.1", subnetIdx) }
+func netGuestCIDRFor(subnetIdx, guestIdx int) string {
+	return fmt.Sprintf("100.64.%d.%d/%d", subnetIdx, 2+guestIdx, netPrefixLen)
+}
+func netGuestMACFor(guestIdx int) string { return fmt.Sprintf("52:54:00:00:00:%02x", 2+guestIdx) }
+func netGuestIPFor(subnetIdx, guestIdx int) string {
+	return fmt.Sprintf("100.64.%d.%d", subnetIdx, 2+guestIdx)
+}
+
+// netdInstance is one owner's shared bhatti-netd gateway process. It is spawned
+// detached (survives a daemon restart) and identified by pid so recovery can
+// re-adopt it instead of respawning onto a socket it still holds.
+type netdInstance struct {
+	owner     string
+	sock      string
+	ctlSock   string
+	dir       string
+	subnetIdx int
+	mu        sync.Mutex // guards cmd/pid (spawn-once)
+	cmd       *exec.Cmd  // set when WE spawned it (nil when adopted across a restart)
+	pid       int        // the running netd's pid (source of truth for alive/kill)
+	nextGuest int
+	refs      int
+}
+
+// netdDir is the deterministic per-owner directory (so recovery finds the same
+// socket + state file the create path used).
+func (e *Engine) netdDir(ownerKey string) string {
+	h := sha256.Sum256([]byte(ownerKey))
+	return filepath.Join(e.cfg.SocketDir, "netd-"+hex.EncodeToString(h[:6]))
+}
+
+// waitForSocket blocks until path exists (a listening UDS) or the deadline.
+func waitForSocket(path string, d time.Duration) error {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("socket %s not present after %s", path, d)
+}
+
+// netdKeyFor is the key that groups sandboxes onto a shared bhatti-netd. Same
+// owner (UserID) ⇒ same netd ⇒ siblings reach each other. No owner ⇒ keyed by
+// sandbox id, so each unowned sandbox gets its own isolated netd (prior
+// single-sandbox behavior is preserved).
+func netdKeyFor(spec engine.SandboxSpec, id string) string {
+	if spec.UserID != "" {
+		return "u:" + spec.UserID
+	}
+	return "s:" + id
+}
+
+// acquireNetd returns (creating if needed) the owner's shared netd instance and
+// reserves a guest slot on it, returning the instance and this guest's index.
+// Release with releaseNetd on Destroy.
+func (e *Engine) acquireNetd(ownerKey string, subnetIdx int) (*netdInstance, int) {
+	e.netdMu.Lock()
+	inst := e.netds[ownerKey]
+	if inst == nil {
+		dir := e.netdDir(ownerKey)
+		inst = &netdInstance{owner: ownerKey, sock: filepath.Join(dir, "n.sock"), ctlSock: filepath.Join(dir, "ctl.sock"), dir: dir, subnetIdx: subnetIdx}
+		e.netds[ownerKey] = inst
+	}
+	inst.refs++
+	e.netdMu.Unlock()
+
+	inst.mu.Lock()
+	idx := inst.nextGuest
+	inst.nextGuest++
+	writeNetdRecord(inst) // persist address counter so recovery doesn't reissue a taken IP
+	inst.mu.Unlock()
+	return inst, idx
+}
+
+// releaseNetd drops one reference to the owner's netd, tearing the process down
+// when the last sandbox of the owner is gone.
+func (e *Engine) releaseNetd(ownerKey string) {
+	e.netdMu.Lock()
+	inst := e.netds[ownerKey]
+	if inst == nil {
+		e.netdMu.Unlock()
+		return
+	}
+	inst.refs--
+	done := inst.refs <= 0
+	if done {
+		delete(e.netds, ownerKey)
+	}
+	e.netdMu.Unlock()
+	if !done {
+		return
+	}
+	inst.mu.Lock()
+	if inst.pid > 0 {
+		_ = syscall.Kill(inst.pid, syscall.SIGKILL)
+		if inst.cmd != nil && inst.cmd.Process != nil {
+			_, _ = inst.cmd.Process.Wait() // reap our child
+		} else {
+			// Adopted across a restart: reap if it's still our child (same-process
+			// recovery / tests); a no-op (ECHILD) in production where init re-parented it.
+			var ws syscall.WaitStatus
+			_, _ = syscall.Wait4(inst.pid, &ws, 0, nil)
+		}
+	}
+	inst.pid = 0
+	inst.mu.Unlock()
+	os.RemoveAll(inst.dir)
+}
+
+// ensureNetd spawns the owner's bhatti-netd (LISTENING on inst.sock) if it is
+// not already running. Idempotent: siblings and cold Start reuse a live gateway.
+func (e *Engine) ensureNetd(ownerKey string) error {
+	e.netdMu.Lock()
+	inst := e.netds[ownerKey]
+	e.netdMu.Unlock()
+	if inst == nil {
+		return fmt.Errorf("netd instance %q not found", ownerKey)
+	}
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	// Already running — we spawned it, or adopted it across a daemon restart.
+	// A live netd that serves traffic (n.sock) but has no control socket
+	// (ctl.sock) is an older binary that survived a daemon upgrade: it can never
+	// receive per-sandbox egress policy, so replace it instead of silently
+	// running guests on the open default.
+	if inst.pid > 0 && pidAlive(inst.pid) {
+		_, sockErr := os.Stat(inst.sock)
+		_, ctlErr := os.Stat(inst.ctlSock)
+		if sockErr == nil && ctlErr == nil {
+			return nil
+		}
+		if sockErr == nil {
+			slog.Warn("krucible: adopted netd lacks control socket; respawning", "owner", ownerKey, "pid", inst.pid)
+			_ = syscall.Kill(-inst.pid, syscall.SIGKILL)
+			inst.pid = 0
+		}
+	}
+	if err := os.MkdirAll(inst.dir, 0700); err != nil {
+		return fmt.Errorf("netd dir: %w", err)
+	}
+	_ = os.Remove(inst.sock)
+	_ = os.Remove(inst.ctlSock)
+	lf, err := os.OpenFile(filepath.Join(inst.dir, "netd.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("netd log: %w", err)
+	}
+	defer lf.Close()
+	cmd := exec.Command(e.cfg.NetdBinary,
+		"--net-uds", inst.sock, "--ctl-uds", inst.ctlSock,
+		"--gw-ip", netGatewayIPFor(inst.subnetIdx),
+		"--prefix", fmt.Sprintf("%d", netPrefixLen), "--mac", netGatewayMAC)
+	cmd.Stdout = lf
+	cmd.Stderr = lf
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start bhatti-netd: %w", err)
+	}
+	if werr := waitForSocket(inst.sock, 5*time.Second); werr != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		return fmt.Errorf("bhatti-netd not listening: %w", werr)
+	}
+	if werr := waitForSocket(inst.ctlSock, 5*time.Second); werr != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		return fmt.Errorf("bhatti-netd control socket not listening: %w", werr)
+	}
+	inst.cmd = cmd
+	inst.pid = cmd.Process.Pid
+	writeNetdRecord(inst) // persist pid+sock so recovery can re-adopt this netd
+	return nil
+}
+
+// pushSandboxPolicy registers this VM's per-sandbox egress state with its
+// owner's netd over the control UDS, retrying briefly since netd may have only
+// just started listening. Returns an error when the policy could not be
+// delivered, so the caller can fail closed rather than boot the guest on the
+// open default. No-op on TSI (no netd IP).
+//
+// TODO(follow-up): re-push on recovery. A sandbox recovered across a daemon
+// restart that respawns its netd (see ensureNetd) loses its policy until its
+// next launch; the create path — the common case — always pushes.
+func (e *Engine) pushSandboxPolicy(vm *VM) error {
+	if vm.netIP == "" || vm.netdKey == "" {
+		return nil
+	}
+	e.netdMu.Lock()
+	inst := e.netds[vm.netdKey]
+	e.netdMu.Unlock()
+	if inst == nil || inst.ctlSock == "" {
+		return fmt.Errorf("netd control socket unavailable for %s", vm.ID)
+	}
+	msg := gateway.ControlMsg{Op: gateway.ControlSet, GuestIP: vm.netIP, Sandbox: vm.ID, Policy: vm.netPolicy}
+	c := gateway.NewControlClient(inst.ctlSock)
+	defer c.Close()
+	var lastErr error
+	for range 20 {
+		if lastErr = c.Send(msg); lastErr == nil {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	slog.Warn("krucible: netd policy push failed", "sandbox", vm.ID, "ip", vm.netIP, "err", lastErr)
+	return fmt.Errorf("netd policy push failed for %s: %w", vm.ID, lastErr)
+}
+
+// delSandboxPolicy removes this VM's state from netd (best-effort; the owner's
+// netd may already be gone when this was the last sandbox).
+func (e *Engine) delSandboxPolicy(vm *VM) {
+	if vm.netIP == "" || vm.netdKey == "" {
+		return
+	}
+	e.netdMu.Lock()
+	inst := e.netds[vm.netdKey]
+	e.netdMu.Unlock()
+	if inst == nil || inst.ctlSock == "" {
+		return
+	}
+	c := gateway.NewControlClient(inst.ctlSock)
+	defer c.Close()
+	_ = c.Send(gateway.ControlMsg{Op: gateway.ControlDel, GuestIP: vm.netIP})
+}
+
+// VM is per-sandbox state. The helper process IS the VM; we hold its cmd to
+// stop it and the agent client to drive lohar.
+type VM struct {
+	mu sync.Mutex
+	// launchMu serializes lifecycle transitions (Create's launch / Start / Stop /
+	// Pause / Resume / Destroy) for this VM. Held for the whole transition so a
+	// burst of concurrent wake-on-request calls (the public proxy + exec handlers
+	// all call ensureHot uncoalesced) can't double-spawn the helper, racing on the
+	// same vsock UDS paths and orphaning processes. Ordering rule: acquire
+	// launchMu BEFORE mu, never the reverse (mu guards field reads/writes and is
+	// also taken by read-only Status/List, which must not block on a transition).
+	launchMu   sync.Mutex
+	ID         string
+	Name       string
+	UserID     string
+	SandboxDir string
+	RootfsDir  string
+	SockDir    string
+	ControlUDS string // guest vsock 1024 (agent control)
+	ForwardUDS string // guest vsock 1025 (port forward)
+	CtlSockUDS string // VMM control socket (PAUSE/RESUME/STATUS)
+	MemMiB     uint32 // configured at boot (for ThermalEngine.MemSizeMib)
+	Thermal    string // "hot" | "warm" | "cold"
+	Token      string
+	Agent      *agent.AgentClient
+	Status     string // "running" | "stopped"
+	BundleDir  string // cold-snapshot bundle dir (Stop writes, Start restores from)
+	baseSpec   VMSpec // the spec to (re-)launch with; Start adds SnapshotDir
+	logPath    string
+	HelperPID  int // bhatti-vmm pid, persisted so recovery can adopt/kill it after a daemon restart
+	cmd        *exec.Cmd
+	cancel     context.CancelFunc
+	configSrv  *configServer          // host-side boot config server (§3.4); launchMu-guarded
+	netdKey    string                 // owner key of the shared bhatti-netd (net backend); "" on TSI
+	subnetIdx  int                    // owner's vnet subnet index (net backend); persisted for recovery
+	netIP      string                 // guest IP on the netd gateway subnet (net backend); "" on TSI; reported in SandboxInfo + persisted for restart
+	netPolicy  *gateway.NetPolicyWire // per-sandbox egress rules pushed to netd; nil = default (public)
+}
+
+// Engine implements engine.Engine on libkrun via the per-VM bhatti-vmm helper.
+type Engine struct {
+	mu        sync.RWMutex
+	vms       map[string]*VM
+	cfg       Config
+	baseImgMu sync.Mutex               // guards the one-time base-image build
+	netdMu    sync.Mutex               // guards netds
+	netds     map[string]*netdInstance // owner key → shared bhatti-netd gateway
+}
+
+var _ engine.Engine = (*Engine)(nil)
+
+// New validates config and returns a krucible engine.
+func New(cfg Config) (*Engine, error) {
+	if cfg.VMMBinary == "" {
+		return nil, fmt.Errorf("krucible: VMMBinary not set")
+	}
+	if _, err := os.Stat(cfg.VMMBinary); err != nil {
+		return nil, fmt.Errorf("krucible: vmm helper not found at %s (run `make vmm`): %w", cfg.VMMBinary, err)
+	}
+	if cfg.NetBackend {
+		if cfg.NetdBinary == "" {
+			return nil, fmt.Errorf("krucible: NetBackend set but NetdBinary is empty")
+		}
+		if _, err := os.Stat(cfg.NetdBinary); err != nil {
+			return nil, fmt.Errorf("krucible: bhatti-netd not found at %s: %w", cfg.NetdBinary, err)
+		}
+	}
+	// Need a rootfs source: a prebuilt block image (production) or a dir tree.
+	if cfg.BaseImage != "" {
+		if _, err := os.Stat(cfg.BaseImage); err != nil {
+			return nil, fmt.Errorf("krucible: base image not found at %s: %w", cfg.BaseImage, err)
+		}
+	} else if cfg.BaseRootfs == "" {
+		return nil, fmt.Errorf("krucible: set BaseImage or BaseRootfs")
+	} else if _, err := os.Stat(cfg.BaseRootfs); err != nil {
+		return nil, fmt.Errorf("krucible: base rootfs not found at %s: %w", cfg.BaseRootfs, err)
+	}
+	if cfg.DefaultVcpus == 0 {
+		cfg.DefaultVcpus = 1
+	}
+	if cfg.DefaultMemMiB == 0 {
+		cfg.DefaultMemMiB = 1024
+	}
+	if cfg.SocketDir == "" {
+		cfg.SocketDir = "/tmp/bhatti-kr"
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "sandboxes"), 0700); err != nil {
+		return nil, fmt.Errorf("krucible: create data dir: %w", err)
+	}
+	if err := os.MkdirAll(cfg.SocketDir, 0700); err != nil {
+		return nil, fmt.Errorf("krucible: create socket dir: %w", err)
+	}
+	eng := &Engine{vms: make(map[string]*VM), netds: make(map[string]*netdInstance), cfg: cfg}
+	eng.recover() // rehydrate live/dead sandboxes from <sandboxDir>/state.json
+	return eng, nil
+}
+
+func (e *Engine) getVM(id string) (*VM, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	vm, ok := e.vms[id]
+	if !ok {
+		return nil, fmt.Errorf("sandbox %q not found", id)
+	}
+	return vm, nil
+}
+
+// agentFor returns the agent client for a running VM, or an error.
+func (e *Engine) agentFor(id string) (*agent.AgentClient, error) {
+	vm, err := e.getVM(id)
+	if err != nil {
+		return nil, err
+	}
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+	if vm.Status != "running" {
+		return nil, fmt.Errorf("sandbox %q is not running (status=%s)", id, vm.Status)
+	}
+	return vm.Agent, nil
+}
+
+// createOpts carries restore hints for create(): cold-restore from a snapshot
+// bundle (snapshotDir), reuse a memory snapshot's in-guest token (forcedToken),
+// and frozen volumes to re-attach. All empty = a fresh boot.
+type createOpts struct {
+	snapshotDir    string
+	forcedToken    string
+	restoreVolumes []restoreVol // frozen volume images to clone in + re-attach (restore/fork)
+}
+
+// restoreVol is a frozen volume image (from a snapshot dir) to clone into a
+// restored/forked sandbox and re-attach as /dev/vdc+, reproducing the snapshot's
+// device set. An independent copy — libkrun block devices are boot-fixed, so the
+// running source can't be CoW-rebased; cloneFile is instant on CoW FS (APFS/
+// btrfs), a full copy elsewhere.
+type restoreVol struct {
+	path     string
+	readOnly bool
+}
+
+// Create boots a new sandbox: prepare the rootfs (block image clone or
+// virtio-fs dir), spawn bhatti-vmm, wait for lohar's agent over the bridged vsock.
+func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.SandboxInfo, error) {
+	return e.create(ctx, spec, createOpts{})
+}
+
+func (e *Engine) create(ctx context.Context, spec engine.SandboxSpec, opts createOpts) (info engine.SandboxInfo, err error) {
+	id, err := generateID()
+	if err != nil {
+		return info, err
+	}
+	sandboxDir := filepath.Join(e.cfg.DataDir, "sandboxes", id)
+	rootfsDir := filepath.Join(sandboxDir, "rootfs")
+	sockDir := filepath.Join(e.cfg.SocketDir, id)
+
+	var vm *VM
+	var netdKey string // owner's shared-netd key; released on error / Destroy
+	defer func() {
+		if err != nil {
+			if vm != nil {
+				vm.kill()
+			}
+			if netdKey != "" {
+				e.releaseNetd(netdKey)
+			}
+			os.RemoveAll(sandboxDir)
+			os.RemoveAll(sockDir)
+		}
+	}()
+
+	if err = os.MkdirAll(sandboxDir, 0700); err != nil {
+		return info, fmt.Errorf("create sandbox dir: %w", err)
+	}
+
+	vcpus := e.cfg.DefaultVcpus
+	if spec.CPUs >= 1 {
+		vcpus = uint8(spec.CPUs)
+	}
+	memMiB := e.cfg.DefaultMemMiB
+	if spec.MemoryMB > 0 {
+		memMiB = uint32(spec.MemoryMB)
+	}
+
+	// Short UDS paths in a dedicated dir — sockaddr_un caps at ~104 bytes.
+	controlUDS := filepath.Join(sockDir, "c.sock")
+	forwardUDS := filepath.Join(sockDir, "f.sock")
+	ctlSockUDS := filepath.Join(sockDir, "k.sock")
+	configUDS := filepath.Join(sockDir, "cfg.sock")
+	netUDS := ""
+	var netGuestIdx int
+	var netInst *netdInstance
+	if e.cfg.NetBackend {
+		netdKey = netdKeyFor(spec, id)
+		netInst, netGuestIdx = e.acquireNetd(netdKey, spec.SubnetIndex)
+		netUDS = netInst.sock
+	}
+	if err = os.MkdirAll(sockDir, 0700); err != nil {
+		return info, fmt.Errorf("create socket dir: %w", err)
+	}
+	for _, p := range []string{controlUDS, forwardUDS, ctlSockUDS, netUDS, configUDS} {
+		if p != "" && len(p) >= maxUnixPath {
+			return info, fmt.Errorf("vsock path too long (%d >= %d): %s — set a shorter SocketDir", len(p), maxUnixPath, p)
+		}
+	}
+
+	baseSpec := VMSpec{
+		Vcpus:            vcpus,
+		MemMiB:           memMiB,
+		Pid1:             true,
+		ExecPath:         "/init.krun",
+		VsockControlUDS:  controlUDS,
+		VsockForwardUDS:  forwardUDS,
+		ControlSocketUDS: ctlSockUDS,
+		LogLevel:         2,
+	}
+	// virtio-net gateway backend (opt-in): the guest gets eth0 wired to a
+	// per-sandbox bhatti-netd; lohar configures it from cdNet.
+	var cdNet *configdrive.NetConfig
+	var netIP string
+	if netUDS != "" {
+		baseSpec.NetUDS = netUDS
+		baseSpec.NetMAC = netGuestMACFor(netGuestIdx)
+		netIP = netGuestIPFor(netInst.subnetIdx, netGuestIdx)
+		cdNet = &configdrive.NetConfig{
+			IP:      netGuestCIDRFor(netInst.subnetIdx, netGuestIdx),
+			Gateway: netGatewayIPFor(netInst.subnetIdx),
+		}
+	}
+
+	name := spec.Name
+	if name == "" {
+		name = id
+	}
+
+	// Per-sandbox auth token, carried into the guest via the config drive; the
+	// agent enforces it. Empty on the config-less virtio-fs dev path (no auth).
+	// On a memory-snapshot restore, reuse the snapshot's token (the restored guest
+	// enforces it from RAM).
+	token := opts.forcedToken
+
+	// virtio-fs --mount binds: assign a per-mount tag; the VMM exposes each host
+	// dir (krun_add_virtiofs3) and lohar mounts the tag at its guest path (carried
+	// in the config drive). Live + shared, unlike an owned/versioned volume.
+	var cdMounts []configdrive.FsMountConfig
+	for i, m := range spec.Mounts {
+		tag := fmt.Sprintf("mnt%d", i)
+		baseSpec.Mounts = append(baseSpec.Mounts, VMFsMount{Tag: tag, HostPath: m.HostPath, ReadOnly: m.ReadOnly})
+		cdMounts = append(cdMounts, configdrive.FsMountConfig{Tag: tag, Mount: m.GuestPath, ReadOnly: m.ReadOnly})
+	}
+
+	// Data volumes (create --volume / persistent): attach each resolved volume as a
+	// block disk AFTER root (vda) — so /dev/vdb+ in order (the config drive is gone,
+	// §3.4) — and tell lohar where to mount it. The libkrun get_block_cfg fix lets
+	// add_disk2 compose with the root setter.
+	var cdVolumes []configdrive.VolumeMountConfig
+	for i, v := range spec.ResolvedVolumes {
+		format := "raw"
+		if isQcow2(v.FilePath) {
+			format = "qcow2"
+		}
+		baseSpec.Volumes = append(baseSpec.Volumes, VMVolume{BlockID: fmt.Sprintf("vol%d", i), Path: v.FilePath, Format: format, ReadOnly: v.ReadOnly})
+		cdVolumes = append(cdVolumes, configdrive.VolumeMountConfig{Device: fmt.Sprintf("/dev/vd%c", 'b'+rune(i)), Mount: v.Mount, FS: "ext4", ReadOnly: v.ReadOnly})
+	}
+
+	// Restore/fork: clone each frozen volume into this sandbox and re-attach it as
+	// /dev/vdc+, reproducing the snapshot's device set (so a memory restore's RAM
+	// view of its disks stays valid). Independent copy; the captured config drive
+	// already carries the guest mount points, so no cdVolumes entry is needed.
+	for _, rv := range opts.restoreVolumes {
+		idx := len(baseSpec.Volumes)
+		dst := filepath.Join(sandboxDir, fmt.Sprintf("restorevol%d.img", idx))
+		if err = cloneFile(rv.path, dst); err != nil {
+			return info, fmt.Errorf("restore volume %d: %w", idx, err)
+		}
+		format := "raw"
+		if isQcow2(dst) {
+			format = "qcow2"
+		}
+		baseSpec.Volumes = append(baseSpec.Volumes, VMVolume{BlockID: fmt.Sprintf("vol%d", idx), Path: dst, Format: format, ReadOnly: rv.readOnly})
+	}
+
+	// Rootfs + config drive. Block-root pairs root=/dev/vda with the config drive
+	// at /dev/vdb; the virtio-fs path stays the minimal config-less dev profile.
+	if e.cfg.BlockRoot {
+		// Per-create image (image pull / image save / snapshot), falling back to
+		// the engine's default base. The image is the root's CoW backing.
+		base, berr := e.resolveBase(spec)
+		if berr != nil {
+			return info, berr
+		}
+		var rootImg string
+		if rootQcow2() {
+			// Default: a qcow2 CoW root — instant + host-FS-independent (no
+			// reflink/btrfs). Raw is the opt-out (KRUCIBLE_ROOT_RAW=1).
+			rootImg = filepath.Join(sandboxDir, "root.qcow2")
+			if isQcow2(base) {
+				// A saved qcow2 image is already a CoW node over the raw base;
+				// copy it as this sandbox's root (it keeps backing that base).
+				if err = cloneFile(base, rootImg); err != nil {
+					return info, fmt.Errorf("clone qcow2 image: %w", err)
+				}
+			} else if err = e.createRootOverlayQcow2(rootImg, base); err != nil {
+				return info, fmt.Errorf("create qcow2 root overlay: %w", err)
+			}
+			baseSpec.RootDiskFormat = "qcow2"
+		} else {
+			rootImg = filepath.Join(sandboxDir, "root.img")
+			if err = cloneFile(base, rootImg); err != nil {
+				return info, fmt.Errorf("clone base image: %w", err)
+			}
+		}
+		baseSpec.RootDisk = rootImg
+		baseSpec.KernelImage = e.cfg.KernelImage // external (lean) kernel, if configured
+
+		if token == "" {
+			if token, err = genToken(); err != nil {
+				return info, err
+			}
+		}
+		// Config is fetched over vsock at boot (§3.4), not read from an on-disk
+		// config drive: write it host-side as config.json (no mke2fs; not in the
+		// guest, not in the snapshot bundle) and serve it on the per-sandbox config
+		// UDS. Restore reuses the snapshot's token (opts.forcedToken via `token`) so
+		// the resumed guest RAM's token still matches.
+		cfg := buildSandboxConfig(id, name, token, spec, cdMounts, cdVolumes, cdNet)
+		cfgJSON, merr := json.MarshalIndent(cfg, "", "  ")
+		if merr != nil {
+			return info, fmt.Errorf("marshal config: %w", merr)
+		}
+		if err = os.WriteFile(filepath.Join(sandboxDir, "config.json"), cfgJSON, 0600); err != nil {
+			return info, fmt.Errorf("write config.json: %w", err)
+		}
+		baseSpec.VsockConfigUDS = configUDS
+	} else {
+		if err = cloneTree(e.cfg.BaseRootfs, rootfsDir); err != nil {
+			return info, fmt.Errorf("clone rootfs: %w", err)
+		}
+		baseSpec.RootfsDir = rootfsDir
+	}
+
+	vm = &VM{
+		ID: id, Name: name, UserID: spec.UserID,
+		SandboxDir: sandboxDir, RootfsDir: rootfsDir, SockDir: sockDir,
+		ControlUDS: controlUDS, ForwardUDS: forwardUDS, CtlSockUDS: ctlSockUDS,
+		MemMiB: memMiB, Thermal: "hot", Status: "stopped", Token: token,
+		BundleDir: filepath.Join(sandboxDir, "bundle"),
+		baseSpec:  baseSpec,
+		logPath:   filepath.Join(sandboxDir, "vmm.log"),
+		netdKey:   netdKey,
+		subnetIdx: spec.SubnetIndex,
+		netIP:     netIP,
+		netPolicy: spec.NetPolicy,
+	}
+
+	if err = e.launch(ctx, vm, opts.snapshotDir); err != nil {
+		return info, err
+	}
+
+	e.mu.Lock()
+	e.vms[id] = vm
+	e.mu.Unlock()
+
+	slog.Info("krucible sandbox created", "id", id, "name", name, "vcpus", vcpus, "mem_mib", memMiB, "block_root", e.cfg.BlockRoot)
+	return engine.SandboxInfo{ID: id, Name: name, Status: "running", EngineID: id, IP: vm.netIP}, nil
+}
+
+// launch spawns the bhatti-vmm helper for vm and waits for the agent. When
+// snapshotDir is non-empty the helper cold-restores from that bundle instead of
+// cold booting. Sets vm.cmd/cancel/Agent/Status on success.
+func (e *Engine) launch(ctx context.Context, vm *VM, snapshotDir string) error {
+	spec := vm.baseSpec
+	spec.SnapshotDir = snapshotDir
+	specPath := filepath.Join(vm.SandboxDir, "vmspec.json")
+	specBytes, _ := json.MarshalIndent(spec, "", "  ")
+	if err := os.WriteFile(specPath, specBytes, 0600); err != nil {
+		return fmt.Errorf("write vmspec: %w", err)
+	}
+
+	// Remove any stale UDS from a prior incarnation so libkrun can re-bind them
+	// (a cold Start re-launches into the same socket dir).
+	for _, p := range []string{vm.ControlUDS, vm.ForwardUDS, vm.CtlSockUDS} {
+		_ = os.Remove(p)
+	}
+
+	logFile, err := os.OpenFile(vm.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("open vmm log: %w", err)
+	}
+	defer logFile.Close()
+
+	// virtio-net gateway: ensure the owner's shared bhatti-netd is LISTENING on
+	// the net UDS before the VMM connects to it (spawned once per owner; siblings
+	// reuse it). The VMM will connect and netd will add it as a switch port.
+	if vm.netdKey != "" {
+		if nerr := e.ensureNetd(vm.netdKey); nerr != nil {
+			return nerr
+		}
+		if perr := e.pushSandboxPolicy(vm); perr != nil && vm.netPolicy != nil {
+			// A policy was explicitly requested but couldn't be delivered to
+			// netd — fail closed rather than boot the guest on the open default.
+			return fmt.Errorf("enforce egress policy: %w", perr)
+		}
+	}
+
+	// Serve the boot config over the guest→host config vsock (§3.4). Must be
+	// listening before the helper starts, since lohar dials it early in boot; a
+	// cold re-launch replaces any prior server.
+	vm.closeConfigSrv()
+	if spec.VsockConfigUDS != "" {
+		_ = os.Remove(spec.VsockConfigUDS)
+		cfgJSON, rerr := os.ReadFile(filepath.Join(vm.SandboxDir, "config.json"))
+		if rerr != nil {
+			return fmt.Errorf("read config.json: %w", rerr)
+		}
+		srv, serr := newConfigServer(spec.VsockConfigUDS, cfgJSON)
+		if serr != nil {
+			return fmt.Errorf("config server: %w", serr)
+		}
+		vm.configSrv = srv
+	}
+
+	vmCtx, vmCancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(vmCtx, e.cfg.VMMBinary, specPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	// Detach the helper into its own process group so it survives a daemon
+	// restart/crash — recovery can then re-adopt the live VM. (darwin + linux.)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if e.cfg.LibDir != "" {
+		cmd.Env = append(os.Environ(),
+			"DYLD_FALLBACK_LIBRARY_PATH="+e.cfg.LibDir,
+			"LD_LIBRARY_PATH="+e.cfg.LibDir,
+		)
+	}
+	if err := cmd.Start(); err != nil {
+		vmCancel()
+		vm.closeConfigSrv()
+		return fmt.Errorf("start vmm helper: %w", err)
+	}
+
+	ag := agent.NewKrucibleClient(vm.ControlUDS, vm.ForwardUDS, vm.Token)
+	if werr := ag.WaitReady(ctx, 30*time.Second); werr != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		// Leave the shared netd running; sibling sandboxes may still be using it.
+		vmCancel()
+		vm.closeConfigSrv()
+		return fmt.Errorf("agent not ready: %w\nvmm log:\n%s", werr, tailFile(vm.logPath, 4096))
+	}
+
+	vm.mu.Lock()
+	vm.cmd = cmd
+	vm.cancel = vmCancel
+	vm.HelperPID = cmd.Process.Pid
+	vm.Agent = ag
+	vm.Status = "running"
+	vm.Thermal = "hot"
+	vm.mu.Unlock()
+	vm.persist()
+	return nil
+}
+
+// kill terminates the helper (best effort). Uses the Cmd handle when we own the
+// process, else the persisted pid (a helper adopted across a daemon restart).
+func (vm *VM) kill() {
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+	if vm.cmd != nil && vm.cmd.Process != nil {
+		_ = vm.cmd.Process.Kill()
+		_, _ = vm.cmd.Process.Wait()
+	} else if vm.HelperPID > 0 {
+		// Adopted helper (not our child) — signal by pid; init reaps it.
+		_ = syscall.Kill(vm.HelperPID, syscall.SIGKILL)
+	}
+	// The bhatti-netd gateway is shared per owner and outlives a single VM; it is
+	// torn down by releaseNetd on Destroy of the owner's last sandbox.
+	if vm.cancel != nil {
+		vm.cancel()
+	}
+	vm.cmd = nil
+	vm.cancel = nil
+	vm.HelperPID = 0
+	vm.closeConfigSrv()
+}
+
+// closeConfigSrv stops the boot config server (§3.4). Serialized with launch by
+// launchMu; safe when none is running.
+func (vm *VM) closeConfigSrv() {
+	if vm.configSrv != nil {
+		vm.configSrv.Close()
+		vm.configSrv = nil
+	}
+}
+
+// Destroy kills the helper and removes the sandbox dir.
+func (e *Engine) Destroy(ctx context.Context, id string) error {
+	vm, err := e.getVM(id)
+	if err != nil {
+		return err
+	}
+	vm.launchMu.Lock()
+	defer vm.launchMu.Unlock()
+	// kill() handles both an owned helper (vm.cmd) and one adopted across a daemon
+	// restart (only vm.HelperPID set) — the inlined cmd-only kill here used to leak
+	// the latter, leaving a live VM with its backing files deleted.
+	vm.kill()
+	vm.mu.Lock()
+	dir := vm.SandboxDir
+	sockDir := vm.SockDir
+	vm.Status = "stopped"
+	vm.mu.Unlock()
+
+	e.mu.Lock()
+	delete(e.vms, id)
+	e.mu.Unlock()
+
+	if vm.netdKey != "" {
+		e.delSandboxPolicy(vm)
+		e.releaseNetd(vm.netdKey)
+	}
+
+	os.RemoveAll(dir)
+	os.RemoveAll(sockDir)
+	slog.Info("krucible sandbox destroyed", "id", id)
+	return nil
+}
+
+// Stop is the cold tier: pause at a quiesced boundary, snapshot to a
+// self-contained bundle, then kill the helper to free RAM. Requires a block
+// root (BlockRoot) so the rootfs survives the round-trip; a virtio-fs VM can be
+// snapshotted but exec-after-restore breaks (the FUSE map isn't persisted).
+func (e *Engine) Stop(ctx context.Context, id string) error {
+	vm, err := e.getVM(id)
+	if err != nil {
+		return err
+	}
+	vm.launchMu.Lock()
+	defer vm.launchMu.Unlock()
+	vm.mu.Lock()
+	if vm.Status != "running" {
+		vm.mu.Unlock()
+		return nil
+	}
+	ctlUDS, bundleDir := vm.CtlSockUDS, vm.BundleDir
+	vm.mu.Unlock()
+
+	// Generous deadline: SNAPSHOT streams the whole guest RAM to disk.
+	sctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	if _, err := controlCmd(sctx, ctlUDS, "PAUSE"); err != nil {
+		return fmt.Errorf("stop: pause: %w", err)
+	}
+	if err := os.MkdirAll(bundleDir, 0700); err != nil {
+		return fmt.Errorf("stop: bundle dir: %w", err)
+	}
+	if _, err := controlCmd(sctx, ctlUDS, "SNAPSHOT "+bundleDir); err != nil {
+		// Snapshot failed (e.g. out of disk for memory.img). The guest is still
+		// PAUSED from above — un-pause it so it isn't left frozen (a frozen guest
+		// hangs the next exec). Then surface the error; the sandbox stays usable.
+		_, _ = controlCmd(sctx, ctlUDS, "RESUME")
+		return fmt.Errorf("stop: snapshot: %w", err)
+	}
+	vm.kill()
+	vm.mu.Lock()
+	vm.Status = "stopped"
+	vm.Thermal = "cold"
+	vm.Agent = nil
+	vm.mu.Unlock()
+	vm.persist()
+	slog.Info("krucible sandbox stopped (cold)", "id", id, "bundle", bundleDir)
+	return nil
+}
+
+// Start cold-restores a stopped sandbox from its snapshot bundle: re-launch the
+// helper with the bundle, restoring RAM + device + vCPU state and resuming from
+// the snapshot point.
+func (e *Engine) Start(ctx context.Context, id string) error {
+	vm, err := e.getVM(id)
+	if err != nil {
+		return err
+	}
+	vm.launchMu.Lock()
+	defer vm.launchMu.Unlock()
+	vm.mu.Lock()
+	if vm.Status == "running" {
+		vm.mu.Unlock()
+		return nil
+	}
+	bundleDir := vm.BundleDir
+	vm.mu.Unlock()
+	// Restore from the cold bundle if present; otherwise cold-boot fresh — a
+	// crashed or never-snapshotted sandbox whose RAM is gone but whose rootfs
+	// image persists. Recovery relies on this for restart-safety.
+	snapshot, mode := "", "fresh boot"
+	if validateBundle(bundleDir) == nil {
+		snapshot, mode = bundleDir, "cold restore"
+	}
+	if err := e.launch(ctx, vm, snapshot); err != nil {
+		return fmt.Errorf("start (%s): %w", mode, err)
+	}
+	slog.Info("krucible sandbox started", "id", id, "mode", mode)
+	return nil
+}
+
+// krucibleProtoVer is the snapshot bundle protocol version this build can
+// restore. Mirrors libkrun's CHECKPOINT_VERSION / the manifest proto_ver.
+const krucibleProtoVer = 1
+
+type bundleManifest struct {
+	ProtoVer  int    `json:"proto_ver"`
+	Arch      string `json:"arch"`
+	VcpuCount int    `json:"vcpu_count"`
+}
+
+// hostSnapshotArch maps Go's GOARCH to the arch string libkrun writes into a
+// bundle manifest.
+func hostSnapshotArch() string {
+	switch runtime.GOARCH {
+	case "arm64":
+		return "aarch64"
+	case "amd64":
+		return "x86_64"
+	default:
+		return runtime.GOARCH
+	}
+}
+
+// validateBundle is bhatti's portability gate (Tier-2 of the cold/move design):
+// refuse a snapshot bundle that can't be restored on this host — incomplete,
+// wrong proto version, or cross-arch (a bundle moved from a different machine)
+// — before spawning the helper, so the failure is a clear error, not a guest
+// crash mid-restore.
+func validateBundle(bundleDir string) error {
+	for _, f := range []string{"manifest.json", "checkpoint.bin", "memory.img"} {
+		if _, err := os.Stat(filepath.Join(bundleDir, f)); err != nil {
+			return fmt.Errorf("incomplete snapshot bundle (missing %s): %w", f, err)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(bundleDir, "manifest.json"))
+	if err != nil {
+		return fmt.Errorf("read manifest: %w", err)
+	}
+	var m bundleManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return fmt.Errorf("parse manifest: %w", err)
+	}
+	if m.ProtoVer != krucibleProtoVer {
+		return fmt.Errorf("bundle proto_ver %d != %d (incompatible snapshot, re-snapshot)", m.ProtoVer, krucibleProtoVer)
+	}
+	if want := hostSnapshotArch(); m.Arch != want {
+		return fmt.Errorf("bundle arch %q != host %q (cross-arch restore not supported)", m.Arch, want)
+	}
+	return nil
+}
+
+// genToken returns a random 128-bit hex token (matches the FC engine's scheme).
+// A failed system RNG is surfaced, never silently swallowed — the token is a
+// security boundary (the guest agent enforces it).
+func genToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// buildSandboxConfig assembles the per-sandbox config lohar fetches over vsock at
+// boot (§3.4). Secrets are pre-resolved into spec.Env by the server layer (same
+// contract as the FC engine).
+func buildSandboxConfig(id, name, token string, spec engine.SandboxSpec, mounts []configdrive.FsMountConfig, volumes []configdrive.VolumeMountConfig, net *configdrive.NetConfig) configdrive.SandboxConfig {
+	files := make(map[string]configdrive.ConfigFile, len(spec.Files))
+	for p, f := range spec.Files {
+		files[p] = configdrive.ConfigFile{
+			Content: base64.StdEncoding.EncodeToString(f.Content),
+			Mode:    f.Mode,
+		}
+	}
+	return configdrive.SandboxConfig{
+		SandboxID: id,
+		Hostname:  name,
+		Token:     token,
+		Env:       spec.Env,
+		Files:     files,
+		Mounts:    mounts,
+		Volumes:   volumes,
+		Net:       net,
+		// Init: the once-after-boot command (create --init); lohar runs it as a
+		// TTY session named "init", as the sandbox user.
+		Init: spec.Init,
+		User: "lohar",
+	}
+}
+
+// cloneBaseImage CoW-clones the shared base ext4 image to dst (per-sandbox root
+// disk). The base is either a prebuilt image (BaseImage, the production path) or
+// one built once from BaseRootfs via mke2fs (the dev path).
+// resolveBase returns the CoW backing image for a new sandbox's root: the
+// per-create image (spec.BaseImage — set by the server for `image pull`,
+// `image save`, snapshot), else the engine's default BaseImage, else a dev base
+// built once from BaseRootfs. May be raw (a fresh base) or qcow2 (a saved image
+// / snapshot, itself a CoW node over a raw base).
+func (e *Engine) resolveBase(spec engine.SandboxSpec) (string, error) {
+	if spec.BaseImage != "" {
+		return spec.BaseImage, nil
+	}
+	if e.cfg.BaseImage != "" {
+		return e.cfg.BaseImage, nil
+	}
+	base := filepath.Join(e.cfg.DataDir, "base.img")
+	e.baseImgMu.Lock()
+	defer e.baseImgMu.Unlock()
+	if _, err := os.Stat(base); err != nil {
+		if berr := buildBaseImage(e.cfg.BaseRootfs, base); berr != nil {
+			return "", berr
+		}
+	}
+	return base, nil
+}
+
+// isQcow2 reports whether path is a qcow2 image (magic "QFI\xfb"), so a saved
+// image/snapshot (a CoW node) is copied as a root rather than overlaid as a raw
+// backing.
+func isQcow2(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return magic == [4]byte{'Q', 'F', 'I', 0xfb}
+}
+
+// rootQcow2 reports whether to boot the block root from a qcow2 CoW overlay
+// (the default — host-FS-independent CoW, no reflink/btrfs requirement) instead
+// of a reflink-cloned raw ext4. Set KRUCIBLE_ROOT_RAW=1 to force the raw path
+// (the native-perf / mountable escape hatch, until `flatten` lands).
+func rootQcow2() bool { return os.Getenv("KRUCIBLE_ROOT_RAW") != "1" }
+
+// createRootOverlayQcow2 creates a qcow2 CoW overlay over the shared base ext4
+// at dst (the per-sandbox root) — instant + host-FS-independent. The daemon is
+// pure Go (never links libkrun), so it shells to the cgo helper, which creates
+// the overlay via libkrun/imago (krun_create_disk_overlay) — reusing the same
+// library that opens these images, with no external tool (no qemu-img).
+func (e *Engine) createRootOverlayQcow2(dst, base string) error {
+	fi, err := os.Stat(base)
+	if err != nil {
+		return fmt.Errorf("stat base image %s: %w", base, err)
+	}
+	cmd := exec.Command(e.cfg.VMMBinary, "create-overlay", dst, base, strconv.FormatInt(fi.Size(), 10))
+	if e.cfg.LibDir != "" {
+		cmd.Env = append(os.Environ(),
+			"DYLD_FALLBACK_LIBRARY_PATH="+e.cfg.LibDir,
+			"LD_LIBRARY_PATH="+e.cfg.LibDir,
+		)
+	}
+	if out, cerr := cmd.CombinedOutput(); cerr != nil {
+		return fmt.Errorf("create qcow2 overlay (%s -> %s): %w: %s", base, dst, cerr, out)
+	}
+	return nil
+}
+
+func (e *Engine) Status(ctx context.Context, id string) (engine.SandboxInfo, error) {
+	vm, err := e.getVM(id)
+	if err != nil {
+		return engine.SandboxInfo{}, err
+	}
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+	return engine.SandboxInfo{ID: vm.ID, Name: vm.Name, Status: vm.Status, EngineID: vm.ID, IP: vm.netIP}, nil
+}
+
+func (e *Engine) List(ctx context.Context) ([]engine.SandboxInfo, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]engine.SandboxInfo, 0, len(e.vms))
+	for _, vm := range e.vms {
+		vm.mu.Lock()
+		out = append(out, engine.SandboxInfo{ID: vm.ID, Name: vm.Name, Status: vm.Status, EngineID: vm.ID, IP: vm.netIP})
+		vm.mu.Unlock()
+	}
+	return out, nil
+}
+
+// Shutdown kills every helper (called on daemon SIGTERM, after the server has
+// snapshotted running VMs so they cold-restore on the next start). It terminates
+// BOTH helpers this engine owns (vm.cmd) AND ones adopted across a prior daemon
+// restart (only HelperPID set) via vm.kill() — the same path Destroy uses. The
+// former inline cmd-only kill leaked adopted helpers, orphaning live VMs whose
+// daemon had restarted at least once. Serialized per-VM against an in-flight
+// Start/Stop/Pause/Resume via launchMu (lock order: launchMu before mu), so a
+// SIGTERM can't SIGKILL a helper mid-transition (e.g. mid-snapshot).
+func (e *Engine) Shutdown() {
+	e.mu.RLock()
+	vms := make([]*VM, 0, len(e.vms))
+	for _, vm := range e.vms {
+		vms = append(vms, vm)
+	}
+	e.mu.RUnlock()
+	for _, vm := range vms {
+		vm.launchMu.Lock()
+		vm.kill() // no-op if already stopped; handles owned + adopted helpers
+		vm.launchMu.Unlock()
+	}
+}
+
+// --- helpers ---
+
+func generateID() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate id: %w", err)
+	}
+	return fmt.Sprintf("%x", b), nil
+}
+
+// cloneTree copies src/* into dst, preferring a CoW clone (APFS clonefile on
+// darwin, reflink on linux) and falling back to a plain recursive copy.
+func cloneTree(src, dst string) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+	var primary *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		primary = exec.Command("cp", "-c", "-R", src+"/.", dst) // clonefile
+	default:
+		primary = exec.Command("cp", "-a", "--reflink=auto", src+"/.", dst)
+	}
+	if out, err := primary.CombinedOutput(); err != nil {
+		fallback := exec.Command("cp", "-R", src+"/.", dst)
+		if out2, err2 := fallback.CombinedOutput(); err2 != nil {
+			return fmt.Errorf("clone (%v: %s) and fallback (%v: %s) both failed",
+				err, out, err2, out2)
+		}
+	}
+	return nil
+}
+
+// buildBaseImage builds an ext4 image populated from srcDir (the rootfs tree)
+// via `mke2fs -d` — no mount, no root. The image is the shared base that each
+// sandbox CoW-clones for its root disk.
+func buildBaseImage(srcDir, dst string) error {
+	// 1 GiB ceiling: the file is CoW-cloned per sandbox (cheap on APFS/reflink),
+	// and ext4 only writes metadata for the populated tree.
+	cmd := exec.Command("mke2fs", "-t", "ext4", "-d", srcDir, "-F", "-q", dst, "1024M")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("mke2fs base image: %s: %w", out, err)
+	}
+	return nil
+}
+
+// cloneFile CoW-clones a file (APFS clonefile on darwin, reflink on linux),
+// falling back to a plain copy.
+func cloneFile(src, dst string) error {
+	var primary *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		primary = exec.Command("cp", "-c", src, dst) // clonefile
+	default:
+		primary = exec.Command("cp", "--reflink=auto", src, dst)
+	}
+	if out, err := primary.CombinedOutput(); err != nil {
+		fallback := exec.Command("cp", src, dst)
+		if out2, err2 := fallback.CombinedOutput(); err2 != nil {
+			return fmt.Errorf("clone image (%v: %s) and fallback (%v: %s) both failed",
+				err, out, err2, out2)
+		}
+	}
+	return nil
+}
+
+// tailFile returns up to the last n bytes of a file (best effort).
+func tailFile(path string, n int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	off := int64(0)
+	if st.Size() > n {
+		off = st.Size() - n
+	}
+	buf := make([]byte, st.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && len(buf) == 0 {
+		return ""
+	}
+	return string(buf)
+}
