@@ -4,6 +4,10 @@
 
 Open-source microVM orchestrator with its own VMM. Each sandbox is a real Linux VM with its own kernel, filesystem, and process isolation — created in seconds, paused for free, resumed in microseconds. Runs on **Linux (KVM)** and **macOS (Apple Silicon)** — a dev box or a server, your choice.
 
+AHVM is a fork of [Bhatti](https://github.com/sahil-shubham/bhatti), adapted
+and maintained for Agent House. The new name expands to **Agent House Virtual
+Machine**.
+
 Built for running AI coding agents in isolated environments. A paused sandbox wakes and serves an HTTP request in **under 4ms**.
 
 ```
@@ -60,7 +64,7 @@ manual grab? Take the per-platform tarball
 it (a bare `ahvm.sh/install` now installs v2):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sahil-shubham/ahvm/firecracker/scripts/install.sh | sudo AHVM_VERSION=v1.11.12 bash
+curl -fsSL https://raw.githubusercontent.com/sahil-shubham/bhatti/firecracker/scripts/install.sh | sudo BHATTI_VERSION=v1.11.12 bash
 ```
 
 See [ahvm.sh/v1/docs](https://ahvm.sh/v1/docs/) for the v1 docs.

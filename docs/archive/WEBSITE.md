@@ -8,95 +8,27 @@ the two primary conversion paths (self-host install and hosted demo).
 
 ## 1. Brand Identity
 
-### 1.1 The Metaphor
+> **Archived plan:** the original brand direction in this section has been
+> superseded by the Agent House fork.
 
-AHVM (भट्टी) is a furnace. Lohar (लोहार) is the blacksmith who works
-inside it. This is the core visual and verbal metaphor — a place where
-raw material (code, agents, workloads) is shaped by fire into something
-useful. The furnace provides the controlled environment; the blacksmith
-does the work.
+### 1.1 The Name
 
-This metaphor is strong because it maps cleanly to the product:
-
-| Metaphor | Product |
-|----------|---------|
-| The furnace (ahvm) | The host daemon — manages fire (VMs), controls temperature (thermal states), provides the environment |
-| The blacksmith (lohar) | The guest agent — PID 1 inside every VM, the one doing the actual work |
-| Fire | Firecracker microVMs — literal fire in the name |
-| Hot/warm/cold | Thermal management states — the furnace regulating itself |
-| Forging | Creating sandboxes — shaping isolated environments from raw compute |
+AHVM expands to **Agent House Virtual Machine**. It describes the product
+plainly: isolated virtual machines operated for Agent House workloads. AHVM is
+a fork of [Bhatti](https://github.com/sahil-shubham/bhatti), but does not carry
+forward the original name's visual or verbal metaphor.
 
 ### 1.2 Logo Direction
 
-The current logo is the hammer-and-pick emoji (⚒). It's placeholder
-energy. The new logo should be a proper mark that works at 16px (favicon),
-32px (GitHub), and full size (website hero).
-
-**Concept: The AHVM Mark**
-
-A stylized furnace opening — an arch shape with the suggestion of
-contained heat/fire inside. Think of the mouth of a traditional Indian
-ahvm (a clay or brick furnace with an arched opening). Abstract it to
-a geometric form:
-
-```
-     ╭─────────╮
-    ╱     ∆     ╲        ← arch/dome (the furnace opening)
-   │    ∆ ∆ ∆    │       ← abstract flame shapes inside
-   │             │
-   └─────────────┘        ← base/foundation
-```
-
-**Design principles for the mark:**
-
-- **Geometric, not illustrative.** No realistic flames, no clipart
-  anvils. A clean symbol that reads at small sizes.
-- **Single color works.** Must be legible in monochrome (README, CLI
-  output, terminal). Color is additive, not required.
-- **The arch is the signature.** The curved top of a furnace opening is
-  the most distinctive shape. It should be recognizable even without
-  the fire elements.
-- **Warmth, not aggression.** The fire metaphor should feel like a
-  craftsman's tool, not destruction. Warm amber/orange tones, not red.
-
-**Color palette:**
-
-| Role | Color | Usage |
-|------|-------|-------|
-| Primary | `#F97316` (amber-500) | Logo fire element, primary accent, CTAs |
-| Primary dark | `#EA580C` (amber-600) | Hover states, secondary emphasis |
-| Ember | `#FB923C` (amber-400) | Highlights, gradients, glow effects |
-| Background | `#09090B` (zinc-950) | Page background (dark mode default) |
-| Surface | `#18181B` (zinc-900) | Cards, code blocks, elevated surfaces |
-| Border | `#27272A` (zinc-800) | Subtle dividers |
-| Text | `#FAFAFA` (zinc-50) | Primary text |
-| Text muted | `#A1A1AA` (zinc-400) | Secondary text, descriptions |
-
-The amber/orange sits naturally in the furnace metaphor and stands out
-against the dark zinc palette. It's warm without being alarming.
-
-**Alternative concept: The Anvil Silhouette**
-
-If the furnace arch feels too abstract, an anvil silhouette is the other
-strong option — it's the tool of the lohar, universally recognizable,
-and has a distinctive angular profile. However, the furnace opening is
-more unique (anvils are overused in forge/blacksmith branding) and maps
-better to "the environment that contains fire."
-
-**Recommendation:** Commission the furnace-arch mark from a designer,
-provide this brief. For immediate use, a typographic lockup (the word
-"ahvm" in a clean geometric sans with the arch shape integrated into
-a letterform — perhaps the "h" or "tt") works well as a stand-in.
+Use an AHVM or Agent House wordmark. The mark should remain legible at favicon,
+GitHub avatar, and website-hero sizes, work in a single color, and avoid imagery
+tied to the former product name.
 
 ### 1.3 Wordmark
 
-**"ahvm"** — always lowercase. The Hindi origin is the identity; keep
-it. No need for "AHVM Cloud" or "AHVM VM" — the single word is the
-brand.
-
-**Typography:** Use a geometric sans-serif for the wordmark and headings.
-Inter, Geist, or Satoshi. The monospace font (for code examples) should
-be Geist Mono, JetBrains Mono, or Berkeley Mono.
+Use **AHVM** for the product name and `ahvm` for commands, binaries, paths, and
+other technical identifiers. Expand it as **Agent House Virtual Machine** on
+first mention.
 
 ### 1.4 Voice & Tone
 
@@ -633,12 +565,10 @@ Every piece of copy the website needs, in one place. Use as-is or adapt.
 > and transparent resource management. Self-host it on a Raspberry Pi,
 > a Hetzner box, or any Linux machine with KVM.
 
-### The name (footer or about page, for the curious)
+### The name (footer or about page)
 
-> **AHVM** (भट्टी) is Hindi for *furnace* — the system that manages
-> fire, provides the environment where work happens.
-> **Lohar** (लोहार) means *blacksmith* — the guest agent that runs as
-> PID 1 inside every microVM, the one doing the actual work.
+> **AHVM** means **Agent House Virtual Machine**. It is an Agent House fork of
+> [Bhatti](https://github.com/sahil-shubham/bhatti).
 
 ### CTA labels
 

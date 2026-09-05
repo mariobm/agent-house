@@ -1,11 +1,13 @@
 # agent-house fork notes
 
-Agent House's VM platform fork, merged as base at upstream `0e70b75`.
+AHVM (Agent House Virtual Machine) is a fork of
+[Bhatti](https://github.com/sahil-shubham/bhatti), merged as base at upstream
+`0e70b75`.
 
 ## Remotes
 
 - `origin` — ours (private `mariobm/agent-house`), push here.
-- `upstream` — `https://github.com/mariobm/agent-house.git`, pull-only.
+- `upstream` — `https://github.com/sahil-shubham/bhatti.git`, pull-only.
   Sync with: `git fetch upstream && git merge upstream/main`
 
 ## Policy

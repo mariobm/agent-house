@@ -67,9 +67,8 @@ Pause/Resume (vCPU only):      ~400µs
 
 ## The Name
 
-**AHVM** (भट्टी) is Hindi for *furnace* — the system that manages fire, provides the environment where work happens.
-
-**Lohar** (लोहार) means *blacksmith* — the one who works inside the ahvm. The guest agent that runs as PID 1 inside every microVM.
+**AHVM** means **Agent House Virtual Machine**. This fork retains `lohar` as
+the internal name of the guest agent that runs as PID 1 inside every microVM.
 
 ## Documentation
 
