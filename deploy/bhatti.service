@@ -1,0 +1,17 @@
+[Unit]
+Description=Bhatti Sandbox Infrastructure
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bhatti serve
+WorkingDirectory=/var/lib/bhatti
+Environment=HOME=/root
+Restart=always
+RestartSec=5
+KillMode=process
+TimeoutStopSec=120
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

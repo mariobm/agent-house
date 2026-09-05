@@ -1,0 +1,86 @@
+# bhatti-sandbox: general-purpose dev sandbox
+#
+# A lean Ubuntu-based environment with zsh, node, tmux, and claude-code.
+# User dotfiles and Claude credentials are injected at build time if present.
+#
+# Build via: make sandbox
+
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG USERNAME=lohar
+ARG NODE_VERSION=22.16.0
+
+# --- System packages (runtime only) ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    zsh git curl wget ca-certificates gnupg \
+    tmux vim-tiny htop jq unzip xz-utils \
+    locales sudo socat \
+  && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
+  && locale-gen \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/* /usr/share/info/* \
+  && find /usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} + 2>/dev/null || true
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+# --- Starship prompt ---
+RUN curl -fsSL https://starship.rs/install.sh | sh -s -- -y
+
+# --- Create user ---
+RUN useradd -m -s /bin/zsh -G sudo ${USERNAME} \
+  && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+USER ${USERNAME}
+WORKDIR /home/${USERNAME}
+ENV HOME=/home/${USERNAME}
+
+# --- Node.js (direct tarball, no nvm) ---
+RUN ARCH=$(dpkg --print-architecture) && \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.xz" \
+    | sudo tar -xJ --strip-components=1 -C /usr/local
+
+# --- Claude Code CLI ---
+RUN npm install -g @anthropic-ai/claude-code
+
+# --- tmux: plugins (shallow clones, no TPM) ---
+RUN mkdir -p ~/.tmux/plugins \
+  && git clone --depth 1 https://github.com/tmux-plugins/tmux-sensible ~/.tmux/plugins/tmux-sensible \
+  && git clone --depth 1 https://github.com/dracula/tmux ~/.tmux/plugins/tmux \
+  && git clone --depth 1 https://github.com/tmux-plugins/tmux-cpu ~/.tmux/plugins/tmux-cpu
+
+# --- tmux: config ---
+COPY --chown=${USERNAME}:${USERNAME} sandbox/tmux.conf /home/${USERNAME}/.tmux.conf
+
+# --- zsh: zinit + plugins (shallow clones) ---
+RUN git clone --depth 1 https://github.com/zdharma-continuum/zinit.git ~/.local/share/zinit/zinit.git \
+  && mkdir -p ~/.local/share/zinit/plugins \
+  && git clone --depth 1 https://github.com/zsh-users/zsh-syntax-highlighting ~/.local/share/zinit/plugins/zsh-users---zsh-syntax-highlighting \
+  && git clone --depth 1 https://github.com/zsh-users/zsh-autosuggestions ~/.local/share/zinit/plugins/zsh-users---zsh-autosuggestions \
+  && git clone --depth 1 https://github.com/agkozak/zsh-z ~/.local/share/zinit/plugins/agkozak---zsh-z
+
+# --- zsh: config ---
+COPY --chown=${USERNAME}:${USERNAME} sandbox/zshrc /home/${USERNAME}/.zshrc
+
+# --- User dotfiles (empty dir if not provided) ---
+COPY --chown=${USERNAME}:${USERNAME} sandbox/dotfiles/ /home/${USERNAME}/.dotfiles/
+RUN if [ -f ~/.dotfiles/.gitconfig ]; then ln -sf ~/.dotfiles/.gitconfig ~/.gitconfig; fi \
+  && if [ -f ~/.dotfiles/.vimrc ]; then ln -sf ~/.dotfiles/.vimrc ~/.vimrc; fi \
+  && if [ -d ~/.dotfiles/.config ]; then cp -rsn ~/.dotfiles/.config/ ~/.config/ 2>/dev/null || true; fi
+
+# --- Claude credentials (empty dir if not provided) ---
+COPY --chown=${USERNAME}:${USERNAME} sandbox/claude/ /home/${USERNAME}/.claude-inject/
+RUN if [ -f ~/.claude-inject/.claude.json ]; then mv ~/.claude-inject/.claude.json ~/; fi \
+  && if [ -d ~/.claude-inject/settings ]; then \
+       mkdir -p ~/.claude && cp -r ~/.claude-inject/settings/. ~/.claude/; \
+     fi \
+  && rm -rf ~/.claude-inject
+
+# /workspace is the volume mount point for persistent project files.
+# User home (/home/lohar) holds dotfiles/config baked into the image.
+RUN sudo mkdir -p /workspace && sudo chown ${USERNAME}:${USERNAME} /workspace
+WORKDIR /workspace
+
+# Bhatti manages lifecycle
+CMD ["sleep", "infinity"]
