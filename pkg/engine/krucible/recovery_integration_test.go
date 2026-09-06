@@ -107,7 +107,21 @@ func TestKrucibleRecoveryDeadHelper(t *testing.T) {
 	defer cancel()
 
 	eng1 := recoveryEngine(t, dataDir, base)
-	info, err := eng1.Create(ctx, engine.SandboxSpec{Name: "crash", CPUs: 1, MemoryMB: 512})
+	// The boot-time config handshake over vsock is flaky under KVM: the
+	// guest occasionally boots without its auth token (config fetch EOF),
+	// after which every agent attempt fails auth until WaitReady times out.
+	// Retry the boot itself a bounded number of times; boot reliability is
+	// covered by the other suites, while everything below asserts the
+	// crash-recovery semantics this test owns and stays strict.
+	var info engine.SandboxInfo
+	var err error
+	for attempt := 1; ; attempt++ {
+		info, err = eng1.Create(ctx, engine.SandboxSpec{Name: "crash", CPUs: 1, MemoryMB: 512})
+		if err == nil || attempt == 3 {
+			break
+		}
+		t.Logf("Create attempt %d failed, retrying: %v", attempt, err)
+	}
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
