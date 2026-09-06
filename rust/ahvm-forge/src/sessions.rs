@@ -6,11 +6,13 @@
 //! left off and learn `truncated=true` when the head they asked for is gone.
 //! PTY sessions use a pty master (ptmx) so interactive programs see a TTY.
 
+#![allow(unsafe_code)]
 use std::collections::{HashMap, VecDeque};
+use std::ffi::CString;
 use std::io::Read;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicUsize, Ordering},
     Arc, Mutex, OnceLock,
 };
 
@@ -18,9 +20,12 @@ use std::sync::{
 pub const RING_CAP: usize = 256 << 10;
 /// Wire chunk size per SessionData frame.
 pub const CHUNK: usize = 32 << 10;
+/// Max number of sessions retained (including completed). Oldest completed
+/// is evicted first; if none, creation fails.
+const MAX_SESSIONS: usize = 100;
 
 static MANAGER: OnceLock<SessionManager> = OnceLock::new();
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 pub fn manager() -> &'static SessionManager {
     MANAGER.get_or_init(SessionManager::default)
@@ -42,6 +47,7 @@ pub struct Session {
     stdin: Mutex<Option<std::process::ChildStdin>>,
     master: Mutex<Option<std::fs::File>>,
     is_pty: bool,
+    active_pumps: Arc<AtomicUsize>,
 }
 
 #[derive(Debug, Default)]
@@ -87,6 +93,32 @@ impl SessionManager {
         if argv.is_empty() {
             return Err("empty argv".into());
         }
+        // Bounded retention: evict oldest completed if at limit
+        {
+            let mut map = self.sessions.lock().unwrap();
+            if map.len() >= MAX_SESSIONS {
+                // Find oldest completed
+                let mut oldest: Option<(String, i64)> = None;
+                for (id, s) in map.iter() {
+                    if s.exit.lock().unwrap().is_some() {
+                        let started = s.started_at;
+                        let candidate = (id.clone(), started);
+                        let is_older = match &oldest {
+                            None => true,
+                            Some((oid, ot)) => (started, id) < (*ot, oid),
+                        };
+                        if is_older {
+                            oldest = Some(candidate);
+                        }
+                    }
+                }
+                if let Some((evict_id, _)) = oldest {
+                    map.remove(&evict_id);
+                } else {
+                    return Err("too many active sessions".into());
+                }
+            }
+        }
         let id = format!(
             "s-{}-{}",
             std::process::id(),
@@ -117,6 +149,7 @@ impl SessionManager {
             });
         }
         let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+        let active_pumps = Arc::new(AtomicUsize::new(2));
         let session = Arc::new(Session {
             id: id.clone(),
             argv,
@@ -127,8 +160,9 @@ impl SessionManager {
             stdin: Mutex::new(child.stdin.take()),
             master: Mutex::new(None),
             is_pty: false,
+            active_pumps: active_pumps.clone(),
         });
-        let pump = |pipe: Option<Box<dyn Read + Send>>, session: Arc<Session>| {
+        let pump = |pipe: Option<Box<dyn Read + Send>>, session: Arc<Session>, counter: Arc<AtomicUsize>| {
             std::thread::spawn(move || {
                 if let Some(mut pipe) = pipe {
                     let mut chunk = [0u8; 8192];
@@ -140,22 +174,38 @@ impl SessionManager {
                         }
                     }
                 }
+                counter.fetch_sub(1, Ordering::SeqCst);
             })
         };
         pump(
             child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
             session.clone(),
+            active_pumps.clone(),
         );
         pump(
             child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
             session.clone(),
+            active_pumps.clone(),
         );
         std::thread::spawn({
             let session = session.clone();
+            let pumps = active_pumps.clone();
             move || {
                 let code = child.wait().ok().and_then(|s| s.code());
+                // Wait for pumps to drain buffered output before publishing exit
+                // (otherwise attach sees exit+currently drained as EOF with missing tail)
+                for _ in 0..50 {
+                    if pumps.load(Ordering::SeqCst) == 0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
                 *session.exit.lock().unwrap() = Some(code.unwrap_or(124));
-                if let Some(pgid) = *session.pgid.lock().unwrap() {
+                // Close I/O to free FDs; drop stdin
+                *session.stdin.lock().unwrap() = None;
+                // Invalidate pgid so later kill cannot hit reused PID
+                let pgid = session.pgid.lock().unwrap().take();
+                if let Some(pgid) = pgid {
                     kill_group(pgid);
                 }
             }
@@ -173,9 +223,7 @@ impl SessionManager {
         cwd: Option<String>,
     ) -> Result<String, String> {
         let (master_file, slave_path) = open_ptmx()?;
-        // Need raw fd for child to close
         let master_fd = master_file.as_raw_fd();
-        // Set initial size 24x80
         {
             let ws = libc::winsize {
                 ws_row: 24,
@@ -195,29 +243,21 @@ impl SessionManager {
         for (k, v) in &env {
             cmd.env(k, v);
         }
-        let slave_path_clone = slave_path.clone();
+        let c_slave = CString::new(slave_path.clone()).map_err(|e| format!("CString: {e}"))?;
         use std::os::unix::process::CommandExt;
-        #[allow(unsafe_code)]
         unsafe {
             cmd.pre_exec(move || {
-                // Create new session, become leader
                 if libc::setsid() < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
-                // Open slave
-                let slave_fd = libc::open(
-                    slave_path_clone.as_ptr() as *const i8,
-                    libc::O_RDWR,
-                );
+                let slave_fd = libc::open(c_slave.as_ptr(), libc::O_RDWR);
                 if slave_fd < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
-                // Make it controlling terminal
                 if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) < 0 {
                     libc::close(slave_fd);
                     return Err(std::io::Error::last_os_error());
                 }
-                // Dup to stdio
                 if libc::dup2(slave_fd, 0) < 0
                     || libc::dup2(slave_fd, 1) < 0
                     || libc::dup2(slave_fd, 2) < 0
@@ -228,14 +268,12 @@ impl SessionManager {
                 if slave_fd > 2 {
                     libc::close(slave_fd);
                 }
-                // Close master in child
                 libc::close(master_fd);
                 Ok(())
             });
         }
-        // Child's stdio will be slave, so don't pipe
         let mut child = cmd.spawn().map_err(|e| format!("spawn pty: {e}"))?;
-        // Keep master for reading/writing
+        let active_pumps = Arc::new(AtomicUsize::new(1));
         let session = Arc::new(Session {
             id: id.clone(),
             argv,
@@ -246,14 +284,15 @@ impl SessionManager {
             stdin: Mutex::new(None),
             master: Mutex::new(Some(master_file)),
             is_pty: true,
+            active_pumps: active_pumps.clone(),
         });
-        // Pump from master
         {
             let master_clone = {
                 let guard = session.master.lock().unwrap();
                 guard.as_ref().unwrap().try_clone().unwrap()
             };
             let session_clone = session.clone();
+            let pumps = active_pumps.clone();
             std::thread::spawn(move || {
                 let mut file = master_clone;
                 let mut chunk = [0u8; 8192];
@@ -265,14 +304,25 @@ impl SessionManager {
                         Err(_) => break,
                     }
                 }
+                pumps.fetch_sub(1, Ordering::SeqCst);
             });
         }
         std::thread::spawn({
             let session = session.clone();
+            let pumps = active_pumps.clone();
             move || {
                 let code = child.wait().ok().and_then(|s| s.code());
+                for _ in 0..50 {
+                    if pumps.load(Ordering::SeqCst) == 0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
                 *session.exit.lock().unwrap() = Some(code.unwrap_or(124));
-                if let Some(pgid) = *session.pgid.lock().unwrap() {
+                // Close master to free FD
+                *session.master.lock().unwrap() = None;
+                let pgid = session.pgid.lock().unwrap().take();
+                if let Some(pgid) = pgid {
                     kill_group(pgid);
                 }
             }
@@ -289,6 +339,10 @@ impl SessionManager {
         let s = self
             .get(id)
             .ok_or_else(|| format!("no such session: {id}"))?;
+        // Synchronize: if already exited, kill would hit reused PID
+        if s.exit.lock().unwrap().is_some() {
+            return Err(format!("session {id} already completed"));
+        }
         let pgid = *s.pgid.lock().unwrap();
         match pgid {
             Some(pgid) => {
@@ -299,7 +353,22 @@ impl SessionManager {
         }
     }
 
-    #[allow(unsafe_code)]
+    pub fn delete(&self, id: &str) -> Result<(), String> {
+        let mut map = self.sessions.lock().unwrap();
+        let s = map.get(id).ok_or_else(|| format!("no such session: {id}"))?.clone();
+        // Kill if still running, then remove
+        if s.exit.lock().unwrap().is_none() {
+            if let Some(pgid) = *s.pgid.lock().unwrap() {
+                kill_group(pgid);
+            }
+        }
+        // Close handles
+        *s.stdin.lock().unwrap() = None;
+        *s.master.lock().unwrap() = None;
+        map.remove(id);
+        Ok(())
+    }
+
     pub fn resize(&self, id: &str, rows: u16, cols: u16) -> Result<(), String> {
         let s = self.get(id).ok_or_else(|| format!("no such session: {id}"))?;
         if !s.is_pty {
@@ -369,6 +438,10 @@ impl Session {
 
     pub fn total(&self) -> u64 {
         self.ring.lock().unwrap().total
+    }
+
+    pub fn pumps_done(&self) -> bool {
+        self.active_pumps.load(Ordering::SeqCst) == 0
     }
 
     pub fn write_stdin(&self, data: &[u8]) -> Result<(), String> {

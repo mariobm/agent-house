@@ -92,6 +92,9 @@ pub enum SessionReq {
         rows: u16,
         cols: u16,
     },
+    Delete {
+        session_id: String,
+    },
     List,
 }
 
@@ -108,6 +111,9 @@ pub enum SessionResp {
         session_id: String,
     },
     Resized {
+        session_id: String,
+    },
+    Deleted {
         session_id: String,
     },
     Listed {
@@ -331,6 +337,17 @@ fn serve_session(_r: &mut BufReader<TcpStream>, w: &mut TcpStream, req: SessionR
             }
             false
         }
+        SessionReq::Delete { session_id } => {
+            match mgr.delete(&session_id) {
+                Ok(()) => {
+                    let body =
+                        serde_json::to_vec(&SessionResp::Deleted { session_id }).expect("serialize");
+                    send_frame(w, reply(FrameType::SessionResp, body));
+                }
+                Err(message) => send_frame(w, err_frame(message)),
+            }
+            false
+        }
         SessionReq::List => {
             let body = serde_json::to_vec(&SessionResp::Listed {
                 sessions: mgr.list(),
@@ -351,17 +368,17 @@ fn serve_session(_r: &mut BufReader<TcpStream>, w: &mut TcpStream, req: SessionR
             loop {
                 let (chunk, next, exit, truncated) = s.read_from(sent);
                 let drained = next == s.total();
-                let eof = exit.is_some() && drained;
-                // Never emit empty non-EOF frames: attachers blocking on
-                // the first frame would otherwise have to distinguish
-                // "nothing yet" from data.
+                // EOF only when process exited AND pumps drained AND ring drained
+                let eof = exit.is_some() && drained && s.pumps_done();
                 if chunk.is_empty() && !eof {
                     std::thread::sleep(std::time::Duration::from_millis(20));
                     continue;
                 }
+                // seq is actual chunk start, not requested offset (wrong after eviction)
+                let actual_seq = next.saturating_sub(chunk.len() as u64);
                 let data = SessionData {
                     session_id: session_id.clone(),
-                    seq: sent,
+                    seq: actual_seq,
                     data_b64: b64(&chunk),
                     eof,
                     exit_code: if eof { exit } else { None },
@@ -383,7 +400,6 @@ fn serve_session(_r: &mut BufReader<TcpStream>, w: &mut TcpStream, req: SessionR
                     return false;
                 }
                 sent = next;
-                std::thread::sleep(std::time::Duration::from_millis(20));
             }
         }
     }

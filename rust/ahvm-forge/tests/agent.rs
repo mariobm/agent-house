@@ -734,3 +734,105 @@ fn session_pty_resize() {
     assert!(msg.contains("not a pty"), "{msg}");
     let _ = session_req(&mut c, serde_json::json!({ "op": "kill", "session_id": id2 }));
 }
+
+#[test]
+fn kill_completed_is_rejected() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "create", "argv": ["sh", "-c", "echo done"] }),
+    );
+    let id = v["session_id"].as_str().unwrap().to_owned();
+    let (out, _, exit) = attach_collect(&mut c, &id, 0);
+    assert_eq!(exit, Some(0));
+    assert!(String::from_utf8_lossy(&out).contains("done"));
+    // Now completed, kill should be rejected, not kill unrelated pgid
+    let body = serde_json::json!({ "op": "kill", "session_id": id }).to_string().into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    let msg = expect_error(&mut c);
+    assert!(msg.contains("already completed"), "{msg}");
+}
+
+#[test]
+fn resume_seq_after_eviction_is_correct() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    // Emit 300KB (> RING_CAP) via one session; ring will evict head
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "create", "argv": ["sh", "-c", "head -c 300000 /dev/zero | tr '\\0' x; echo done"] }),
+    );
+    let id = v["session_id"].as_str().unwrap().to_owned();
+    // Wait for completion via attach, then re-attach from 0 to test truncated path
+    let (full, truncated_initial, exit) = attach_collect(&mut c, &id, 0);
+    assert_eq!(exit, Some(0));
+    // Re-attach from 0 on same completed session: should be truncated and seq should be base, not 0
+    // Use new connection so we don't interleave with previous attach's streaming
+    let mut c2 = agent.connect();
+    let body = serde_json::json!({ "op": "attach", "session_id": id, "from_seq": 0 }).to_string().into_bytes();
+    write_frame(&mut c2.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    let f = read_frame(&mut c2.r).unwrap();
+    assert_eq!(f.msg_type, FrameType::SessionData);
+    let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
+    let seq = v["seq"].as_u64().unwrap();
+    let truncated = v["truncated"].as_bool().unwrap();
+    assert!(truncated, "should be truncated after eviction");
+    assert!(seq > 0, "seq should be actual start, not 0, got {seq}");
+    assert!(seq > 30000 && seq < 50000, "seq should be ~37856, got {seq}");
+    // Drain remaining chunks on c2 so server can return to idle before delete
+    let mut next_seq = seq + B64.decode(v["data_b64"].as_str().unwrap()).unwrap().len() as u64;
+    loop {
+        let f = read_frame(&mut c2.r).unwrap();
+        assert_eq!(f.msg_type, FrameType::SessionData);
+        let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
+        if v["eof"].as_bool().unwrap() {
+            break;
+        }
+        next_seq = v["seq"].as_u64().unwrap() + B64.decode(v["data_b64"].as_str().unwrap()).unwrap().len() as u64;
+    }
+    // Cleanup on original connection
+    let _ = session_req(&mut c, serde_json::json!({ "op": "delete", "session_id": id }));
+}
+
+#[test]
+fn delete_frees_session() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "create", "argv": ["sleep", "60"] }),
+    );
+    let id = v["session_id"].as_str().unwrap().to_owned();
+    let v = session_req(&mut c, serde_json::json!({ "op": "delete", "session_id": id }));
+    assert_eq!(v["session_id"], id);
+    let body = serde_json::json!({ "op": "attach", "session_id": id, "from_seq": 0 }).to_string().into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    let msg = expect_error(&mut c);
+    assert!(msg.contains("no such session"), "{msg}");
+}
+
+#[test]
+fn bounded_retention_evicts_oldest_completed() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    // Create 101 short-lived sessions; 100 should remain, oldest evicted
+    let mut ids = Vec::new();
+    for i in 0..101 {
+        let v = session_req(
+            &mut c,
+            serde_json::json!({ "op": "create", "argv": ["sh", "-c", format!("echo {i}")] }),
+        );
+        ids.push(v["session_id"].as_str().unwrap().to_owned());
+        // Attach to let it complete and free pumps
+        let _ = attach_collect(&mut c, ids.last().unwrap(), 0);
+    }
+    let v = session_req(&mut c, serde_json::json!({ "op": "list" }));
+    let listed = v["sessions"].as_array().unwrap().len();
+    assert!(listed <= 100, "retention not bounded: {listed}");
+    // Oldest completed should be gone
+    let body = serde_json::json!({ "op": "attach", "session_id": ids[0], "from_seq": 0 }).to_string().into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    let msg = expect_error(&mut c);
+    assert!(msg.contains("no such session"), "oldest not evicted: {msg}");
+}
