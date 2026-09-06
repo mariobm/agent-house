@@ -16,7 +16,10 @@ edition = "2021"
 license = "Apache-2.0"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny` (not `forbid`) so the two process-group helpers in ahvm-forge can
+# carry a scoped `#[allow]` with their safety justification. Everything else
+# must stay unsafe-free.
+unsafe_code = "deny"
 missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]

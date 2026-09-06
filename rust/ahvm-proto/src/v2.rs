@@ -22,6 +22,8 @@ pub enum FrameType {
     ConfigResp = 0x3,
     ExecResp = 0x4,
     Error = 0x5,
+    FileReq = 0x6,
+    FileResp = 0x7,
 }
 
 impl FrameType {
@@ -33,6 +35,8 @@ impl FrameType {
             0x3 => Some(Self::ConfigResp),
             0x4 => Some(Self::ExecResp),
             0x5 => Some(Self::Error),
+            0x6 => Some(Self::FileReq),
+            0x7 => Some(Self::FileResp),
             _ => None,
         }
     }
@@ -185,6 +189,8 @@ mod tests {
             FrameType::ConfigResp,
             FrameType::ExecResp,
             FrameType::Error,
+            FrameType::FileReq,
+            FrameType::FileResp,
         ] {
             roundtrip(t, b"");
             roundtrip(t, b"hello-token-bytes");

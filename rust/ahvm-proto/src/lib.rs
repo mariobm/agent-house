@@ -12,4 +12,4 @@
 
 pub mod v2;
 
-pub use v2::{Frame, FrameType, MAX_FRAME_SIZE, PROTOCOL_VERSION};
+pub use v2::{read_frame, write_frame, Frame, FrameType, MAX_FRAME_SIZE, PROTOCOL_VERSION};
