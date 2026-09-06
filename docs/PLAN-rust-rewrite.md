@@ -32,8 +32,8 @@ throughout; it is the rewrite's safety net, not its victim.
 
 ```text
 rust/
-  ahvm-proto/    new frame codec + message types (+ shim parsing old bytes)
-  ahvm-store/    rusqlite, same schema + migrations as pkg/store
+  ahvm-proto/    new frame codec + message types (no legacy readers)
+  ahvm-store/    rusqlite, schema redesigned (no production data to migrate)
   ahvm-forge/    guest agent (static musl, size-budgeted, replaces cmd/forge)
   ahvm-engine/   VMM lifecycle, links libkrucible as a native crate (no cgo),
                  spawns one worker process per VM (keeps today's isolation)
@@ -46,36 +46,32 @@ rust/
 
 Guiding rule: nothing needs to be byte-identical for its own sake. Wherever
 the Rust version can be more efficient or cleaner, do it better — frozen
-vectors below exist to build exact migration tooling and parity tests, not to
-chain the new design to old bytes. Compat is required only where data gravity
-demands it (existing SQLite DBs and snapshot bundles must import cleanly);
-everything else (wire frames, CLI output, internal APIs) may be redesigned,
-with a translation shim at the boundary during transition, removed at cutover.
+vectors below exist as parity-test references, not as a freeze on the new
+design. Nothing is carried over: no production data exists, so wire frames,
+storage schema, snapshots, CLI output, and internal APIs are all free to be
+redesigned better. No migration shims, no legacy readers.
 
 ## 3. Phases (each shippable, each gated)
 
 ### Phase 0 — Vectors + conformance harness (1–2 wks)
-- Record protocol vectors (frames, config JSON) as the migration reference
-  and translation-shim contract — not a freeze on the new design.
+- Record protocol vectors (frames, config JSON) as parity-test references.
 - Black-box conformance suite at CLI level: same workflows must work on both
   trees (behavioral parity; output text may improve).
 - CI builds both trees; conformance must pass on Go before Rust exists.
 - **Exit:** harness green on Go; vectors recorded in repo.
 
 ### Phase 1 — `ahvm-proto` + `ahvm-store` (2–3 wks)
-- New protocol design, plus a translation shim that parses every golden
-  vector (fuzz the shim against the vectors).
-- rusqlite store: must open Go-written DBs (data gravity); schema itself may
-  be redesigned with a one-shot migration.
-- **Exit:** fuzz clean 1h; Go DBs open in Rust.
+- New protocol design, fuzzed (proptest-style roundtrips + adversarial inputs).
+- rusqlite store with a clean redesigned schema; parity tests assert the same
+  workflows persist and query the same facts, not byte compatibility.
+- **Exit:** fuzz clean 1h; store roundtrip tests green.
 
 ### Phase 2 — `ahvm-forge` guest agent (3–4 wks)
 - Port exec/PTY/files/sessions/systemctl-shim; static musl; strip; size budget
   (e.g. <8 MB) enforced in CI.
 - Validate with the ported guest unit suite + live boot driven by a Rust
-  test engine (mixed-version runs against the Go daemon only where the
-  translation shim makes them cheap).
-- **Exit:** Go daemon + Rust forge passes agent KVM suite; binary size in budget.
+  test engine against the Rust daemon (no mixed-version runs).
+- **Exit:** Rust daemon + Rust forge passes agent KVM suite; binary size in budget.
 
 ### Phase 3 — `ahvm-engine` (4–6 wks)
 - Native libkrucible dependency (path/crates.io); per-VM worker processes;
@@ -83,8 +79,8 @@ with a translation shim at the boundary during transition, removed at cutover.
 - This is where this week's vsock flake lives: add a deterministic
   regression test for back-to-back SIGKILL→relaunch (fixed-CID reuse) and
   keep a bounded retry until the fork-level fix lands.
-- Snapshot import tests (Go-written bundles restore in Rust) are mandatory
-  here; export back need not be preserved if the format improves.
+- Snapshot format redesigned for chunked S3-backed storage (see §7);
+  no import path from Go bundles (nothing in production to import).
 - **Exit:** full KVM suite green on Rust engine + Go daemon.
 
 ### Phase 4 — `ahvm-daemon` (4–6 wks)
@@ -108,8 +104,8 @@ with a translation shim at the boundary during transition, removed at cutover.
 - **Exit:** install-from-scratch on ahvm-node-01 using only Rust artifacts.
 
 ### Phase 7 — Cutover (2 wks)
-- SQLite migrates (same file or one-shot migration); snapshot bundles import;
-  flag-day cutover per host with rollback = previous binary. Delete Go tree.
+- Fresh state per host (no migration); flag-day cutover per host with
+  rollback = previous binary. Delete Go tree.
 - **Exit:** repo is Rust + libkrucible submodule only; CI has zero Go.
 
 ## 4. Risks (stated plainly)

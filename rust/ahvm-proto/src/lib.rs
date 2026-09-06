@@ -1,16 +1,15 @@
 //! Agent wire protocol, v2.
 //!
-//! The Go implementation's framing (`[u32 BE len][u8 type][payload]`, 1 MiB
-//! cap) is documented in `docs/PLAN-rust-rewrite.md` as migration reference
-//! only: v2 is free to be better. What v2 keeps: tiny header, single-write
-//! frames, stream-safe parsing. What v2 changes: explicit version nibble so
-//! future revisions negotiate instead of breaking, and a legacy reader
-//! ([`legacy`]) that parses Go-era frames for migration tooling.
+//! Clean break from the Go implementation's framing: v2 keeps the good
+//! properties (tiny header, single-write frames, stream-safe parsing) and
+//! changes the rest — explicit version nibble so future revisions negotiate
+//! instead of breaking. No legacy readers, no migration shims: pre-release
+//! project, no production data to carry.
 //!
 //! Design notes live with the dashboard-first API plan: the daemon API and
-//! this transport both get redesigned, with shims at the boundary.
+//! this transport are both redesigned, similar in spirit to v1 where it was
+//! good, better where it wasn't.
 
-pub mod legacy;
 pub mod v2;
 
 pub use v2::{Frame, FrameType, MAX_FRAME_SIZE, PROTOCOL_VERSION};
