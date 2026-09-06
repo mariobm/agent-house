@@ -21,7 +21,7 @@
 
 use ahvm_engine::{host_caps, send_ctl, SnapshotManifest};
 use ahvm_proto::{read_frame, write_frame, Frame, FrameType};
-use std::io::{BufReader, Write};
+use std::io::BufReader;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -168,33 +168,46 @@ impl Guest {
         v["session_id"].as_str().unwrap().to_owned()
     }
 
-    /// Attach from `seq`, collecting until `eof` or the budget runs out.
-    fn session_drain(&self, id: &str, from_seq: u64, budget: Duration) -> (Vec<u8>, bool) {
+    /// Attach from `seq`, collecting until `needle` is seen or the budget
+    /// runs out. Returns (bytes, found). NOTE: must NOT wait for EOF — the
+    /// marker session stays alive (sleep) across snapshot cycles by design,
+    /// so EOF may never come; waiting for it hits the socket read timeout.
+    fn session_drain_until(
+        &self,
+        id: &str,
+        from_seq: u64,
+        needle: &[u8],
+        budget: Duration,
+    ) -> (Vec<u8>, bool) {
         let body = serde_json::json!({ "op": "attach", "session_id": id, "from_seq": from_seq })
             .to_string()
             .into_bytes();
-        let stream = {
-            let mut c = self.conn();
-            write_frame(&mut c, &Frame { msg_type: FrameType::SessionReq, payload: body })
-                .unwrap();
-            c
-        };
-        let mut r = BufReader::new(stream);
+        let mut c = self.conn();
+        write_frame(&mut c, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+        let mut r = BufReader::new(c.try_clone().unwrap());
         let mut out = Vec::new();
         let deadline = Instant::now() + budget;
         loop {
             if Instant::now() > deadline {
                 return (out, false);
             }
-            let f = read_frame(&mut r).unwrap();
+            // Silence (incl. socket read timeout) means "marker absent":
+            // return, don't panic — the caller asserts with context.
+            let f = match read_frame(&mut r) {
+                Ok(f) => f,
+                Err(_) => return (out, false),
+            };
             assert_eq!(f.msg_type, FrameType::SessionData);
             let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
             let chunk =
                 base64::Engine::decode(&base64::engine::general_purpose::STANDARD, v["data_b64"].as_str().unwrap())
                     .unwrap();
             out.extend_from_slice(&chunk);
-            if v["eof"].as_bool().unwrap() {
+            if out.windows(needle.len()).any(|w| w == needle) {
                 return (out, true);
+            }
+            if v["eof"].as_bool().unwrap() {
+                return (out, false);
             }
         }
     }
@@ -286,11 +299,20 @@ fn kvm_snapshot_restore_cycle() {
     // Filesystem state inside the overlay (frozen by the snapshot).
     let v = g.exec(&["/bin/sh", "-c", "echo FSVAL > /workspace/fs-proof"]);
     assert_eq!(v["exit_code"], 0);
-    // RAM state: session output exists only in guest memory.
-    let sess = g.session_create(&["/bin/sh", "-c", "echo SNAPMARKER; sleep 60"]);
-    let (first, _) = g.session_drain(&sess, 0, Duration::from_secs(20));
+    // RAM state: session output exists only in guest memory. The session
+    // stays alive across ALL cycles (long sleep), so attach with a marker
+    // search — never drain-to-EOF here (EOF may never come).
+    // NOTE: MARKER_SLEEP_SECS only needs to exceed total test time (~minutes);
+    // nothing ever waits for it — the worker is killed at test end.
+    const MARKER_SLEEP_SECS: u32 = 600;
+    let sess = g.session_create(&[
+        "/bin/sh",
+        "-c",
+        &format!("echo SNAPMARKER; sleep {MARKER_SLEEP_SECS}"),
+    ]);
+    let (first, found) = g.session_drain_until(&sess, 0, b"SNAPMARKER\n", Duration::from_secs(20));
     assert!(
-        first.windows(11).any(|w| w == b"SNAPMARKER\n"),
+        found,
         "no marker pre-snapshot: {:?}",
         String::from_utf8_lossy(&first)
     );
@@ -338,13 +360,12 @@ fn kvm_snapshot_restore_cycle() {
 
         // RAM proof: the pre-snapshot session resumes with its output.
         // A fresh boot has no such session and errors here instead.
-        let (out, eof) = g.session_drain(&sess, 0, Duration::from_secs(20));
+        let (out, found) = g.session_drain_until(&sess, 0, b"SNAPMARKER\n", Duration::from_secs(20));
         assert!(
-            out.windows(11).any(|w| w == b"SNAPMARKER\n"),
+            found,
             "cycle {cycle}: RAM marker lost: {:?}",
             String::from_utf8_lossy(&out)
         );
-        assert!(eof, "cycle {cycle}: session did not reach EOF");
 
         // Disk proof: file written pre-snapshot is back.
         let v = g.exec(&["/bin/sh", "-c", "cat /workspace/fs-proof"]);
