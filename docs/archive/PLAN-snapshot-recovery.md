@@ -1,6 +1,6 @@
 # Fix: Sandbox stuck in 'unknown' after thermal snapshot timeout
 
-Issue: [#4](https://github.com/sahil-shubham/bhatti/issues/4)
+Issue: [#4](https://github.com/mariobm/agent-house/issues/4)
 
 ---
 
@@ -8,7 +8,7 @@ Issue: [#4](https://github.com/sahil-shubham/bhatti/issues/4)
 
 When a warm→cold thermal snapshot times out, the sandbox is immediately
 marked `unknown` in the store. The VM is still alive (Firecracker process
-running, vCPUs paused) but bhatti considers it unrecoverable. All
+running, vCPUs paused) but ahvm considers it unrecoverable. All
 subsequent operations fail — exec returns 500, proxy returns 502.
 The only recovery is destroy + recreate, losing all in-VM state.
 
@@ -615,7 +615,7 @@ timeout via context. The thermal cycle's 60s is enough for any VM size
 on NVMe. If we find edge cases, tune the caller's timeout — don't add
 a formula inside `Stop()`.
 
-**`bhatti recover` CLI command.** Fix 5 makes `ensureHot` self-heal.
+**`ahvm recover` CLI command.** Fix 5 makes `ensureHot` self-heal.
 The next user interaction auto-recovers. No manual command needed.
 
 **`handleSandboxStart` accepting `unknown` status.** With `ensureHot`

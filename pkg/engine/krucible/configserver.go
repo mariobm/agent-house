@@ -5,15 +5,15 @@ import (
 	"os"
 	"sync"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
 // configServer serves a sandbox's boot config over a guest→host vsock UDS.
 //
 // libkrun (in the per-VM helper) forwards the guest's connection on
-// proto.VsockPortConfig to this UDS (krun_add_vsock_port2 listen=false); lohar
+// proto.VsockPortConfig to this UDS (krun_add_vsock_port2 listen=false); forge
 // dials it once at boot to fetch its SandboxConfig — replacing the on-disk
-// config drive (DESIGN-bhatti-v2-secrets-and-trust §3.4). Nothing is written to
+// config drive (DESIGN-ahvm-v2-secrets-and-trust §3.4). Nothing is written to
 // a guest disk or captured in a snapshot.
 //
 // The UDS is per-sandbox, so the channel *is* the capability: a guest reaches

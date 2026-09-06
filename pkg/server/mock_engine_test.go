@@ -8,8 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // mockEngine implements engine.Engine and ThermalEngine for server tests.
@@ -235,10 +235,8 @@ type mockTermConn struct {
 
 func (t *mockTermConn) Read(p []byte) (int, error)  { return t.conn.Read(p) }
 func (t *mockTermConn) Write(p []byte) (int, error) { return t.conn.Write(p) }
-func (t *mockTermConn) Resize(rows, cols int) error  { return nil }
+func (t *mockTermConn) Resize(rows, cols int) error { return nil }
 func (t *mockTermConn) Close() error {
 	t.server.Close()
 	return t.conn.Close()
 }
-
-

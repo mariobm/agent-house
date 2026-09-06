@@ -28,10 +28,10 @@ some are outright incorrect.
 |-----|-------------|---------------------------|
 | `thermal-management.md` §Diff Snapshots | Diff snapshots are used for warm→cold, `track_dirty_pages: true` | **Diff snapshots are completely disabled.** All snapshots are Full. `track_dirty_pages: false`. The rory incident killed this. (`engine.go:508-510`) |
 | `thermal-management.md` §Why TCP | "Cold boot uses vsock (slightly faster)" | **All connections use TCP, including cold boot.** `Create()` calls `agent.NewTCPClientWithAuth()` directly (`engine.go:589`). Vsock is still configured for FC but the agent client never uses it. |
-| `networking.md` entire doc | Describes a single shared bridge `brbhatti0` on `192.168.137.0/24` | **Per-user bridges** with `subnetFromIndex()`. Each user gets their own bridge and /24 subnet. `userNetworks map[string]*UserNetwork` (`engine.go:70,228-246`) |
+| `networking.md` entire doc | Describes a single shared bridge `brahvm0` on `192.168.137.0/24` | **Per-user bridges** with `subnetFromIndex()`. Each user gets their own bridge and /24 subnet. `userNetworks map[string]*UserNetwork` (`engine.go:70,228-246`) |
 | `architecture.md` §Project Structure | Lists `docker/docker.go` | **Docker engine is gone.** The `pkg/engine/docker/` directory doesn't exist. |
 | `architecture.md` §Project Structure | Missing files | Missing: `jail.go`, `ringbuffer.go`, `public_proxy.go`, `pkg/backup/*`, `pkg/oci/*` |
-| `architecture.md` diagram | Shows single bridge `brbhatti0` | Per-user bridges (same as networking.md) |
+| `architecture.md` diagram | Shows single bridge `brahvm0` | Per-user bridges (same as networking.md) |
 
 ### Moderate (docs are incomplete, missing new features)
 
@@ -73,14 +73,14 @@ months? What would a contributor need to know? What can be cut?
 
 ### What to learn
 
-Everything lohar does is about processes. Fork, exec, signals, process
+Everything forge does is about processes. Fork, exec, signals, process
 groups, PID 1 responsibilities — this is the foundation.
 
 **Read your code:**
-- `cmd/lohar/main.go` (310 lines) — the boot sequence, mounts, listeners
-- `cmd/lohar/exec.go` — piped exec with process group kill
-- `cmd/lohar/session.go` — session registry, ring buffer, idle timers
-- `cmd/lohar/handler.go` (147 lines) — protocol dispatch
+- `cmd/forge/main.go` (310 lines) — the boot sequence, mounts, listeners
+- `cmd/forge/exec.go` — piped exec with process group kill
+- `cmd/forge/session.go` — session registry, ring buffer, idle timers
+- `cmd/forge/handler.go` (147 lines) — protocol dispatch
 
 **Study:**
 - OSTEP Chapter 5: "Process API" — fork, exec, wait, signals
@@ -102,8 +102,8 @@ groups, PID 1 responsibilities — this is the foundation.
   can be caught), SIGHUP (terminal disconnected), SIGCHLD (child exited).
 
 **Questions to answer yourself:**
-1. Why does `cmd/lohar/exec.go` use `Kill(-pid)` instead of `Kill(pid)`?
-2. Why does `cmd/lohar/main.go` end with `select {}`?
+1. Why does `cmd/forge/exec.go` use `Kill(-pid)` instead of `Kill(pid)`?
+2. Why does `cmd/forge/main.go` end with `select {}`?
 3. What happens if a process inside your VM forks and the parent dies?
 4. Why does piped exec use SIGKILL but TTY sessions use SIGTERM?
 
@@ -111,7 +111,7 @@ groups, PID 1 responsibilities — this is the foundation.
 
 Current problems:
 - Boot args example still has `console=ttyS0` — serial is disabled now
-- Doesn't mention lohar injection on every create (`injectLoharIntoRootfs`)
+- Doesn't mention forge injection on every create (`injectForgeIntoRootfs`)
 - The PTY section is thorough but reads like a textbook, not docs. Focus
   on what a contributor needs to know, not explaining ioctls from scratch.
 - Missing: what happens when the agent's auth token doesn't match
@@ -119,8 +119,8 @@ Current problems:
 
 Rewrite goals:
 - Update boot args to match actual `engine.go:496-498`
-- Add a section on lohar injection and why it exists (protocol drift)
-- Trim the PTY internals to "lohar opens /dev/ptmx, unlocks it, starts
+- Add a section on forge injection and why it exists (protocol drift)
+- Trim the PTY internals to "forge opens /dev/ptmx, unlocks it, starts
   the shell on the slave side" — link to a resource for the deep dive
 - Add a "what changed" section at the top noting diff snapshots disabled,
   serial console disabled, always-TCP
@@ -174,7 +174,7 @@ model.
 This is the most stale doc. Almost everything needs updating.
 
 Current problems:
-- Entire doc describes single bridge `brbhatti0` on `192.168.137.0/24`
+- Entire doc describes single bridge `brahvm0` on `192.168.137.0/24`
 - Code now has per-user bridges with dynamic subnets
 - No mention of `setupGlobalFirewall()` or what the 6 global rules are
 - No mention of per-user bridge creation/cleanup lifecycle
@@ -197,7 +197,7 @@ Rewrite goals:
 
 ### What to learn
 
-This is the core of bhatti — what Firecracker does, how snapshots work,
+This is the core of ahvm — what Firecracker does, how snapshots work,
 and why you disabled diff snapshots.
 
 **Read your code:**
@@ -236,7 +236,7 @@ and why you disabled diff snapshots.
    Create — each `fcPut` is one endpoint)
 2. Why does `Stop()` pause BEFORE creating a snapshot?
 3. Why does `Stop()` NOT destroy the TAP device?
-4. What does `injectLoharIntoRootfs` do and why is it necessary?
+4. What does `injectForgeIntoRootfs` do and why is it necessary?
 5. What does the `restoreFailed` circuit breaker protect against?
 6. In `Start()`, why create a new `AgentClient` with TCP instead of
    reusing the old one?
@@ -276,14 +276,14 @@ Rewrite goals for `thermal-management.md`:
 ### What to learn
 
 Your wire protocol is simple and clever. The PTY handling is the most
-"systems-y" part of lohar. Understanding both deeply makes you fluent
+"systems-y" part of forge. Understanding both deeply makes you fluent
 in the whole host↔guest communication path.
 
 **Read your code:**
 - `pkg/agent/proto/frame.go` (127 lines) — the ENTIRE framing layer
 - `pkg/agent/proto/constants.go` — frame type definitions
 - `pkg/agent/client.go` (740 lines) — host-side client
-- `cmd/lohar/tty.go` — PTY allocation and session handling
+- `cmd/forge/tty.go` — PTY allocation and session handling
 
 **Study:**
 - HTTP/2 framing (RFC 7540 section 4.1) — same concept as yours, more
@@ -298,10 +298,10 @@ in the whole host↔guest communication path.
 - Atomic writes: entire frame assembled into one buffer, one Write() call.
   Without this, concurrent goroutines (stdout + stderr) would interleave
   bytes on the wire, producing corrupt frames.
-- PTY = master + slave pair. Lohar holds the master. The child process
+- PTY = master + slave pair. Forge holds the master. The child process
   (shell/command) uses the slave. The kernel's PTY layer between them
   handles echo, line editing, Ctrl+C, etc.
-- Sessions survive disconnects because lohar keeps the master fd open.
+- Sessions survive disconnects because forge keeps the master fd open.
   The 64KB ring buffer captures output while no one is attached.
 
 **Questions to answer yourself:**
@@ -338,7 +338,7 @@ Rewrite goals:
 Atomic writes, WAL mode, ext4 images, age encryption — the data layer.
 
 **Read your code:**
-- `cmd/lohar/files.go` — atomic file writes inside the VM
+- `cmd/forge/files.go` — atomic file writes inside the VM
 - `pkg/store/store.go` (1545 lines) — SQLite store
 - `pkg/secrets/age.go` — encryption at rest
 - `pkg/engine/firecracker/configdrive.go` — config drive creation
@@ -354,7 +354,7 @@ Atomic writes, WAL mode, ext4 images, age encryption — the data layer.
   Without fsync before rename, the renamed file could be empty after crash.
 - rename() is atomic on POSIX. Reader sees old file or new file, never half.
 - SQLite WAL: writes go to a log. Readers see a consistent snapshot without
-  blocking writers. Critical for bhatti because thermal manager writes while
+  blocking writers. Critical for ahvm because thermal manager writes while
   API reads.
 - Config drive: a 1MB ext4 image with a JSON config file. Mounted read-only
   in the VM. Contains hostname, token, env vars, files, volume mounts, init
@@ -403,7 +403,7 @@ everything connects end-to-end.
 **Read your code:**
 - `pkg/server/server.go` — `runThermalCycle`, `SnapshotAll`, `ensureHot`
 - `pkg/engine/firecracker/engine.go` — `EnsureHot`, `Pause`, `Resume`
-- `cmd/bhatti/main.go` — recovery, graceful shutdown
+- `cmd/ahvm/main.go` — recovery, graceful shutdown
 
 **Study:**
 - Go Memory Model (1 page):
@@ -513,7 +513,7 @@ diagram and doesn't mention jailer, balloon, per-user bridges, or backup.
 You'll know you own this when:
 
 1. Someone reads your rewritten docs and they sound like a person wrote them
-2. You can trace `bhatti exec dev -- echo hello` from keystroke to output
+2. You can trace `ahvm exec dev -- echo hello` from keystroke to output
    and explain every step without looking at code
 3. You can look at a bug report and immediately know which file to open
 4. You can explain the rory incident — what happened, why, and how you

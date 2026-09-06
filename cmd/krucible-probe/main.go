@@ -1,6 +1,6 @@
-// Throwaway S0 probe: dial lohar through the krucible vsock bridge UDS.
+// Throwaway S0 probe: dial forge through the krucible vsock bridge UDS.
 // Diagnostic order: (1) raw UDS connect, (2) Activity (handled internally by
-// lohar — needs no guest binary), (3) Exec (needs a binary in the rootfs).
+// forge — needs no guest binary), (3) Exec (needs a binary in the rootfs).
 package main
 
 import (
@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/agent"
 )
 
 func main() {
@@ -30,7 +30,7 @@ func main() {
 
 	c := agent.NewTestClient(uds, uds) // empty token => no auth
 
-	// (2) Activity — internal to lohar, no guest binary required.
+	// (2) Activity — internal to forge, no guest binary required.
 	for i := 0; i < 5; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		info, err := c.Activity(ctx)

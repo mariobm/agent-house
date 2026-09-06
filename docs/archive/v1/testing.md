@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/contributing/testing/>.
+> <https://ahvm.sh/docs/contributing/testing/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -15,7 +15,7 @@
 
 **Test at the real boundary.** Early in development, the server tests used a mock engine that silently accepted any input. Tests passed even when volumes, exec, and state transitions were broken. The mock was replaced with real Docker integration tests, and later with real Firecracker VMs. The mock now only exists in `proxy_test.go` where it's at the right abstraction level (testing TCP relay logic, not VM behavior).
 
-**Test the protocol without VMs.** The guest agent (lohar) has a test mode that listens on Unix sockets instead of vsock/TCP. The entire protocol handler test suite — 40+ tests covering exec, TTY sessions, file operations, scrollback, idle timers — runs on macOS in under 2 seconds without root or KVM.
+**Test the protocol without VMs.** The guest agent (forge) has a test mode that listens on Unix sockets instead of vsock/TCP. The entire protocol handler test suite — 40+ tests covering exec, TTY sessions, file operations, scrollback, idle timers — runs on macOS in under 2 seconds without root or KVM.
 
 **Test performance with percentiles.** Performance tests report p50/p95/p99, not averages. A p50 of 1ms with a p99 of 50ms is a very different system than a p50 of 1ms with a p99 of 2ms. The tests assert on p99 to catch regressions.
 
@@ -33,9 +33,9 @@ Pure Go, no dependencies, runs everywhere. Tests the binary framing layer:
 - Resize/Exit payloads: encode/decode edge cases (0, max uint16, negative exit codes)
 - Concurrent writes: 2 goroutines × 1000 frames → read all 2000 back, none corrupt
 
-### Agent Tests (`cmd/lohar/`)
+### Agent Tests (`cmd/forge/`)
 
-Start lohar as a subprocess in test mode, connect via Unix socket, exercise every handler. Runs on macOS, no VM needed.
+Start forge as a subprocess in test mode, connect via Unix socket, exercise every handler. Runs on macOS, no VM needed.
 
 **Exec:**
 - Basic exec, exit codes, command not found
@@ -65,7 +65,7 @@ Start lohar as a subprocess in test mode, connect via Unix socket, exercise ever
 
 ### Client Tests (`pkg/agent/`)
 
-Test the host-side client against lohar in test mode. Validates the full stack: client → Unix socket → agent → child process → frames → client.
+Test the host-side client against forge in test mode. Validates the full stack: client → Unix socket → agent → child process → frames → client.
 
 ### Engine Integration Tests (`pkg/engine/firecracker/`)
 
@@ -124,7 +124,7 @@ Test the HTTP layer against real Docker (macOS) or real Firecracker (Linux).
 - Secret CRUD
 - Volume CRUD
 
-### Daemon Recovery Tests (`cmd/bhatti/`)
+### Daemon Recovery Tests (`cmd/ahvm/`)
 
 Test `recoverVMs()` without any actual VMs. Use a mock `VMStateProvider` to verify recovery logic:
 
@@ -137,7 +137,7 @@ Test `recoverVMs()` without any actual VMs. Use a mock `VMStateProvider` to veri
 - Type coercion: `float64` from JSON vs `int` from SQLite
 - Multiple sandboxes recovered in one pass
 
-### CLI Tests (`cmd/bhatti/`)
+### CLI Tests (`cmd/ahvm/`)
 
 Integration tests against a running Firecracker daemon:
 
@@ -151,7 +151,7 @@ Integration tests against a running Firecracker daemon:
 
 ```bash
 go test -bench=. ./pkg/agent/proto/
-go test -bench=. ./cmd/lohar/
+go test -bench=. ./cmd/forge/
 ```
 
 - Frame write throughput
@@ -163,7 +163,7 @@ go test -bench=. ./cmd/lohar/
 
 ```bash
 # Protocol + agent tests (macOS, no root, no VM)
-go test -v -timeout=120s ./pkg/agent/proto/ ./cmd/lohar/ ./pkg/agent/
+go test -v -timeout=120s ./pkg/agent/proto/ ./cmd/forge/ ./pkg/agent/
 
 # Server tests (requires Docker on macOS, or Firecracker on Linux)
 go test -v -timeout=120s ./pkg/server/
@@ -172,7 +172,7 @@ go test -v -timeout=120s ./pkg/server/
 go test -v -timeout=30s ./pkg/store/
 
 # Recovery + CLI tests
-go test -v -timeout=30s ./cmd/bhatti/
+go test -v -timeout=30s ./cmd/ahvm/
 
 # Firecracker integration tests (Linux, root, KVM required)
 sudo go test -v -timeout=600s ./pkg/engine/firecracker/

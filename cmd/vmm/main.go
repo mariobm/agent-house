@@ -1,15 +1,15 @@
 //go:build krucible
 
-// Command vmm is bhatti's per-VM libkrun helper.
+// Command vmm is ahvm's per-VM libkrun helper.
 //
-// It links libkrun (the only bhatti component that does), reads a VMSpec, and
+// It links libkrun (the only ahvm component that does), reads a VMSpec, and
 // calls krun_start_enter — at which point THIS PROCESS BECOMES THE VM and never
 // returns (libkrun exit()s it with the workload's code when the guest shuts
-// down). The bhatti daemon spawns one of these per sandbox and controls it
-// out-of-band: the agent (lohar) over the bridged vsock UDS, and lifecycle via
+// down). The ahvm daemon spawns one of these per sandbox and controls it
+// out-of-band: the agent (forge) over the bridged vsock UDS, and lifecycle via
 // the shutdown eventfd / control socket (P2+).
 //
-// This is the proven S0 spike (originally C), promoted into bhatti in Go+cgo.
+// This is the proven S0 spike (originally C), promoted into ahvm in Go+cgo.
 //
 // Build: `make vmm` — cgo + libkrun via pkg-config; on macOS codesigned with
 // the com.apple.security.hypervisor entitlement (required for HVF). At runtime
@@ -33,7 +33,7 @@ import (
 	"strconv"
 	"unsafe"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine/krucible"
+	"github.com/mariobm/agent-house/pkg/engine/krucible"
 )
 
 // defaultExtCmdline mirrors libkrun's bundled block-root cmdline for the
@@ -140,7 +140,7 @@ func run(spec krucible.VMSpec) {
 	}
 
 	// PID-1 mode: stop libkrun injecting /init.krun so the rootfs's own
-	// /init.krun (= lohar) boots as PID 1. Must precede krun_set_root. Only for
+	// /init.krun (= forge) boots as PID 1. Must precede krun_set_root. Only for
 	// the bundled kernel — the external kernel boots init= from the cmdline.
 	if spec.Pid1 && !externalKernel {
 		if r := C.krun_disable_implicit_init(cid); r != 0 {
@@ -180,7 +180,7 @@ func run(spec krucible.VMSpec) {
 	}
 
 	// virtio-fs --mount binds: expose host dirs to the guest, live + shared +
-	// bidirectional. lohar mounts each tag at its guest path (from the config
+	// bidirectional. forge mounts each tag at its guest path (from the config
 	// drive). shm_size=0 → no DAX window (standard FUSE-over-virtio). Boot-time
 	// only — the device set is fixed once the VM starts.
 	for _, m := range spec.Mounts {
@@ -196,7 +196,7 @@ func run(spec krucible.VMSpec) {
 
 	// Data volumes: block disks attached AFTER root (vda). With the config drive
 	// gone (§3.4) they enumerate as /dev/vdb+ in order. krun_add_disk2 composes
-	// with the root setter (get_block_cfg). lohar mounts each at its guest path.
+	// with the root setter (get_block_cfg). forge mounts each at its guest path.
 	for _, v := range spec.Volumes {
 		cbid := C.CString(v.BlockID)
 		cpath := C.CString(v.Path)
@@ -231,9 +231,9 @@ func run(spec krucible.VMSpec) {
 		fail("krun_add_vsock: %d", int(r))
 	}
 
-	// virtio-net wired to the per-owner gateway (bhatti-netd) over a unixstream
+	// virtio-net wired to the per-owner gateway (ahvm-netd) over a unixstream
 	// socket. Adding this disables the implicit TSI backend (see libkrun.h). The
-	// guest gets eth0; lohar configures its IP/gw/dns from the config drive.
+	// guest gets eth0; forge configures its IP/gw/dns from the config drive.
 	if spec.NetUDS != "" {
 		mac, merr := net.ParseMAC(spec.NetMAC)
 		if merr != nil || len(mac) != 6 {
@@ -255,7 +255,7 @@ func run(spec krucible.VMSpec) {
 	}
 
 	// Bridge host<->guest vsock ports. listen=true: the host dials the UDS,
-	// libkrun forwards to the guest port where lohar listens.
+	// libkrun forwards to the guest port where forge listens.
 	addVsock := func(port uint32, uds string) {
 		if uds == "" {
 			return
@@ -269,7 +269,7 @@ func run(spec krucible.VMSpec) {
 	addVsock(1024, spec.VsockControlUDS)
 	addVsock(1025, spec.VsockForwardUDS)
 
-	// Config fetch (guest → host): lohar dials port 1026 and libkrun connects to
+	// Config fetch (guest → host): forge dials port 1026 and libkrun connects to
 	// the host UDS where the daemon serves this sandbox's config (DESIGN §3.4).
 	// listen=false: the connection is initiated from the guest side.
 	if spec.VsockConfigUDS != "" {
@@ -299,7 +299,7 @@ func run(spec krucible.VMSpec) {
 	}
 
 	// In PID-1 mode the kernel boots ExecPath directly; KRUN_INIT is ignored
-	// by lohar. We still set it (with env) for parity / non-PID1 use. Skipped
+	// by forge. We still set it (with env) for parity / non-PID1 use. Skipped
 	// for the external kernel, which carries init= in the cmdline.
 	if !externalKernel {
 		cexec := C.CString(spec.ExecPath)

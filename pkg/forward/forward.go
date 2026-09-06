@@ -1,6 +1,6 @@
 // Package forward bridges a host-side TCP listener to a port inside a guest,
 // over the engine's vsock Tunnel primitive. It is the building block for the
-// `bhatti forward` dev convenience (host↔guest) and the server-brokered
+// `ahvm forward` dev convenience (host↔guest) and the server-brokered
 // inter-sandbox mesh (each sandbox gets a stable host endpoint that other
 // sandboxes reach via the host). Engine-agnostic: anything implementing
 // Tunneler (both krucible and Firecracker do) works.

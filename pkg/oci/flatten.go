@@ -15,7 +15,7 @@ import (
 // Uses a staging directory + whiteout application to correctly handle
 // OCI whiteout semantics including opaque whiteouts in any order.
 func extractLayer(layer v1.Layer, targetDir string) error {
-	stageDir, err := os.MkdirTemp("", "bhatti-layer-*")
+	stageDir, err := os.MkdirTemp("", "ahvm-layer-*")
 	if err != nil {
 		return err
 	}

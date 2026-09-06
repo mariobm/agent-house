@@ -1,4 +1,4 @@
-# bhatti sandbox zshrc
+# ahvm sandbox zshrc
 
 # --- Zinit plugin manager ---
 ZINIT_HOME="$HOME/.local/share/zinit/zinit.git"

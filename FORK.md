@@ -1,7 +1,8 @@
 # agent-house fork notes
 
-Fork of [sahil-shubham/bhatti](https://github.com/sahil-shubham/bhatti) (v2/krucible),
-merged as base at upstream `0e70b75`.
+AHVM (Agent House Virtual Machine) is a fork of
+[Bhatti](https://github.com/sahil-shubham/bhatti), merged as base at upstream
+`0e70b75`.
 
 ## Remotes
 

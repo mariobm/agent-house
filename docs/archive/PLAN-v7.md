@@ -1,7 +1,7 @@
-# Bhatti v0.4 — Kernel, Rootfs Tiers, Installation
+# AHVM v0.4 — Kernel, Rootfs Tiers, Installation
 
 v0.3 shipped images, persistent volumes, named snapshots, and OCI support.
-The platform primitives are complete. v0.4 makes bhatti installable in
+The platform primitives are complete. v0.4 makes ahvm installable in
 30 seconds instead of 10 minutes, ships three rootfs application profiles,
 and builds a custom kernel that enables Docker inside VMs.
 
@@ -41,18 +41,18 @@ Architecture naming conventions used throughout this plan:
 
 ## Design Principle: Rootfs = Application Profile
 
-Bhatti is programmable Linux. The rootfs defines what kind of Linux.
+AHVM is programmable Linux. The rootfs defines what kind of Linux.
 Three profiles ship, each serving a different use case:
 
 ```
-minimal   — bare Ubuntu + lohar deps. The base layer.
+minimal   — bare Ubuntu + forge deps. The base layer.
 browser   — minimal + headless Chromium + Playwright. Browser automation.
 docker    — minimal + Docker Engine. Containers inside VMs.
 ```
 
 There is no "default" tier with dev tools pre-installed. Users who want
 zsh/git/node/claude-code boot from `minimal`, install what they want,
-then `bhatti image save` to snapshot their custom environment. This is
+then `ahvm image save` to snapshot their custom environment. This is
 the primary workflow — ship minimal, users build their own.
 
 ### Why not Playwright inside Docker?
@@ -79,7 +79,7 @@ container. This is deliberate:
 The current rootfs has: zsh, zinit, 3 zinit plugins, starship, tmux,
 3 tmux plugins, vim-tiny, htop, jq, ripgrep, fd-find, git, curl, wget,
 socat, unzip, xz-utils, node 22, claude-code, custom .zshrc, custom
-.tmux.conf. None of this is needed by bhatti. It's one developer's
+.tmux.conf. None of this is needed by ahvm. It's one developer's
 opinionated setup baked into every installation.
 
 Users who want this exact setup can build it once and save it as an
@@ -191,7 +191,7 @@ Ship one kernel artifact for all tiers.
 
 ```bash
 #!/bin/bash
-# Build the bhatti kernel from Firecracker CI config + additional flags.
+# Build the ahvm kernel from Firecracker CI config + additional flags.
 # Usage: ./scripts/build-kernel.sh [arch]
 #   arch: x86_64 (default) or aarch64
 #
@@ -221,15 +221,15 @@ echo "==> Downloading Firecracker CI config (${FC_CI_VERSION}/${ARCH})..."
 curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/${FC_CI_VERSION}/${ARCH}/vmlinux-${KERNEL_VERSION}.config" -o .config
 
 # Audit: show current state of our flags before modification
-echo "==> Current state of bhatti flags in CI config:"
+echo "==> Current state of ahvm flags in CI config:"
 for flag in IP_NF_RAW IP6_NF_RAW BRIDGE VETH OVERLAY_FS NF_CONNTRACK \
     NETFILTER_XT_MATCH_CONNTRACK IP_NF_SECURITY IP6_NF_SECURITY \
     NET_CLS_CGROUP NETFILTER_XT_MARK; do
     grep "CONFIG_${flag}[= ]" .config 2>/dev/null || echo "# CONFIG_${flag} is not set"
 done
 
-# Apply bhatti additions (idempotent — safe if already =y)
-echo "==> Applying bhatti kernel config (13 flags)..."
+# Apply ahvm additions (idempotent — safe if already =y)
+echo "==> Applying ahvm kernel config (13 flags)..."
 
 # Docker bridge networking (hard blockers)
 scripts/config --enable CONFIG_IP_NF_RAW
@@ -282,7 +282,7 @@ After building, boot a VM on agni-01 and check:
 
 ```bash
 # Kernel flags
-bhatti exec test -- sh -c 'zcat /proc/config.gz | grep -E "IP_NF_RAW|BRIDGE|VETH|OVERLAY_FS|NF_CONNTRACK"'
+ahvm exec test -- sh -c 'zcat /proc/config.gz | grep -E "IP_NF_RAW|BRIDGE|VETH|OVERLAY_FS|NF_CONNTRACK"'
 # CONFIG_IP_NF_RAW=y
 # CONFIG_BRIDGE=y
 # CONFIG_VETH=y
@@ -290,11 +290,11 @@ bhatti exec test -- sh -c 'zcat /proc/config.gz | grep -E "IP_NF_RAW|BRIDGE|VETH
 # CONFIG_NF_CONNTRACK=y
 
 # iptables raw table works
-bhatti exec test -- sudo iptables -t raw -L
+ahvm exec test -- sudo iptables -t raw -L
 # Chain PREROUTING (policy ACCEPT) ...
 
 # Docker full path
-bhatti exec test -- sudo docker run --rm hello-world
+ahvm exec test -- sudo docker run --rm hello-world
 # Hello from Docker!
 ```
 
@@ -314,9 +314,9 @@ and runs correctly.
    formats (mem.snap, vm.snap) are incompatible with FC v1.14 — they
    cannot be resumed. This is a one-time cost.
    ```bash
-   bhatti list --json | jq -r '.[].id' | xargs -I{} bhatti destroy {}
+   ahvm list --json | jq -r '.[].id' | xargs -I{} ahvm destroy {}
    # Also delete any saved snapshots:
-   rm -rf /var/lib/bhatti/snapshots/*
+   rm -rf /var/lib/ahvm/snapshots/*
    ```
 
 2. **Verify API compatibility.** The Go code in `engine.go` talks to
@@ -364,19 +364,19 @@ A 15-minute task that runs in CI.
 
 ### 2.1 Minimal (~100MB uncompressed)
 
-The thinnest image that lohar can boot and users can work in.
+The thinnest image that forge can boot and users can work in.
 
 **Contents:**
 - Ubuntu 24.04 minbase (debootstrap `--variant=minbase`)
-- `iproute2` — lohar calls `ip addr add`, `ip route add` for network setup;
+- `iproute2` — forge calls `ip addr add`, `ip route add` for network setup;
   engine calls `ss -tln` via exec for port discovery
 - `ca-certificates` — TLS from inside the VM
-- `sudo` — lohar runs exec as uid 1000, users need root escalation
+- `sudo` — forge runs exec as uid 1000, users need root escalation
 - `curl` — basic HTTP client for bootstrapping (installing tools, etc.)
 - `bash` — comes with minbase, needed as fallback shell
-- `lohar` binary at `/usr/local/bin/lohar`
-- `lohar` user (uid 1000, gid 1000) with NOPASSWD sudo
-- `/workspace` directory owned by lohar
+- `forge` binary at `/usr/local/bin/forge`
+- `forge` user (uid 1000, gid 1000) with NOPASSWD sudo
+- `/workspace` directory owned by forge
 - Static `/etc/resolv.conf` (1.1.1.1, 8.8.8.8)
 - `en_US.UTF-8` locale
 
@@ -397,10 +397,10 @@ Headless Chromium with Playwright for browser automation.
 - Node.js 22.x LTS (Playwright needs it)
 - Python 3.12 (Playwright Python bindings)
 - Playwright pinned to a specific version (see §2.2.2)
-- Boot profile: `/etc/bhatti/init.sh` starts Chromium with CDP on port 9222
+- Boot profile: `/etc/ahvm/init.sh` starts Chromium with CDP on port 9222
 
 **Kernel dependency: none.** Browser tier needs only `/dev/shm` for
-Chromium shared memory, which lohar mounts unconditionally (§3.2.1).
+Chromium shared memory, which forge mounts unconditionally (§3.2.1).
 No iptables, no bridge, no overlay. Works with the stock Firecracker
 CI kernel. This is why browser ships before docker.
 
@@ -436,13 +436,13 @@ npx playwright install-deps chromium
 Update the pinned version per release, not per rootfs build. The CI
 workflow validates the combination.
 
-**Boot profile (`/etc/bhatti/init.sh`):**
+**Boot profile (`/etc/ahvm/init.sh`):**
 ```bash
 #!/bin/sh
 # Resolve Playwright's bundled Chromium path
 CHROMIUM=$(find /root/.cache/ms-playwright -name chrome -type f 2>/dev/null | head -1)
 if [ -z "$CHROMIUM" ]; then
-    echo "bhatti: chromium not found" >&2
+    echo "ahvm: chromium not found" >&2
     exit 1
 fi
 
@@ -460,7 +460,7 @@ for i in $(seq 1 50); do
 done
 
 if ! curl -sf http://localhost:9222/json/version >/dev/null 2>&1; then
-    echo "bhatti: chromium CDP not ready after 5s" >&2
+    echo "ahvm: chromium CDP not ready after 5s" >&2
 fi
 ```
 
@@ -471,11 +471,11 @@ against Chromium startup.
 
 **How it's used:**
 ```bash
-bhatti create --name scraper --image browser
+ahvm create --name scraper --image browser
 # Chromium starts automatically on port 9222, ready by the time create returns
 
-# AI agent connects via CDP through bhatti's tunnel:
-bhatti exec scraper -- python3 -c "
+# AI agent connects via CDP through ahvm's tunnel:
+ahvm exec scraper -- python3 -c "
 from playwright.sync_api import sync_playwright
 with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp('http://localhost:9222')
@@ -486,12 +486,12 @@ with sync_playwright() as p:
 ```
 
 **The snapshot story:** Navigate to a page, log in, get to a specific
-state — `bhatti snapshot create`. Resume that snapshot 100 times, each
+state — `ahvm snapshot create`. Resume that snapshot 100 times, each
 starting from the logged-in state with Chromium's full process memory
 restored. No re-login, no cookie management, no re-navigation.
 
 **Use case:** AI web agents, scraping, browser testing, screenshot
-capture. No new bhatti API needed — CDP over port tunnel works today.
+capture. No new ahvm API needed — CDP over port tunnel works today.
 
 ### 2.3 Docker (~800MB uncompressed)
 
@@ -500,9 +500,9 @@ Docker Engine running inside the VM.
 **Contents (everything in minimal, plus):**
 - `docker-ce`, `containerd`, `runc` (from Docker's apt repo)
 - `iptables` (legacy mode configured via `update-alternatives`)
-- Boot profile: `/etc/bhatti/init.sh` starts dockerd with readiness check
+- Boot profile: `/etc/ahvm/init.sh` starts dockerd with readiness check
 
-**Boot profile (`/etc/bhatti/init.sh`):**
+**Boot profile (`/etc/ahvm/init.sh`):**
 ```bash
 #!/bin/sh
 # iptables-legacy (kernel has legacy iptables, not nftables)
@@ -519,23 +519,23 @@ for i in $(seq 1 100); do
 done
 
 if [ ! -S /var/run/docker.sock ]; then
-    echo "bhatti: dockerd failed to start within 10s, check /var/log/dockerd.log" >&2
+    echo "ahvm: dockerd failed to start within 10s, check /var/log/dockerd.log" >&2
 fi
 ```
 
-Note: cgroups v2 and `/dev/shm` are mounted by lohar unconditionally
+Note: cgroups v2 and `/dev/shm` are mounted by forge unconditionally
 (see §3.2), so the boot profile doesn't need to handle them.
 
 **How it's used:**
 ```bash
-bhatti create --name ci --image docker --memory 2048
-bhatti exec ci -- docker run --rm postgres:16 postgres --version
-bhatti exec ci -- docker compose up -d
+ahvm create --name ci --image docker --memory 2048
+ahvm exec ci -- docker run --rm postgres:16 postgres --version
+ahvm exec ci -- docker compose up -d
 ```
 
 **The snapshot story:** Boot a sandbox, `docker compose up` your full
 stack (Postgres + Redis + your app), wait for everything to be healthy,
-then `bhatti snapshot create`. Resume later — all containers are running,
+then `ahvm snapshot create`. Resume later — all containers are running,
 databases have data, app is connected. No cold start, no seeding.
 
 **Kernel requirement:** Custom kernel with `CONFIG_IP_NF_RAW=y`,
@@ -543,7 +543,7 @@ databases have data, app is connected. No cold start, no seeding.
 `CONFIG_NF_CONNTRACK=y`. Without these, Docker's bridge networking
 refuses to create containers. Verified on agni-01: with the stock v1.15
 kernel, `docker run hello-world` fails with
-`can't initialize iptables table 'raw'`. With the bhatti kernel, bridge
+`can't initialize iptables table 'raw'`. With the ahvm kernel, bridge
 networking works.
 
 **Use case:** Docker-based CI pipelines, testcontainers, running
@@ -551,25 +551,25 @@ databases, any workload that needs Docker's ecosystem.
 
 ---
 
-## Part 3 — Boot Profiles + lohar changes
+## Part 3 — Boot Profiles + forge changes
 
 ### 3.1 Mechanism
 
-A boot profile is a script at `/etc/bhatti/init.sh` inside the rootfs.
-Lohar runs it after system setup and **after the agent listeners are
+A boot profile is a script at `/etc/ahvm/init.sh` inside the rootfs.
+Forge runs it after system setup and **after the agent listeners are
 accepting connections**. This ordering is critical — if a boot profile
-hangs, the VM must still be reachable via `bhatti exec` for debugging.
+hangs, the VM must still be reachable via `ahvm exec` for debugging.
 
 **Execution order:**
 ```
-1. lohar PID 1 init (mount /proc, /sys, /dev, /dev/pts, /dev/shm, /tmp, /run)
-2. lohar mounts cgroups v2 unconditionally
+1. forge PID 1 init (mount /proc, /sys, /dev, /dev/pts, /dev/shm, /tmp, /run)
+2. forge mounts cgroups v2 unconditionally
 3. loadConfigDrive() — env vars, files, volumes
 4. setupNetworking()
 5. installSignalHandlers()
 6. start vsock + TCP listeners ← agent is now reachable
-7. "lohar: ready"
-8. /etc/bhatti/init.sh (boot profile — if exists, 30s timeout)
+7. "forge: ready"
+8. /etc/ahvm/init.sh (boot profile — if exists, 30s timeout)
 9. user's --init script (from create request, runs as uid 1000)
 ```
 
@@ -577,9 +577,9 @@ The boot profile starts tier-specific services (Chromium, dockerd) and
 **waits for them to be ready** before returning. The user's init runs
 in an environment where those services are already accepting connections.
 
-### 3.2 lohar changes
+### 3.2 forge changes
 
-**File:** `cmd/lohar/main.go`
+**File:** `cmd/forge/main.go`
 
 Two changes to PID 1 init, one change to post-listener startup.
 
@@ -594,11 +594,11 @@ mustMount("tmpfs", "/dev/shm", "tmpfs", 0, "")
 
 // cgroups v2 — required by Docker for resource isolation.
 // Mount unconditionally: zero overhead when unused, avoids needing
-// tier-specific logic in lohar.
+// tier-specific logic in forge.
 os.MkdirAll("/sys/fs/cgroup", 0755)
 if err := syscall.Mount("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, ""); err != nil {
     // Non-fatal: may already be mounted, or kernel may not support it
-    fmt.Fprintf(os.Stderr, "lohar: mount cgroup2: %v\n", err)
+    fmt.Fprintf(os.Stderr, "forge: mount cgroup2: %v\n", err)
 }
 // Enable cgroup controllers for Docker. Without this, dockerd can't
 // create cgroups for containers (errors like "cgroup: no such file").
@@ -608,28 +608,28 @@ os.WriteFile("/sys/fs/cgroup/cgroup.subtree_control",
 
 #### 3.2.2 Run boot profile after listeners, with timeout
 
-**After** the vsock + TCP listeners are started and "lohar: ready" is
+**After** the vsock + TCP listeners are started and "forge: ready" is
 printed, but **before** the user init session:
 
 ```go
-fmt.Fprintln(os.Stderr, "lohar: ready")
+fmt.Fprintln(os.Stderr, "forge: ready")
 
 // Run boot profile if present. Runs AFTER listeners so the VM is
-// reachable via bhatti exec even if the boot profile hangs.
+// reachable via ahvm exec even if the boot profile hangs.
 // 30-second hard timeout — if dockerd or chromium can't start in 30s,
 // something is broken. Don't block forever.
-if _, err := os.Stat("/etc/bhatti/init.sh"); err == nil {
+if _, err := os.Stat("/etc/ahvm/init.sh"); err == nil {
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
-    cmd := exec.CommandContext(ctx, "/bin/sh", "/etc/bhatti/init.sh")
+    cmd := exec.CommandContext(ctx, "/bin/sh", "/etc/ahvm/init.sh")
     cmd.Stdout = os.Stderr
     cmd.Stderr = os.Stderr
     cmd.Env = buildEnv(nil)
     if err := cmd.Run(); err != nil {
         if ctx.Err() == context.DeadlineExceeded {
-            fmt.Fprintf(os.Stderr, "lohar: boot profile timed out after 30s\n")
+            fmt.Fprintf(os.Stderr, "forge: boot profile timed out after 30s\n")
         } else {
-            fmt.Fprintf(os.Stderr, "lohar: boot profile failed: %v\n", err)
+            fmt.Fprintf(os.Stderr, "forge: boot profile failed: %v\n", err)
         }
         // Non-fatal — sandbox is still reachable, just without tier services
     }
@@ -653,7 +653,7 @@ dockerd, etc. The user's `--init` runs as uid 1000 (via the existing
 return ag.Shell(ctx, []string{"/bin/zsh", "-li"}, ...)
 ```
 
-The minimal tier doesn't have zsh. `bhatti shell` would fail.
+The minimal tier doesn't have zsh. `ahvm shell` would fail.
 
 **Fix:** Change to `/bin/bash` with `-li` flags. Every tier has bash
 (comes with minbase). One-line change, no caching, no probing, no new
@@ -679,7 +679,7 @@ if there's demand.
 
 ### 3.4 Tests
 
-- `TestBootProfileRuns` — create sandbox from image with `/etc/bhatti/init.sh`
+- `TestBootProfileRuns` — create sandbox from image with `/etc/ahvm/init.sh`
   that writes a marker file, exec `cat /tmp/boot-profile-ran` → exists
 - `TestBootProfileBeforeUserInit` — boot profile writes timestamp to
   `/tmp/profile-ts`, user init writes to `/tmp/init-ts`, verify profile
@@ -692,7 +692,7 @@ if there's demand.
   gets killed after 30s, sandbox is still reachable via exec
 - `TestDevShmMounted` — boot minimal, exec `mount | grep /dev/shm` → tmpfs
 - `TestCgroupsMounted` — boot minimal, exec `mount | grep cgroup2` → mounted
-- `TestShellUsesBash` — boot from minimal, `bhatti shell` opens bash
+- `TestShellUsesBash` — boot from minimal, `ahvm shell` opens bash
 
 ---
 
@@ -717,7 +717,7 @@ scripts/
 ```bash
 #!/bin/bash
 # Build a rootfs tier image.
-# Usage: sudo ./scripts/build-tier.sh <tier> <arch> <lohar-binary>
+# Usage: sudo ./scripts/build-tier.sh <tier> <arch> <forge-binary>
 #   tier: minimal, browser, docker
 #   arch: amd64, arm64
 #
@@ -727,10 +727,10 @@ scripts/
 #
 # For cross-arch builds (e.g., arm64 on amd64 host):
 #   sudo apt-get install qemu-user-static  # registers binfmt_misc handlers
-#   sudo ./scripts/build-tier.sh minimal arm64 ./lohar-arm64
+#   sudo ./scripts/build-tier.sh minimal arm64 ./forge-arm64
 set -euo pipefail
 
-TIER="${1:?usage: build-tier.sh <tier> <arch> <lohar-binary>}"
+TIER="${1:?usage: build-tier.sh <tier> <arch> <forge-binary>}"
 ARCH="${2:?}"
 AGENT="${3:?}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -750,7 +750,7 @@ case "$ARCH" in
 esac
 
 IMG="dist/rootfs-${TIER}-${ARCH}.ext4"
-MOUNT="/mnt/bhatti-${TIER}-$$"
+MOUNT="/mnt/ahvm-${TIER}-$$"
 
 mkdir -p dist
 
@@ -799,7 +799,7 @@ echo "==> Built: $IMG ($(du -h "$IMG" | cut -f1))"
 
 ```bash
 #!/bin/bash
-# Minimal tier: bare Ubuntu + lohar dependencies.
+# Minimal tier: bare Ubuntu + forge dependencies.
 # Called by build-tier.sh with $MOUNT, $ARCH, $AGENT set.
 set -euo pipefail
 
@@ -814,9 +814,9 @@ apt-get install -y --no-install-recommends \
 sed -i "/en_US.UTF-8/s/^# //g" /etc/locale.gen
 locale-gen
 
-# Create lohar user (bash is the default shell — comes with minbase)
-useradd -m -s /bin/bash -G sudo lohar
-echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+# Create forge user (bash is the default shell — comes with minbase)
+useradd -m -s /bin/bash -G sudo forge
+echo "forge ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 apt-get clean
 rm -rf /var/lib/apt/lists/*
@@ -832,9 +832,9 @@ nameserver 1.1.1.1
 nameserver 8.8.8.8
 EOF
 
-# Install lohar
-cp "$AGENT" "$MOUNT/usr/local/bin/lohar"
-chmod 755 "$MOUNT/usr/local/bin/lohar"
+# Install forge
+cp "$AGENT" "$MOUNT/usr/local/bin/forge"
+chmod 755 "$MOUNT/usr/local/bin/forge"
 ```
 
 ### 4.4 Browser tier script
@@ -882,8 +882,8 @@ rm -rf /var/lib/apt/lists/* /tmp/*
 "
 
 # Boot profile: start Chromium with CDP + readiness wait
-mkdir -p "$MOUNT/etc/bhatti"
-cat > "$MOUNT/etc/bhatti/init.sh" << 'PROFILE'
+mkdir -p "$MOUNT/etc/ahvm"
+cat > "$MOUNT/etc/ahvm/init.sh" << 'PROFILE'
 #!/bin/sh
 # Resolve Playwright's bundled Chromium path.
 # Playwright installs to a versioned directory; use the CLI to get the
@@ -897,7 +897,7 @@ if [ -z "$CHROMIUM" ]; then
 fi
 
 if [ -z "$CHROMIUM" ]; then
-    echo "bhatti: chromium not found" >&2
+    echo "ahvm: chromium not found" >&2
     exit 1
 fi
 
@@ -915,10 +915,10 @@ for i in $(seq 1 50); do
 done
 
 if ! curl -sf http://localhost:9222/json/version >/dev/null 2>&1; then
-    echo "bhatti: chromium CDP not ready after 5s" >&2
+    echo "ahvm: chromium CDP not ready after 5s" >&2
 fi
 PROFILE
-chmod 755 "$MOUNT/etc/bhatti/init.sh"
+chmod 755 "$MOUNT/etc/ahvm/init.sh"
 ```
 
 ### 4.5 Docker tier script
@@ -957,16 +957,16 @@ apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io
 update-alternatives --set iptables /usr/sbin/iptables-legacy
 update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
 
-# Add lohar user to docker group (standard Docker access control)
-usermod -aG docker lohar
+# Add forge user to docker group (standard Docker access control)
+usermod -aG docker forge
 
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 '
 
 # Boot profile: start dockerd with readiness check + timeout
-mkdir -p "$MOUNT/etc/bhatti"
-cat > "$MOUNT/etc/bhatti/init.sh" << 'PROFILE'
+mkdir -p "$MOUNT/etc/ahvm"
+cat > "$MOUNT/etc/ahvm/init.sh" << 'PROFILE'
 #!/bin/sh
 # iptables-legacy (kernel has legacy iptables, not nftables)
 update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null
@@ -982,24 +982,24 @@ for i in $(seq 1 100); do
 done
 
 if [ ! -S /var/run/docker.sock ]; then
-    echo "bhatti: dockerd failed to start within 10s, check /var/log/dockerd.log" >&2
+    echo "ahvm: dockerd failed to start within 10s, check /var/log/dockerd.log" >&2
 fi
 PROFILE
-chmod 755 "$MOUNT/etc/bhatti/init.sh"
+chmod 755 "$MOUNT/etc/ahvm/init.sh"
 ```
 
 Note: the old boot profile had `chmod 666 /var/run/docker.sock` which is
 overly permissive. Removed — the `docker` group membership from
-`usermod -aG docker lohar` in the tier script is the standard Docker
+`usermod -aG docker forge` in the tier script is the standard Docker
 access control mechanism.
 
-Note: cgroups v2 mount and `/dev/shm` are handled by lohar
+Note: cgroups v2 mount and `/dev/shm` are handled by forge
 unconditionally (§3.2.1), so the Docker boot profile doesn't duplicate them.
 
 ### 4.6 Tests
 
 **Tier build tests (CI, ubuntu-latest):**
-- `TestMinimalTierBoots` — build minimal, boot VM, exec `whoami` → `lohar`
+- `TestMinimalTierBoots` — build minimal, boot VM, exec `whoami` → `forge`
 - `TestMinimalTierHasIproute` — exec `ip addr` → works
 - `TestMinimalTierHasCurl` — exec `curl -V` → works
 - `TestMinimalTierHasSudo` — exec `sudo whoami` → `root`
@@ -1034,10 +1034,10 @@ unconditionally (§3.2.1), so the Docker boot profile doesn't duplicate them.
 ```
 dist/
   # Binaries (existing)
-  bhatti-darwin-arm64
-  bhatti-darwin-amd64
-  bhatti-linux-amd64
-  bhatti-linux-arm64
+  ahvm-darwin-arm64
+  ahvm-darwin-amd64
+  ahvm-linux-amd64
+  ahvm-linux-arm64
 
   # Kernel (new)
   vmlinux-6.1.155-x86_64
@@ -1144,17 +1144,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
-      - name: Build lohar
+      - name: Build forge
         run: |
           GOARCH=${{ matrix.arch }} GOOS=linux CGO_ENABLED=0 \
-            go build -ldflags="-s -w" -o lohar ./cmd/lohar/
+            go build -ldflags="-s -w" -o forge ./cmd/forge/
       - name: Install debootstrap
         run: |
           sudo apt-get update
           sudo apt-get install -y debootstrap
           ${{ matrix.arch == 'arm64' && 'sudo apt-get install -y qemu-user-static' || '' }}
       - name: Build rootfs
-        run: sudo ./scripts/build-tier.sh ${{ matrix.tier }} ${{ matrix.arch }} ./lohar
+        run: sudo ./scripts/build-tier.sh ${{ matrix.tier }} ${{ matrix.arch }} ./forge
       - name: Compress
         run: zstd -19 dist/rootfs-${{ matrix.tier }}-${{ matrix.arch }}.ext4
       - uses: actions/upload-artifact@v4
@@ -1190,21 +1190,21 @@ jobs:
 
 ## Part 6 — Implementation Phases
 
-### Phase 1: Firecracker upgrade + lohar changes
+### Phase 1: Firecracker upgrade + forge changes
 
 No rootfs rebuilds. No kernel build. No CI changes. Just upgrade
-Firecracker, update lohar for boot profiles + shell fix + mounts.
+Firecracker, update forge for boot profiles + shell fix + mounts.
 
 1. **Migrate agni-01:** Destroy all sandboxes and snapshots (FC v1.6
    snapshot format is incompatible with v1.14).
 2. **Upgrade Firecracker** on agni-01 from v1.6.0 to v1.14.0.
-3. Add `/dev/shm` mount to lohar (§3.2.1).
-4. Add cgroups v2 mount + subtree_control to lohar (§3.2.1).
-5. Add boot profile support to lohar — after listeners, with 30s
+3. Add `/dev/shm` mount to forge (§3.2.1).
+4. Add cgroups v2 mount + subtree_control to forge (§3.2.1).
+5. Add boot profile support to forge — after listeners, with 30s
    timeout (§3.2.2).
 6. Fix `/bin/zsh` → `/bin/bash` in `engine.go` (§3.3).
 7. Update `FC_VERSION` in `scripts/install.sh` to `1.14.0`.
-8. Deploy updated lohar + bhatti to agni-01.
+8. Deploy updated forge + ahvm to agni-01.
 9. Verify: boot existing rootfs with new FC v1.14 + v1.15 CI kernel,
    all existing functionality works (exec, shell, files, volumes,
    snapshots).
@@ -1252,11 +1252,11 @@ Add CI workflows, update install script, cut release.
 ### Dependency graph
 
 ```
-Phase 1 (FC upgrade + lohar)
+Phase 1 (FC upgrade + forge)
      ↓
-Phase 2 (minimal + browser)  — needs Phase 1 lohar (boot profiles, /dev/shm)
+Phase 2 (minimal + browser)  — needs Phase 1 forge (boot profiles, /dev/shm)
      ↓                         does NOT need custom kernel
-Phase 3 (kernel + docker)    — needs Phase 1 lohar + custom kernel
+Phase 3 (kernel + docker)    — needs Phase 1 forge + custom kernel
      ↓
 Phase 4 (CI + distribution)  — needs Phase 2+3 tier scripts
 ```

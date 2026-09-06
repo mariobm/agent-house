@@ -2,7 +2,7 @@ name: macOS VMM — sign + notarize (dry-run)
 
 # The macOS signing building block for the Phase-1 release pipeline, and the CI
 # counterpart of the local 0c spike (proven Accepted 2026-07-02): build the macOS
-# krucible runtime closure (libkrun + bhatti-vmm), Developer-ID sign it with the
+# krucible runtime closure (libkrun + ahvm-vmm), Developer-ID sign it with the
 # hardened runtime + the com.apple.security.hypervisor entitlement, and notarize
 # via notarytool. Manual dispatch only; it does NOT publish — it uploads the
 # signed/notarized artifacts for inspection before any real v2 tag.
@@ -49,7 +49,7 @@ jobs:
       - name: Ensure Rust toolchain
         run: rustup show >/dev/null 2>&1 || rustup default stable
 
-      - name: Build libkrun (krucible fork) + bhatti-vmm
+      - name: Build libkrun (krucible fork) + ahvm-vmm
         # make vmm ad-hoc signs on darwin; we replace that with a Developer ID
         # signature below.
         run: |
@@ -63,7 +63,7 @@ jobs:
           KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
         run: |
           set -euo pipefail
-          KEYCHAIN="$RUNNER_TEMP/bhatti-signing.keychain-db"
+          KEYCHAIN="$RUNNER_TEMP/ahvm-signing.keychain-db"
           echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
@@ -85,23 +85,23 @@ jobs:
           IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          KEYCHAIN="$RUNNER_TEMP/bhatti-signing.keychain-db"
+          KEYCHAIN="$RUNNER_TEMP/ahvm-signing.keychain-db"
           DYLIB=$(find libkrucible/_install/lib -maxdepth 1 -type f -name 'libkrun.*.dylib' | head -1)
           echo "signing dylib: $DYLIB"
-          # dylib: hardened runtime + secure timestamp, same Team ID as bhatti-vmm
+          # dylib: hardened runtime + secure timestamp, same Team ID as ahvm-vmm
           # so hardened-runtime library validation is satisfied (no
           # disable-library-validation needed). Dylibs carry no entitlements.
           codesign --force --timestamp --options runtime --keychain "$KEYCHAIN" \
             --sign "$IDENTITY" "$DYLIB"
-          # bhatti-vmm: + the hypervisor entitlement (required for HVF).
+          # ahvm-vmm: + the hypervisor entitlement (required for HVF).
           codesign --force --timestamp --options runtime --keychain "$KEYCHAIN" \
             --entitlements cmd/vmm/hvf-entitlements.plist \
-            --sign "$IDENTITY" bhatti-vmm
+            --sign "$IDENTITY" ahvm-vmm
           echo "=== verify ==="
-          codesign -dv --verbose=4 bhatti-vmm 2>&1 | grep -iE 'Authority|TeamIdentifier|flags|Timestamp='
-          codesign -d --entitlements - bhatti-vmm 2>&1 | grep -i hypervisor
+          codesign -dv --verbose=4 ahvm-vmm 2>&1 | grep -iE 'Authority|TeamIdentifier|flags|Timestamp='
+          codesign -d --entitlements - ahvm-vmm 2>&1 | grep -i hypervisor
           codesign --verify --strict --verbose=2 "$DYLIB"
-          codesign --verify --strict --verbose=2 bhatti-vmm
+          codesign --verify --strict --verbose=2 ahvm-vmm
 
       - name: Notarize (notarytool)
         if: ${{ inputs.notarize }}
@@ -114,7 +114,7 @@ jobs:
           DYLIB=$(find libkrucible/_install/lib -maxdepth 1 -type f -name 'libkrun.*.dylib' | head -1)
           echo "$NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
           mkdir -p "$RUNNER_TEMP/notarize"
-          cp bhatti-vmm "$DYLIB" "$RUNNER_TEMP/notarize/"
+          cp ahvm-vmm "$DYLIB" "$RUNNER_TEMP/notarize/"
           ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/notarize" "$RUNNER_TEMP/notarize.zip"
           xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
             --key "$RUNNER_TEMP/notary.p8" \
@@ -128,12 +128,12 @@ jobs:
 
       - name: Clean up keychain
         if: always()
-        run: security delete-keychain "$RUNNER_TEMP/bhatti-signing.keychain-db" || true
+        run: security delete-keychain "$RUNNER_TEMP/ahvm-signing.keychain-db" || true
 
       - name: Upload signed artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos-vmm-signed-arm64
           path: |
-            bhatti-vmm
+            ahvm-vmm
             libkrucible/_install/lib/libkrun.*.dylib

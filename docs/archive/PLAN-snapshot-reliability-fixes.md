@@ -205,7 +205,7 @@ if err := copyBlock(src, dst); err != nil {
 ```
 
 The VM stays paused (alive). The caller can retry on the next thermal
-cycle, or the user can manually `bhatti stop` with disk space freed.
+cycle, or the user can manually `ahvm stop` with disk space freed.
 
 ### 2.2 Return error on verify failure
 

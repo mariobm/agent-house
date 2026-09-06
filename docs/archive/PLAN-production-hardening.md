@@ -1,6 +1,6 @@
-# Bhatti Production Hardening — Firecracker Best Practices
+# AHVM Production Hardening — Firecracker Best Practices
 
-This plan addresses every gap between how bhatti uses Firecracker today and
+This plan addresses every gap between how ahvm uses Firecracker today and
 what the Firecracker documentation requires for production deployments. The
 audit covers `prod-host-setup.md`, `jailer.md`, `snapshotting/snapshot-support.md`,
 `snapshotting/network-for-clones.md`, `ballooning.md`, `entropy.md`,
@@ -18,9 +18,9 @@ Every change in this plan is tagged with its impact:
 
 | Tag | Meaning |
 |-----|---------|
-| ⚠️ **BREAKING** | Existing snapshots/VMs won't survive this change. Requires `bhatti destroy` + recreate. |
+| ⚠️ **BREAKING** | Existing snapshots/VMs won't survive this change. Requires `ahvm destroy` + recreate. |
 | 🔄 **ROLLING** | Can be deployed without downtime. Old VMs keep working. New VMs get the improvement. |
-| 🛑 **DOWNTIME** | Requires stopping the bhatti daemon. Running VMs are snapshotted and resumed after. |
+| 🛑 **DOWNTIME** | Requires stopping the ahvm daemon. Running VMs are snapshotted and resumed after. |
 | ✅ **TRANSPARENT** | No user-visible change. Pure internal improvement. |
 
 ### Volumes, Images, and Snapshots — What Breaks and What Doesn't
@@ -28,12 +28,12 @@ Every change in this plan is tagged with its impact:
 These three things are different and have completely different lifecycles.
 The user sees "my data" but under the hood they are different objects with
 different durability guarantees. This section must be crystal clear because
-users interacting with bhatti through the API (not through us) need to
+users interacting with ahvm through the API (not through us) need to
 understand what happens to their data.
 
 #### Volumes — ✅ SAFE across every change in this plan
 
-A volume is an ext4 file on the host at `/var/lib/bhatti/volumes/<user>/<name>.ext4`.
+A volume is an ext4 file on the host at `/var/lib/ahvm/volumes/<user>/<name>.ext4`.
 It is the user's persistent data (workspace files, databases, etc.).
 
 Volumes exist **outside** the sandbox directory. They are never copied into
@@ -44,12 +44,12 @@ Firecracker as `path_on_host` in the drive configuration:
 ```go
 // engine.go:480 — FC is told the REAL volume path, not a copy
 fcPut(ctx, client, "/drives/vol0",
-    `{"path_on_host":"/var/lib/bhatti/volumes/usr_xxx/workspace.ext4",...}`)
+    `{"path_on_host":"/var/lib/ahvm/volumes/usr_xxx/workspace.ext4",...}`)
 ```
 
 Firecracker opens the file, the guest mounts it, reads/writes happen
 directly to the ext4 file. When the sandbox is destroyed, the volume file
-is untouched — it stays at `/var/lib/bhatti/volumes/<user>/workspace.ext4`.
+is untouched — it stays at `/var/lib/ahvm/volumes/<user>/workspace.ext4`.
 
 **Why volumes survive the jailer change**: The jailer changes how the FC
 process is launched and what filesystem paths it can see. But the volume
@@ -66,8 +66,8 @@ that, it can be reattached to any new sandbox.
 
 #### Images — ✅ SAFE across every change in this plan
 
-An image is an immutable ext4 file at `/var/lib/bhatti/images/<name>.ext4`.
-It is used as a *source* for sandbox rootfs. On `bhatti create --image python-3.12`,
+An image is an immutable ext4 file at `/var/lib/ahvm/images/<name>.ext4`.
+It is used as a *source* for sandbox rootfs. On `ahvm create --image python-3.12`,
 the engine copies (CoW clone or sparse copy) the image file into the sandbox
 directory as `rootfs.ext4`. The original image is never modified.
 
@@ -90,9 +90,9 @@ Firecracker opens those exact paths to reconnect its virtio-blk devices.
 
 Today those paths look like:
 ```
-/var/lib/bhatti/sandboxes/a1b2c3d4e5f6/rootfs.ext4
-/var/lib/bhatti/sandboxes/a1b2c3d4e5f6/config.ext4
-/var/lib/bhatti/volumes/usr_xxx/workspace.ext4
+/var/lib/ahvm/sandboxes/a1b2c3d4e5f6/rootfs.ext4
+/var/lib/ahvm/sandboxes/a1b2c3d4e5f6/config.ext4
+/var/lib/ahvm/volumes/usr_xxx/workspace.ext4
 ```
 
 The symlink dance in `ResumeSnapshot` exists precisely to place files at
@@ -110,7 +110,7 @@ FC would look in the wrong place.
 |--------|--------------------------|--------------------|
 | **Volumes** | ✅ Yes — data files are independent | None. Reattach to new sandbox. |
 | **Images** | ✅ Yes — source files, never modified | None. Use with `--image` as before. |
-| **Named snapshots** (`bhatti snapshot create`) | ❌ No — `vm.snap` has wrong paths | Delete and recreate from a new sandbox. |
+| **Named snapshots** (`ahvm snapshot create`) | ❌ No — `vm.snap` has wrong paths | Delete and recreate from a new sandbox. |
 | **Thermal snapshots** (auto hot→cold) | ❌ No — same `vm.snap` path issue | Sandboxes must be destroyed and recreated. |
 | **Running sandboxes** | ❌ No — can't live-migrate to jailer | Destroy and recreate. Volume data is safe. |
 
@@ -121,7 +121,7 @@ only in a sandbox rootfs should be saved to a volume or image first.*
 
 #### How Checkpoint snapshots handle volume data
 
-When `bhatti snapshot create` runs, Checkpoint copies the volume ext4 file
+When `ahvm snapshot create` runs, Checkpoint copies the volume ext4 file
 into the snapshot directory alongside `vm.snap` and `mem.snap`. This is a
 point-in-time copy — the snapshot is self-contained:
 
@@ -133,7 +133,7 @@ for _, vol := range vm.Volumes {
 }
 ```
 
-When `bhatti snapshot resume` runs, it copies those files back out and
+When `ahvm snapshot resume` runs, it copies those files back out and
 symlinks them at the original paths so FC can find them. **The original
 volume file is not modified.** The resumed sandbox uses a *copy* of the
 volume data from snapshot time, not the live volume.
@@ -177,23 +177,23 @@ This is the script users run before enabling the jailer:
 
 ```bash
 # 1. Save any important sandbox state to volumes/images
-bhatti exec my-sandbox -- cp -r /important-rootfs-data /workspace/  # move to volume
-bhatti image save my-sandbox --name my-env-backup                  # save rootfs as image
+ahvm exec my-sandbox -- cp -r /important-rootfs-data /workspace/  # move to volume
+ahvm image save my-sandbox --name my-env-backup                  # save rootfs as image
 
 # 2. Delete all named snapshots (they won't work post-jailer)
-bhatti snapshot list
-bhatti snapshot delete my-checkpoint                               # repeat for each
+ahvm snapshot list
+ahvm snapshot delete my-checkpoint                               # repeat for each
 
 # 3. Destroy all sandboxes (volumes are NOT deleted)
-bhatti destroy my-sandbox
+ahvm destroy my-sandbox
 
 # 4. Enable jailer
-# Edit /var/lib/bhatti/config.yaml:
+# Edit /var/lib/ahvm/config.yaml:
 #   use_jailer: true
-sudo systemctl restart bhatti
+sudo systemctl restart ahvm
 
 # 5. Recreate sandboxes — volumes reattach, images work as before
-bhatti create --name my-sandbox --image my-env-backup --volume workspace:/workspace
+ahvm create --name my-sandbox --image my-env-backup --volume workspace:/workspace
 ```
 
 ---
@@ -263,15 +263,15 @@ type Config struct {
 
 The jailer needs a UID/GID to drop to. Each VM ideally gets its own UID
 (as FC docs recommend), but that requires pre-allocating UIDs. Start with
-a single `bhatti-vm` user:
+a single `ahvm-vm` user:
 
 ```bash
 # scripts/install.sh — in do_server_install()
-useradd --system --no-create-home --shell /usr/sbin/nologin bhatti-vm
+useradd --system --no-create-home --shell /usr/sbin/nologin ahvm-vm
 ```
 
 For Phase 2 (per-VM UIDs), allocate a range in `/etc/subuid` and map each
-VM to `bhatti-vm-base-uid + vm-index`.
+VM to `ahvm-vm-base-uid + vm-index`.
 
 #### 1.3 Launch via Jailer
 
@@ -295,7 +295,7 @@ func (e *Engine) startFC(ctx context.Context, id, socketPath string) (*exec.Cmd,
         "--uid", fmt.Sprintf("%d", e.jailUID),
         "--gid", fmt.Sprintf("%d", e.jailGID),
         "--chroot-base-dir", chrootBase,
-        "--netns", fmt.Sprintf("/var/run/netns/bhatti-%s", id),
+        "--netns", fmt.Sprintf("/var/run/netns/ahvm-%s", id),
         "--new-pid-ns",
         "--cgroup-version", "2",
         "--cgroup", fmt.Sprintf("cpu.max=%d 100000", vcpuCount*100000),
@@ -356,7 +356,7 @@ This replaces the current bridge-based approach with proper L2 isolation:
 
 ```go
 func (e *Engine) setupNetNS(id, tapName, guestIP, gateway string) error {
-    nsName := "bhatti-" + id
+    nsName := "ahvm-" + id
     run("ip", "netns", "add", nsName)
     // Move TAP into the namespace
     run("ip", "link", "set", tapName, "netns", nsName)
@@ -396,7 +396,7 @@ jailer) working.
 
 1. Ship the jailer code path behind a config flag (`use_jailer: true`)
 2. Default OFF for one release — existing deployments unaffected
-3. Document migration: `bhatti destroy --all && bhatti update && set use_jailer: true`
+3. Document migration: `ahvm destroy --all && ahvm update && set use_jailer: true`
 4. Default ON in the next release
 5. Eventually remove bare-FC path (or keep for dev only)
 
@@ -427,7 +427,7 @@ Apply cgroup limits after the FC process starts:
 
 ```go
 func (e *Engine) applyCgroups(pid int, id string, vcpuCount, memMB int64) error {
-    cgroupPath := fmt.Sprintf("/sys/fs/cgroup/bhatti/%s", id)
+    cgroupPath := fmt.Sprintf("/sys/fs/cgroup/ahvm/%s", id)
     os.MkdirAll(cgroupPath, 0755)
 
     // Move FC process into its cgroup
@@ -457,7 +457,7 @@ func (e *Engine) applyCgroups(pid int, id string, vcpuCount, memMB int64) error 
 
 ```go
 func (e *Engine) cleanupCgroup(id string) {
-    cgroupPath := fmt.Sprintf("/sys/fs/cgroup/bhatti/%s", id)
+    cgroupPath := fmt.Sprintf("/sys/fs/cgroup/ahvm/%s", id)
     os.Remove(filepath.Join(cgroupPath, "cgroup.procs")) // must be empty first
     os.Remove(cgroupPath)
 }
@@ -478,7 +478,7 @@ type SandboxSpec struct {
 
 #### 2.4 Systemd Unit Hardening
 
-The bhatti daemon itself should also be constrained:
+The ahvm daemon itself should also be constrained:
 
 ```ini
 [Service]
@@ -486,7 +486,7 @@ The bhatti daemon itself should also be constrained:
 MemoryMax=512M
 # Protect host filesystem
 ProtectSystem=strict
-ReadWritePaths=/var/lib/bhatti /sys/fs/cgroup/bhatti
+ReadWritePaths=/var/lib/ahvm /sys/fs/cgroup/ahvm
 PrivateTmp=true
 NoNewPrivileges=false  # jailer needs to set uid/gid
 ```
@@ -531,7 +531,7 @@ Add `8250.nr_uarts=0` to boot args and remove `console=ttyS0`:
 
 ```go
 bootArgs := fmt.Sprintf(
-    "reboot=k panic=1 pci=off 8250.nr_uarts=0 init=/usr/local/bin/lohar quiet loglevel=0 ip=%s::%s:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:",
+    "reboot=k panic=1 pci=off 8250.nr_uarts=0 init=/usr/local/bin/forge quiet loglevel=0 ip=%s::%s:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:",
     guestIP, userNet.GatewayIP)
 ```
 
@@ -945,7 +945,7 @@ if err = fcPut(ctx, client, "/metrics", fmt.Sprintf(
 ```
 
 Metrics are written as newline-delimited JSON. A background goroutine
-can periodically read and aggregate them for the bhatti metrics endpoint.
+can periodically read and aggregate them for the ahvm metrics endpoint.
 
 #### 8.3 Note on Snapshot Resume
 
@@ -1008,7 +1008,7 @@ Use 3-second timeout for normal Stop, 1-second for Destroy.
 ### 9.2 Socket Path Length Validation
 
 Unix socket paths are limited to 108 bytes on Linux. The current path
-format is `/var/lib/bhatti/sandboxes/<16-hex>/firecracker.sock.resume`
+format is `/var/lib/ahvm/sandboxes/<16-hex>/firecracker.sock.resume`
 which is ~65 bytes. A custom `DataDir` could overflow.
 
 ```go

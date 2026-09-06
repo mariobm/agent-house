@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // TestKrucibleTierRootfsBoots boots a REAL release-tier rootfs (built by
@@ -34,8 +34,8 @@ func TestKrucibleTierRootfsBoots(t *testing.T) {
 	if !hasHypervisor() {
 		t.Skip("no hypervisor (/dev/kvm or HVF); skipping")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
-	netd := filepath.Join(repo, "bhatti-netd")
+	vmm := filepath.Join(repo, "ahvm-vmm")
+	netd := filepath.Join(repo, "ahvm-netd")
 	for _, p := range []string{vmm, netd} {
 		if _, err := os.Stat(p); err != nil {
 			t.Skipf("%s not built; skipping", filepath.Base(p))
@@ -67,7 +67,7 @@ func TestKrucibleTierRootfsBoots(t *testing.T) {
 	}
 	t.Cleanup(func() { eng.Destroy(context.Background(), info.ID) })
 
-	// The guest booted (lohar as PID 1) iff the agent answers an exec.
+	// The guest booted (forge as PID 1) iff the agent answers an exec.
 	r, err := eng.Exec(ctx, info.ID, []string{"sh", "-c", "echo booted-ok"})
 	if err != nil || r.ExitCode != 0 || !strings.Contains(r.Stdout, "booted-ok") {
 		t.Fatalf("tier rootfs did not boot cleanly: err=%v exit=%d out=%q", err, r.ExitCode, strings.TrimSpace(r.Stdout))

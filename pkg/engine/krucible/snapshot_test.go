@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // TestKrucibleSaveImageRoundTrip is the Phase-2 image-capture gate: write a

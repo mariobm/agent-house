@@ -15,14 +15,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/engine/enginetest"
-	"github.com/sahil-shubham/bhatti/pkg/forward"
-	"github.com/sahil-shubham/bhatti/pkg/gateway"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine/enginetest"
+	"github.com/mariobm/agent-house/pkg/forward"
+	"github.com/mariobm/agent-house/pkg/gateway"
 )
 
 // newNetEngine builds a block-root engine with the virtio-net gateway backend
-// (bhatti-netd) instead of TSI. Skips if bhatti-netd isn't built.
+// (ahvm-netd) instead of TSI. Skips if ahvm-netd isn't built.
 func newNetEngine(t *testing.T) engine.Engine {
 	dataDir := t.TempDir()
 	if d := os.Getenv("KRUCIBLE_NET_DATADIR"); d != "" {
@@ -57,13 +57,13 @@ func newNetEngineAt(t *testing.T, dataDir, sockDir string) engine.Engine {
 	if _, err := exec.LookPath("mke2fs"); err != nil {
 		t.Skip("mke2fs not found; skipping")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
+	vmm := filepath.Join(repo, "ahvm-vmm")
 	if _, err := os.Stat(vmm); err != nil {
-		t.Skip("bhatti-vmm not built — run `make vmm`; skipping")
+		t.Skip("ahvm-vmm not built — run `make vmm`; skipping")
 	}
-	netd := filepath.Join(repo, "bhatti-netd")
+	netd := filepath.Join(repo, "ahvm-netd")
 	if _, err := os.Stat(netd); err != nil {
-		t.Skip("bhatti-netd not built (go build ./cmd/bhatti-netd); skipping")
+		t.Skip("ahvm-netd not built (go build ./cmd/ahvm-netd); skipping")
 	}
 	ensureVMMSigned(t, vmm)
 	eng, err := New(Config{
@@ -84,7 +84,7 @@ func newNetEngineAt(t *testing.T, dataDir, sockDir string) engine.Engine {
 }
 
 // TestKrucibleNetEgress is the virtio-net gateway end-to-end gate: a guest boots
-// with eth0 wired to bhatti-netd, and its TCP egress to the public internet flows
+// with eth0 wired to ahvm-netd, and its TCP egress to the public internet flows
 // guest → eth0 → netstack → TCP forwarder → guard dialer → upstream.
 func TestKrucibleNetEgress(t *testing.T) {
 	eng := newNetEngine(t)
@@ -131,7 +131,7 @@ func TestKrucibleNetDNS(t *testing.T) {
 
 // TestKrucibleNetIPReported is the IP-visibility gate for the net backend: the
 // engine must REPORT the guest's gateway IP (100.64.x.y) in SandboxInfo from
-// Create, Status, AND List — the value the server persists and `bhatti list`
+// Create, Status, AND List — the value the server persists and `ahvm list`
 // shows. (That eth0 is actually up carrying it is covered by TestKrucibleNetEgress,
 // where traffic flows.) On TSI this is empty; on the net backend it must be set
 // and identical across all three surfaces.
@@ -236,7 +236,7 @@ func TestKrucibleNetForward(t *testing.T) {
 }
 
 // TestKrucibleNetSiblings is the sibling-reachability gate: two sandboxes of the
-// SAME owner share one bhatti-netd and reach each other across the L2 switch,
+// SAME owner share one ahvm-netd and reach each other across the L2 switch,
 // while a sandbox of a DIFFERENT owner (separate netd) cannot.
 func TestKrucibleNetSiblings(t *testing.T) {
 	eng := newNetEngine(t)
@@ -306,7 +306,7 @@ func readNetdPid(t *testing.T, sockDir string) int {
 }
 
 // TestKrucibleNetRecovery is the daemon-restart gate for the net backend: the
-// per-owner bhatti-netd survives a restart and is RE-ADOPTED (not respawned onto
+// per-owner ahvm-netd survives a restart and is RE-ADOPTED (not respawned onto
 // the socket it still holds), so a recovered sandbox keeps its networking; and
 // it's still reference-counted, so destroying the owner's last sandbox tears it
 // down.

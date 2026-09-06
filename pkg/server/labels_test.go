@@ -15,10 +15,10 @@ func TestValidateLabel_AcceptsCommonShapes(t *testing.T) {
 		{"pool", "workers"},
 		{"env", "prod"},
 		{"team-a", "platform"},
-		{"app.kubernetes.io/name", "myapp"},   // namespaced
-		{"version", "v1.2.3"},                  // dots in value
-		{"experimental", ""},                   // empty value (boolean)
-		{"a", "b"},                             // single char
+		{"app.kubernetes.io/name", "myapp"}, // namespaced
+		{"version", "v1.2.3"},               // dots in value
+		{"experimental", ""},                // empty value (boolean)
+		{"a", "b"},                          // single char
 		{"a_b.c-d", "x.y_z-1"},
 	}
 	for _, tc := range ok {
@@ -41,7 +41,7 @@ func TestValidateLabel_RejectsBadShapes(t *testing.T) {
 		{"k=eq", "v", "= in key"},
 		{strings.Repeat("a", 64), "v", "key segment >63 chars"},
 		{"k", strings.Repeat("a", maxLabelValueLen+1), "value too long"},
-		{"bhatti.sh/owner", "v", "reserved prefix"},
+		{"ahvm.sh/owner", "v", "reserved prefix"},
 		{"foo/", "v", "trailing slash on namespace"},
 		{"/foo", "v", "leading slash"},
 	}
@@ -83,7 +83,7 @@ func TestParseLabelQueryParams(t *testing.T) {
 			map[string]string{"q": "a=b=c"}, false},
 		{"missing equals", []string{"poolworkers"}, nil, true},
 		{"empty key", []string{"=value"}, nil, true},
-		{"reserved prefix", []string{"bhatti.sh/own=me"}, nil, true},
+		{"reserved prefix", []string{"ahvm.sh/own=me"}, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,7 +102,7 @@ func TestValidateLabelKeys_BasicAndReserved(t *testing.T) {
 	if err := validateLabelKeys([]string{"pool", "env"}); err != nil {
 		t.Fatalf("valid keys: %v", err)
 	}
-	if err := validateLabelKeys([]string{"bhatti.sh/owner"}); err == nil {
+	if err := validateLabelKeys([]string{"ahvm.sh/owner"}); err == nil {
 		t.Fatal("reserved-prefix key should fail")
 	}
 	if err := validateLabelKeys([]string{""}); err == nil {

@@ -10,7 +10,7 @@ func validateImage(rootDir string) []string {
 	var warnings []string
 
 	if exists(rootDir, "lib/systemd/systemd") || exists(rootDir, "usr/lib/systemd/systemd") {
-		warnings = append(warnings, "image contains systemd — it will NOT run as PID 1, lohar replaces it")
+		warnings = append(warnings, "image contains systemd — it will NOT run as PID 1, forge replaces it")
 	}
 
 	if exists(rootDir, "usr/bin/dockerd") {

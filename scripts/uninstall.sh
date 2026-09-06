@@ -1,5 +1,5 @@
 #!/bin/bash
-# scripts/uninstall.sh — Remove bhatti from a Linux host.
+# scripts/uninstall.sh — Remove ahvm from a Linux host.
 #
 # Usage:
 #   sudo ./scripts/uninstall.sh           # remove binaries + service, keep data
@@ -8,7 +8,7 @@
 # Safe to run multiple times.
 set -euo pipefail
 
-DATA_DIR="/var/lib/bhatti"
+DATA_DIR="/var/lib/ahvm"
 PURGE=false
 
 for arg in "$@"; do
@@ -28,7 +28,7 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-echo "==> Uninstalling bhatti"
+echo "==> Uninstalling ahvm"
 if [[ "$PURGE" == "true" ]]; then
     echo "    mode: PURGE (all data will be deleted)"
 else
@@ -38,30 +38,30 @@ echo ""
 
 # --- 1. Stop service ---
 
-if systemctl is-active bhatti &>/dev/null; then
-    echo "==> Stopping bhatti service..."
-    systemctl stop bhatti
+if systemctl is-active ahvm &>/dev/null; then
+    echo "==> Stopping ahvm service..."
+    systemctl stop ahvm
 fi
 
-if systemctl is-enabled bhatti &>/dev/null; then
-    echo "==> Disabling bhatti service..."
-    systemctl disable bhatti
+if systemctl is-enabled ahvm &>/dev/null; then
+    echo "==> Disabling ahvm service..."
+    systemctl disable ahvm
 fi
 
-if [[ -f /etc/systemd/system/bhatti.service ]]; then
+if [[ -f /etc/systemd/system/ahvm.service ]]; then
     echo "==> Removing systemd unit..."
-    rm -f /etc/systemd/system/bhatti.service
+    rm -f /etc/systemd/system/ahvm.service
     systemctl daemon-reload
 fi
 
 # --- 2. Kill any running sandbox VMs / gateways (v2 = krucible) ---
 #
-# v2 runs one bhatti-vmm helper per sandbox and one bhatti-netd gateway per
+# v2 runs one ahvm-vmm helper per sandbox and one ahvm-netd gateway per
 # owner. Both are plain host processes; the daemon normally reaps them, but
 # kill any strays before removing the runtime.
 
 KILLED=0
-for pat in "bhatti-vmm" "bhatti-netd"; do
+for pat in "ahvm-vmm" "ahvm-netd"; do
     for pid in $(pgrep -f "$pat" 2>/dev/null || true); do
         echo "  killing $pat pid $pid"
         kill "$pid" 2>/dev/null || true
@@ -75,12 +75,12 @@ fi
 
 # --- 2b. Legacy v1 (Firecracker) teardown — only if FC artifacts are present ---
 #
-# v2's network gateway (bhatti-netd) is a userspace gVisor netstack: there is NO
+# v2's network gateway (ahvm-netd) is a userspace gVisor netstack: there is NO
 # host tap/bridge/iptables state to reap. This block only runs on a leftover v1
-# host (per-sandbox TAP + per-user brbhatti bridge + FORWARD rules).
+# host (per-sandbox TAP + per-user brahvm bridge + FORWARD rules).
 
 if command -v firecracker >/dev/null 2>&1 \
-   || ip -o link show type bridge 2>/dev/null | grep -q "brbhatti"; then
+   || ip -o link show type bridge 2>/dev/null | grep -q "brahvm"; then
     echo "==> Firecracker (v1) artifacts detected — cleaning up host network state"
 
     for pid in $(pgrep -f "firecracker --api-sock" 2>/dev/null || true); do
@@ -93,11 +93,11 @@ if command -v firecracker >/dev/null 2>&1 \
         echo "  removing tap device: $tap"
         ip link del "$tap" 2>/dev/null || true
     done
-    for br in $(ip -o link show type bridge 2>/dev/null | grep "brbhatti" | awk -F': ' '{print $2}' | cut -d@ -f1); do
+    for br in $(ip -o link show type bridge 2>/dev/null | grep "brahvm" | awk -F': ' '{print $2}' | cut -d@ -f1); do
         echo "  removing bridge: $br"
         ip link del "$br" 2>/dev/null || true
     done
-    RULES=$(iptables -S FORWARD 2>/dev/null | grep -i "brbhatti" || true)
+    RULES=$(iptables -S FORWARD 2>/dev/null | grep -i "brahvm" || true)
     if [[ -n "$RULES" ]]; then
         echo "$RULES" | while read -r rule; do
             echo "  removing iptables rule: $rule"
@@ -109,14 +109,14 @@ fi
 
 # --- 3. Remove binaries + the v2 runtime prefix ---
 
-for bin in /usr/local/bin/bhatti /usr/local/bin/firecracker /usr/local/bin/jailer; do
+for bin in /usr/local/bin/ahvm /usr/local/bin/firecracker /usr/local/bin/jailer; do
     if [[ -f "$bin" ]]; then
         echo "==> Removing $bin"
         rm -f "$bin"
     fi
 done
 
-# The v2 runtime closure (bhatti-vmm, bhatti-netd, libkrun, lean kernel) lives
+# The v2 runtime closure (ahvm-vmm, ahvm-netd, libkrun, lean kernel) lives
 # under $DATA_DIR/runtime and is re-laid on every install, so remove it even in
 # soft mode (it is not user data).
 if [[ -d "$DATA_DIR/runtime" ]]; then
@@ -138,13 +138,13 @@ if [[ "$PURGE" == "true" ]]; then
         rm -rf "$DATA_DIR"
     fi
 
-    if [[ -d /etc/bhatti ]]; then
-        echo "==> Removing /etc/bhatti"
-        rm -rf /etc/bhatti
+    if [[ -d /etc/ahvm ]]; then
+        echo "==> Removing /etc/ahvm"
+        rm -rf /etc/ahvm
     fi
 
     # Remove CLI configs
-    for cfg in /root/.bhatti; do
+    for cfg in /root/.ahvm; do
         if [[ -d "$cfg" ]]; then
             echo "==> Removing $cfg"
             rm -rf "$cfg"
@@ -153,7 +153,7 @@ if [[ "$PURGE" == "true" ]]; then
 
     # Try to find the sudo user's config too
     if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-        USER_CFG="$(eval echo "~$SUDO_USER")/.bhatti"
+        USER_CFG="$(eval echo "~$SUDO_USER")/.ahvm"
         if [[ -d "$USER_CFG" ]]; then
             echo "==> Removing $USER_CFG"
             rm -rf "$USER_CFG"
@@ -169,7 +169,7 @@ fi
 
 echo ""
 echo "============================================"
-echo "  bhatti uninstalled"
+echo "  ahvm uninstalled"
 echo ""
 if [[ "$PURGE" == "true" ]]; then
     echo "  All data removed."
@@ -177,10 +177,10 @@ else
     echo "  Binaries + runtime + service removed."
     echo "  Data preserved: $DATA_DIR"
     echo "    (rootfs images, volumes, secrets, sandboxes)"
-    echo "  Config preserved: /etc/bhatti/config.yaml"
+    echo "  Config preserved: /etc/ahvm/config.yaml"
     echo "    (the krucible runtime under $DATA_DIR/runtime is re-installed on update)"
     echo ""
     echo "  To reinstall:"
-    echo "    curl -fsSL bhatti.sh/install | sudo bash"
+    echo "    curl -fsSL ahvm.sh/install | sudo bash"
 fi
 echo "============================================"

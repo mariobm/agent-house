@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // setupShellTest creates a server, user, and sandbox for shell tests.
@@ -242,7 +242,7 @@ func TestShellHTMLServed(t *testing.T) {
 			if idx < 0 {
 				t.Fatal("no nonce in script-src")
 			}
-			nonce := part[idx+7 : strings.Index(part[idx+7:], "'") + idx+7]
+			nonce := part[idx+7 : strings.Index(part[idx+7:], "'")+idx+7]
 			if !strings.Contains(string(body), "nonce=\""+nonce+"\"") {
 				t.Fatalf("CSP nonce %q not found in HTML script tag", nonce)
 			}

@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 var aliasRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -31,7 +31,7 @@ func validateAlias(alias string) error {
 }
 
 // generateAlias creates a <name>-<random> alias. The random suffix prevents
-// guessing (2.1B possibilities) and collisions. Format: dev-k3m9x2.bhatti.sh
+// guessing (2.1B possibilities) and collisions. Format: dev-k3m9x2.ahvm.sh
 func generateAlias(sandboxName string) string {
 	base := strings.ToLower(sandboxName)
 	base = regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(base, "-")
@@ -139,7 +139,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request, sandboxID
 			if lerr == nil {
 				for _, r := range existing {
 					if r.Port == req.Port {
-						w.Header().Set("X-Bhatti-Existing", "true")
+						w.Header().Set("X-AHVM-Existing", "true")
 						writeJSON(w, 200, map[string]interface{}{
 							"id":         r.ID,
 							"sandbox_id": sb.ID,

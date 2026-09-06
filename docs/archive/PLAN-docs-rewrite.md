@@ -1,14 +1,14 @@
-# Documentation Rewrite — bhatti.sh
+# Documentation Rewrite — ahvm.sh
 
-The bhatti.sh docs work. Every page is factually accurate, covers the
+The ahvm.sh docs work. Every page is factually accurate, covers the
 API surface, and has both CLI and API examples. Someone who needs to use
-bhatti can figure it out from these docs.
+ahvm can figure it out from these docs.
 
 The problem isn't correctness. It's that the docs don't know who they're
 talking to. A user trying to publish a preview URL gets a paragraph about
 singleflight deduplication. Someone who wants to understand how thermal
-snapshots work gets the same level of depth as "bhatti secret list." And
-the person who found bhatti on Hacker News and wants to understand the
+snapshots work gets the same level of depth as "ahvm secret list." And
+the person who found ahvm on Hacker News and wants to understand the
 engineering — the person PLAN-learning.md was written for — has to dig
 through reference-style pages to find the interesting parts.
 
@@ -47,7 +47,7 @@ Reference
   Configuration              ← incomplete — missing most server config fields
 Architecture
   Overview                   ← internals + reference hybrid
-  Guest Agent (Lohar)        ← deep internals, the best technical writing in the docs
+  Guest Agent (Forge)        ← deep internals, the best technical writing in the docs
   Firecracker Engine         ← internals, good
   Design Decisions           ← the best page in the entire site
 Contributing
@@ -63,7 +63,7 @@ Contributing
 | **Files** | Performance table at the bottom (p50/p95 latencies) is a flex, not user documentation. These numbers are on the homepage and README already. |
 | **Networking** | Almost entirely internals: bridge diagram, IP allocation pool, kernel `ip=`, TAP lifecycle. The only user-facing content is "every sandbox gets internet access" and the proxy examples. |
 | **Preview URLs** | "Auto-wake" section explains singleflight, LRU cache size, ensureHot implementation. A user needs: "cold sandboxes wake automatically, first request takes ~50ms extra." |
-| **Thermal Management** | Zero user-facing content. The entire page is the state machine internals, diff snapshot implementation, background goroutine tick. The only user-facing bits are: `--keep-hot` flag and `bhatti edit --allow-cold`. |
+| **Thermal Management** | Zero user-facing content. The entire page is the state machine internals, diff snapshot implementation, background goroutine tick. The only user-facing bits are: `--keep-hot` flag and `ahvm edit --allow-cold`. |
 | **Templates** | Says "Templates are managed via the API" with no CLI. If there's no CLI, say "There's no CLI for templates yet." Don't leave a section header suggesting CLI content exists. |
 | **Images** | `image share` / `image unshare` — who can call these? The page says "By default, images are scoped to the user who created them. Sharing makes them available to all users" but it's not clear if this requires admin access. |
 | **Configuration** | Shows only `listen` and `data_dir`. The install script generates a config with `firecracker_bin`, `firecracker_kernel`, `firecracker_rootfs`, `jail_uid`, `jail_gid`, `firecracker_jailer`. This page is incomplete. |
@@ -93,7 +93,7 @@ These patterns repeat across pages:
    know how to run npm install.
 
 4. **Equal depth for everything.** The secret env priority diagram gets
-   the same treatment as "bhatti secret delete KEY". One is a real
+   the same treatment as "ahvm secret delete KEY". One is a real
    question users have. The other is a one-liner that doesn't need a
    section.
 
@@ -145,7 +145,7 @@ Updating & Uninstalling              ← new, from our install work
 
 Under the Hood                       ← new section
   Architecture Overview
-  Lohar: PID 1 Inside Every VM
+  Forge: PID 1 Inside Every VM
   Thermal States & Snapshots
   Networking: Bridges, TAP, and ip=
   The Wire Protocol
@@ -182,7 +182,7 @@ Contributing
 | Templates | **Managing → Templates** | Add explicit note: "Templates don't have CLI commands yet — use the API directly." |
 | Images | **Managing → Images & Tiers** | Merge with tier documentation. Clarify who can share (admin only? any user?). Add tier table from README. |
 | Architecture Overview | **Under the Hood → Architecture Overview** | Keep ASCII diagrams and data flow. Move disk layout and concurrency model to a subsection or separate page. |
-| Guest Agent | **Under the Hood → Lohar: PID 1 Inside Every VM** | Rename for discoverability. Keep the deep content — it's good. |
+| Guest Agent | **Under the Hood → Forge: PID 1 Inside Every VM** | Rename for discoverability. Keep the deep content — it's good. |
 | Firecracker Engine | Merge into **Architecture Overview** and **Thermal States** | The engine page is a grab bag. The VM creation sequence fits in Architecture. The snapshot/restore fits in Thermal States. |
 | Design Decisions | **Under the Hood → Design Decisions** | Keep as-is. It's the best page. |
 | Wire Protocol | Split: narrative → **Under the Hood → The Wire Protocol**, byte spec → **Reference → Wire Protocol Frames** | The current page mixes "why binary framing" (interesting) with frame type tables (reference). |
@@ -192,12 +192,12 @@ Contributing
 
 ### New pages to write
 
-**Updating & Uninstalling** — from our install UX work. `bhatti update`,
-`--tiers`, the curl fallback, `bhatti.sh/uninstall`, `--purge`. This
+**Updating & Uninstalling** — from our install UX work. `ahvm update`,
+`--tiers`, the curl fallback, `ahvm.sh/uninstall`, `--purge`. This
 exists in the repo README and quickstart.md but not as a standalone doc
 page.
 
-**Development Setup** — how to build bhatti from source, run it locally,
+**Development Setup** — how to build ahvm from source, run it locally,
 run the test suite. Currently undocumented. A contributor's first stop.
 
 **Adding a Tier** — the checklist from `docs/tiers.md` in the repo,
@@ -258,11 +258,11 @@ Each page should answer:
 - The force-pause circuit breaker (10 consecutive failures)
 - Why vsock breaks after restore (from Design Decisions, expanded)
 
-**Lohar: PID 1 Inside Every VM** should be the current Guest Agent page
+**Forge: PID 1 Inside Every VM** should be the current Guest Agent page
 with a better title. The boot sequence, config drive, session model,
 PTY allocation — all strong content. Add:
-- Why lohar is injected into the rootfs on every create (protocol drift)
-- What happens when lohar crashes (PID 1 death = kernel panic = VM dies)
+- Why forge is injected into the rootfs on every create (protocol drift)
+- What happens when forge crashes (PID 1 death = kernel panic = VM dies)
 
 **Networking: Bridges, TAP, and ip=** — the current Networking page,
 but rewritten to reflect per-user bridges (the current page still
@@ -318,11 +318,11 @@ Lifecycle page. If a page answers its questions in 30 lines, it's done.
 ## Relationship to PLAN-learning.md
 
 PLAN-learning.md covers rewriting the **repo docs** (`/docs/` in the
-bhatti repo) as a learning exercise. Those docs are for contributors
+ahvm repo) as a learning exercise. Those docs are for contributors
 and contain implementation details, code references with line numbers,
 and architecture notes.
 
-This plan covers the **website docs** (`bhatti.sh/docs/`). These are
+This plan covers the **website docs** (`ahvm.sh/docs/`). These are
 for users and the curious public. The content overlaps — both have
 architecture docs, both have a thermal management page — but the
 audience and voice are different.
@@ -366,7 +366,7 @@ Templates, Images, Users & Auth.
 Write/rewrite the "Under the Hood" pages with narrative, context, and
 personality. This is where PLAN-learning.md's rewrite work feeds in.
 
-Pages: Architecture Overview, Lohar, Thermal States, Networking,
+Pages: Architecture Overview, Forge, Thermal States, Networking,
 Design Decisions (already good — expand with new entries).
 
 ### Phase 4: Tier 3 gaps (Reference)
@@ -383,7 +383,7 @@ Write: Updating & Uninstalling, Development Setup, Adding a Tier.
 ## What's Not in This Plan
 
 **Blog.** The best "Under the Hood" pages could be blog posts too
-(cross-posted or linked). But bhatti.sh doesn't have a blog yet. Adding
+(cross-posted or linked). But ahvm.sh doesn't have a blog yet. Adding
 one is a separate decision. The docs should stand alone first.
 
 **Versioned docs.** One version, always current. Defer until there's a

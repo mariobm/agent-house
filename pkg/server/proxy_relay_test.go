@@ -11,7 +11,7 @@ import (
 )
 
 // Regression tests for the goroutine leak in proxyWebSocket's
-// fallback (no-deadline) path. Tranche 0a item #1 of PLAN-bhatti-v2.md.
+// fallback (no-deadline) path. Tranche 0a item #1 of PLAN-ahvm-v2.md.
 //
 // The bug: plain io.Copy in both directions, with one shared `done`
 // channel and only the foreground call's exit triggering teardown.

@@ -1,6 +1,6 @@
-# Package Compatibility — lohar as PID 1 with systemctl shim
+# Package Compatibility — forge as PID 1 with systemctl shim
 
-lohar stays as PID 1. A built-in systemctl implementation makes
+forge stays as PID 1. A built-in systemctl implementation makes
 `apt-get install openssh-server` work without real systemd.
 Snapshot/restore keeps working. Addresses GitHub issue #12.
 
@@ -10,17 +10,17 @@ Snapshot/restore keeps working. Addresses GitHub issue #12.
 
 ## Why not systemd
 
-We spent a week trying to run systemd as PID 1 with lohar as a
+We spent a week trying to run systemd as PID 1 with forge as a
 systemd service. Here's what happened and why we're not doing it.
 
 ### What we tried
 
 1. Built a systemd-native rootfs (systemd + dbus + journald +
-   lohar.service)
+   forge.service)
 2. Fresh boot works — `systemctl is-system-running` returns
-   "running", lohar.service active, exec works
+   "running", forge.service active, exec works
 3. Stop (snapshot) works
-4. Start (restore) **breaks** — lohar's TCP listeners accept
+4. Start (restore) **breaks** — forge's TCP listeners accept
    connections at the kernel level but the Go runtime never
    processes them. First exec after restore works (WaitReady),
    every subsequent exec hangs forever.
@@ -29,17 +29,17 @@ systemd service. Here's what happened and why we're not doing it.
 
 - **Not a Firecracker version issue.** Tested on FC 1.14.0 and
   1.15.1. Same failure.
-- **Not our lohar code changes.** The POC systemd rootfs (built
-  weeks earlier with different lohar.service config) has the same
+- **Not our forge code changes.** The POC systemd rootfs (built
+  weeks earlier with different forge.service config) has the same
   failure.
 - **Not our service file.** Tested with both `Restart=no` and
   `Restart=always`. Same failure.
 - **Not a network issue.** After restore: ping works, port 22
   returns RST (guest kernel responsive), port 1024 accepts TCP
-  connections (lohar listener still registered in kernel).
-- **Not a general Firecracker snapshot bug.** The same lohar
+  connections (forge listener still registered in kernel).
+- **Not a general Firecracker snapshot bug.** The same forge
   binary, same Firecracker, same host kernel — works perfectly
-  when lohar is PID 1 (no systemd). CI tests for stop/start/exec
+  when forge is PID 1 (no systemd). CI tests for stop/start/exec
   pass consistently.
 
 ### The root cause
@@ -58,8 +58,8 @@ restoration order (PR #4666). The ARM64 variant with child processes
 of systemd has no fix.
 
 The fundamental problem: **systemd and its children (dbus, journald,
-lohar) introduce kernel state (timers, epoll sets, inotify watches)
-that doesn't survive snapshot restore cleanly.** When lohar is PID 1
+forge) introduce kernel state (timers, epoll sets, inotify watches)
+that doesn't survive snapshot restore cleanly.** When forge is PID 1
 and is the only userspace process, the kernel state is minimal and
 resumes correctly.
 
@@ -82,34 +82,34 @@ Users don't need systemd. They need `systemctl` to work — the
 binary that reads `.service` files and starts/stops processes.
 These are different things.
 
-### The design: busybox-pattern systemctl built into lohar
+### The design: busybox-pattern systemctl built into forge
 
-lohar (already in every rootfs) gains a systemctl personality.
+forge (already in every rootfs) gains a systemctl personality.
 One binary, three symlinks:
 
 ```
-/usr/local/bin/lohar         — the actual binary
-/sbin/init → lohar           — kernel boots this as PID 1
-/usr/bin/systemctl → lohar   — packages call this
+/usr/local/bin/forge         — the actual binary
+/sbin/init → forge           — kernel boots this as PID 1
+/usr/bin/systemctl → forge   — packages call this
 ```
 
-When invoked as `init` or `lohar`: run the agent (existing code).
+When invoked as `init` or `forge`: run the agent (existing code).
 When invoked as `systemctl`: handle service management commands.
 
 This is the busybox pattern — a single binary that checks
 `os.Args[0]` to determine its behavior. busybox provides 300+
-Unix utilities in one binary this way. lohar provides the sandbox
+Unix utilities in one binary this way. forge provides the sandbox
 agent + systemctl in one binary.
 
 No Python. No external dependencies. No separate daemon. The
 systemctl implementation reads `.service` files directly, manages
-processes via PID files, and exits. lohar (PID 1) handles zombie
+processes via PID files, and exits. forge (PID 1) handles zombie
 reaping for everything.
 
 The systemctl shim is a common pattern in container runtimes that
 need package compatibility without full systemd (e.g. Docker
 containers, Firecracker microVMs). Our implementation is tailored
-to bhatti's snapshot/restore lifecycle.
+to ahvm's snapshot/restore lifecycle.
 
 ---
 
@@ -117,20 +117,20 @@ to bhatti's snapshot/restore lifecycle.
 
 Tag: `v1.9.0-rc.1` → `v1.9.0`
 
-lohar gets the systemctl personality. The rootfs gets the symlinks.
+forge gets the systemctl personality. The rootfs gets the symlinks.
 Packages that call systemctl during install work. Services start.
-Snapshot/restore keeps working because lohar stays as PID 1.
+Snapshot/restore keeps working because forge stays as PID 1.
 
 ---
 
-## A1 — Restore lohar PID 1 init duties
+## A1 — Restore forge PID 1 init duties
 
 We deleted the PID 1 path in the previous commit. We need to bring
 back the init duties (mounts, loopback, signal handlers) but keep
 the code clean — no dual-mode, no `runAsAgent()` copy-paste.
 
 The current `runAgent()` assumes systemd handles mounts and
-loopback. Since lohar is PID 1 again, it needs to do these itself.
+loopback. Since forge is PID 1 again, it needs to do these itself.
 
 Restore from the git history:
 - `mustMount()` calls for proc, sys, dev, devpts, tmpfs, run, shm
@@ -140,10 +140,10 @@ Restore from the git history:
 
 Keep the fixes from the systemd attempt:
 - DNS fallback (`ensureResolvConf()` when config drive has no DNS)
-- Boot timing to `/run/bhatti/boot-timing.txt`
+- Boot timing to `/run/ahvm/boot-timing.txt`
 - Clean single-function structure (`runAgent()`)
 
-Add zombie reaping (lohar is PID 1, must reap orphans):
+Add zombie reaping (forge is PID 1, must reap orphans):
 ```go
 // Reap orphaned zombie processes. Go's runtime handles SIGCHLD for
 // processes started via exec.Command, but grandchild processes
@@ -162,29 +162,29 @@ go func() {
 
 ### Changes
 
-- `cmd/lohar/main.go`: Restore PID 1 init in `runAgent()`, add
+- `cmd/forge/main.go`: Restore PID 1 init in `runAgent()`, add
   zombie reaper. Keep the DNS fix and boot-timing fix.
 
 ---
 
-## A2 — Revert engine init= to /usr/local/bin/lohar
+## A2 — Revert engine init= to /usr/local/bin/forge
 
 We changed `init=/sbin/init` in the previous commit. Revert to
-`init=/usr/local/bin/lohar` since lohar is PID 1 again.
+`init=/usr/local/bin/forge` since forge is PID 1 again.
 
-The `/sbin/init → lohar` symlink in the rootfs means both paths
-work, but being explicit about lohar avoids ambiguity.
+The `/sbin/init → forge` symlink in the rootfs means both paths
+work, but being explicit about forge avoids ambiguity.
 
 ### Changes
 
 - `pkg/engine/firecracker/create.go`: Change `init=/sbin/init`
-  back to `init=/usr/local/bin/lohar`.
+  back to `init=/usr/local/bin/forge`.
 
 ---
 
-## A3 — Build the systemctl shim into lohar
+## A3 — Build the systemctl shim into forge
 
-New file: `cmd/lohar/systemctl.go`
+New file: `cmd/forge/systemctl.go`
 
 ### Dispatch (busybox pattern)
 
@@ -193,7 +193,7 @@ In `main()`:
 func main() {
     name := filepath.Base(os.Args[0])
     switch {
-    case os.Getenv("LOHAR_TEST") == "1":
+    case os.Getenv("FORGE_TEST") == "1":
         runTestMode()
     case name == "systemctl":
         runSystemctl(os.Args[1:])
@@ -218,13 +218,13 @@ Based on what Debian/Ubuntu package scripts actually call:
 5. Run ExecStartPre commands (sequential, fail-fast)
 6. Fork/exec ExecStart
 7. For `Type=simple`: write PID to
-   `/run/bhatti/services/<name>.pid`, exit
+   `/run/ahvm/services/<name>.pid`, exit
 8. For `Type=oneshot`: wait for completion, exit
 9. For `Type=forking`: wait for main process to exit, find
    child PID (from PIDFile or by scanning), write to PID file
 
 **`systemctl stop <service>`**
-1. Read PID from `/run/bhatti/services/<name>.pid`
+1. Read PID from `/run/ahvm/services/<name>.pid`
 2. Parse ExecStop from service file (if present, run it)
 3. If no ExecStop: send SIGTERM, wait TimeoutStopSec (default
    5s), SIGKILL
@@ -292,9 +292,9 @@ Handle multi-line values (backslash continuation). Handle multiple
 
 ### PID file location
 
-All PID files go to `/run/bhatti/services/<name>.pid`. This is
-a tmpfs directory, cleared on reboot. lohar creates it at boot.
-The shim reads/writes PID files. lohar (PID 1) reaps the zombies.
+All PID files go to `/run/ahvm/services/<name>.pid`. This is
+a tmpfs directory, cleared on reboot. forge creates it at boot.
+The shim reads/writes PID files. forge (PID 1) reaps the zombies.
 
 ### What we explicitly DON'T implement
 
@@ -305,16 +305,16 @@ The shim reads/writes PID files. lohar (PID 1) reaps the zombies.
 - Timer units — cron exists
 - Slice/scope/cgroup management — Firecracker already constrains
   the VM
-- `journalctl` — services write to stdout/stderr, lohar can
+- `journalctl` — services write to stdout/stderr, forge can
   capture if needed later
 - `systemd-tmpfiles`, `systemd-sysusers` — handle manually in
   rootfs build
 
 ### Changes
 
-- `cmd/lohar/main.go`: Add busybox dispatch in `main()`
-- `cmd/lohar/systemctl.go`: New file, ~400-500 lines
-- `cmd/lohar/service_parser.go`: New file, .service file parser,
+- `cmd/forge/main.go`: Add busybox dispatch in `main()`
+- `cmd/forge/systemctl.go`: New file, ~400-500 lines
+- `cmd/forge/service_parser.go`: New file, .service file parser,
   ~100 lines
 
 ---
@@ -324,11 +324,11 @@ The shim reads/writes PID files. lohar (PID 1) reaps the zombies.
 Modify `scripts/tiers/minimal.sh` to set up the shim:
 
 ```bash
-# systemctl shim — lohar handles systemctl commands via busybox pattern
-ln -sf /usr/local/bin/lohar "$MOUNT/usr/bin/systemctl"
+# systemctl shim — forge handles systemctl commands via busybox pattern
+ln -sf /usr/local/bin/forge "$MOUNT/usr/bin/systemctl"
 
 # Create the services PID directory
-mkdir -p "$MOUNT/run/bhatti/services"
+mkdir -p "$MOUNT/run/ahvm/services"
 
 # Mark system as "systemd-like" so deb-systemd-helper uses
 # the enable/disable path instead of the no-op path.
@@ -336,15 +336,15 @@ mkdir -p "$MOUNT/run/bhatti/services"
 mkdir -p "$MOUNT/run/systemd/system"
 ```
 
-Also in `minimal.sh` — lohar needs to create `/run/systemd/system`
+Also in `minimal.sh` — forge needs to create `/run/systemd/system`
 at boot (it's tmpfs, gone on reboot). Add to `runAgent()`:
 ```go
 os.MkdirAll("/run/systemd/system", 0755)
-os.MkdirAll("/run/bhatti/services", 0755)
+os.MkdirAll("/run/ahvm/services", 0755)
 ```
 
 **Auto-start enabled services at boot.** After listeners are up
-and before the boot profile runs, lohar scans
+and before the boot profile runs, forge scans
 `/etc/systemd/system/multi-user.target.wants/` and starts each
 enabled service:
 
@@ -362,8 +362,8 @@ installed with `apt-get install` and enabled via
 - `scripts/tiers/minimal.sh`: Add symlink, keep rootfs at 512 MB
   (no systemd packages needed)
 - `scripts/build-tier.sh`: Revert minimal size to 512 MB
-- `cmd/lohar/main.go`: Create /run/systemd/system and
-  /run/bhatti/services at boot, call `startEnabledServices()`
+- `cmd/forge/main.go`: Create /run/systemd/system and
+  /run/ahvm/services at boot, call `startEnabledServices()`
 
 ---
 
@@ -438,7 +438,7 @@ func TestServiceSurvivesSnapshot(t *testing.T) {
     // Stop (snapshot)
     eng.Stop(ctx, info.ID)
 
-    // Start (restore) — lohar resumes as PID 1, restarts services
+    // Start (restore) — forge resumes as PID 1, restarts services
     eng.Start(ctx, info.ID)
 
     // nginx should be running again
@@ -502,42 +502,42 @@ func TestThermalCyclesWithServices(t *testing.T) {
 
 ```bash
 # Issue #12 scenario end-to-end
-bhatti create --name test --cpus 1 --memory 1024 --disk-size 2048
-bhatti exec test -- sudo apt-get update -qq
-bhatti exec test -- sudo apt-get install -y --no-install-recommends openssh-server
-bhatti exec test -- systemctl is-active ssh
-bhatti exec test -- sudo systemctl stop ssh
-bhatti exec test -- systemctl is-active ssh    # inactive
-bhatti exec test -- sudo systemctl start ssh
-bhatti exec test -- systemctl is-active ssh    # active
+ahvm create --name test --cpus 1 --memory 1024 --disk-size 2048
+ahvm exec test -- sudo apt-get update -qq
+ahvm exec test -- sudo apt-get install -y --no-install-recommends openssh-server
+ahvm exec test -- systemctl is-active ssh
+ahvm exec test -- sudo systemctl stop ssh
+ahvm exec test -- systemctl is-active ssh    # inactive
+ahvm exec test -- sudo systemctl start ssh
+ahvm exec test -- systemctl is-active ssh    # active
 
 # Survives snapshot
-bhatti stop test
-bhatti start test
-bhatti exec test -- systemctl is-active ssh    # active
+ahvm stop test
+ahvm start test
+ahvm exec test -- systemctl is-active ssh    # active
 
 # Other packages
-bhatti exec test -- sudo apt-get install -y --no-install-recommends nginx
-bhatti exec test -- curl -sf localhost | head -1
-bhatti exec test -- sudo apt-get install -y --no-install-recommends redis-server
-bhatti exec test -- redis-cli ping
+ahvm exec test -- sudo apt-get install -y --no-install-recommends nginx
+ahvm exec test -- curl -sf localhost | head -1
+ahvm exec test -- sudo apt-get install -y --no-install-recommends redis-server
+ahvm exec test -- redis-cli ping
 
 # Boot timing (target < 500ms — no systemd overhead)
 for i in $(seq 1 5); do
     START=$(date +%s%N)
-    bhatti create --name bt --cpus 1 --memory 1024 >/dev/null 2>&1
+    ahvm create --name bt --cpus 1 --memory 1024 >/dev/null 2>&1
     END=$(date +%s%N)
     echo "$i: $(( (END - START) / 1000000 ))ms"
-    bhatti destroy bt -y >/dev/null 2>&1
+    ahvm destroy bt -y >/dev/null 2>&1
     sleep 1
 done
 
 # Tier boot profiles
-bhatti create --name docker-test --image docker --cpus 2 --memory 2048
-bhatti exec docker-test -- docker info
-bhatti destroy docker-test -y
+ahvm create --name docker-test --image docker --cpus 2 --memory 2048
+ahvm exec docker-test -- docker info
+ahvm destroy docker-test -y
 
-bhatti destroy test -y
+ahvm destroy test -y
 ```
 
 ### Decision gate
@@ -581,7 +581,7 @@ New:
 ```
 sandbox/dev created (1 vCPU, 1024 MB, 1024 MB disk)
   IP:    10.0.1.2
-  Shell: bhatti shell dev
+  Shell: ahvm shell dev
 ```
 
 Shows resources so the user knows what was allocated (the #12
@@ -593,7 +593,7 @@ Idempotent create: `sandbox/dev unchanged (already exists)`.
 
 ## B2 — Streaming exec
 
-Second thing every user hits. `bhatti exec dev -- sudo apt-get
+Second thing every user hits. `ahvm exec dev -- sudo apt-get
 install openssh-server` shows nothing for 30+ seconds.
 
 When stdout is a terminal, send `Accept: application/x-ndjson`.
@@ -610,7 +610,7 @@ Pattern-match known errors, append recovery hints:
 Error: sandbox "dev" is not running
 
   Resume it first:
-    bhatti start dev
+    ahvm start dev
 ```
 
 Also: confirm verbs on stop/start/destroy:
@@ -652,12 +652,12 @@ Volumes:
 Server: add cpus, memory_mb, disk_size_mb, image columns to
 sandboxes table. Disk usage via live `df` exec (running VMs only).
 
-## B5 — `bhatti ports`
+## B5 — `ahvm ports`
 
 CLI for existing `GET /ports` and `GET /sandboxes/:id/ports`.
 
 ```
-$ bhatti ports dev
+$ ahvm ports dev
 PORT    PROXY
 22      /sandboxes/a1b2c3d4/proxy/22/
 8080    /sandboxes/a1b2c3d4/proxy/8080/
@@ -671,11 +671,11 @@ Drop ID from default columns (names are the primary key).
 Add `-o wide` with resources and image.
 
 ```
-$ bhatti ls
+$ ahvm ls
 NAME         STATUS   THERMAL  IP
 dev          running  hot      10.0.1.2
 
-$ bhatti ls -o wide
+$ ahvm ls -o wide
 NAME         STATUS   THERMAL  IP            CPUS  MEMORY  DISK   IMAGE
 dev          running  hot      10.0.1.2      1     1024    1024   minimal
 ```
@@ -684,13 +684,13 @@ Needs the store columns from B4.
 
 ## B7 — Wire up `--force` on start
 
-Error says `"use 'bhatti start --force' to retry"` but the flag
+Error says `"use 'ahvm start --force' to retry"` but the flag
 doesn't exist. Engine has `StartForce()`. Wire server + CLI.
 ~10 lines.
 
 ## B8 — Fix image pull Ctrl+C
 
-Trap SIGINT, print "pull continues on server, check: bhatti
+Trap SIGINT, print "pull continues on server, check: ahvm
 image list", exit cleanly. ~15 lines.
 
 ## B9 — `--detach` flag on exec
@@ -699,16 +699,16 @@ CLI for existing server `detach: true`. Fire-and-forget for
 long-running commands.
 
 ```
-$ bhatti exec dev --detach -- make build-all
+$ ahvm exec dev --detach -- make build-all
 pid: 4821
-output: /tmp/bhatti-exec-4821.log
+output: /tmp/ahvm-exec-4821.log
 ```
 
 ## B10 — `--hugepages` flag on create
 
 CLI for existing server/engine support. 3 lines.
 
-## B11 — `bhatti volume clone`
+## B11 — `ahvm volume clone`
 
 CLI for existing `POST /volumes/:name/snapshot`. ~20 lines.
 
@@ -739,7 +739,7 @@ systemctl shim behavior and limitations.
 
 ## B15 — Integration tests
 
-New file: `cmd/bhatti/cli_ux_test.go`
+New file: `cmd/ahvm/cli_ux_test.go`
 
 This is the HN launch gate. Every B item gets verified by at least
 one test. Tests are organized in three tiers: must-have for launch,
@@ -762,7 +762,7 @@ func TestCLICreateVerboseOutput(t *testing.T)
     // Create sandbox, verify multi-line format:
     //   sandbox/<name> created (1 vCPU, 1024 MB, 1024 MB disk)
     //     IP:    10.x.x.x
-    //     Shell: bhatti shell <name>
+    //     Shell: ahvm shell <name>
     // Match exact format — not strings.Contains.
 
 func TestCLICreateIdempotent(t *testing.T)
@@ -775,7 +775,7 @@ func TestCLIStreamingExecNDJSON(t *testing.T)
     // Run slow command (echo line; sleep 0.1; echo line).
     // Verify Accept: application/x-ndjson was sent.
     // Verify stdout lines arrive incrementally.
-    // Use BHATTI_FORCE_STREAM=1 env to bypass TTY check in tests.
+    // Use AHVM_FORCE_STREAM=1 env to bypass TTY check in tests.
     //
     // Cut: TestCLIExecBufferedWhenPiped — existing TestCLIExec
     // already runs piped (harness always pipes stdout). That test
@@ -786,7 +786,7 @@ func TestCLIErrorExecOnStopped(t *testing.T)
     // Create → stop → exec. Verify stderr contains:
     //   sandbox "<name>" is not running
     //   Resume it first:
-    //     bhatti start <name>
+    //     ahvm start <name>
     //
     // Cut: TestCLIErrorNotFound — existing TestCLIExecNonexistentSandbox
     // and TestCLIDestroyNonexistentSandbox already cover that path.
@@ -968,7 +968,7 @@ func TestCLIInspectStoppedSandbox(t *testing.T)
 | `TestCLIExecBufferedWhenPiped` | Existing `TestCLIExec` already runs piped. Tests a negative. |
 | `TestCLIErrorNotFound` | Existing `TestCLIExecNonexistentSandbox` + `TestCLIDestroyNonexistentSandbox` already cover. |
 | `TestCLIHelpGroupHeaders` | Tests cobra's group rendering, not our code. |
-| `TestCLICompletionScripts` | Tests cobra's `GenBashCompletion`. No bhatti logic. |
+| `TestCLICompletionScripts` | Tests cobra's `GenBashCompletion`. No ahvm logic. |
 | `TestCLIVersionCheck` | Existing `TestCLIVersion` already covers; `--json` proven by `TestCLIJSONOutput`. |
 | `TestCLIThermalCycleWithExec` | `TestCLILifecycleFullCycle` does 2 cycles; A6 engine tests do 5 with nginx. 30s+ of apt-get for no new signal. |
 | `TestCLICreateDuplicateName` | Identical to `TestCLICreateIdempotent`. |
@@ -1078,14 +1078,14 @@ services), we'd revisit with VMGenID-based restore detection —
 but that's a different project.
 
 **`Type=notify` services.** Requires implementing the sd_notify
-protocol (lohar listens on a socket, service sends READY=1).
+protocol (forge listens on a socket, service sends READY=1).
 openssh, nginx, postgres, redis all use `Type=simple` or
 `Type=forking`. notify can be added later if needed.
 
 **Socket activation.** No target packages need it.
 
 **journalctl replacement.** Services write to stdout/stderr.
-Users can check service output via `bhatti exec dev -- cat
+Users can check service output via `ahvm exec dev -- cat
 /var/log/<service>.log` or we add log capture later.
 
 **Timer units.** cron exists and works.
@@ -1105,7 +1105,7 @@ is a follow-up.
 | # | Gap | Fix | Release | Test |
 |---|-----|-----|---------|------|
 | 1 | `--force` flag referenced, doesn't exist | Wire server + CLI | B7 | `TestCLIForceStart` |
-| 2 | Port discovery: server exists, no CLI | `bhatti ports` | B5 | `TestCLIPorts` |
+| 2 | Port discovery: server exists, no CLI | `ahvm ports` | B5 | `TestCLIPorts` |
 | 3 | Detached exec: server supports, no CLI | `--detach` flag | B9 | `TestCLIDetachedExec` |
 | 4 | Streaming exec: server supports NDJSON, CLI never requests | Stream when TTY | B2 | `TestCLIStreamingExecNDJSON` |
 | 5 | Hugepages: API field, no CLI flag | `--hugepages` flag | B10 | `TestCLIHugepagesFlag` |
@@ -1113,7 +1113,7 @@ is a follow-up.
 | 7 | UserData: dead field | Delete | B12 | — |
 | 8 | Files in create: works, no CLI flag | Deferred | — | — |
 | 9 | Secrets in create: works, no CLI flag | Deferred | — | — |
-| 10 | Volume clone: server works, no CLI | `bhatti volume clone` | B11 | `TestCLIVolumeClone` |
+| 10 | Volume clone: server works, no CLI | `ahvm volume clone` | B11 | `TestCLIVolumeClone` |
 | 11 | Template CRUD: server works, CLI only consumes | Deferred | — | — |
 | 12 | Task status: server works, no CLI | Deferred | — | — |
 | 13 | Health endpoint: no CLI | Not needed | — | — |

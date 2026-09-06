@@ -6,7 +6,7 @@ import (
 )
 
 // Regression tests for the O(N)-eviction LRU bug in routeCache and
-// publicRateLimiter. Tranche 0a item #4 of PLAN-bhatti-v2.md.
+// publicRateLimiter. Tranche 0a item #4 of PLAN-ahvm-v2.md.
 //
 // Pre-fix, both bounded maps scanned every entry on each Set/getOrCreate
 // past capacity to find the oldest by lastAccess timestamp. With

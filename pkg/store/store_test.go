@@ -24,14 +24,14 @@ func TestTemplatesCRUD(t *testing.T) {
 	s := testStore(t)
 
 	tmpl := Template{
-		ID:       "t1",
-		Name:     "ubuntu-dev",
-		Engine:   "docker",
-		Image:    "ubuntu:22.04",
-		CPUs:     2,
-		MemoryMB: 1024,
-		Secrets:  []string{"github-token"},
-		Labels:   map[string]string{"env": "dev"},
+		ID:        "t1",
+		Name:      "ubuntu-dev",
+		Engine:    "docker",
+		Image:     "ubuntu:22.04",
+		CPUs:      2,
+		MemoryMB:  1024,
+		Secrets:   []string{"github-token"},
+		Labels:    map[string]string{"env": "dev"},
 		CreatedAt: time.Now().Truncate(time.Second),
 	}
 
@@ -980,17 +980,17 @@ func TestFirecrackerStateRoundTrip(t *testing.T) {
 
 	// Save FC state
 	state := FirecrackerState{
-		RootfsPath:  "/var/lib/bhatti/sandboxes/abc/rootfs.ext4",
-		SnapMemPath: "/var/lib/bhatti/sandboxes/abc/mem.snap",
-		SnapVMPath:  "/var/lib/bhatti/sandboxes/abc/vm.snap",
+		RootfsPath:  "/var/lib/ahvm/sandboxes/abc/rootfs.ext4",
+		SnapMemPath: "/var/lib/ahvm/sandboxes/abc/mem.snap",
+		SnapVMPath:  "/var/lib/ahvm/sandboxes/abc/vm.snap",
 		VsockCID:    42,
 		TapDevice:   "tap12345678",
 		GuestIP:     "192.168.137.5",
 		GuestMAC:    "02:ab:cd:ef:00:01",
 		VcpuCount:   2,
 		MemSizeMib:  1024,
-		SocketPath:  "/var/lib/bhatti/sandboxes/abc/firecracker.sock",
-		VsockPath:   "/var/lib/bhatti/sandboxes/abc/vsock.sock",
+		SocketPath:  "/var/lib/ahvm/sandboxes/abc/firecracker.sock",
+		VsockPath:   "/var/lib/ahvm/sandboxes/abc/vsock.sock",
 	}
 	if err := s.SaveFirecrackerState("sb-fc-1", state); err != nil {
 		t.Fatal(err)
@@ -1175,4 +1175,3 @@ func TestShellTokenRoundTrip(t *testing.T) {
 		t.Fatalf("expected scopedhash via GetSandbox, got %q", sb.ShellTokenHash)
 	}
 }
-

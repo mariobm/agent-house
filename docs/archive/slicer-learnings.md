@@ -17,7 +17,7 @@ shipped in its OCI images.
 Every technique referenced in this file has a documented upstream origin in
 Linux, Firecracker, or cloud-init. The "[Standard Linux/Firecracker techniques
 worth using](#standard-linuxfirecracker-techniques-worth-using)" section at the
-bottom enumerates each one with its actual source. Bhatti's design follows those
+bottom enumerates each one with its actual source. AHVM's design follows those
 upstream sources directly; SlicerVM appears in this file because it's a useful
 concrete example to compare against, and because its public release notes
 (e.g. the v0.1.108 unship of suspend/restore) corroborate upstream Firecracker
@@ -93,7 +93,7 @@ Confirmed independently:
 
 SlicerVM is a useful concrete example of several standard techniques. To be
 explicit: **none of these are SlicerVM inventions.** They are documented Linux,
-Firecracker, and cloud-init patterns, and bhatti adopts them from those upstream
+Firecracker, and cloud-init patterns, and ahvm adopts them from those upstream
 sources directly. Listed here with their actual origins so the attribution is
 unambiguous.
 

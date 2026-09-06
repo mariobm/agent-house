@@ -19,12 +19,12 @@ intact across the round-trip. `TestKrucibleSnapshotSuite` (engine-level, FC-pari
 
 The exec-after-restore gap was closed via the **block root** (the decision below): a CoW ext4 image (built once from the
 rootfs via `mke2fs -d`, cloned per-sandbox), booted **kernel-direct** (`root=/dev/vda rootfstype=ext4` in the cmdline —
-the bundled kernel has virtio-blk+ext4 built in, so no init-blob/init-toolchain and lohar stays PID 1). The block device
+the bundled kernel has virtio-blk+ext4 built in, so no init-blob/init-toolchain and forge stays PID 1). The block device
 persist + the block-backed rootfs survive the snapshot, so the restored guest's fs is consistent and exec works — no FUSE
 persist needed. virtio-fs remains the warm/dev profile (`BlockRoot=false`).
 
 What's left on the cold tier is hardening, not capability: bundle integrity/atomic-rename + tamper-refuse, the manifest
-arch/feature gate (Tier 2), and the lohar slimming (§ init-model doc). The core mechanism is done.
+arch/feature gate (Tier 2), and the forge slimming (§ init-model doc). The core mechanism is done.
 
 ---
 
@@ -33,7 +33,7 @@ arch/feature gate (Tier 2), and the lohar slimming (§ init-model doc). The core
 The VMM cold-wake machinery is **done and proven** by a loopback integration test
 (`TestColdLoopbackRestore`): boot → agent ready → `PAUSE` + `SNAPSHOT <dir>` →
 kill the helper (free RAM) → restore into a fresh helper from the bundle → **the
-guest resumes and lohar answers an `Activity` request.** Memory + vCPU + GIC
+guest resumes and forge answers an `Activity` request.** Memory + vCPU + GIC
 (incl. the per-IRQ pending/active state — a guest paused mid-ISR EOIs cleanly) +
 vsock/console/rng device state all round-trip. Layers 1→7b are committed.
 
@@ -42,8 +42,8 @@ because the root is **virtio-fs**, whose FUSE inode map is not persisted (it goe
 stale on a fresh server). The fix is a block root (§1) — but with a new, concrete
 finding: **`krun_set_root_disk` alone does not boot a block root under PID-1.**
 libkrun's block-boot mounts `/dev/vda` and pivots from its *own* init (`init.c`);
-we disable that init so lohar is PID 1 (`init=/init.krun`, `rootfstype=virtiofs`,
-`nomodule`, no `root=`), so a block root would need lohar to `switch_root` itself.
+we disable that init so forge is PID 1 (`init=/init.krun`, `rootfstype=virtiofs`,
+`nomodule`, no `root=`), so a block root would need forge to `switch_root` itself.
 
 **Decision (2026-06-16, supersedes §1's block-root call below): the fix is FUSE
 state persist on the existing virtio-fs root — NOT a block root.** The reference
@@ -51,8 +51,8 @@ fork solves exec-after-restore exactly this way: capture the FUSE server's logic
 state (nodeid→`(dev,ino)` via volfs, open handles, the inode counter, writeback
 flags), and on restore rebuild the map on a fresh server (volfs makes inodes
 addressable by `(dev,ino)` with no held fd) and reopen handles — the guest's
-cached node-ids resolve and exec works. This **keeps bhatti's design intact**
-(virtio-fs + lohar-as-PID-1); the block-root detour and its PID-1 boot friction
+cached node-ids resolve and exec works. This **keeps ahvm's design intact**
+(virtio-fs + forge-as-PID-1); the block-root detour and its PID-1 boot friction
 were self-inflicted. The port is tractable: libkrucible's macOS passthrough is
 volfs-compatible (the hard part — inode identity — ports directly); the
 `AugmentFs`/`inode_alloc` delta is small (`inode_alloc` is one `AtomicU64`, the
@@ -61,7 +61,7 @@ but is **not** the chosen path; block-root remains a *possible* future profile,
 and if pursued needs the guest-side `switch_root` noted above.
 
 **Separate strategic question (P4+, do not couple to the snapshot work):** our
-`lohar-as-PID-1` (`disable_implicit_init`) is a Firecracker-ism. The reference /
+`forge-as-PID-1` (`disable_implicit_init`) is a Firecracker-ism. The reference /
 idiomatic-libkrun model is libkrun's `init.c` → a real init → the agent as a
 *service* (not PID 1). That model makes block-root *and* virtio-fs work, frees the
 agent from PID-1 duties (mounts, zombie reaping, reboot/SIGHUP — the W4 bricked-Pi
@@ -87,7 +87,7 @@ independently-tested layers on libkrucible:
 | 5d | device-manager `snapshot/restore_devices` + MMIO transport queue rebuild | ⬜ |
 | 6 | `VmCheckpoint` + `Vmm::checkpoint`/`restore` + `save/restore_vcpu_states` | ⬜ |
 | 7 | `SNAPSHOT <dir>` control verb + `krun_set_snapshot` eager `build_restore_ctx` | ⬜ |
-| 8 | bhatti `pkg/bundle`, engine `Snapshot`/`Stop`/`Start`, `RunSnapshotSuite` | ⬜ |
+| 8 | ahvm `pkg/bundle`, engine `Snapshot`/`Stop`/`Start`, `RunSnapshotSuite` | ⬜ |
 
 Everything above 5b is a tractable port from the reference fork (Apache-2.0; device models, GIC, memory, queue all line
 up). **One thing is not a port: virtio-fs.** That's the architectural fork in the road this doc resolves.
@@ -126,7 +126,7 @@ virtio-fs.** Rationale, in first-principles order:
   console queues + checkpoint + control verb + eager restore + bundle) lands and proves out end-to-end.
 
 ### What this costs / changes
-- The cold-tier guest rootfs becomes a **built ext4/qcow2 image** (lohar at `/init.krun` + base userland), attached via
+- The cold-tier guest rootfs becomes a **built ext4/qcow2 image** (forge at `/init.krun` + base userland), attached via
   `krun_set_root_disk` (or `krun_add_disk2` + `root=/dev/vda` cmdline). The `mke2fs -d` tooling already exists
   (`pkg/engine/guestfs/configdrive.go`, extracted from FC). The base image build is a bounded addition to
   `scripts/krucible-rootfs.sh`.
@@ -145,13 +145,13 @@ distinct capability, gated by its own tests.
 
 ---
 
-## 2. Bundle format (the `.bhatti` cold-storage unit)
+## 2. Bundle format (the `.ahvm` cold-storage unit)
 
 A self-contained directory (the unit `Stop`/`Snapshot` writes and `Start`/`ResumeFromBundle` reads). Survives the VMM
 helper exiting and a daemon restart.
 
 ```
-<sandbox>.bhatti/
+<sandbox>.ahvm/
   manifest.json     # compatibility gate + layout (below)
   memory.img        # eager guest RAM, region-ordered (snapshot::write_guest_memory)
   checkpoint.bin    # VmCheckpoint: VmState (GIC distributor) + Vec<VcpuState> + VmDevicesState
@@ -244,8 +244,8 @@ The snapshot work is **owned libkrucible code** now. To keep the merge tax bound
 - **Additive-first.** New capability lives in new files where possible (`snapshot.rs`, `persist.rs`, the hvf state block),
   minimizing conflicts with upstream churn. Touch existing files (vstate, queue, device_manager) surgically.
 - **`REBASE.md` + green-at-SHA CI.** libkrucible gets a `cargo test` gate (the serialize roundtrips + a loopback
-  snapshot/restore on HVF). Bumping the bhatti submodule SHA is gated on green-at-SHA.
-- **The bhatti suite is the oracle.** `RunSnapshotSuite` passing on libkrucible is the port-correctness proof; never weaken
+  snapshot/restore on HVF). Bumping the ahvm submodule SHA is gated on green-at-SHA.
+- **The ahvm suite is the oracle.** `RunSnapshotSuite` passing on libkrucible is the port-correctness proof; never weaken
   an assertion to make a port pass.
 
 ---
@@ -256,14 +256,14 @@ The snapshot work is **owned libkrucible code** now. To keep the merge tax bound
 2. Device-manager `snapshot/restore_devices` + transport queue rebuild (5d).
 3. `VmCheckpoint` + `Vmm::checkpoint`/`restore` + `save/restore_vcpu_states` (6).
 4. `SNAPSHOT <dir>` verb + `krun_set_snapshot` eager `build_restore_ctx` (7).
-5. **Engine block root:** build an ext4/qcow2 base (lohar + userland), `krun_create_disk_overlay` in `Create`,
+5. **Engine block root:** build an ext4/qcow2 base (forge + userland), `krun_create_disk_overlay` in `Create`,
    `krun_set_root_disk`. A cold-capable profile alongside the virtio-fs warm profile.
-6. bhatti `pkg/bundle` + engine `Snapshot`/`Stop`/`Start` + `RunSnapshotSuite` (8). Drive to a green
+6. ahvm `pkg/bundle` + engine `Snapshot`/`Stop`/`Start` + `RunSnapshotSuite` (8). Drive to a green
    **cold-wake-survives-daemon-restart** on Mac/HVF.
 7. (Later, optional) virtio-fs FUSE persist as its own capability + gate.
 
 P3 gate (unchanged from v3 §8): cold-wake works and survives a daemon restart on Mac (+ x86-Linux when the cluster is in
-the loop); the bhatti suite is green on libkrucible.
+the loop); the ahvm suite is green on libkrucible.
 
 ---
 
@@ -274,7 +274,7 @@ the loop); the bhatti suite is green on libkrucible.
 2. **Single vs split disks** — rootfs overlay only, or a separate persistent data disk (so `/workspace` survives a base
    rebump)? (Defer; rootfs overlay first.)
 3. **`feature_hash` contents** — minimal arm64 set for Tier 1 (exact-match) now; the full classify model is Tier 2.
-4. **Bundle disk storage** — copy the overlay into the `.bhatti` dir, or content-address the base + store only the overlay
+4. **Bundle disk storage** — copy the overlay into the `.ahvm` dir, or content-address the base + store only the overlay
    delta (fork fan-out dedup)? (Defer past Tier 1; copy/ref the overlay for now.)
 5. **Warm→cold transition** — `Stop` pauses then `SNAPSHOT`s then exits the helper; confirm the overlay is fsync'd into the
    bundle atomically with the memory image (crash-consistency).

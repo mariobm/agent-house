@@ -9,7 +9,7 @@ import (
 )
 
 // Regression tests for the v1 → v2 secrets schema migration.
-// Tranche 0a item #6 of PLAN-bhatti-v2.md.
+// Tranche 0a item #6 of PLAN-ahvm-v2.md.
 //
 // The bug: the migration sequence (CREATE secrets_v2, INSERT from
 // secrets, DROP secrets, RENAME secrets_v2 → secrets) ran on every

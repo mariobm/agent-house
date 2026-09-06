@@ -1,0 +1,17 @@
+[Unit]
+Description=AHVM Sandbox Infrastructure
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ahvm serve
+WorkingDirectory=/var/lib/ahvm
+Environment=HOME=/root
+Restart=always
+RestartSec=5
+KillMode=process
+TimeoutStopSec=120
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

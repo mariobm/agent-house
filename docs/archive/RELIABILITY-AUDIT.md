@@ -1,4 +1,4 @@
-# Bhatti Reliability Audit
+# AHVM Reliability Audit
 
 _April 1, 2026 — triggered by the `rory` snapshot corruption incident_
 
@@ -81,7 +81,7 @@ Three compounding failures:
 
 **Fixes:**
 - Capture FC stderr per-VM into a buffer or log file. On restore failure, include the FC stderr in the error message.
-- After a restore failure, mark the VM with a "restore_failed" flag. Don't retry until explicitly requested (e.g. `bhatti start --force`). Return a clear error: "sandbox snapshot is corrupt, data is safe on disk, please recreate."
+- After a restore failure, mark the VM with a "restore_failed" flag. Don't retry until explicitly requested (e.g. `ahvm start --force`). Return a clear error: "sandbox snapshot is corrupt, data is safe on disk, please recreate."
 - Reap zombie processes in the error path (Kill + Wait already happens, but ensure it covers the panic-after-204 case).
 
 ### 4. Name Resolution (`store.go:562`, `routes.go:724`)

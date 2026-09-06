@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent"
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // NewEngine builds a ready engine for the suite, or calls t.Skip if the engine
@@ -33,7 +33,7 @@ type fileEngine interface {
 
 // RunAgentSuite boots one sandbox and asserts the VMM-agnostic core: status,
 // list, exec (exit codes + stdout), and the file API. Commands used (true,
-// false, echo) and lohar-internal file ops exist on any reasonable rootfs, so
+// false, echo) and forge-internal file ops exist on any reasonable rootfs, so
 // the suite is portable across engines.
 func RunAgentSuite(t *testing.T, newEngine NewEngine) {
 	eng := newEngine(t) // may t.Skip

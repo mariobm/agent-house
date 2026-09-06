@@ -14,14 +14,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds all bhatti configuration.
+// Config holds all ahvm configuration.
 type Config struct {
 	Engine    string `yaml:"engine"`     // "krucible" (default; v2). Firecracker is v1 (firecracker branch).
 	Listen    string `yaml:"listen"`     // TCP control API, e.g. ":8080". Empty disables TCP (unix socket only).
 	APISocket string `yaml:"api_socket"` // unix socket for the local control API (default: <DataDir>/api.sock). Never reachable from a sandbox.
-	APIURL    string `yaml:"api_url"`    // CLI: remote API endpoint (e.g. https://api.bhatti.sh)
+	APIURL    string `yaml:"api_url"`    // CLI: remote API endpoint (e.g. https://api.ahvm.sh)
 	AuthToken string `yaml:"auth_token"` // CLI: API key for remote requests
-	DataDir   string `yaml:"data_dir"`   // defaults to ~/.bhatti
+	DataDir   string `yaml:"data_dir"`   // defaults to ~/.ahvm
 
 	// ConfigPath is the file path LoadConfig actually loaded from.
 	// Not persisted — set at load time for logging/debugging.
@@ -34,15 +34,15 @@ type Config struct {
 	Domain *DomainConfig `yaml:"domain,omitempty"`
 
 	// Krucible-specific (libkrun engine; macOS + Linux)
-	KrucibleVMM         string `yaml:"krucible_vmm"`          // path to the bhatti-vmm helper (default: next to binary / PATH)
-	KrucibleRootfs      string `yaml:"krucible_rootfs"`       // base rootfs dir (virtiofs root) with /init.krun=lohar
+	KrucibleVMM         string `yaml:"krucible_vmm"`          // path to the ahvm-vmm helper (default: next to binary / PATH)
+	KrucibleRootfs      string `yaml:"krucible_rootfs"`       // base rootfs dir (virtiofs root) with /init.krun=forge
 	KrucibleBaseImage   string `yaml:"krucible_base_image"`   // prebuilt ext4 root image (oci.PullAndConvert output); enables the production block-root path
 	KrucibleBlockRoot   bool   `yaml:"krucible_block_root"`   // boot from a CoW ext4 block image (required for the cold tier); implied when KrucibleBaseImage is set
 	KrucibleLibDir      string `yaml:"krucible_libdir"`       // dir with libkrun/libkrunfw (default: autodetect)
 	KrucibleKernelImage string `yaml:"krucible_kernel_image"` // lean external kernel (block-root only; ~2x faster cold-start). Empty = autodetect dist/kernel/*-lean-*, else libkrunfw bundle
-	KrucibleSocketDir   string `yaml:"krucible_socket_dir"`   // short dir for vsock UDS (default: /tmp/bhatti-kr)
-	KrucibleNetBackend  *bool  `yaml:"krucible_net_backend"`  // per-owner bhatti-netd gateway (policed egress, host isolation, siblings). Default ON: nil (key absent) ⇒ enabled, see NetBackendEnabled. Opt out with false for legacy TSI. Needs libkrun net feature + bhatti-netd (shipped in the release bundle).
-	KrucibleNetd        string `yaml:"krucible_netd"`         // path to the bhatti-netd gateway helper (default: next to binary / PATH)
+	KrucibleSocketDir   string `yaml:"krucible_socket_dir"`   // short dir for vsock UDS (default: /tmp/ahvm-kr)
+	KrucibleNetBackend  *bool  `yaml:"krucible_net_backend"`  // per-owner ahvm-netd gateway (policed egress, host isolation, siblings). Default ON: nil (key absent) ⇒ enabled, see NetBackendEnabled. Opt out with false for legacy TSI. Needs libkrun net feature + ahvm-netd (shipped in the release bundle).
+	KrucibleNetd        string `yaml:"krucible_netd"`         // path to the ahvm-netd gateway helper (default: next to binary / PATH)
 
 	// Backup to S3-compatible storage
 	Backup *BackupConfig `yaml:"backup,omitempty"`
@@ -67,8 +67,8 @@ type BackupSchedule struct {
 
 // DomainConfig configures domain mode with host-based routing and TLS.
 type DomainConfig struct {
-	APIHost   string `yaml:"api_host"`   // e.g. "api.bhatti.sh"
-	ProxyZone string `yaml:"proxy_zone"` // e.g. "bhatti.sh" — published apps get <alias>.bhatti.sh
+	APIHost   string `yaml:"api_host"`   // e.g. "api.ahvm.sh"
+	ProxyZone string `yaml:"proxy_zone"` // e.g. "ahvm.sh" — published apps get <alias>.ahvm.sh
 	ACMEEmail string `yaml:"acme_email"` // for per-alias autocert (fallback)
 	TLSCert   string `yaml:"tls_cert"`   // wildcard cert path (recommended)
 	TLSKey    string `yaml:"tls_key"`    // wildcard key path
@@ -84,20 +84,20 @@ func (c *Config) APISocketPath() string {
 	return filepath.Join(c.DataDir, "api.sock")
 }
 
-// DefaultDataDir returns ~/.bhatti for the *invoking* user.
+// DefaultDataDir returns ~/.ahvm for the *invoking* user.
 //
 // When the process is running under sudo, os.UserHomeDir() returns
 // /var/root (macOS) or /root (Linux), which is almost never what the
 // user wants — their CLI config lives in their real home directory.
-// We honor SUDO_USER so that `sudo bhatti setup` writes the same file
-// `bhatti list` later reads, and we don't leave token configs scattered
-// across /root/.bhatti and ~/.bhatti.
+// We honor SUDO_USER so that `sudo ahvm setup` writes the same file
+// `ahvm list` later reads, and we don't leave token configs scattered
+// across /root/.ahvm and ~/.ahvm.
 //
-// Daemon callers (`bhatti serve` under systemd) are unaffected: SUDO_USER
-// is unset there, and the server reads /etc/bhatti/config.yaml which
+// Daemon callers (`ahvm serve` under systemd) are unaffected: SUDO_USER
+// is unset there, and the server reads /etc/ahvm/config.yaml which
 // supplies an explicit data_dir anyway.
 func DefaultDataDir() string {
-	return filepath.Join(invokingUserHome(), ".bhatti")
+	return filepath.Join(invokingUserHome(), ".ahvm")
 }
 
 // invokingUserHome returns the home directory of the user who started
@@ -146,8 +146,8 @@ func InvokingUserIDs() (int, int, bool) {
 //
 // The classic trap this prevents:
 //
-//	$ sudo bhatti version    # creates /home/alice/.bhatti/ owned by root
-//	$ bhatti setup           # EACCES — alice can't write into root's dir
+//	$ sudo ahvm version    # creates /home/alice/.ahvm/ owned by root
+//	$ ahvm setup           # EACCES — alice can't write into root's dir
 //
 // Use after every os.MkdirAll / os.WriteFile that touches a user-home
 // path. Errors are intentionally swallowed: we can't recover from a
@@ -179,17 +179,17 @@ func InvokingUID() int {
 
 // LoadConfig reads config from multiple locations and layers them:
 //
-//  1. $BHATTI_CONFIG (explicit path — used alone if set)
-//  2. /etc/bhatti/config.yaml (server config — engine, listen, data_dir)
-//  3. ~/.bhatti/config.yaml (client config — api_url, auth_token)
+//  1. $AHVM_CONFIG (explicit path — used alone if set)
+//  2. /etc/ahvm/config.yaml (server config — engine, listen, data_dir)
+//  3. ~/.ahvm/config.yaml (client config — api_url, auth_token)
 //
-// On a server machine, both /etc/bhatti/config.yaml and ~/.bhatti/config.yaml
+// On a server machine, both /etc/ahvm/config.yaml and ~/.ahvm/config.yaml
 // may exist. The server config provides engine settings, the user config
 // provides client credentials. Fields from the user config only fill in
 // values that are empty after loading the server config — they never
 // override server settings.
 //
-// For migration: if /var/lib/bhatti/config.yaml exists and nothing above
+// For migration: if /var/lib/ahvm/config.yaml exists and nothing above
 // matched, it is loaded as a deprecated fallback with a stderr warning.
 //
 // Returns sensible defaults if no config file is found.
@@ -202,7 +202,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// If an explicit config is set, use it alone (no layering).
-	if envPath := os.Getenv("BHATTI_CONFIG"); envPath != "" {
+	if envPath := os.Getenv("AHVM_CONFIG"); envPath != "" {
 		data, err := os.ReadFile(envPath)
 		if err != nil {
 			return nil, fmt.Errorf("read config %s: %w", envPath, err)
@@ -220,7 +220,7 @@ func LoadConfig() (*Config, error) {
 	// Layer 1: system config (server settings)
 	var loadedFrom string
 	for _, path := range []string{
-		"/etc/bhatti/config.yaml",
+		"/etc/ahvm/config.yaml",
 	} {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -236,13 +236,13 @@ func LoadConfig() (*Config, error) {
 	// Migration fallback: old location inside data dir.
 	// TODO: remove after a few releases (added v1.6.0).
 	if loadedFrom == "" {
-		const deprecated = "/var/lib/bhatti/config.yaml"
+		const deprecated = "/var/lib/ahvm/config.yaml"
 		if data, err := os.ReadFile(deprecated); err == nil {
 			if err := yaml.Unmarshal(data, cfg); err != nil {
 				return nil, fmt.Errorf("parse config %s: %w", deprecated, err)
 			}
 			loadedFrom = deprecated
-			fmt.Fprintf(os.Stderr, "⚠ config loaded from deprecated location %s\n  move to /etc/bhatti/config.yaml\n\n", deprecated)
+			fmt.Fprintf(os.Stderr, "⚠ config loaded from deprecated location %s\n  move to /etc/ahvm/config.yaml\n\n", deprecated)
 		}
 	}
 
@@ -273,12 +273,12 @@ func LoadConfig() (*Config, error) {
 	return cfg, nil
 }
 
-// NetBackendEnabled reports whether the per-owner bhatti-netd gateway (secure
+// NetBackendEnabled reports whether the per-owner ahvm-netd gateway (secure
 // networking) is on. It is the DEFAULT in v2, so a nil pointer — the key absent
 // from the config — means ENABLED. A plain bool can't distinguish "absent" from
 // an explicit "false", so the field is a *bool and this method holds the
 // default; opt out with `krucible_net_backend: false`. nil-safe for the
-// BHATTI_CONFIG early-return path and for Configs built directly in tests.
+// AHVM_CONFIG early-return path and for Configs built directly in tests.
 func (c *Config) NetBackendEnabled() bool {
 	return c.KrucibleNetBackend == nil || *c.KrucibleNetBackend
 }

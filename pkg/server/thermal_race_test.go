@@ -7,7 +7,7 @@ import (
 
 // Regression tests for the sync.Map LoadOrStore+Store TOCTOU race on
 // the thermal manager's failure counters (`thermalFails` and
-// `snapshotFailures`). Tranche 0a of PLAN-bhatti-v2.md.
+// `snapshotFailures`). Tranche 0a of PLAN-ahvm-v2.md.
 //
 // The bug: the pre-fix shape of incrementThermalFails was
 //

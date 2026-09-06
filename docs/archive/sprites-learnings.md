@@ -41,7 +41,7 @@ session running. If none → idle timer starts.
 - PIDs ❌
 
 This is filesystem-only persistence, NOT memory snapshots. Different from
-bhatti's full memory snapshots where processes survive.
+ahvm's full memory snapshots where processes survive.
 
 ## Fixed resources (no config)
 
@@ -145,9 +145,9 @@ Full SDKs from day one. The API is the product surface, not the CLI.
 
 ---
 
-## Key differences: Sprites vs bhatti
+## Key differences: Sprites vs ahvm
 
-| | Sprites | Bhatti |
+| | Sprites | AHVM |
 |---|---|---|
 | **Persistence** | Filesystem only (processes die) | Full memory (processes survive) |
 | **Idle behavior** | Automatic 30s timeout | Manual stop/start |
@@ -159,7 +159,7 @@ Full SDKs from day one. The API is the product surface, not the CLI.
 | **Networking** | Public URL per sprite | TAP + NAT, local only |
 | **Checkpoints** | Filesystem snapshots (fast, non-disruptive) | Full VM snapshots (slower, process-preserving) |
 
-## What bhatti should learn from Sprites
+## What ahvm should learn from Sprites
 
 1. **Auto-idle/resume** — the #1 UX improvement. Users shouldn't manage lifecycle.
 2. **Sessions** — detachable TTY without tmux is excellent UX
@@ -170,7 +170,7 @@ Full SDKs from day one. The API is the product surface, not the CLI.
 7. **DNS-based network policy** — user-friendly security
 8. **Control channel** — single WebSocket for multiplexed operations
 
-## What bhatti has that Sprites doesn't
+## What ahvm has that Sprites doesn't
 
 1. **Full memory snapshots** — processes, fds, memory all survive
 2. **Self-hosted** — no cloud dependency, no data leaving your network

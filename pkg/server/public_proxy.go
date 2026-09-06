@@ -15,8 +15,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/store"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -30,13 +30,13 @@ type PublicProxyHandler struct {
 	store       *store.Store
 	limiter     *publicRateLimiter
 	resumeSem   chan struct{}
-	resumeGroup singleflight.Group // coalesces concurrent resumes per sandbox
-	routeCache  *routeCache        // in-memory alias → route mapping
-	onActivity  func(engineID string) // called on every request to signal thermal manager
+	resumeGroup singleflight.Group                               // coalesces concurrent resumes per sandbox
+	routeCache  *routeCache                                      // in-memory alias → route mapping
+	onActivity  func(engineID string)                            // called on every request to signal thermal manager
 	onEnsureHot func(ctx context.Context, engineID string) error // canonical wake logic (delegates to Server.ensureHot)
 
 	// Observability
-	onRecordEvent func(store.Event) // optional callback to record events
+	onRecordEvent   func(store.Event) // optional callback to record events
 	requestsTotal   atomic.Int64
 	requestsError   atomic.Int64
 	coldWakes       atomic.Int64
@@ -84,7 +84,7 @@ type resolvedRoute struct {
 // Pre-fix used a plain map and scanned every entry on each Set to find
 // the oldest — O(N) per eviction with N=10,000 while holding the write
 // lock, which is exactly the wrong shape for a hot path. Tranche 0a #4
-// of PLAN-bhatti-v2.md.
+// of PLAN-ahvm-v2.md.
 type routeCache struct {
 	mu      sync.Mutex
 	entries map[string]*list.Element // alias → element in order
@@ -176,14 +176,14 @@ func (rc *routeCache) InvalidateSandbox(sandboxID string) {
 // Pre-fix scanned the entire bounded map on every cache miss past
 // capacity to find the oldest entry. With max-size 10,000 and the
 // limiter mutex held throughout, every excess Allow() spent O(N) on a
-// hot HTTP path. Tranche 0a #4 of PLAN-bhatti-v2.md.
+// hot HTTP path. Tranche 0a #4 of PLAN-ahvm-v2.md.
 type publicRateLimiter struct {
-	mu          sync.Mutex
-	perIP       map[string]*list.Element // ip → element in perIPOrder
-	perIPOrder  *list.List               // front = MRU, back = LRU
-	perAlias    map[string]*list.Element
+	mu            sync.Mutex
+	perIP         map[string]*list.Element // ip → element in perIPOrder
+	perIPOrder    *list.List               // front = MRU, back = LRU
+	perAlias      map[string]*list.Element
 	perAliasOrder *list.List
-	global      *tokenBucket
+	global        *tokenBucket
 }
 
 type publicBucketNode struct {
@@ -446,12 +446,12 @@ func (h *PublicProxyHandler) logRequest(alias, method, path string, status int, 
 // Metrics returns a snapshot of public proxy metrics.
 func (h *PublicProxyHandler) Metrics() map[string]interface{} {
 	return map[string]interface{}{
-		"requests_total":    h.requestsTotal.Load(),
-		"requests_error":    h.requestsError.Load(),
-		"cold_wakes":        h.coldWakes.Load(),
-		"rate_limited":      h.rateLimited.Load(),
-		"busy":              h.busy.Load(),
-		"websocket_active":  h.webSocketActive.Load(),
+		"requests_total":   h.requestsTotal.Load(),
+		"requests_error":   h.requestsError.Load(),
+		"cold_wakes":       h.coldWakes.Load(),
+		"rate_limited":     h.rateLimited.Load(),
+		"busy":             h.busy.Load(),
+		"websocket_active": h.webSocketActive.Load(),
 	}
 }
 

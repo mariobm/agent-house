@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Bhatti performance benchmarks.
+# AHVM performance benchmarks.
 #
-# Measures real end-to-end latencies against a live bhatti daemon. Designed
+# Measures real end-to-end latencies against a live ahvm daemon. Designed
 # to run on the same host as the daemon (loopback) so results don't include
 # geographic network latency.
 #
@@ -18,12 +18,12 @@
 # Usage:
 #   ./run.sh [iterations]                # default iterations: 20
 #   SECTIONS=exec,files ./run.sh 30      # subset
-#   TIMEOUT_PER_CALL=10s ./run.sh        # per-bhatti-call timeout
+#   TIMEOUT_PER_CALL=10s ./run.sh        # per-ahvm-call timeout
 #   RESULTS_DIR=/tmp/r ./run.sh          # override output directory
 #
 # Robustness:
-#   - Single-instance lock (flock /tmp/bhatti-bench.lock).
-#   - Per-call `timeout` so a hung bhatti invocation doesn't block the suite.
+#   - Single-instance lock (flock /tmp/ahvm-bench.lock).
+#   - Per-call `timeout` so a hung ahvm invocation doesn't block the suite.
 #   - All created sandboxes tracked and destroyed on EXIT (success, failure,
 #     SIGINT, SIGTERM).
 #   - Unique sandbox names per run (no collisions across simultaneous or
@@ -102,7 +102,7 @@ die()     { echo "${RED}ERROR:${NC} $*" >&2; exit 1; }
 
 # ── Single-instance lock ──────────────────────────────────────────────────────
 
-LOCK="/tmp/bhatti-bench.lock"
+LOCK="/tmp/ahvm-bench.lock"
 exec 200>"$LOCK" || die "cannot open lock file $LOCK"
 flock -n 200 || die "another bench is already running (lock: $LOCK)"
 
@@ -121,7 +121,7 @@ cleanup() {
         local s attempt failed=0
         for s in "${CREATED_SANDBOXES[@]}"; do
             for attempt in 1 2 3 4 5; do
-                if bhatti destroy "$s" -y >/dev/null 2>&1; then
+                if ahvm destroy "$s" -y >/dev/null 2>&1; then
                     break
                 fi
                 # Backoff: rate-limit bucket refills 30/min = 2s/token.
@@ -134,7 +134,7 @@ cleanup() {
         done
         if (( failed > 0 )); then
             echo "${RED}cleanup: $failed sandbox(es) could not be destroyed after retries${NC}" >&2
-            echo "${RED}  manual cleanup: bhatti list | awk '/^$RUN_ID/ {print \$1}' | xargs -I{} bhatti destroy {} -y${NC}" >&2
+            echo "${RED}  manual cleanup: ahvm list | awk '/^$RUN_ID/ {print \$1}' | xargs -I{} ahvm destroy {} -y${NC}" >&2
         fi
     fi
     if (( exit_code != 0 )); then
@@ -151,7 +151,7 @@ trap 'exit 143' TERM
 
 create_sandbox() {
     local name="$1"; shift
-    if ! timeout 30s bhatti create --name "$name" "$@" >/dev/null 2>&1; then
+    if ! timeout 30s ahvm create --name "$name" "$@" >/dev/null 2>&1; then
         die "create $name failed"
     fi
     CREATED_SANDBOXES+=("$name")
@@ -159,7 +159,7 @@ create_sandbox() {
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 
-command -v bhatti >/dev/null 2>&1 || die "bhatti not in PATH"
+command -v ahvm >/dev/null 2>&1 || die "ahvm not in PATH"
 command -v flock  >/dev/null 2>&1 || die "flock not installed (required for single-instance lock)"
 command -v timeout >/dev/null 2>&1 || die "timeout not installed"
 command -v awk    >/dev/null 2>&1 || die "awk not installed"
@@ -171,8 +171,8 @@ if (( BASH_VERSINFO[0] < 5 )); then
 fi
 
 # Daemon reachable?
-if ! timeout 5s bhatti list >/dev/null 2>&1; then
-    die "cannot reach bhatti daemon (run 'bhatti list' to debug)"
+if ! timeout 5s ahvm list >/dev/null 2>&1; then
+    die "cannot reach ahvm daemon (run 'ahvm list' to debug)"
 fi
 
 mkdir -p "$RESULTS_DIR"
@@ -188,7 +188,7 @@ mkdir -p "$RESULTS_DIR"
 # times per call, adding 150-300ms of overhead and making sub-100ms operations
 # unmeasurable.
 #
-# Set BENCH_DEBUG=1 to log stderr from failed iterations to /tmp/bhatti-bench-fails.log.
+# Set BENCH_DEBUG=1 to log stderr from failed iterations to /tmp/ahvm-bench-fails.log.
 time_ms() {
     local start_us="${EPOCHREALTIME//.}"
     local err
@@ -196,7 +196,7 @@ time_ms() {
         err=$(timeout "$TIMEOUT_PER_CALL" "$@" 2>&1 >/dev/null)
         local rc=$?
         if (( rc != 0 )); then
-            echo "[$(date +%H:%M:%S)] rc=$rc cmd: $* | err: $err" >> /tmp/bhatti-bench-fails.log
+            echo "[$(date +%H:%M:%S)] rc=$rc cmd: $* | err: $err" >> /tmp/ahvm-bench-fails.log
             return 1
         fi
     else
@@ -263,8 +263,8 @@ elapsed_since() {
 
 START_US="${EPOCHREALTIME//.}"
 
-echo "${BOLD}Bhatti performance benchmark${NC}"
-echo "  Target:        $(bhatti version 2>&1 | head -1)"
+echo "${BOLD}AHVM performance benchmark${NC}"
+echo "  Target:        $(ahvm version 2>&1 | head -1)"
 echo "  Sections:      $SECTIONS"
 echo "  Sample sizes:  exec/file/api/network/publish-wake-hot=$ITERATIONS"
 echo "                 lifecycle=$LIFECYCLE_N  warm=$WARM_N (35s sleep each)"
@@ -290,7 +290,7 @@ run_lifecycle() {
     for ((i = 1; i <= LIFECYCLE_N; i++)); do
         (( i > 1 )) && sleep "$SLEEP_PER_CREATE"
         name="$RUN_ID-create-$i"
-        if t=$(time_ms bhatti create --name "$name" --cpus 1 --memory 512); then
+        if t=$(time_ms ahvm create --name "$name" --cpus 1 --memory 512); then
             echo "$t" >> "$file"
             CREATED_SANDBOXES+=("$name")
             echo "    run $i: ${t}ms"
@@ -304,17 +304,17 @@ run_lifecycle() {
     # Reuse one of the created sandboxes for the rest of the lifecycle tests.
     # Renaming via stop+start cycle keeps state warm.
     create_sandbox "$LIFECYCLE_SB" --cpus 1 --memory 512
-    timeout 10s bhatti exec "$LIFECYCLE_SB" -- true >/dev/null 2>&1
+    timeout 10s ahvm exec "$LIFECYCLE_SB" -- true >/dev/null 2>&1
 
     # 1b. Stop (snapshot)
     subhead "1b. Stop sandbox (snapshot to disk)"
     file="$RESULTS_DIR/stop.txt"
     : > "$file"
     for ((i = 1; i <= LIFECYCLE_N; i++)); do
-        timeout 10s bhatti start "$LIFECYCLE_SB" >/dev/null 2>&1
-        timeout 10s bhatti exec  "$LIFECYCLE_SB" -- true >/dev/null 2>&1
+        timeout 10s ahvm start "$LIFECYCLE_SB" >/dev/null 2>&1
+        timeout 10s ahvm exec  "$LIFECYCLE_SB" -- true >/dev/null 2>&1
         sleep 1
-        if t=$(time_ms bhatti stop "$LIFECYCLE_SB"); then
+        if t=$(time_ms ahvm stop "$LIFECYCLE_SB"); then
             echo "$t" >> "$file"
             echo "    run $i: ${t}ms"
         else
@@ -326,7 +326,7 @@ run_lifecycle() {
 
     # 1c. Cold resume (start) — ORCHESTRATION COST ONLY.
     # FC restores snapshots with `backend_type: "File"` (lazy mmap-faulting),
-    # so `bhatti start` returns when the mmap is set up but BEFORE memory
+    # so `ahvm start` returns when the mmap is set up but BEFORE memory
     # pages are actually faulted in. The user-facing cold-start cost is in
     # cold_resume_exec.txt or publish_wake_cold.txt — don't use this number
     # for any "how fast does a sandbox wake up" claim. See bench/README.md.
@@ -334,9 +334,9 @@ run_lifecycle() {
     file="$RESULTS_DIR/cold_resume.txt"
     : > "$file"
     for ((i = 1; i <= LIFECYCLE_N; i++)); do
-        timeout 10s bhatti stop "$LIFECYCLE_SB" >/dev/null 2>&1
+        timeout 10s ahvm stop "$LIFECYCLE_SB" >/dev/null 2>&1
         sleep 0.5
-        if t=$(time_ms bhatti start "$LIFECYCLE_SB"); then
+        if t=$(time_ms ahvm start "$LIFECYCLE_SB"); then
             echo "$t" >> "$file"
             echo "    run $i: ${t}ms"
         else
@@ -351,9 +351,9 @@ run_lifecycle() {
     file="$RESULTS_DIR/cold_resume_exec.txt"
     : > "$file"
     for ((i = 1; i <= LIFECYCLE_N; i++)); do
-        timeout 10s bhatti stop "$LIFECYCLE_SB" >/dev/null 2>&1
+        timeout 10s ahvm stop "$LIFECYCLE_SB" >/dev/null 2>&1
         sleep 0.5
-        if t=$(time_ms bhatti exec "$LIFECYCLE_SB" -- true); then
+        if t=$(time_ms ahvm exec "$LIFECYCLE_SB" -- true); then
             echo "$t" >> "$file"
             echo "    run $i: ${t}ms"
         else
@@ -370,11 +370,11 @@ run_lifecycle() {
     for ((i = 1; i <= LIFECYCLE_N; i++)); do
         (( i > 1 )) && sleep "$SLEEP_PER_CREATE"
         name="$RUN_ID-destroy-$i"
-        timeout 30s bhatti create --name "$name" --cpus 1 --memory 512 >/dev/null 2>&1 || {
+        timeout 30s ahvm create --name "$name" --cpus 1 --memory 512 >/dev/null 2>&1 || {
             warn "destroy iteration $i: create failed"; continue
         }
         CREATED_SANDBOXES+=("$name")
-        if t=$(time_ms bhatti destroy "$name" -y); then
+        if t=$(time_ms ahvm destroy "$name" -y); then
             echo "$t" >> "$file"
             echo "    run $i: ${t}ms"
             # Already destroyed; remove from cleanup list.
@@ -396,7 +396,7 @@ run_warm() {
 
     # Make sure we have a hot sandbox.
     create_sandbox "$RUN_ID-warm" --cpus 1 --memory 512
-    timeout 10s bhatti exec "$RUN_ID-warm" -- true >/dev/null 2>&1
+    timeout 10s ahvm exec "$RUN_ID-warm" -- true >/dev/null 2>&1
 
     subhead "Warm resume + exec ($WARM_N samples)"
     local file="$RESULTS_DIR/warm_resume_exec.txt"
@@ -405,7 +405,7 @@ run_warm() {
     for ((i = 1; i <= WARM_N; i++)); do
         echo "    sample $i: waiting 35s for thermal manager to pause sandbox..."
         sleep 35
-        if t=$(time_ms bhatti exec "$RUN_ID-warm" -- true); then
+        if t=$(time_ms ahvm exec "$RUN_ID-warm" -- true); then
             echo "$t" >> "$file"
             echo "    sample $i: ${t}ms (warm→hot + exec)"
         else
@@ -421,10 +421,10 @@ run_warm() {
 # =============================================================================
 
 ensure_main_sandbox() {
-    if ! timeout 5s bhatti inspect "$SB" >/dev/null 2>&1; then
+    if ! timeout 5s ahvm inspect "$SB" >/dev/null 2>&1; then
         create_sandbox "$SB" --cpus 2 --memory 2048
     fi
-    timeout 10s bhatti exec "$SB" -- true >/dev/null 2>&1
+    timeout 10s ahvm exec "$SB" -- true >/dev/null 2>&1
 }
 
 # Helper: warmup + collect for an exec/file-style test (rate-limited at 600/min).
@@ -462,12 +462,12 @@ run_exec() {
     header "EXEC OPS (hot sandbox)"
     ensure_main_sandbox
 
-    exec_test "2a. Exec 'true' (no output)"          "$RESULTS_DIR/exec_true.txt"  "$ITERATIONS" bhatti exec "$SB" -- true
-    exec_test "2b. Exec 'echo hello' (tiny output)"  "$RESULTS_DIR/exec_echo.txt"  "$ITERATIONS" bhatti exec "$SB" -- echo hello
-    exec_test "2c. Exec 'cat /etc/os-release'"       "$RESULTS_DIR/exec_cat.txt"   "$ITERATIONS" bhatti exec "$SB" -- cat /etc/os-release
-    exec_test "2d. Exec 'ls -laR /usr/bin' (~50KB)"  "$RESULTS_DIR/exec_ls.txt"    "$ITERATIONS" bhatti exec "$SB" -- ls -laR /usr/bin
-    exec_test "2e. Exec 'sha256sum /usr/bin/bash'"   "$RESULTS_DIR/exec_sha.txt"   "$ITERATIONS" bhatti exec "$SB" -- sha256sum /usr/bin/bash
-    exec_test "2f. Exec 'sh -c echo \$HOME'"         "$RESULTS_DIR/exec_env.txt"   "$ITERATIONS" bhatti exec "$SB" -- sh -c 'echo $HOME'
+    exec_test "2a. Exec 'true' (no output)"          "$RESULTS_DIR/exec_true.txt"  "$ITERATIONS" ahvm exec "$SB" -- true
+    exec_test "2b. Exec 'echo hello' (tiny output)"  "$RESULTS_DIR/exec_echo.txt"  "$ITERATIONS" ahvm exec "$SB" -- echo hello
+    exec_test "2c. Exec 'cat /etc/os-release'"       "$RESULTS_DIR/exec_cat.txt"   "$ITERATIONS" ahvm exec "$SB" -- cat /etc/os-release
+    exec_test "2d. Exec 'ls -laR /usr/bin' (~50KB)"  "$RESULTS_DIR/exec_ls.txt"    "$ITERATIONS" ahvm exec "$SB" -- ls -laR /usr/bin
+    exec_test "2e. Exec 'sha256sum /usr/bin/bash'"   "$RESULTS_DIR/exec_sha.txt"   "$ITERATIONS" ahvm exec "$SB" -- sha256sum /usr/bin/bash
+    exec_test "2f. Exec 'sh -c echo \$HOME'"         "$RESULTS_DIR/exec_env.txt"   "$ITERATIONS" ahvm exec "$SB" -- sh -c 'echo $HOME'
 }
 
 # =============================================================================
@@ -482,7 +482,7 @@ run_files() {
     local sizes_kb=(1 10 100 1024)
     local s
     for s in "${sizes_kb[@]}"; do
-        timeout 30s bhatti exec "$SB" -- sh -c "head -c $((s*1024)) /dev/urandom | base64 > /tmp/bench${s}k.txt" >/dev/null 2>&1
+        timeout 30s ahvm exec "$SB" -- sh -c "head -c $((s*1024)) /dev/urandom | base64 > /tmp/bench${s}k.txt" >/dev/null 2>&1
     done
 
     # Prep local write payloads in /tmp.
@@ -499,7 +499,7 @@ run_files() {
         # File read goes through /sandboxes/:id/files which is the exec
         # rate-limit class (writes data through the engine).
         exec_test "3. File read $label" "$out" "$ITERATIONS" \
-            bhatti file read "$SB" "/tmp/bench${s}k.txt"
+            ahvm file read "$SB" "/tmp/bench${s}k.txt"
     done
 
     for s in "${local_writes[@]}"; do
@@ -510,13 +510,13 @@ run_files() {
         : > "$out"
         # 3 warmup calls (rate-limited)
         for w in 1 2 3; do
-            timeout "$TIMEOUT_PER_CALL" sh -c "bhatti file write $SB /tmp/benchw${s}k.txt < /tmp/${RUN_ID}.w${s}k.txt" >/dev/null 2>&1 || true
+            timeout "$TIMEOUT_PER_CALL" sh -c "ahvm file write $SB /tmp/benchw${s}k.txt < /tmp/${RUN_ID}.w${s}k.txt" >/dev/null 2>&1 || true
             sleep "$SLEEP_PER_EXEC"
         done
         for ((i = 1; i <= ITERATIONS; i++)); do
             (( i > 1 )) && sleep "$SLEEP_PER_EXEC"
             local start_us="${EPOCHREALTIME//.}"
-            if timeout "$TIMEOUT_PER_CALL" sh -c "bhatti file write $SB /tmp/benchw${s}k.txt < /tmp/${RUN_ID}.w${s}k.txt" >/dev/null 2>&1; then
+            if timeout "$TIMEOUT_PER_CALL" sh -c "ahvm file write $SB /tmp/benchw${s}k.txt < /tmp/${RUN_ID}.w${s}k.txt" >/dev/null 2>&1; then
                 local end_us="${EPOCHREALTIME//.}"
                 local diff=$((end_us - start_us))
                 printf '%d.%03d\n' $((diff / 1000)) $((diff % 1000)) >> "$out"
@@ -531,7 +531,7 @@ run_files() {
 
     # `file ls` is a read op (no engine I/O — just a dir listing).
     read_test "3. File ls /usr/bin" "$RESULTS_DIR/file_ls.txt" "$ITERATIONS" \
-        bhatti file ls "$SB" /usr/bin
+        ahvm file ls "$SB" /usr/bin
 
     # Cleanup local payloads
     rm -f "/tmp/${RUN_ID}.w"*.txt
@@ -546,13 +546,13 @@ run_api() {
     ensure_main_sandbox
 
     # `list` and `inspect` are read-class endpoints (1200/min limit).
-    read_test "4a. List sandboxes"   "$RESULTS_DIR/api_list.txt"     "$ITERATIONS" bhatti list --json
-    read_test "4b. Inspect sandbox"  "$RESULTS_DIR/api_inspect.txt"  "$ITERATIONS" bhatti inspect "$SB" --json
+    read_test "4a. List sandboxes"   "$RESULTS_DIR/api_list.txt"     "$ITERATIONS" ahvm list --json
+    read_test "4b. Inspect sandbox"  "$RESULTS_DIR/api_inspect.txt"  "$ITERATIONS" ahvm inspect "$SB" --json
 
     # curl tests
-    local api_url="${BHATTI_URL:-$(grep -h '^api_url:' ~/.bhatti/config.yaml /etc/bhatti/config.yaml 2>/dev/null | head -1 | awk '{print $2}')}"
+    local api_url="${AHVM_URL:-$(grep -h '^api_url:' ~/.ahvm/config.yaml /etc/ahvm/config.yaml 2>/dev/null | head -1 | awk '{print $2}')}"
     api_url="${api_url:-http://localhost:8080}"
-    local token="${BHATTI_TOKEN:-$(grep -h '^auth_token:' ~/.bhatti/config.yaml 2>/dev/null | awk '{print $2}')}"
+    local token="${AHVM_TOKEN:-$(grep -h '^auth_token:' ~/.ahvm/config.yaml 2>/dev/null | awk '{print $2}')}"
 
     subhead "4c. GET /health (curl, no auth)"
     local out="$RESULTS_DIR/api_health.txt"
@@ -577,7 +577,7 @@ run_api() {
         echo "${YELLOW}GET /sandboxes (curl, ms):${NC}"
         percentiles "$out"
     else
-        warn "no auth token in ~/.bhatti/config.yaml or BHATTI_TOKEN — skipping 4d"
+        warn "no auth token in ~/.ahvm/config.yaml or AHVM_TOKEN — skipping 4d"
     fi
 }
 
@@ -597,7 +597,7 @@ concurrent_run() {
         local start_us="${EPOCHREALTIME//.}"
         local pids=()
         for ((i = 1; i <= count; i++)); do
-            ( timeout "$TIMEOUT_PER_CALL" bhatti exec "$SB" -- true >/dev/null 2>&1 ) &
+            ( timeout "$TIMEOUT_PER_CALL" ahvm exec "$SB" -- true >/dev/null 2>&1 ) &
             pids+=("$!")
         done
         local rep_ok=1
@@ -632,7 +632,7 @@ run_concurrent() {
     local i fails=0
     for ((i = 1; i <= 30; i++)); do
         (( i > 1 )) && sleep "$SLEEP_PER_EXEC"
-        timeout "$TIMEOUT_PER_CALL" bhatti exec "$SB" -- true >/dev/null 2>&1 || ((fails++))
+        timeout "$TIMEOUT_PER_CALL" ahvm exec "$SB" -- true >/dev/null 2>&1 || ((fails++))
     done
     local end_us="${EPOCHREALTIME//.}"
     local diff=$((end_us - start_us))
@@ -654,7 +654,7 @@ run_concurrent() {
 # Three states:
 #   hot   — sandbox already running, baseline overhead.
 #   warm  — vCPUs paused (35s idle, thermal manager has paused).
-#   cold  — fully snapshotted to disk (`bhatti stop`).
+#   cold  — fully snapshotted to disk (`ahvm stop`).
 # =============================================================================
 
 run_publish_wake() {
@@ -666,7 +666,7 @@ run_publish_wake() {
 
     # Tiny in-VM HTTP server (Node, single-line). --detach returns the PID
     # immediately so the script doesn't block on `exec`.
-    if ! timeout 30s bhatti exec --detach "$pub" -- \
+    if ! timeout 30s ahvm exec --detach "$pub" -- \
         node -e 'require("http").createServer((q,r)=>r.end("ok")).listen(3000)' \
         >/dev/null 2>&1; then
         warn "failed to start in-VM http server"
@@ -674,9 +674,9 @@ run_publish_wake() {
     fi
     sleep 2  # let it bind
 
-    local api_url="${BHATTI_URL:-$(grep -h '^api_url:' ~/.bhatti/config.yaml /etc/bhatti/config.yaml 2>/dev/null | head -1 | awk '{print $2}')}"
+    local api_url="${AHVM_URL:-$(grep -h '^api_url:' ~/.ahvm/config.yaml /etc/ahvm/config.yaml 2>/dev/null | head -1 | awk '{print $2}')}"
     api_url="${api_url:-http://localhost:8080}"
-    local token="${BHATTI_TOKEN:-$(grep -h '^auth_token:' ~/.bhatti/config.yaml 2>/dev/null | awk '{print $2}')}"
+    local token="${AHVM_TOKEN:-$(grep -h '^auth_token:' ~/.ahvm/config.yaml 2>/dev/null | awk '{print $2}')}"
     local proxy_url="$api_url/sandboxes/$pub/proxy/3000/"
 
     # Smoke test the proxy URL
@@ -710,13 +710,13 @@ run_publish_wake() {
     out="$RESULTS_DIR/publish_wake_cold.txt"
     : > "$out"
     # Warmup cycle — first stop+wake pays setup costs we don't want to measure.
-    timeout 30s bhatti stop "$pub" >/dev/null 2>&1 || true
+    timeout 30s ahvm stop "$pub" >/dev/null 2>&1 || true
     sleep 0.5
     timeout "$TIMEOUT_PER_CALL" curl -sf -o /dev/null \
         -H "Authorization: Bearer $token" "$proxy_url" 2>/dev/null || true
     sleep 1
     for ((i = 1; i <= PUBLISH_WAKE_COLD_N; i++)); do
-        timeout 30s bhatti stop "$pub" >/dev/null 2>&1 || true
+        timeout 30s ahvm stop "$pub" >/dev/null 2>&1 || true
         sleep 0.5
         t=$(timeout "$TIMEOUT_PER_CALL" curl -sf -o /dev/null -w '%{time_total}' \
             -H "Authorization: Bearer $token" "$proxy_url" 2>/dev/null) || { warn "sample $i failed"; continue; }
@@ -755,7 +755,7 @@ run_publish_wake() {
 
 run_network() {
     header "NETWORK BASELINE (client → server)"
-    local api_url="${BHATTI_URL:-$(grep -h '^api_url:' ~/.bhatti/config.yaml /etc/bhatti/config.yaml 2>/dev/null | head -1 | awk '{print $2}')}"
+    local api_url="${AHVM_URL:-$(grep -h '^api_url:' ~/.ahvm/config.yaml /etc/ahvm/config.yaml 2>/dev/null | head -1 | awk '{print $2}')}"
     api_url="${api_url:-http://localhost:8080}"
 
     subhead "6a. TCP connect time"

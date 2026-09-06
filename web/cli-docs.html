@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>bhatti — CLI Reference</title>
+  <title>ahvm — CLI Reference</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>" />
   <style>
     :root {
@@ -150,85 +150,85 @@
 <body>
   <div class="layout">
     <nav class="sidebar">
-      <h2>bhatti CLI</h2>
-      <a href="#bhatti">bhatti</a>
-      <a href="#bhatti-completion" >bhatti completion</a>
-      <a href="#bhatti-create" >bhatti create</a>
-      <a href="#bhatti-destroy" >bhatti destroy</a>
-      <a href="#bhatti-edit" >bhatti edit</a>
-      <a href="#bhatti-exec" >bhatti exec</a>
-      <a href="#bhatti-file" style="margin-top: 8px;">bhatti file</a>
-      <a class="sub" href="#bhatti-file-ls">ls</a>
-      <a class="sub" href="#bhatti-file-read">read</a>
-      <a class="sub" href="#bhatti-file-write">write</a>
-      <a href="#bhatti-image" style="margin-top: 8px;">bhatti image</a>
-      <a class="sub" href="#bhatti-image-delete">delete</a>
-      <a class="sub" href="#bhatti-image-import">import</a>
-      <a class="sub" href="#bhatti-image-list">list</a>
-      <a class="sub" href="#bhatti-image-pull">pull</a>
-      <a class="sub" href="#bhatti-image-save">save</a>
-      <a class="sub" href="#bhatti-image-share">share</a>
-      <a class="sub" href="#bhatti-image-unshare">unshare</a>
-      <a href="#bhatti-inspect" >bhatti inspect</a>
-      <a href="#bhatti-list" >bhatti list</a>
-      <a href="#bhatti-ps" >bhatti ps</a>
-      <a href="#bhatti-publish" >bhatti publish</a>
-      <a href="#bhatti-secret" style="margin-top: 8px;">bhatti secret</a>
-      <a class="sub" href="#bhatti-secret-delete">delete</a>
-      <a class="sub" href="#bhatti-secret-list">list</a>
-      <a class="sub" href="#bhatti-secret-set">set</a>
-      <a href="#bhatti-serve" >bhatti serve</a>
-      <a href="#bhatti-setup" >bhatti setup</a>
-      <a href="#bhatti-shell" >bhatti shell</a>
-      <a href="#bhatti-snapshot" style="margin-top: 8px;">bhatti snapshot</a>
-      <a class="sub" href="#bhatti-snapshot-create">create</a>
-      <a class="sub" href="#bhatti-snapshot-delete">delete</a>
-      <a class="sub" href="#bhatti-snapshot-list">list</a>
-      <a class="sub" href="#bhatti-snapshot-resume">resume</a>
-      <a href="#bhatti-start" >bhatti start</a>
-      <a href="#bhatti-stop" >bhatti stop</a>
-      <a href="#bhatti-unpublish" >bhatti unpublish</a>
-      <a href="#bhatti-update" >bhatti update</a>
-      <a href="#bhatti-user" style="margin-top: 8px;">bhatti user</a>
-      <a class="sub" href="#bhatti-user-create">create</a>
-      <a class="sub" href="#bhatti-user-delete">delete</a>
-      <a class="sub" href="#bhatti-user-list">list</a>
-      <a class="sub" href="#bhatti-user-rotate-key">rotate-key</a>
-      <a href="#bhatti-version" >bhatti version</a>
-      <a href="#bhatti-volume" style="margin-top: 8px;">bhatti volume</a>
-      <a class="sub" href="#bhatti-volume-backup">backup</a>
-      <a class="sub" href="#bhatti-volume-backup-delete">backup-delete</a>
-      <a class="sub" href="#bhatti-volume-backup-list">backup-list</a>
-      <a class="sub" href="#bhatti-volume-create">create</a>
-      <a class="sub" href="#bhatti-volume-delete">delete</a>
-      <a class="sub" href="#bhatti-volume-list">list</a>
-      <a class="sub" href="#bhatti-volume-resize">resize</a>
-      <a class="sub" href="#bhatti-volume-restore">restore</a>
+      <h2>ahvm CLI</h2>
+      <a href="#ahvm">ahvm</a>
+      <a href="#ahvm-completion" >ahvm completion</a>
+      <a href="#ahvm-create" >ahvm create</a>
+      <a href="#ahvm-destroy" >ahvm destroy</a>
+      <a href="#ahvm-edit" >ahvm edit</a>
+      <a href="#ahvm-exec" >ahvm exec</a>
+      <a href="#ahvm-file" style="margin-top: 8px;">ahvm file</a>
+      <a class="sub" href="#ahvm-file-ls">ls</a>
+      <a class="sub" href="#ahvm-file-read">read</a>
+      <a class="sub" href="#ahvm-file-write">write</a>
+      <a href="#ahvm-image" style="margin-top: 8px;">ahvm image</a>
+      <a class="sub" href="#ahvm-image-delete">delete</a>
+      <a class="sub" href="#ahvm-image-import">import</a>
+      <a class="sub" href="#ahvm-image-list">list</a>
+      <a class="sub" href="#ahvm-image-pull">pull</a>
+      <a class="sub" href="#ahvm-image-save">save</a>
+      <a class="sub" href="#ahvm-image-share">share</a>
+      <a class="sub" href="#ahvm-image-unshare">unshare</a>
+      <a href="#ahvm-inspect" >ahvm inspect</a>
+      <a href="#ahvm-list" >ahvm list</a>
+      <a href="#ahvm-ps" >ahvm ps</a>
+      <a href="#ahvm-publish" >ahvm publish</a>
+      <a href="#ahvm-secret" style="margin-top: 8px;">ahvm secret</a>
+      <a class="sub" href="#ahvm-secret-delete">delete</a>
+      <a class="sub" href="#ahvm-secret-list">list</a>
+      <a class="sub" href="#ahvm-secret-set">set</a>
+      <a href="#ahvm-serve" >ahvm serve</a>
+      <a href="#ahvm-setup" >ahvm setup</a>
+      <a href="#ahvm-shell" >ahvm shell</a>
+      <a href="#ahvm-snapshot" style="margin-top: 8px;">ahvm snapshot</a>
+      <a class="sub" href="#ahvm-snapshot-create">create</a>
+      <a class="sub" href="#ahvm-snapshot-delete">delete</a>
+      <a class="sub" href="#ahvm-snapshot-list">list</a>
+      <a class="sub" href="#ahvm-snapshot-resume">resume</a>
+      <a href="#ahvm-start" >ahvm start</a>
+      <a href="#ahvm-stop" >ahvm stop</a>
+      <a href="#ahvm-unpublish" >ahvm unpublish</a>
+      <a href="#ahvm-update" >ahvm update</a>
+      <a href="#ahvm-user" style="margin-top: 8px;">ahvm user</a>
+      <a class="sub" href="#ahvm-user-create">create</a>
+      <a class="sub" href="#ahvm-user-delete">delete</a>
+      <a class="sub" href="#ahvm-user-list">list</a>
+      <a class="sub" href="#ahvm-user-rotate-key">rotate-key</a>
+      <a href="#ahvm-version" >ahvm version</a>
+      <a href="#ahvm-volume" style="margin-top: 8px;">ahvm volume</a>
+      <a class="sub" href="#ahvm-volume-backup">backup</a>
+      <a class="sub" href="#ahvm-volume-backup-delete">backup-delete</a>
+      <a class="sub" href="#ahvm-volume-backup-list">backup-list</a>
+      <a class="sub" href="#ahvm-volume-create">create</a>
+      <a class="sub" href="#ahvm-volume-delete">delete</a>
+      <a class="sub" href="#ahvm-volume-list">list</a>
+      <a class="sub" href="#ahvm-volume-resize">resize</a>
+      <a class="sub" href="#ahvm-volume-restore">restore</a>
     </nav>
     <main class="content">
-      <h1>bhatti <small>CLI Reference</small></h1>
+      <h1>ahvm <small>CLI Reference</small></h1>
       <p class="subtitle">Auto-generated from command definitions. Always up to date.</p>
-      <section class="command" id="bhatti">
-        <h2><a href="#bhatti">bhatti</a></h2>
+      <section class="command" id="ahvm">
+        <h2><a href="#ahvm">ahvm</a></h2>
         <p>Firecracker microVM orchestrator</p>
-        <div class="description">bhatti creates isolated Linux VMs in seconds. Each sandbox has its own
+        <div class="description">ahvm creates isolated Linux VMs in seconds. Each sandbox has its own
 kernel, filesystem, and network. Paused sandboxes resume in under 3ms.</div>
       </section>
-      <section class="command" id="bhatti-completion">
-        <h2><a href="#bhatti-completion">bhatti completion</a></h2>
+      <section class="command" id="ahvm-completion">
+        <h2><a href="#ahvm-completion">ahvm completion</a></h2>
         <p>Generate shell completion script</p>
       </section>
-      <section class="command" id="bhatti-create">
-        <h2><a href="#bhatti-create">bhatti create</a></h2>
+      <section class="command" id="ahvm-create">
+        <h2><a href="#ahvm-create">ahvm create</a></h2>
         <p>Create a new sandbox</p>
         <div class="description">Create a new sandbox VM. Each sandbox is an isolated Linux environment
 with its own kernel, filesystem, and network.</div>
-        <pre>  bhatti create --name dev
-  bhatti create --name ml --cpus 4 --memory 4096
-  bhatti create --name api --env API_KEY=sk-abc --init &#34;npm install&#34;
-  bhatti create --name py --image python-3.12
-  bhatti create --name work --volume workspace:/workspace
-  bhatti create --name agent --init &#34;hermes gateway&#34; --keep-hot</pre>
+        <pre>  ahvm create --name dev
+  ahvm create --name ml --cpus 4 --memory 4096
+  ahvm create --name api --env API_KEY=sk-abc --init &#34;npm install&#34;
+  ahvm create --name py --image python-3.12
+  ahvm create --name work --volume workspace:/workspace
+  ahvm create --name agent --init &#34;hermes gateway&#34; --keep-hot</pre>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
           <tr>
@@ -283,13 +283,13 @@ with its own kernel, filesystem, and network.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-destroy">
-        <h2><a href="#bhatti-destroy">bhatti destroy</a></h2>
+      <section class="command" id="ahvm-destroy">
+        <h2><a href="#ahvm-destroy">ahvm destroy</a></h2>
         <div class="aliases">aliases: rm</div>
         <p>Destroy a sandbox</p>
         <div class="description">Permanently destroy a sandbox and all its data. Persistent volumes
 are detached but not deleted.</div>
-        <pre>  bhatti destroy dev</pre>
+        <pre>  ahvm destroy dev</pre>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
           <tr>
@@ -299,13 +299,13 @@ are detached but not deleted.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-edit">
-        <h2><a href="#bhatti-edit">bhatti edit</a></h2>
+      <section class="command" id="ahvm-edit">
+        <h2><a href="#ahvm-edit">ahvm edit</a></h2>
         <p>Update sandbox settings</p>
         <div class="description">Update mutable settings on an existing sandbox. Currently supports
 toggling keep_hot to control thermal management.</div>
-        <pre>  bhatti edit my-agent --keep-hot
-  bhatti edit my-agent --allow-cold</pre>
+        <pre>  ahvm edit my-agent --keep-hot
+  ahvm edit my-agent --allow-cold</pre>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
           <tr>
@@ -320,14 +320,14 @@ toggling keep_hot to control thermal management.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-exec">
-        <h2><a href="#bhatti-exec">bhatti exec</a></h2>
+      <section class="command" id="ahvm-exec">
+        <h2><a href="#ahvm-exec">ahvm exec</a></h2>
         <p>Execute a command in a sandbox</p>
         <div class="description">Execute a command inside a sandbox. The exit code is forwarded.
 Sleeping sandboxes wake automatically.</div>
-        <pre>  bhatti exec dev -- echo hello
-  bhatti exec dev -- sudo apt-get install -y ripgrep
-  bhatti exec dev --timeout 60 -- long-running-script.sh</pre>
+        <pre>  ahvm exec dev -- echo hello
+  ahvm exec dev -- sudo apt-get install -y ripgrep
+  ahvm exec dev --timeout 60 -- long-running-script.sh</pre>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
           <tr>
@@ -337,36 +337,36 @@ Sleeping sandboxes wake automatically.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-file">
-        <h2><a href="#bhatti-file">bhatti file</a></h2>
+      <section class="command" id="ahvm-file">
+        <h2><a href="#ahvm-file">ahvm file</a></h2>
         <p>Read, write, and list files in a sandbox</p>
-        <pre>  bhatti file read dev /workspace/app.js
-  echo &#39;hello&#39; | bhatti file write dev /workspace/greeting.txt
-  bhatti file ls dev /workspace/</pre>
+        <pre>  ahvm file read dev /workspace/app.js
+  echo &#39;hello&#39; | ahvm file write dev /workspace/greeting.txt
+  ahvm file ls dev /workspace/</pre>
       </section>
-      <section class="command" id="bhatti-file-ls">
-        <h2><a href="#bhatti-file-ls">bhatti file ls</a></h2>
+      <section class="command" id="ahvm-file-ls">
+        <h2><a href="#ahvm-file-ls">ahvm file ls</a></h2>
         <p>List files in a sandbox directory</p>
       </section>
-      <section class="command" id="bhatti-file-read">
-        <h2><a href="#bhatti-file-read">bhatti file read</a></h2>
+      <section class="command" id="ahvm-file-read">
+        <h2><a href="#ahvm-file-read">ahvm file read</a></h2>
         <p>Read a file from a sandbox</p>
       </section>
-      <section class="command" id="bhatti-file-write">
-        <h2><a href="#bhatti-file-write">bhatti file write</a></h2>
+      <section class="command" id="ahvm-file-write">
+        <h2><a href="#ahvm-file-write">ahvm file write</a></h2>
         <p>Write a file to a sandbox (reads from stdin)</p>
       </section>
-      <section class="command" id="bhatti-image">
-        <h2><a href="#bhatti-image">bhatti image</a></h2>
+      <section class="command" id="ahvm-image">
+        <h2><a href="#ahvm-image">ahvm image</a></h2>
         <p>Manage rootfs images</p>
         <div class="description">Images are ext4 filesystem snapshots used as sandbox root filesystems.
 Pull public images from registries with &#39;image pull&#39;.</div>
-        <pre>  bhatti image pull python:3.12
-  bhatti image save dev --name my-custom-env
-  bhatti image list</pre>
+        <pre>  ahvm image pull python:3.12
+  ahvm image save dev --name my-custom-env
+  ahvm image list</pre>
       </section>
-      <section class="command" id="bhatti-image-delete">
-        <h2><a href="#bhatti-image-delete">bhatti image delete</a></h2>
+      <section class="command" id="ahvm-image-delete">
+        <h2><a href="#ahvm-image-delete">ahvm image delete</a></h2>
         <p>Delete an image</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -377,9 +377,9 @@ Pull public images from registries with &#39;image pull&#39;.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-image-import">
-        <h2><a href="#bhatti-image-import">bhatti image import</a></h2>
-        <p>Import a local Docker image as a bhatti rootfs</p>
+      <section class="command" id="ahvm-image-import">
+        <h2><a href="#ahvm-image-import">ahvm image import</a></h2>
+        <p>Import a local Docker image as a ahvm rootfs</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
           <tr>
@@ -394,12 +394,12 @@ Pull public images from registries with &#39;image pull&#39;.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-image-list">
-        <h2><a href="#bhatti-image-list">bhatti image list</a></h2>
+      <section class="command" id="ahvm-image-list">
+        <h2><a href="#ahvm-image-list">ahvm image list</a></h2>
         <p>List available images</p>
       </section>
-      <section class="command" id="bhatti-image-pull">
-        <h2><a href="#bhatti-image-pull">bhatti image pull</a></h2>
+      <section class="command" id="ahvm-image-pull">
+        <h2><a href="#ahvm-image-pull">ahvm image pull</a></h2>
         <p>Pull an OCI/Docker image from a public registry</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -415,8 +415,8 @@ Pull public images from registries with &#39;image pull&#39;.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-image-save">
-        <h2><a href="#bhatti-image-save">bhatti image save</a></h2>
+      <section class="command" id="ahvm-image-save">
+        <h2><a href="#ahvm-image-save">ahvm image save</a></h2>
         <p>Save a sandbox&#39;s rootfs as an image</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -427,8 +427,8 @@ Pull public images from registries with &#39;image pull&#39;.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-image-share">
-        <h2><a href="#bhatti-image-share">bhatti image share</a></h2>
+      <section class="command" id="ahvm-image-share">
+        <h2><a href="#ahvm-image-share">ahvm image share</a></h2>
         <p>Share an image with other users (requires DB access)</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -444,8 +444,8 @@ Pull public images from registries with &#39;image pull&#39;.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-image-unshare">
-        <h2><a href="#bhatti-image-unshare">bhatti image unshare</a></h2>
+      <section class="command" id="ahvm-image-unshare">
+        <h2><a href="#ahvm-image-unshare">ahvm image unshare</a></h2>
         <p>Revoke image access from users (requires DB access)</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -456,28 +456,28 @@ Pull public images from registries with &#39;image pull&#39;.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-inspect">
-        <h2><a href="#bhatti-inspect">bhatti inspect</a></h2>
+      <section class="command" id="ahvm-inspect">
+        <h2><a href="#ahvm-inspect">ahvm inspect</a></h2>
         <div class="aliases">aliases: info</div>
         <p>Show sandbox details</p>
-        <pre>  bhatti inspect dev</pre>
+        <pre>  ahvm inspect dev</pre>
       </section>
-      <section class="command" id="bhatti-list">
-        <h2><a href="#bhatti-list">bhatti list</a></h2>
+      <section class="command" id="ahvm-list">
+        <h2><a href="#ahvm-list">ahvm list</a></h2>
         <div class="aliases">aliases: ls</div>
         <p>List sandboxes</p>
-        <pre>  bhatti list</pre>
+        <pre>  ahvm list</pre>
       </section>
-      <section class="command" id="bhatti-ps">
-        <h2><a href="#bhatti-ps">bhatti ps</a></h2>
+      <section class="command" id="ahvm-ps">
+        <h2><a href="#ahvm-ps">ahvm ps</a></h2>
         <p>List sessions in a sandbox</p>
-        <pre>  bhatti ps dev</pre>
+        <pre>  ahvm ps dev</pre>
       </section>
-      <section class="command" id="bhatti-publish">
-        <h2><a href="#bhatti-publish">bhatti publish</a></h2>
+      <section class="command" id="ahvm-publish">
+        <h2><a href="#ahvm-publish">ahvm publish</a></h2>
         <p>Publish a sandbox port with a public URL</p>
-        <pre>  bhatti publish dev -p 3000
-  bhatti publish dev -p 3000 -a my-app</pre>
+        <pre>  ahvm publish dev -p 3000
+  ahvm publish dev -p 3000 -a my-app</pre>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
           <tr>
@@ -492,45 +492,45 @@ Pull public images from registries with &#39;image pull&#39;.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-secret">
-        <h2><a href="#bhatti-secret">bhatti secret</a></h2>
+      <section class="command" id="ahvm-secret">
+        <h2><a href="#ahvm-secret">ahvm secret</a></h2>
         <p>Manage encrypted secrets</p>
         <div class="description">Secrets are encrypted at rest (age) and scoped to your API key.
 They can be referenced in templates and injected into sandboxes at boot.</div>
-        <pre>  bhatti secret set API_KEY sk-abc123
-  bhatti secret list
-  bhatti secret delete API_KEY</pre>
+        <pre>  ahvm secret set API_KEY sk-abc123
+  ahvm secret list
+  ahvm secret delete API_KEY</pre>
       </section>
-      <section class="command" id="bhatti-secret-delete">
-        <h2><a href="#bhatti-secret-delete">bhatti secret delete</a></h2>
+      <section class="command" id="ahvm-secret-delete">
+        <h2><a href="#ahvm-secret-delete">ahvm secret delete</a></h2>
         <p>Delete a secret</p>
       </section>
-      <section class="command" id="bhatti-secret-list">
-        <h2><a href="#bhatti-secret-list">bhatti secret list</a></h2>
+      <section class="command" id="ahvm-secret-list">
+        <h2><a href="#ahvm-secret-list">ahvm secret list</a></h2>
         <p>List secrets</p>
       </section>
-      <section class="command" id="bhatti-secret-set">
-        <h2><a href="#bhatti-secret-set">bhatti secret set</a></h2>
+      <section class="command" id="ahvm-secret-set">
+        <h2><a href="#ahvm-secret-set">ahvm secret set</a></h2>
         <p>Create or update a secret</p>
       </section>
-      <section class="command" id="bhatti-serve">
-        <h2><a href="#bhatti-serve">bhatti serve</a></h2>
+      <section class="command" id="ahvm-serve">
+        <h2><a href="#ahvm-serve">ahvm serve</a></h2>
         <p>Start the daemon</p>
-        <div class="description">Start the bhatti daemon. Requires root, KVM, and a config at /var/lib/bhatti/config.yaml.</div>
+        <div class="description">Start the ahvm daemon. Requires root, KVM, and a config at /var/lib/ahvm/config.yaml.</div>
       </section>
-      <section class="command" id="bhatti-setup">
-        <h2><a href="#bhatti-setup">bhatti setup</a></h2>
+      <section class="command" id="ahvm-setup">
+        <h2><a href="#ahvm-setup">ahvm setup</a></h2>
         <p>Configure CLI endpoint and API key</p>
         <div class="description">Interactive setup for remote CLI users. Prompts for the API endpoint
-and API key, saves to ~/.bhatti/config.yaml, and tests the connection.</div>
+and API key, saves to ~/.ahvm/config.yaml, and tests the connection.</div>
       </section>
-      <section class="command" id="bhatti-shell">
-        <h2><a href="#bhatti-shell">bhatti shell</a></h2>
+      <section class="command" id="ahvm-shell">
+        <h2><a href="#ahvm-shell">ahvm shell</a></h2>
         <div class="aliases">aliases: sh</div>
         <p>Open an interactive shell</p>
         <div class="description">Open an interactive terminal inside the sandbox. Ctrl+\ to detach —
-the shell keeps running. Reconnect with &#39;bhatti shell&#39; again.</div>
-        <pre>  bhatti shell dev</pre>
+the shell keeps running. Reconnect with &#39;ahvm shell&#39; again.</div>
+        <pre>  ahvm shell dev</pre>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
           <tr>
@@ -540,17 +540,17 @@ the shell keeps running. Reconnect with &#39;bhatti shell&#39; again.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-snapshot">
-        <h2><a href="#bhatti-snapshot">bhatti snapshot</a></h2>
+      <section class="command" id="ahvm-snapshot">
+        <h2><a href="#ahvm-snapshot">ahvm snapshot</a></h2>
         <p>Manage named VM snapshots</p>
         <div class="description">Snapshots capture the entire VM state: memory, CPU, disk. Resume
 produces an exact continuation — processes running, files open.</div>
-        <pre>  bhatti snapshot create dev --name dev-ready
-  bhatti snapshot resume dev-ready --name dev-2
-  bhatti snapshot list</pre>
+        <pre>  ahvm snapshot create dev --name dev-ready
+  ahvm snapshot resume dev-ready --name dev-2
+  ahvm snapshot list</pre>
       </section>
-      <section class="command" id="bhatti-snapshot-create">
-        <h2><a href="#bhatti-snapshot-create">bhatti snapshot create</a></h2>
+      <section class="command" id="ahvm-snapshot-create">
+        <h2><a href="#ahvm-snapshot-create">ahvm snapshot create</a></h2>
         <p>Checkpoint a running sandbox</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -561,8 +561,8 @@ produces an exact continuation — processes running, files open.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-snapshot-delete">
-        <h2><a href="#bhatti-snapshot-delete">bhatti snapshot delete</a></h2>
+      <section class="command" id="ahvm-snapshot-delete">
+        <h2><a href="#ahvm-snapshot-delete">ahvm snapshot delete</a></h2>
         <p>Delete a snapshot</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -573,12 +573,12 @@ produces an exact continuation — processes running, files open.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-snapshot-list">
-        <h2><a href="#bhatti-snapshot-list">bhatti snapshot list</a></h2>
+      <section class="command" id="ahvm-snapshot-list">
+        <h2><a href="#ahvm-snapshot-list">ahvm snapshot list</a></h2>
         <p>List snapshots</p>
       </section>
-      <section class="command" id="bhatti-snapshot-resume">
-        <h2><a href="#bhatti-snapshot-resume">bhatti snapshot resume</a></h2>
+      <section class="command" id="ahvm-snapshot-resume">
+        <h2><a href="#ahvm-snapshot-resume">ahvm snapshot resume</a></h2>
         <p>Resume a sandbox from a snapshot</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -589,23 +589,23 @@ produces an exact continuation — processes running, files open.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-start">
-        <h2><a href="#bhatti-start">bhatti start</a></h2>
+      <section class="command" id="ahvm-start">
+        <h2><a href="#ahvm-start">ahvm start</a></h2>
         <p>Resume a stopped sandbox</p>
         <div class="description">Resume a sandbox from its snapshot. Continues exactly where it left off.</div>
-        <pre>  bhatti start dev</pre>
+        <pre>  ahvm start dev</pre>
       </section>
-      <section class="command" id="bhatti-stop">
-        <h2><a href="#bhatti-stop">bhatti stop</a></h2>
+      <section class="command" id="ahvm-stop">
+        <h2><a href="#ahvm-stop">ahvm stop</a></h2>
         <p>Snapshot and stop a sandbox</p>
         <div class="description">Pause the sandbox and save a snapshot to disk. Resume later with
-&#39;bhatti start&#39;. Stopped sandboxes use zero CPU and memory.</div>
-        <pre>  bhatti stop dev</pre>
+&#39;ahvm start&#39;. Stopped sandboxes use zero CPU and memory.</div>
+        <pre>  ahvm stop dev</pre>
       </section>
-      <section class="command" id="bhatti-unpublish">
-        <h2><a href="#bhatti-unpublish">bhatti unpublish</a></h2>
+      <section class="command" id="ahvm-unpublish">
+        <h2><a href="#ahvm-unpublish">ahvm unpublish</a></h2>
         <p>Unpublish a sandbox port</p>
-        <pre>  bhatti unpublish dev -p 3000</pre>
+        <pre>  ahvm unpublish dev -p 3000</pre>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
           <tr>
@@ -615,17 +615,17 @@ produces an exact continuation — processes running, files open.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-update">
-        <h2><a href="#bhatti-update">bhatti update</a></h2>
-        <p>Update bhatti CLI to the latest version</p>
+      <section class="command" id="ahvm-update">
+        <h2><a href="#ahvm-update">ahvm update</a></h2>
+        <p>Update ahvm CLI to the latest version</p>
       </section>
-      <section class="command" id="bhatti-user">
-        <h2><a href="#bhatti-user">bhatti user</a></h2>
+      <section class="command" id="ahvm-user">
+        <h2><a href="#ahvm-user">ahvm user</a></h2>
         <p>Manage users (requires DB access)</p>
         <div class="description">User management operates directly on the local SQLite database. Run on the server, not remotely.</div>
       </section>
-      <section class="command" id="bhatti-user-create">
-        <h2><a href="#bhatti-user-create">bhatti user create</a></h2>
+      <section class="command" id="ahvm-user-create">
+        <h2><a href="#ahvm-user-create">ahvm user create</a></h2>
         <p>Create a new user</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -651,8 +651,8 @@ produces an exact continuation — processes running, files open.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-user-delete">
-        <h2><a href="#bhatti-user-delete">bhatti user delete</a></h2>
+      <section class="command" id="ahvm-user-delete">
+        <h2><a href="#ahvm-user-delete">ahvm user delete</a></h2>
         <p>Delete a user</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -663,33 +663,33 @@ produces an exact continuation — processes running, files open.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-user-list">
-        <h2><a href="#bhatti-user-list">bhatti user list</a></h2>
+      <section class="command" id="ahvm-user-list">
+        <h2><a href="#ahvm-user-list">ahvm user list</a></h2>
         <p>List users</p>
       </section>
-      <section class="command" id="bhatti-user-rotate-key">
-        <h2><a href="#bhatti-user-rotate-key">bhatti user rotate-key</a></h2>
+      <section class="command" id="ahvm-user-rotate-key">
+        <h2><a href="#ahvm-user-rotate-key">ahvm user rotate-key</a></h2>
         <p>Rotate a user&#39;s API key</p>
       </section>
-      <section class="command" id="bhatti-version">
-        <h2><a href="#bhatti-version">bhatti version</a></h2>
+      <section class="command" id="ahvm-version">
+        <h2><a href="#ahvm-version">ahvm version</a></h2>
         <p>Print version and API endpoint</p>
       </section>
-      <section class="command" id="bhatti-volume">
-        <h2><a href="#bhatti-volume">bhatti volume</a></h2>
+      <section class="command" id="ahvm-volume">
+        <h2><a href="#ahvm-volume">ahvm volume</a></h2>
         <p>Manage persistent volumes</p>
         <div class="description">Persistent volumes are ext4 filesystems that survive sandbox destruction.
 Attach them with &#39;--volume name:/mount&#39; on create.</div>
-        <pre>  bhatti volume create --name workspace --size 5120
-  bhatti create --name dev --volume workspace:/workspace
-  bhatti volume resize workspace --size 10240</pre>
+        <pre>  ahvm volume create --name workspace --size 5120
+  ahvm create --name dev --volume workspace:/workspace
+  ahvm volume resize workspace --size 10240</pre>
       </section>
-      <section class="command" id="bhatti-volume-backup">
-        <h2><a href="#bhatti-volume-backup">bhatti volume backup</a></h2>
+      <section class="command" id="ahvm-volume-backup">
+        <h2><a href="#ahvm-volume-backup">ahvm volume backup</a></h2>
         <p>Backup a volume to S3-compatible storage</p>
       </section>
-      <section class="command" id="bhatti-volume-backup-delete">
-        <h2><a href="#bhatti-volume-backup-delete">bhatti volume backup-delete</a></h2>
+      <section class="command" id="ahvm-volume-backup-delete">
+        <h2><a href="#ahvm-volume-backup-delete">ahvm volume backup-delete</a></h2>
         <p>Delete a volume backup</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -700,12 +700,12 @@ Attach them with &#39;--volume name:/mount&#39; on create.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-volume-backup-list">
-        <h2><a href="#bhatti-volume-backup-list">bhatti volume backup-list</a></h2>
+      <section class="command" id="ahvm-volume-backup-list">
+        <h2><a href="#ahvm-volume-backup-list">ahvm volume backup-list</a></h2>
         <p>List backups for a volume</p>
       </section>
-      <section class="command" id="bhatti-volume-create">
-        <h2><a href="#bhatti-volume-create">bhatti volume create</a></h2>
+      <section class="command" id="ahvm-volume-create">
+        <h2><a href="#ahvm-volume-create">ahvm volume create</a></h2>
         <p>Create a persistent volume</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -721,8 +721,8 @@ Attach them with &#39;--volume name:/mount&#39; on create.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-volume-delete">
-        <h2><a href="#bhatti-volume-delete">bhatti volume delete</a></h2>
+      <section class="command" id="ahvm-volume-delete">
+        <h2><a href="#ahvm-volume-delete">ahvm volume delete</a></h2>
         <p>Delete a persistent volume</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -733,12 +733,12 @@ Attach them with &#39;--volume name:/mount&#39; on create.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-volume-list">
-        <h2><a href="#bhatti-volume-list">bhatti volume list</a></h2>
+      <section class="command" id="ahvm-volume-list">
+        <h2><a href="#ahvm-volume-list">ahvm volume list</a></h2>
         <p>List persistent volumes</p>
       </section>
-      <section class="command" id="bhatti-volume-resize">
-        <h2><a href="#bhatti-volume-resize">bhatti volume resize</a></h2>
+      <section class="command" id="ahvm-volume-resize">
+        <h2><a href="#ahvm-volume-resize">ahvm volume resize</a></h2>
         <p>Resize a persistent volume (grow only)</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -749,8 +749,8 @@ Attach them with &#39;--volume name:/mount&#39; on create.</div>
           </tr>
         </table>
       </section>
-      <section class="command" id="bhatti-volume-restore">
-        <h2><a href="#bhatti-volume-restore">bhatti volume restore</a></h2>
+      <section class="command" id="ahvm-volume-restore">
+        <h2><a href="#ahvm-volume-restore">ahvm volume restore</a></h2>
         <p>Restore a volume from a backup</p>
         <table>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -763,7 +763,7 @@ Attach them with &#39;--volume name:/mount&#39; on create.</div>
       </section>
 
       <p style="color: var(--text-muted); margin-top: 48px; font-size: 13px;">
-        Generated from <code>github.com/sahil-shubham/bhatti</code> command definitions.
+        Generated from <code>github.com/mariobm/agent-house</code> command definitions.
       </p>
     </main>
   </div>

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a krucible base rootfs (virtiofs dir): lohar as /init.krun plus a tiny
+# Build a krucible base rootfs (virtiofs dir): forge as /init.krun plus a tiny
 # multi-call "box" util (true/false/echo/errcho/sleep/netcheck) so exec + egress
 # demos work. This is a minimal dev base — a full Ubuntu/busybox userland (bash,
 # ss, node, ...) is a separate pipeline. Guest arch == host arch.
@@ -15,8 +15,8 @@ echo "==> building krucible base rootfs at $OUT (linux/$ARCH)"
 rm -rf "$OUT"
 mkdir -p "$OUT"/{bin,usr/local/bin,proc,sys,dev/pts,tmp,run,etc,root,workspace}
 
-echo "    lohar -> /init.krun"
-GOOS=linux GOARCH="$ARCH" CGO_ENABLED=0 go build -o "$OUT/init.krun" ./cmd/lohar
+echo "    forge -> /init.krun"
+GOOS=linux GOARCH="$ARCH" CGO_ENABLED=0 go build -o "$OUT/init.krun" ./cmd/forge
 
 echo "    box (true/false/echo/errcho/sleep/netcheck) -> /bin"
 TD="$(mktemp -d)"

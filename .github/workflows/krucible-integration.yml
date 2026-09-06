@@ -8,8 +8,8 @@ name: Krucible Integration
 # touches no host networking).
 #
 # These steps are the ones validated by hand on the cluster (raspi-5a arm64 +
-# asus-i5 x86): bring up libkrun + libkrunfw + bhatti-vmm via the bring-up
-# script, build lohar, then run the `-tags krucible` suite. The cold-tier
+# asus-i5 x86): bring up libkrun + libkrunfw + ahvm-vmm via the bring-up
+# script, build forge, then run the `-tags krucible` suite. The cold-tier
 # suite self-runs on x86 and is n/a on arm64; the VM suites self-skip only if
 # there's no hypervisor (there is here), via hasHypervisor().
 #
@@ -24,7 +24,7 @@ on:
     paths:
       - 'pkg/engine/krucible/**'
       - 'cmd/vmm/**'
-      - 'cmd/lohar/**'
+      - 'cmd/forge/**'
       - 'scripts/krucible-*'
       - '.github/workflows/krucible-integration.yml'
 
@@ -36,7 +36,7 @@ jobs:
   integration:
     name: Krucible Integration (KVM)
     runs-on: arc-runner-set
-    if: github.repository == 'sahil-shubham/bhatti'
+    if: github.repository == 'mariobm/agent-house'
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -46,22 +46,22 @@ jobs:
           git config submodule.libkrucible.url https://github.com/sahil-shubham/libkrucible.git
           git submodule update --init --recursive libkrucible
 
-      - name: Bring up krucible (apt deps + Rust + Go + libkrunfw + libkrun + bhatti-vmm)
+      - name: Bring up krucible (apt deps + Rust + Go + libkrunfw + libkrun + ahvm-vmm)
         # Self-contained: the bring-up script is the proven node-provisioning
         # path. libkrunfw is a slow kernel build on first run (cache TODO).
         run: ./scripts/krucible-linux-bringup.sh
 
-      - name: Build lohar (the guest agent / init.krun)
+      - name: Build forge (the guest agent / init.krun)
         run: |
           export PATH=/usr/local/go/bin:$PATH
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o lohar ./cmd/lohar/
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o forge ./cmd/forge/
 
-      - name: Build bhatti-netd (the per-owner network gateway)
+      - name: Build ahvm-netd (the per-owner network gateway)
         # Required for the TestKrucibleNet* suite to run instead of skipping. The
         # bring-up builds libkrun with --features blk,net (krun_add_net_unixstream).
         run: |
           export PATH=/usr/local/go/bin:$PATH
-          go build -ldflags="-s -w" -o bhatti-netd ./cmd/bhatti-netd/
+          go build -ldflags="-s -w" -o ahvm-netd ./cmd/ahvm-netd/
 
       - name: Setup /dev/kvm + TMPDIR
         run: |
@@ -76,7 +76,7 @@ jobs:
         run: |
           sudo apt-get install -y -qq debootstrap
           arch=$(dpkg --print-architecture)   # amd64 | arm64
-          sudo ./scripts/build-tier.sh minimal "$arch" ./lohar
+          sudo ./scripts/build-tier.sh minimal "$arch" ./forge
           echo "KRUCIBLE_TIER_ROOTFS=$PWD/dist/rootfs-minimal-${arch}.ext4" >> "$GITHUB_ENV"
 
       - name: Run krucible suite (-tags krucible)
@@ -92,5 +92,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          sudo pkill -f bhatti-vmm 2>/dev/null || true
+          sudo pkill -f ahvm-vmm 2>/dev/null || true
           rm -rf "$HOME/krtmp"/* 2>/dev/null || true

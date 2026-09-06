@@ -89,7 +89,7 @@ func TestSubstituteExfilAttemptBlocked(t *testing.T) {
 
 func TestSubstituteNoAliasUnchanged(t *testing.T) {
 	tbl := NewAliasTable()
-	tbl.Add("sk-bhtAAAA", bindingFor(t, "K", "v", "api.example.com"))
+	tbl.Add("sk-ahvAAAA", bindingFor(t, "K", "v", "api.example.com"))
 	req := []byte("GET / HTTP/1.1\r\nHost: api.example.com\r\n\r\n")
 	res, err := tbl.Substitute("api.example.com", req)
 	if err != nil {

@@ -17,8 +17,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // uniqueName generates a collision-free resource name for tests.
@@ -26,7 +26,7 @@ func uniqueName(t *testing.T, prefix string) string {
 	t.Helper()
 	b := make([]byte, 4)
 	rand.Read(b)
-	return fmt.Sprintf("bhatti-test-%s-%s", prefix, hex.EncodeToString(b))
+	return fmt.Sprintf("ahvm-test-%s-%s", prefix, hex.EncodeToString(b))
 }
 
 // testAPIKey is the plaintext key used in tests.
@@ -184,7 +184,7 @@ func TestHealthNoAuth(t *testing.T) {
 // TestSetupMustUseAuthenticatedEndpoint verifies that /sandboxes (the
 // endpoint setup should use for validation) actually rejects bad keys,
 // while /health does not. This is a regression test for the bug where
-// `bhatti setup` reported "✓ connected" with an invalid API key.
+// `ahvm setup` reported "✓ connected" with an invalid API key.
 func TestSetupMustUseAuthenticatedEndpoint(t *testing.T) {
 	_, ts := setup(t)
 
@@ -954,8 +954,8 @@ func TestDuplicateSandboxNameHTTP(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("duplicate: expected 200, got %d: %s", resp.StatusCode, body)
 	}
-	if resp.Header.Get("X-Bhatti-Existing") != "true" {
-		t.Error("missing X-Bhatti-Existing header")
+	if resp.Header.Get("X-AHVM-Existing") != "true" {
+		t.Error("missing X-AHVM-Existing header")
 	}
 	var sb2 store.Sandbox
 	decodeJSON(t, resp, &sb2)
@@ -1160,7 +1160,7 @@ func TestErrorSanitization(t *testing.T) {
 
 	// Force an engine error that contains internal path info
 	mockEng := srv.engine.(*mockEngine)
-	mockEng.CreateErr = fmt.Errorf("internal: /var/lib/bhatti/sandboxes/abc/rootfs.ext4 failed")
+	mockEng.CreateErr = fmt.Errorf("internal: /var/lib/ahvm/sandboxes/abc/rootfs.ext4 failed")
 
 	resp := doReq(t, ts, "POST", "/sandboxes", map[string]any{
 		"name": uniqueName(t, "err-test"),
@@ -1244,11 +1244,11 @@ func TestVersionHeadersPresent(t *testing.T) {
 	resp := doReq(t, ts, "GET", "/sandboxes", nil)
 	defer resp.Body.Close()
 
-	if got := resp.Header.Get("X-Bhatti-Version"); got != "0.5.0" {
-		t.Errorf("X-Bhatti-Version = %q, want %q", got, "0.5.0")
+	if got := resp.Header.Get("X-AHVM-Version"); got != "0.5.0" {
+		t.Errorf("X-AHVM-Version = %q, want %q", got, "0.5.0")
 	}
-	if got := resp.Header.Get("X-Bhatti-Min-CLI"); got != "0.4.0" {
-		t.Errorf("X-Bhatti-Min-CLI = %q, want %q", got, "0.4.0")
+	if got := resp.Header.Get("X-AHVM-Min-CLI"); got != "0.4.0" {
+		t.Errorf("X-AHVM-Min-CLI = %q, want %q", got, "0.4.0")
 	}
 }
 
@@ -1266,7 +1266,7 @@ func TestVersionHeaderOnHealth(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if got := resp.Header.Get("X-Bhatti-Version"); got != "0.5.0" {
-		t.Errorf("X-Bhatti-Version on /health = %q, want %q", got, "0.5.0")
+	if got := resp.Header.Get("X-AHVM-Version"); got != "0.5.0" {
+		t.Errorf("X-AHVM-Version on /health = %q, want %q", got, "0.5.0")
 	}
 }

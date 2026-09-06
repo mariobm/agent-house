@@ -2,7 +2,7 @@
 
 ## The Problem
 
-`bhatti create` takes **~1.5 seconds** when it works, but frequently
+`ahvm create` takes **~1.5 seconds** when it works, but frequently
 times out at **30 seconds** with `agent not ready: context deadline
 exceeded`. The failure pattern is bimodal — no middle ground.
 
@@ -23,7 +23,7 @@ The real problem is **reliability, not raw speed.**
 | e2fsck on reflinked rootfs | ~39ms |
 | truncate to 8192MB | ~1ms |
 | resize2fs | ~39ms |
-| Lohar injection (mount + cp + umount) | ~34ms |
+| Forge injection (mount + cp + umount) | ~34ms |
 | Config drive creation | ~2ms |
 | Jail hardlinks + chown | ~5ms |
 | FC process start + socket ready | ~3ms |
@@ -47,7 +47,7 @@ The real problem is **reliability, not raw speed.**
 | docker no-resize | 1.49s |
 | docker + disk-size 8192 | 2.18s |
 
-The ~1.5s is kernel boot + lohar init + WaitReady. The extra ~0.7s
+The ~1.5s is kernel boot + forge init + WaitReady. The extra ~0.7s
 with disk-size is e2fsck + truncate + resize2fs.
 
 ### The real problem: orphaned resources
@@ -72,12 +72,12 @@ not, it times out at 30s and leaves another orphan.
 1. Whether the orphaned TAP/FC cleanup is missing from the error path
    in Create(), or if it's a destroy-path bug for sandboxes that
    failed to fully initialize
-2. Exact kernel boot time (need lohar boot timing instrumentation)
+2. Exact kernel boot time (need forge boot timing instrumentation)
 3. How many WaitReady probe attempts happen on a SUCCESSFUL create
    (is 1.5s = 1 attempt or 2 attempts?)
 4. Whether the orphaned resources also leak IP pool allocations,
    causing address exhaustion
-5. Whether a bhatti server restart cleans up orphaned TAPs (the
+5. Whether a ahvm server restart cleans up orphaned TAPs (the
    `cleanupOrphanedTapDevices` function exists but may not cover
    all cases)
 
@@ -121,7 +121,7 @@ defer func() {
 }()
 ```
 
-Also add a startup recovery path: on `bhatti serve` start, compare
+Also add a startup recovery path: on `ahvm serve` start, compare
 running FC processes and existing TAPs against the DB/in-memory VM
 map. Kill/remove anything orphaned. The `cleanupOrphanedTapDevices`
 function exists but may not be called on the right path.
@@ -169,10 +169,10 @@ Then instrument every step:
     if err = copyRootfs(baseImage, rootfsPath); err != nil { ... }
     phase("rootfs_copy_done")
 
-    // 1b. Inject lohar
-    phase("lohar_inject_start")
-    if err = injectLoharIntoRootfs(rootfsPath, e.cfg.DataDir); err != nil { ... }
-    phase("lohar_inject_done")
+    // 1b. Inject forge
+    phase("forge_inject_start")
+    if err = injectForgeIntoRootfs(rootfsPath, e.cfg.DataDir); err != nil { ... }
+    phase("forge_inject_done")
 
     // 1c. Resize
     if spec.DiskSizeMB > 0 {
@@ -340,9 +340,9 @@ func (e *Engine) startFCJailed(socketPath string, opts startFCOpts) (*fcProcess,
     phase("socket_ready")
 ```
 
-### Phase 4: Lohar boot timing (`cmd/lohar/main.go`)
+### Phase 4: Forge boot timing (`cmd/forge/main.go`)
 
-Lohar runs inside the VM. Its stderr goes to FC's stderr buffer.
+Forge runs inside the VM. Its stderr goes to FC's stderr buffer.
 Add timestamps to the boot sequence so we can see kernel→userspace
 and each init phase:
 
@@ -350,7 +350,7 @@ and each init phase:
 func main() {
     bootStart := time.Now()
     bp := func(name string) {
-        fmt.Fprintf(os.Stderr, "lohar: boot %s +%dms\n",
+        fmt.Fprintf(os.Stderr, "forge: boot %s +%dms\n",
             name, time.Since(bootStart).Milliseconds())
     }
 
@@ -382,10 +382,10 @@ func main() {
     tcpForward, _ := net.Listen("tcp", ...)
     bp("tcp_listen")              // ← WaitReady can succeed after this
 
-    fmt.Fprintln(os.Stderr, "lohar: ready")
+    fmt.Fprintln(os.Stderr, "forge: ready")
 
     // Boot profile
-    if _, err := os.Stat("/etc/bhatti/init.sh"); err == nil {
+    if _, err := os.Stat("/etc/ahvm/init.sh"); err == nil {
         bp("boot_profile_start")
         cmd.Run()
         bp("boot_profile_done")
@@ -394,16 +394,16 @@ func main() {
 
 To read these after boot:
 ```bash
-bhatti exec <sandbox> -- sudo cat /dev/null
+ahvm exec <sandbox> -- sudo cat /dev/null
 # FC stderr is captured in the stderrBuf ring buffer.
 # Alternatively, read the FC log file.
 ```
 
-Actually, the FC log goes to a file (`logRef` in the jail). The lohar
+Actually, the FC log goes to a file (`logRef` in the jail). The forge
 stderr goes to FC's captured stderr. We need to surface it.
 
 **Better approach:** Write boot timing to a file inside the VM that
-can be read via `bhatti exec` or `bhatti file read`:
+can be read via `ahvm exec` or `ahvm file read`:
 
 ```go
 func main() {
@@ -411,20 +411,20 @@ func main() {
     var bootLog strings.Builder
     bp := func(name string) {
         line := fmt.Sprintf("+%dms %s\n", time.Since(bootStart).Milliseconds(), name)
-        fmt.Fprint(os.Stderr, "lohar: boot "+line)
+        fmt.Fprint(os.Stderr, "forge: boot "+line)
         bootLog.WriteString(line)
     }
 
     // ... all the boot phases ...
 
     bp("tcp_listen")
-    // Write boot timing to a file accessible via bhatti file read
+    // Write boot timing to a file accessible via ahvm file read
     os.WriteFile("/tmp/boot-timing.txt", []byte(bootLog.String()), 0644)
 ```
 
 Then after create:
 ```bash
-bhatti file read <sandbox> /tmp/boot-timing.txt
+ahvm file read <sandbox> /tmp/boot-timing.txt
 ```
 
 ### Phase 5: Server-side handler (`pkg/server/sandbox_handlers.go`)
@@ -513,8 +513,8 @@ DEBUG create.handler phase=volumes_resolved elapsed_ms=2 volume_count=1
 DEBUG create.handler phase=engine_create_start elapsed_ms=2
 DEBUG create.phase sandbox=k3s-s1 phase=rootfs_copy_start elapsed_ms=0
 DEBUG create.phase sandbox=k3s-s1 phase=rootfs_copy_done elapsed_ms=45
-DEBUG create.phase sandbox=k3s-s1 phase=lohar_inject_start elapsed_ms=45
-DEBUG create.phase sandbox=k3s-s1 phase=lohar_inject_done elapsed_ms=80
+DEBUG create.phase sandbox=k3s-s1 phase=forge_inject_start elapsed_ms=45
+DEBUG create.phase sandbox=k3s-s1 phase=forge_inject_done elapsed_ms=80
 DEBUG create.phase sandbox=k3s-s1 phase=resize_start elapsed_ms=80
 DEBUG create.phase sandbox=k3s-s1 phase=e2fsck_done elapsed_ms=120
 DEBUG create.phase sandbox=k3s-s1 phase=truncate_done elapsed_ms=121
@@ -545,7 +545,7 @@ DEBUG create.handler phase=db_store_done elapsed_ms=7085
 This would prove (or disprove) that WaitReady is the bottleneck and
 show exactly how many 2-second TCP timeout cycles are wasted.
 
-The lohar boot timing (from inside the VM) would show:
+The forge boot timing (from inside the VM) would show:
 
 ```
 +0ms start
@@ -566,14 +566,14 @@ with exponential backoff** (50ms → 100ms → 200ms → 400ms → 1s → 2s).
 The first probe would catch the VM at ~50ms after boot.
 
 If the VM itself takes seconds to reach `tcp_listen`, the fix is in
-lohar (lazy-load config drive, defer heavy mounts, etc).
+forge (lazy-load config drive, defer heavy mounts, etc).
 
 ## Implementation notes
 
 - All instrumentation uses `slog.Debug` — invisible at default log
   level (`INFO`). Enable with `--log-level debug` or env var.
-- The lohar boot timing writes to `/tmp/boot-timing.txt` — readable
-  after create via `bhatti file read`, no protocol changes needed.
+- The forge boot timing writes to `/tmp/boot-timing.txt` — readable
+  after create via `ahvm file read`, no protocol changes needed.
 - Zero behavioral changes. Every log line is fire-and-forget.
 - The `phase()` helper is 3 lines of code, inlined per function.
   No new packages, no interfaces, no config.
@@ -587,9 +587,9 @@ The orphaned TAP/FC leak is the #1 issue. A burst of failed creates
 into permanent creation failures until server restart.
 
 1. Audit and fix the defer chain in `Create()` for TAP + FC + IP cleanup
-2. Add startup recovery: clean orphaned TAPs/FCs on `bhatti serve` start
+2. Add startup recovery: clean orphaned TAPs/FCs on `ahvm serve` start
 3. Add `Destroy()` fallback cleanup by TAP name convention
-4. Test: create 10 sandboxes, kill bhatti mid-create, restart, verify
+4. Test: create 10 sandboxes, kill ahvm mid-create, restart, verify
    no orphans remain
 
 ### Priority 2: Reduce WaitReady overhead
@@ -603,10 +603,10 @@ Even when creates succeed, the WaitReady polling pattern wastes time:
 | ~1.5s total on success | Target: ~200-500ms |
 
 If the VM is reachable at ~200ms after InstanceStart (plausible for
-a stripped kernel + fast lohar init), the first 50ms probe would fail,
+a stripped kernel + fast forge init), the first 50ms probe would fail,
 the 100ms probe would catch it. Total WaitReady: ~150ms.
 
-Alternative: have lohar write a readiness sentinel to a shared
+Alternative: have forge write a readiness sentinel to a shared
 file (via virtio-9p or a second virtio-blk device) instead of
 polling TCP. The host watches for the file. Eliminates TCP connect
 overhead entirely.
@@ -619,15 +619,15 @@ at that size:
 
 ```bash
 # Build docker tier at 8GB instead of 2GB
-SIZE_MB=8192 sudo ./scripts/build-tier.sh docker amd64 ./lohar
+SIZE_MB=8192 sudo ./scripts/build-tier.sh docker amd64 ./forge
 ```
 
 Or save a pre-resized golden image:
 ```bash
-bhatti create --name base --image docker --disk-size 8192
-bhatti image save base --name docker-8g
-bhatti destroy base
-# Now: bhatti create --image docker-8g (no resize needed)
+ahvm create --name base --image docker --disk-size 8192
+ahvm image save base --name docker-8g
+ahvm destroy base
+# Now: ahvm create --image docker-8g (no resize needed)
 ```
 
 This saves ~700ms per create.
@@ -660,7 +660,7 @@ we should prove it before shipping it.
 | `pkg/engine/firecracker/fc.go` | 6 log lines in `startFCJailed` |
 | `pkg/agent/client.go` | 2 log lines in `WaitReady` loop |
 | `pkg/server/sandbox_handlers.go` | 5 log lines in POST handler |
-| `cmd/lohar/main.go` | `bp()` helper + 12 log lines + write `/tmp/boot-timing.txt` |
+| `cmd/forge/main.go` | `bp()` helper + 12 log lines + write `/tmp/boot-timing.txt` |
 
 Total: ~50 lines of logging. No new dependencies. No behavioral
 changes. Ship it, run one create with `--log-level debug`, read the
@@ -701,7 +701,7 @@ random MAC. But the host's ARP cache still maps `10.0.1.7 → old MAC`
 as `STALE`:
 
 ```
-$ ip neigh show 10.0.1.7 dev brbhatti-1
+$ ip neigh show 10.0.1.7 dev brahvm-1
 10.0.1.7 lladdr 02:66:65:ec:55:b4 STALE
 ```
 
@@ -735,7 +735,7 @@ transitions to 3/forwarding when FC connects virtio-net).
 
 ## Memory Footprint
 
-**Bhatti server**: **26 MB RSS** (12.5 MB heap, 13.5 MB binary/libs).
+**AHVM server**: **26 MB RSS** (12.5 MB heap, 13.5 MB binary/libs).
 22 threads, 30 FDs, 5 sockets.
 
 **Firecracker VMs** (all 8 are `keep_hot=1`, across 2 users):
@@ -776,11 +776,11 @@ Created a sandbox and ran `dmesg` inside it. Kernel 6.1.155.
 0.557s  AT keyboard input registered (i8042 probe completed)
 0.577s  IP-Config: eth0 configured (10.0.1.7)
 0.579s  EXT4: root filesystem (vda) mounted
-0.585s  "Run /usr/local/bin/lohar as init process"
+0.585s  "Run /usr/local/bin/forge as init process"
 0.592s  Config drive (vdb) mounted
 0.596s  Config drive unmounted
-        ──── lohar: mounts, networking, listeners ────
-~0.7s   TCP listeners ready ("lohar: ready")
+        ──── forge: mounts, networking, listeners ────
+~0.7s   TCP listeners ready ("forge: ready")
 ~0.8s   First successful WaitReady poll
 ```
 
@@ -792,7 +792,7 @@ process connects its virtio-net backend.
 
 This is not the kernel being slow — it's the kernel waiting for the
 host to be ready. The TAP is created late in Create() (after rootfs
-copy, lohar injection, config drive creation). The guest boots faster
+copy, forge injection, config drive creation). The guest boots faster
 than the host finishes prep.
 
 ### Why removing `ip=` is NOT the answer
@@ -806,14 +806,14 @@ egg by configuring the network before init runs.
 
 Currently:
 ```
-copyRootfs (5ms) → injectLohar (34ms) → configDrive (2ms) → allocIP+createTAP (30ms) → startFC (200ms)
+copyRootfs (5ms) → injectForge (34ms) → configDrive (2ms) → allocIP+createTAP (30ms) → startFC (200ms)
                                                                                         ↑ carrier arrives
                                                               guest kernel boots ────────┘ waits ~350ms
 ```
 
 Reordered:
 ```
-allocIP+createTAP (30ms) → copyRootfs (5ms) → injectLohar (34ms) → configDrive (2ms) → startFC (200ms)
+allocIP+createTAP (30ms) → copyRootfs (5ms) → injectForge (34ms) → configDrive (2ms) → startFC (200ms)
 ↑ TAP already up                                                                       ↑ carrier ~immediately
                                                               guest kernel boots ────────┘ IP-Config in ~5ms
 ```
@@ -829,14 +829,14 @@ are more precise than my earlier estimates):
 |---|---|---|---|
 | TAP + IP alloc | 30ms | ~1ms | Pre-created TAP pool |
 | copyRootfs | 43ms | 43ms | Already fast (btrfs reflink) |
-| injectLohar | 34ms | 0-10ms | Checksum skip for base images; e2cp fallback |
+| injectForge | 34ms | 0-10ms | Checksum skip for base images; e2cp fallback |
 | createConfigDrive | 2ms | 2ms | Already fast |
 | Jail hardlinks + chown | 5ms | 5ms | Already fast |
 | FC process + socket | 3ms | 3ms | Already fast |
 | FC API config (10 PUTs) | ~100ms | ~50ms | Keep-alive |
 | InstanceStart → carrier | ~520ms | ~80ms | TAP pre-ready; carrier = FC virtio-net init only |
 | Kernel IP-Config + root mount | ~60ms | ~50ms | Minimal; fast once carrier up |
-| Lohar init | ~80ms | ~65ms | Minor |
+| Forge init | ~80ms | ~65ms | Minor |
 | WaitReady poll alignment | ~50ms avg | ~5ms avg | 10ms initial poll interval |
 | **Total** | **~1,200ms** | **~450ms** | |
 
@@ -875,9 +875,9 @@ Every suggestion checked against `decisions.md`, `PLAN-reliability.md`,
 | TAP pool | ✅ | 37 NO-CARRIER TAPs already on bridges without issue |
 | HTTP keep-alive on FC client | ✅ | Only within single Create() call |
 | Kernel stripping (i8042, DHCP, XFS) | ✅ | kernel.md confirms unused; FC base config includes them |
-| Checksum-skip lohar injection | ⚠️ | Only safe for default base images, NOT OCI/saved images |
-| e2cp for lohar injection | ⚠️ | e2cp may not be installed; actual savings ~24ms (34→10ms) |
-| Raw config drive (no ext4) | ❌ | Protocol change; old lohars in snapshots would break |
+| Checksum-skip forge injection | ⚠️ | Only safe for default base images, NOT OCI/saved images |
+| e2cp for forge injection | ⚠️ | e2cp may not be installed; actual savings ~24ms (34→10ms) |
+| Raw config drive (no ext4) | ❌ | Protocol change; old forges in snapshots would break |
 | Remove kernel `ip=` | ❌ | Breaks chicken-and-egg per decisions.md #11 |
 | Snapshot-based fast create | ✅ | Reliability plan Phase 8 already considers this |
 

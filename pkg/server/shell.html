@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>bhatti shell</title>
+<title>ahvm shell</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
 <style>
   @font-face {
@@ -229,7 +229,7 @@
           const statusEl = document.getElementById('sb-status');
           statusEl.textContent = msg.status || 'connected';
           statusEl.className = 'status ' + (msg.status || '');
-          document.title = 'bhatti · ' + (msg.sandbox || sandboxID);
+          document.title = 'ahvm · ' + (msg.sandbox || sandboxID);
 
           messageEl.style.display = 'none';
           toolbarEl.style.display = 'flex';

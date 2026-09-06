@@ -1,6 +1,6 @@
 # Fix: Published Vite dev-server apps hit 429 during initial page load
 
-Issue: [#6](https://github.com/sahil-shubham/bhatti/issues/6)
+Issue: [#6](https://github.com/mariobm/agent-house/issues/6)
 
 ---
 
@@ -74,7 +74,7 @@ The per-alias bucket of `(burst=2000, sustained=5000/min)` means:
 - A botnet of 100 IPs each doing 20 req/s would hit it (~83/sec
   sustained vs the alias cap)
 
-`r.RemoteAddr` is the real client IP — bhatti terminates TLS directly
+`r.RemoteAddr` is the real client IP — ahvm terminates TLS directly
 on `:443` via `ListenAndServeTLS`, no load balancer in front.
 
 ### 1. Add `perIP` map to `publicRateLimiter`
@@ -253,9 +253,9 @@ without changing the architecture.
 module loads anyway — the request simply fails and the module graph
 breaks. The fix is to not 429 in the first place.
 
-**X-Forwarded-For / X-Real-IP parsing.** Bhatti terminates TLS
+**X-Forwarded-For / X-Real-IP parsing.** AHVM terminates TLS
 directly (`ListenAndServeTLS` on `:443`). `r.RemoteAddr` is the real
-client. If bhatti ever goes behind a load balancer, we'd need to
+client. If ahvm ever goes behind a load balancer, we'd need to
 trust a forwarded header — but that's a separate change with its own
 security considerations (header spoofing).
 

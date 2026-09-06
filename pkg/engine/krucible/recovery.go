@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/agent"
 )
 
 // Recovery makes krucible restart-safe: each sandbox's durable state is written
@@ -40,12 +40,12 @@ type vmRecord struct {
 	LogPath    string `json:"log_path"`
 	BaseSpec   VMSpec `json:"base_spec"`
 	HelperPID  int    `json:"helper_pid"`
-	NetdKey    string `json:"netd_key,omitempty"`   // owner key of the shared bhatti-netd (net backend)
+	NetdKey    string `json:"netd_key,omitempty"`   // owner key of the shared ahvm-netd (net backend)
 	SubnetIdx  int    `json:"subnet_idx,omitempty"` // owner's vnet subnet index
 	NetIP      string `json:"net_ip,omitempty"`     // guest IP on the netd gateway subnet
 }
 
-// netdRecord is the durable state of one owner's shared bhatti-netd, so recovery
+// netdRecord is the durable state of one owner's shared ahvm-netd, so recovery
 // can re-adopt the running gateway (survives daemon restarts, spawned detached)
 // rather than respawn onto a socket it still holds. Lives beside the socket.
 type netdRecord struct {
@@ -136,7 +136,7 @@ func vmFromRecord(rec vmRecord) *VM {
 	}
 }
 
-// readoptNetd re-registers a recovered VM with its owner's shared bhatti-netd:
+// readoptNetd re-registers a recovered VM with its owner's shared ahvm-netd:
 // it rebuilds the per-owner instance from the persisted netd record, re-adopts
 // the still-running gateway (so ensureNetd reuses it instead of respawning onto a
 // socket it holds), and reference-counts it so Destroy of the owner's last

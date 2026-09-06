@@ -9,7 +9,7 @@ import (
 )
 
 // TemplateMountSpec defines a default volume mount for a template.
-// Volume is a named Docker volume tracked by bhatti (legacy v0.1/v0.2).
+// Volume is a named Docker volume tracked by ahvm (legacy v0.1/v0.2).
 // ImageRecord is a v0.3 rootfs image (admin or user-scoped).
 // SnapshotRecord is a v0.3 named VM snapshot.
 // TaskRecord tracks an async operation (e.g., image pull).
@@ -282,7 +282,7 @@ func New(dbPath string) (*Store, error) {
 // secrets_v2, INSERT from secrets, DROP secrets, RENAME. That
 // re-copies every secret on every restart and opens a narrow crash
 // window between DROP and RENAME where the secrets table doesn't
-// exist. Tranche 0a item #6 of PLAN-bhatti-v2.md.
+// exist. Tranche 0a item #6 of PLAN-ahvm-v2.md.
 func migrateSecretsToV2(db *sql.DB) (bool, error) {
 	// Composite PK on (user_id, name) means user_id is part of the
 	// primary key (pk > 0 in pragma_table_info). On a v1 schema,

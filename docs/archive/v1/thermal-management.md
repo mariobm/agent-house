@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/under-the-hood/thermal-states/>.
+> <https://ahvm.sh/docs/under-the-hood/thermal-states/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -9,7 +9,7 @@
 
 # Thermal Management
 
-Bhatti manages VM resources automatically through three thermal states. The consumer never sees this — from the API's perspective, every sandbox is always "running." Behind the scenes, idle VMs progressively release resources and transparently restore when needed.
+AHVM manages VM resources automatically through three thermal states. The consumer never sees this — from the API's perspective, every sandbox is always "running." Behind the scenes, idle VMs progressively release resources and transparently restore when needed.
 
 ## The Three States
 
@@ -85,11 +85,11 @@ Sandboxes with `keep_hot: true` are skipped entirely by the thermal cycle. The V
 
 ```bash
 # At creation time
-bhatti create --name agent --init "hermes gateway" --keep-hot
+ahvm create --name agent --init "hermes gateway" --keep-hot
 
 # Toggle on an existing sandbox
-bhatti edit agent --keep-hot
-bhatti edit agent --allow-cold
+ahvm edit agent --keep-hot
+ahvm edit agent --allow-cold
 ```
 
 ```
@@ -193,7 +193,7 @@ After snapshot/restore, it breaks. The guest kernel's vsock state is stale — c
 
 The fix: after restore, create a new `AgentClient` that uses TCP over the TAP network instead of vsock. Virtio-net (the virtual network card) survives snapshot/restore cleanly — the guest kernel's TCP stack re-establishes connections through the existing TAP device and bridge.
 
-Lohar listens on both vsock *and* TCP on the same ports (1024/1025). Cold boot uses whichever connects first (vsock is slightly faster). Post-restore always uses TCP.
+Forge listens on both vsock *and* TCP on the same ports (1024/1025). Cold boot uses whichever connects first (vsock is slightly faster). Post-restore always uses TCP.
 
 ## Port Scanning
 

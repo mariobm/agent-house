@@ -60,7 +60,7 @@ FCPathOrigin symlink dance.
 
 ### File placement
 
-Before invoking the jailer, bhatti must hard-link (not copy — same
+Before invoking the jailer, ahvm must hard-link (not copy — same
 filesystem, instant) all files FC needs into the chroot root:
 
 ```go
@@ -101,7 +101,7 @@ same blocks, zero copy.
 ### Snapshot paths simplify
 
 Inside the chroot, FC sees:
-- `/rootfs.ext4` (not `/var/lib/bhatti/sandboxes/<id>/rootfs.ext4`)
+- `/rootfs.ext4` (not `/var/lib/ahvm/sandboxes/<id>/rootfs.ext4`)
 - `/mem.snap`
 - `/vm.snap`
 
@@ -122,7 +122,7 @@ perspective, it's at:
 
 We need to set `--api-sock` to a short relative path (e.g., `api.sock`)
 to avoid the 108-byte Unix socket limit. The host-visible path is what
-bhatti uses for HTTP API calls.
+ahvm uses for HTTP API calls.
 
 ### cgroup limits
 
@@ -158,7 +158,7 @@ jail_gid: 10000
 
 ```bash
 # Create the jail user (no login, no home)
-useradd -r -s /usr/sbin/nologin -u 10000 bhatti-vm
+useradd -r -s /usr/sbin/nologin -u 10000 ahvm-vm
 
 # Jailer binary (from FC release tarball)
 cp jailer-v1.14.0-x86_64 /usr/local/bin/jailer
@@ -194,9 +194,9 @@ Modify `startFC` to branch on `JailerBinary`. The jailed path:
 ### Step 2: Adjust all FC API paths
 
 When jailed, FC configuration uses chroot-relative paths:
-- `/rootfs.ext4` instead of `/var/lib/bhatti/sandboxes/<id>/rootfs.ext4`
+- `/rootfs.ext4` instead of `/var/lib/ahvm/sandboxes/<id>/rootfs.ext4`
 - `/config.ext4` instead of full path
-- `/kernel` instead of `/var/lib/bhatti/images/vmlinux-amd64`
+- `/kernel` instead of `/var/lib/ahvm/images/vmlinux-amd64`
 - `/vol-<name>.ext4` for volumes
 
 The Create() flow needs to pass these relative paths to the FC API
@@ -234,7 +234,7 @@ is set up with the snapshot files hard-linked in.
 
 Update `scripts/install.sh` to:
 - Download and install the jailer binary alongside firecracker
-- Create the `bhatti-vm` user if it doesn't exist
+- Create the `ahvm-vm` user if it doesn't exist
 - Add `firecracker_jailer`, `jail_uid`, `jail_gid` to config.yaml
 
 ### Step 7: Pre-upgrade check
@@ -246,7 +246,7 @@ sandboxes), log an error and refuse to start:
 ```
 ERROR: jailer is configured but bare-mode sandboxes exist.
 Destroy all sandboxes and snapshots before enabling the jailer.
-See: bhatti.sh/docs/jailer-migration
+See: ahvm.sh/docs/jailer-migration
 ```
 
 This prevents silent data loss from trying to resume bare-mode
@@ -260,7 +260,7 @@ All tests run on real Firecracker with the jailer binary.
 |------|-------------------|
 | `TestJailerBootAndExec` | Boot VM via jailer, exec command, verify output |
 | `TestJailerChroot` | FC process root is the chroot (`/proc/<pid>/root`) |
-| `TestJailerUIDDrop` | FC runs as `bhatti-vm` user, not root |
+| `TestJailerUIDDrop` | FC runs as `ahvm-vm` user, not root |
 | `TestJailerCgroupLimits` | `memory.max` and `cpu.max` set correctly |
 | `TestJailerSnapshotRoundtrip` | Create → stop → start → exec works |
 | `TestJailerCheckpointResume` | Checkpoint → destroy → resume from snapshot |
@@ -276,22 +276,22 @@ All tests run on real Firecracker with the jailer binary.
 
 ```bash
 # 1. Save any important sandbox state to volumes
-bhatti exec my-sandbox -- cp -r /important /workspace/
+ahvm exec my-sandbox -- cp -r /important /workspace/
 
 # 2. Save sandbox rootfs as images (if customized)
-bhatti image save my-sandbox --name my-env
+ahvm image save my-sandbox --name my-env
 
 # 3. Delete all snapshots
-bhatti snapshot list --json | jq -r '.[].name' | xargs -I{} bhatti snapshot delete {} --yes
+ahvm snapshot list --json | jq -r '.[].name' | xargs -I{} ahvm snapshot delete {} --yes
 
 # 4. Delete all sandboxes
-bhatti list --json | jq -r '.[].id' | xargs -I{} bhatti destroy {} --yes
+ahvm list --json | jq -r '.[].id' | xargs -I{} ahvm destroy {} --yes
 
-# 5. Update bhatti (install script installs jailer + creates user)
-curl -fsSL bhatti.sh/install | sudo bash
+# 5. Update ahvm (install script installs jailer + creates user)
+curl -fsSL ahvm.sh/install | sudo bash
 
 # 6. Recreate sandboxes
-bhatti create --name my-sandbox --image my-env --volume workspace:/workspace
+ahvm create --name my-sandbox --image my-env --volume workspace:/workspace
 ```
 
 ## Not in this phase

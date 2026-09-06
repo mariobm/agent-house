@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // thermalEngine is the optional thermal surface an engine implements. Mirrors

@@ -58,9 +58,9 @@ check). **Remaining: the GICv2 distributor + CPU-interface register save/restore
 - **Guest memory** (`vmm/src/snapshot.rs`): arch-agnostic, done.
 - **Device persist** (`devices/src/virtio/persist.rs`, `device_manager/kvm/mmio.rs`):
   arch-agnostic (virtio queues/vsock/block/rng/console), done and used by x86.
-- **bhatti side**: `Stop`/`Start`/`validateBundle`/`EnsureHot`/bundle manifest —
+- **ahvm side**: `Stop`/`Start`/`validateBundle`/`EnsureHot`/bundle manifest —
   all engine-level, arch-agnostic. The manifest already writes `arch:"aarch64"`
-  on an arm64 build (the SNAPSHOT verb in `libkrun/src/lib.rs`). **No bhatti Go
+  on an arm64 build (the SNAPSHOT verb in `libkrun/src/lib.rs`). **No ahvm Go
   changes expected** beyond un-skipping `TestKrucibleSnapshotSuite` on arm64.
 
 The three things that are x86-only today and must gain an aarch64-linux impl:
@@ -218,7 +218,7 @@ instruction) and take the structural fix, not a workaround.
 | 3 | (B) `Vmm.intc` + GICv2 trait save/restore + aarch64 `VmState` | `lib.rs`, `builder.rs`, `gic.rs`, `kvmgicv2.rs`, `vstate.rs` | `TestKrucibleSnapshotSuite` Stop/Start + exec-after-restore + RAM-survived on raspi-5a | med |
 | 4 | widen the `cold_tier` matches! to `(linux,aarch64)` end-to-end | `build.rs` ×N | `SNAPSHOT` verb no longer returns "not supported"; full suite green on Pi | low |
 | 5 | GICv3 impl (best-effort, unvalidated) + version-tag refuse | `kvmgicv3.rs`, `gic.rs` | compiles; refuses cross-version; **not** marked green | low (no hw) |
-| 6 | docs + matrix flip (arm64 cold = ✓), un-skip Go suite | bhatti | suite green; HANDOFF/§6f updated | — |
+| 6 | docs + matrix flip (arm64 cold = ✓), un-skip Go suite | ahvm | suite green; HANDOFF/§6f updated | — |
 
 **Local typecheck loop (step 1)** is worth the one-time setup: `rustup target add
 aarch64-unknown-linux-gnu`; `cargo check --target aarch64-unknown-linux-gnu -p

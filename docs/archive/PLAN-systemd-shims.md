@@ -5,7 +5,7 @@ Previous: `v1.10.1` (CLI/UX fixes, shipped)
 Triggered by: GitHub issue #12 follow-up — `systemctl status sshd` reports
 "inactive" while `systemctl status ssh` reports "active" on the same daemon.
 
-lohar today reimplements roughly nine pieces of systemd's userspace at varying
+forge today reimplements roughly nine pieces of systemd's userspace at varying
 fidelity: PID 1 init, systemctl, journalctl, /dev/log syslog, /etc/resolv.conf
 management, hostname, /run tmpfile creation, target-wants service activation,
 and (via shell) policy-rc.d + runlevel. The systemctl bug Fastidious found is
@@ -28,7 +28,7 @@ files" and "a thing you can reason about with a systemd mental model".
 ## Why this plan now
 
 The user-visible bug is small: status reports the wrong thing for one alias.
-But the debug ([github.com/sahil-shubham/bhatti/issues/12](https://github.com/sahil-shubham/bhatti/issues/12))
+But the debug ([github.com/mariobm/agent-house/issues/12](https://github.com/mariobm/agent-house/issues/12))
 showed:
 
 1. `systemctl status sshd` says inactive while `systemctl status ssh` says
@@ -36,13 +36,13 @@ showed:
 2. `systemctl stop sshd` is a **silent no-op** while the daemon keeps running.
    Demonstrated on the same VM as root: pidfile keyed by canonical name, lookup
    keyed by argument string, the two never meet.
-3. `systemctl stop ssh` from `bhatti exec` (non-root) silently exits 0 without
+3. `systemctl stop ssh` from `ahvm exec` (non-root) silently exits 0 without
    stopping anything because `svcStop` ignores `kill()` errors.
 4. `parseServiceFile` reads exactly one file. Drop-in directories
    (`<unit>.service.d/*.conf`) are silently ignored — that's where most of the
    distro-shipped behaviour customisation lives.
 5. `svcEnableUnit` ignores `[Install] Alias=` directives. Real systemd creates
-   an alias symlink during enable; lohar doesn't, which is why `sshd.service`
+   an alias symlink during enable; forge doesn't, which is why `sshd.service`
    doesn't exist as a filesystem entity at all in our test VM, breaking any
    tool that scans `/etc/systemd/system/`.
 
@@ -53,7 +53,7 @@ every alias) at lookup time to the same pointer. State lives on the Unit, never
 keyed by name. The data model makes the "two names disagree" bug class
 unrepresentable.
 
-A second realisation came from surveying the rest of lohar: most of the other
+A second realisation came from surveying the rest of forge: most of the other
 systemd-shaped surfaces have the same architectural shape problem. They each
 make sense in isolation; they're inconsistent as a set; they share enough
 state that bugs in one bleed into another. This plan addresses them together.
@@ -68,7 +68,7 @@ it should be, and the gaps in the smaller shims are closed.
 ## What we read
 
 To make sure this plan isn't a tactical patch, I read the implementations of
-the things lohar is shimming:
+the things forge is shimming:
 
 - **systemd itself** (`github.com/systemd/systemd`,
   `src/core/{unit,manager,load-fragment}.{c,h}` and `src/basic/unit-name.{c,h}`).
@@ -103,10 +103,10 @@ What this means for our fix shape:
 
 | # | Shim | Real systemd counterpart | Current fidelity | Severity of gaps |
 |---|------|--------------------------|------------------|------------------|
-| 1 | `runAgent()` (PID 1) | systemd PID 1 | Mounts, signals, zombie reap, `/run/{systemd,bhatti}` dirs, target-wants scan. **No tmpfiles.d, no sysusers.d, no generators, no targets/dependencies, no socket activation, no cgroup unit assignment.** | Medium. Most things work because postinst handles their own users/dirs. Snapshot/restore lifecycle is unique and not systemd-equivalent — that's by design. |
+| 1 | `runAgent()` (PID 1) | systemd PID 1 | Mounts, signals, zombie reap, `/run/{systemd,ahvm}` dirs, target-wants scan. **No tmpfiles.d, no sysusers.d, no generators, no targets/dependencies, no socket activation, no cgroup unit assignment.** | Medium. Most things work because postinst handles their own users/dirs. Snapshot/restore lifecycle is unique and not systemd-equivalent — that's by design. |
 | 2 | `/usr/bin/systemctl` shim | systemd's `systemctl` D-Bus client | start/stop/restart/reload/enable/disable/status/show/cat/mask/unmask/list-units/list-unit-files/preset/kill/is-active/is-enabled. **Name-keyed state, no alias merge, no drop-ins, no privilege boundary, silent kill failures, no failed-state tracking, no `Restart=` policy, no `Type=notify` sd_notify protocol, no socket activation runtime.** | **High.** This is the one Fastidious tripped on. See the "Why this plan now" list above. |
-| 3 | `/usr/bin/journalctl` shim | systemd-journald + journalctl | Reads `/var/log/bhatti/<unit>.log`. Supports `-u`, `-f`, `-n`. **No metadata indexing, no cursors, no `--since`/`--until`, no priority filtering, no boot rotation, no JSON output, no kernel ringbuffer, splits per-name not per-Unit (so alias bug bleeds in here too).** | Medium. Users mostly want `tail -f`; that works. The alias-split is the same bug class as #2. |
-| 4 | `/dev/log` syslog receiver | systemd-journald (or rsyslog) | Listens on unix datagram, parses `<priority>tag[pid]: msg`, appends to `/var/log/bhatti/<tag>.log`. **No structured fields, no priority filtering, no rate limiting, no rotation, no `_TRANSPORT=stdout` capture (only syslog).** | Low. Works for the "I want to see sshd.log" case. Tag-keying is independent of the systemctl Unit identity, so logs from a service started under one name go to a different file than logs sent to syslog by the same daemon — same identity-fragmentation bug as #2 and #3. |
+| 3 | `/usr/bin/journalctl` shim | systemd-journald + journalctl | Reads `/var/log/ahvm/<unit>.log`. Supports `-u`, `-f`, `-n`. **No metadata indexing, no cursors, no `--since`/`--until`, no priority filtering, no boot rotation, no JSON output, no kernel ringbuffer, splits per-name not per-Unit (so alias bug bleeds in here too).** | Medium. Users mostly want `tail -f`; that works. The alias-split is the same bug class as #2. |
+| 4 | `/dev/log` syslog receiver | systemd-journald (or rsyslog) | Listens on unix datagram, parses `<priority>tag[pid]: msg`, appends to `/var/log/ahvm/<tag>.log`. **No structured fields, no priority filtering, no rate limiting, no rotation, no `_TRANSPORT=stdout` capture (only syslog).** | Low. Works for the "I want to see sshd.log" case. Tag-keying is independent of the systemctl Unit identity, so logs from a service started under one name go to a different file than logs sent to syslog by the same daemon — same identity-fragmentation bug as #2 and #3. |
 | 5 | `/etc/resolv.conf` management (`applyDNS`, `ensureResolvConf`) | systemd-resolved + nss-resolve | Writes a static resolv.conf at boot from config drive or fallback. **No 127.0.0.53 stub resolver, no per-link DNS, no DNSSEC, no caching, no LLMNR/mDNS.** | Low. We deliberately keep this minimal; the rootfs pins out `systemd-resolved`. The gap is acceptable. |
 | 6 | Hostname (`Sethostname` + `/etc/hosts`) | systemd-hostnamed | Set once at boot from config. No D-Bus, no transient/static distinction, no `hostnamectl`. | Negligible. |
 | 7 | `/run/systemd/system` marker | systemd's runtime dir convention | Empty directory created at boot. Causes `deb-systemd-helper` to take the systemctl path instead of the no-op path. | Low. Works as intended. The dir being empty means we don't honour drop-ins placed at runtime — see C2. |
@@ -138,20 +138,20 @@ A fourth rule comes from systemd's process model:
 
 4. **Privileged operations run in PID 1; the CLI is a thin client.** systemd's
    `systemctl` IPCs into PID 1 over D-Bus; polkit checks the caller's identity
-   at the bus boundary. We will use lohar's existing UDS instead of D-Bus, but
+   at the bus boundary. We will use forge's existing UDS instead of D-Bus, but
    the topology is the same: the systemctl shim becomes a client that asks
-   PID-1 lohar to do the privileged thing, with caller-uid propagated for
+   PID-1 forge to do the privileged thing, with caller-uid propagated for
    authorisation.
 
 ```
    ┌─────────────────────────────────────────────────────────┐
    │ /usr/bin/systemctl  (thin client, runs as caller)        │
    │ — argument parsing, output formatting                    │
-   │ — IPCs the requested op to PID-1 lohar via UDS           │
+   │ — IPCs the requested op to PID-1 forge via UDS           │
    └────────────────────┬────────────────────────────────────┘
                         │  privileged boundary (uid check + audit)
    ┌────────────────────▼────────────────────────────────────┐
-   │ lohar agent (PID 1, runs as root)                        │
+   │ forge agent (PID 1, runs as root)                        │
    │                                                          │
    │  ┌────────────────────────────────────────────────────┐ │
    │  │ Unit registry (n:1 hashmap)                        │ │
@@ -208,7 +208,7 @@ the same root cause.
 
 ## C1 — Unit identity + registry (the architectural core)
 
-New file: `cmd/lohar/unit.go`
+New file: `cmd/forge/unit.go`
 
 This is the change that everything else builds on. The systemctl shim today is
 a kitchen of `func(name string)` that each call `findServiceFile`, `pidFile`,
@@ -277,12 +277,12 @@ The result: `Resolve("ssh")` and `Resolve("sshd")` return the same pointer.
 
 ```go
 // before
-pidFile(name)            → /run/bhatti/services/<name>.pid
-serviceLogPath(name)     → /var/log/bhatti/<name>.log
+pidFile(name)            → /run/ahvm/services/<name>.pid
+serviceLogPath(name)     → /var/log/ahvm/<name>.log
 
 // after
-(u *Unit) PidPath()      → /run/bhatti/services/<u.Canonical>.pid
-(u *Unit) LogPath()      → /var/log/bhatti/<u.Canonical>.log
+(u *Unit) PidPath()      → /run/ahvm/services/<u.Canonical>.pid
+(u *Unit) LogPath()      → /var/log/ahvm/<u.Canonical>.log
 (u *Unit) WantsLink(target string) string  // /etc/systemd/system/<target>.wants/<u.Canonical>.service
 ```
 
@@ -334,19 +334,19 @@ for _, raw := range units {
 
 ### What stays the same
 
-- Pidfile path: `/run/bhatti/services/<canonical>.pid`. The on-disk format is
-  unchanged; in practice the only files lohar wrote on the test VM were
+- Pidfile path: `/run/ahvm/services/<canonical>.pid`. The on-disk format is
+  unchanged; in practice the only files forge wrote on the test VM were
   already keyed by canonical name.
-- Logfile path: `/var/log/bhatti/<canonical>.log`. Same reasoning.
+- Logfile path: `/var/log/ahvm/<canonical>.log`. Same reasoning.
 - Output format of `status`, `show`, `cat`, `list-units`, `list-unit-files`.
 
 ### Changes
 
-- `cmd/lohar/unit.go`: new file, ~250 lines. `Unit` type, `Registry`,
+- `cmd/forge/unit.go`: new file, ~250 lines. `Unit` type, `Registry`,
   `Resolve`, `Unit` methods.
-- `cmd/lohar/systemctl.go`: rewrite operation functions to take `*Unit`. The
+- `cmd/forge/systemctl.go`: rewrite operation functions to take `*Unit`. The
   file shrinks because dedup goes away (~1100 → ~800 LOC).
-- `cmd/lohar/systemctl_test.go`: update test signatures; add the regression
+- `cmd/forge/systemctl_test.go`: update test signatures; add the regression
   tests in C7.
 
 ---
@@ -396,8 +396,8 @@ list-reset semantics).
 
 ### Changes
 
-- `cmd/lohar/unit.go`: drop-in walk inside `Resolve`, ~40 lines.
-- `cmd/lohar/systemctl.go`: `serviceFile.merge`, ~25 lines.
+- `cmd/forge/unit.go`: drop-in walk inside `Resolve`, ~40 lines.
+- `cmd/forge/systemctl.go`: `serviceFile.merge`, ~25 lines.
 - Test: drop-in overrides `ExecStart`; multiple drop-ins merge in alphabetical
   order; `ExecStart=` (empty) resets prior values.
 
@@ -410,12 +410,12 @@ created from the `[Install]` section:
 
 - `WantedBy=multi-user.target` → `multi-user.target.wants/ssh.service`
 - `RequiredBy=foo.service`     → `foo.service.requires/ssh.service`
-- **`Alias=sshd.service`       → `/etc/systemd/system/sshd.service`** ← lohar misses this
+- **`Alias=sshd.service`       → `/etc/systemd/system/sshd.service`** ← forge misses this
 
 The third one matters because it makes the alias visible to anything globbing
 `/etc/systemd/system/`, including:
 
-- lohar's own `svcIsEnabled` (which globs `*.wants/<name>.service`)
+- forge's own `svcIsEnabled` (which globs `*.wants/<name>.service`)
 - Other unit files that say `After=sshd.service` instead of `After=ssh.service`
 - Distro tooling that probes for unit files by alias name
 - Cold-restart loader: with the symlink in place, the inode-merge in C1's
@@ -443,7 +443,7 @@ which matches systemd's behaviour).
 
 ### Changes
 
-- `cmd/lohar/systemctl.go`: alias-symlink creation in `svcEnableUnit`, removal
+- `cmd/forge/systemctl.go`: alias-symlink creation in `svcEnableUnit`, removal
   in `svcDisableUnit`, ~30 lines.
 - Test: enable creates the alias symlink; disable removes it; cold-load via
   `Registry.Resolve` finds the alias through the symlink-by-inode path.
@@ -453,18 +453,18 @@ which matches systemd's behaviour).
 ## C4 — Privilege boundary: systemctl as IPC client
 
 This closes the second-most-dangerous bug found in the issue #12 debug:
-`bhatti exec <vm> -- systemctl stop ssh` (default unprivileged user) silently
-exits 0 because `svcStop`'s `kill()` returns `EPERM` and lohar drops the error.
+`ahvm exec <vm> -- systemctl stop ssh` (default unprivileged user) silently
+exits 0 because `svcStop`'s `kill()` returns `EPERM` and forge drops the error.
 The same pattern hides in `svcStart`/`svcReload`/`svcKill`/`svcRestart`.
 
 The fix is to invert the privilege model so it matches systemd: the
-`/usr/bin/systemctl` binary becomes a thin client that asks PID-1 lohar to
+`/usr/bin/systemctl` binary becomes a thin client that asks PID-1 forge to
 perform the operation. PID 1 runs as root and has the privilege; the client
 just formats output and returns the exit code.
 
 ### Wire format
 
-A new vsock/UDS endpoint on PID 1 lohar, alongside the existing exec/forward
+A new vsock/UDS endpoint on PID 1 forge, alongside the existing exec/forward
 listeners. The protocol is JSON over the existing control connection — same
 auth, same observability, same connection multiplexing.
 
@@ -516,7 +516,7 @@ existing scripts and parsing tools work.
 
 Read-only ops (status, show, cat, is-active, is-enabled, list-units,
 list-unit-files, journalctl read) keep their current in-process path. They
-don't need privilege, the IPC round-trip would slow down `bhatti exec` calls
+don't need privilege, the IPC round-trip would slow down `ahvm exec` calls
 that just want to check status, and the agent is already PID 1 reading the
 same files.
 
@@ -540,13 +540,13 @@ if requiresPrivilege(command) {
 // otherwise, in-process as today
 ```
 
-PID 1 lohar handles the request by running the same `svc*` operation
+PID 1 forge handles the request by running the same `svc*` operation
 functions in-process, against the same Registry. No process fork, no extra
 goroutine pool — these ops are fast.
 
 ### Snapshot/restore considerations
 
-The IPC endpoint listens on UDS at `/run/bhatti/control.sock` (already
+The IPC endpoint listens on UDS at `/run/ahvm/control.sock` (already
 exists); no changes to the existing exec/forward vsock listeners. Adding a
 new code path on the existing socket is structurally identical to adding a
 new exec verb, which already survives snapshot/restore correctly.
@@ -577,11 +577,11 @@ func svcStop(u *Unit) error {
 
 ### Changes
 
-- `cmd/lohar/systemctl_ipc.go`: new file, ~200 lines. Request/response types,
+- `cmd/forge/systemctl_ipc.go`: new file, ~200 lines. Request/response types,
   client dispatch, server handler that calls into the same `svc*` functions.
-- `cmd/lohar/handler.go`: new control-connection verb `systemctl` routed to
+- `cmd/forge/handler.go`: new control-connection verb `systemctl` routed to
   the handler.
-- `cmd/lohar/systemctl.go`: error propagation in `svcStop`/`svcKill`/
+- `cmd/forge/systemctl.go`: error propagation in `svcStop`/`svcKill`/
   `svcReload` (~30 lines of `if err != nil { return err }` discipline).
 - Test: non-root caller gets access-denied; root caller succeeds; ESRCH on a
   dead pidfile returns 0 (already-stopped is success); `kill -EPERM` is no
@@ -611,12 +611,12 @@ func runJournalctl(args []string) {
 This collapses the same alias-split bug that affects the systemctl shim:
 `journalctl -u sshd` and `journalctl -u ssh` now read the same file.
 
-The standalone `/var/log/bhatti/<tag>.log` files written by syslog (#4 in the
+The standalone `/var/log/ahvm/<tag>.log` files written by syslog (#4 in the
 inventory) are also reconciled — see C5.
 
 ### Changes
 
-- `cmd/lohar/systemctl.go` (the `runJournalctl` function): use registry,
+- `cmd/forge/systemctl.go` (the `runJournalctl` function): use registry,
   ~10 LOC change.
 - Test: `journalctl -u sshd` and `journalctl -u ssh` both return the same
   output after a service started under either name.
@@ -625,20 +625,20 @@ inventory) are also reconciled — see C5.
 
 ## C5 — Syslog tag → Unit canonical reconciliation
 
-Today, `startSyslogReceiver` writes to `/var/log/bhatti/<tag>.log` where
+Today, `startSyslogReceiver` writes to `/var/log/ahvm/<tag>.log` where
 `<tag>` is whatever syslog message tag the daemon used (typically the binary
-name — `sshd`, not `ssh`). lohar's `svcStart` writes to
-`/var/log/bhatti/<service-name>.log`. So a single daemon ends up with logs
+name — `sshd`, not `ssh`). forge's `svcStart` writes to
+`/var/log/ahvm/<service-name>.log`. So a single daemon ends up with logs
 split across two files: one captured from stdout/stderr (named after the
 service), one received over /dev/log (named after the binary).
 
 Fix: in the syslog receiver, look up the tag in the Unit registry. If the
 tag matches a Unit's canonical name OR any alias, write to the canonical
 log path. If it doesn't match any known unit (kernel, login, custom daemons
-not managed by lohar), fall back to `/var/log/bhatti/<tag>.log` as today.
+not managed by forge), fall back to `/var/log/ahvm/<tag>.log` as today.
 
 ```go
-logPath := filepath.Join("/var/log/bhatti", tag+".log")  // fallback
+logPath := filepath.Join("/var/log/ahvm", tag+".log")  // fallback
 if u, err := reg.Resolve(tag); err == nil {
     logPath = u.LogPath()
 }
@@ -646,7 +646,7 @@ if u, err := reg.Resolve(tag); err == nil {
 
 ### Changes
 
-- `cmd/lohar/main.go`: registry lookup in `startSyslogReceiver`,
+- `cmd/forge/main.go`: registry lookup in `startSyslogReceiver`,
   ~5 LOC change. Registry must be a process-wide singleton initialised in
   `runAgent` for this to work — small refactor in C1.
 - Test: write a syslog message tagged `sshd`; assert it lands in
@@ -747,8 +747,8 @@ and zeroes `RestartCount`.
 
 ### Changes
 
-- `cmd/lohar/unit.go`: ActiveState + watcher goroutine, ~80 LOC.
-- `cmd/lohar/systemctl.go`: `Restart=` parsing, `is-failed` op, `reset-failed`
+- `cmd/forge/unit.go`: ActiveState + watcher goroutine, ~80 LOC.
+- `cmd/forge/systemctl.go`: `Restart=` parsing, `is-failed` op, `reset-failed`
   op, ~50 LOC.
 - Test: `Restart=on-failure` actually restarts a crashing service;
   `is-failed` returns "failed" after a crash; `reset-failed` clears it;
@@ -758,11 +758,11 @@ and zeroes `RestartCount`.
 
 ## C7 — Tests
 
-New file: `cmd/lohar/unit_test.go` (registry + resolution).
-Extends: `cmd/lohar/systemctl_test.go` (operation tests with new signatures).
+New file: `cmd/forge/unit_test.go` (registry + resolution).
+Extends: `cmd/forge/systemctl_test.go` (operation tests with new signatures).
 Extends: `pkg/engine/firecracker/systemctl_test.go` (integration on Pi).
 
-### Unit tests (in lohar package)
+### Unit tests (in forge package)
 
 ```go
 func TestRegistryAliasResolution(t *testing.T)
@@ -823,7 +823,7 @@ func TestEnableCreatesAliasSymlink(t *testing.T)
 func TestSyslogReconciledToUnit(t *testing.T)
     // Register Unit "ssh" with alias "sshd".
     // Send syslog message tagged "sshd[123]: hello".
-    // Assert /var/log/bhatti/ssh.log contains "hello".
+    // Assert /var/log/ahvm/ssh.log contains "hello".
 ```
 
 ### Integration tests (engine package, on Pi)
@@ -836,9 +836,9 @@ func TestSystemctlAliasNotRegression(t *testing.T)
     // systemctl start ssh → starts. systemctl status sshd → active.
 
 func TestSystemctlPrivilegeBoundary(t *testing.T)
-    // bhatti exec (default uid 1000) systemctl stop ssh → exit non-zero,
+    // ahvm exec (default uid 1000) systemctl stop ssh → exit non-zero,
     // stderr contains "Access denied". Daemon still running.
-    // bhatti exec --user root systemctl stop ssh → exit 0, daemon stopped.
+    // ahvm exec --user root systemctl stop ssh → exit 0, daemon stopped.
 
 func TestRestartPolicyOnFailure(t *testing.T)
     // Install a custom unit with Restart=on-failure that exits 1.
@@ -897,7 +897,7 @@ architecture.
 ### `docs/architecture.md` — new section "Userspace shims"
 
 The shim inventory table from this plan, with each row pointing at the
-relevant code path. So a future contributor reading "what is lohar's
+relevant code path. So a future contributor reading "what is forge's
 relationship to systemd" gets one place that answers it.
 
 ### Changes
@@ -918,7 +918,7 @@ Each Cn ships when:
 The series is "done" when a real `apt install openssh-server && apt install
 nginx && apt install redis-server && apt install postgresql` on a fresh VM
 produces: `systemctl is-active` returning `active` for every service, by every
-name the package's postinst registered, with `bhatti stop && bhatti start`
+name the package's postinst registered, with `ahvm stop && ahvm start`
 preserving state. After that, future-architectural-work items become the next
 batch.
 
@@ -978,7 +978,7 @@ control files. `KillMode=control-group` (the default) makes stop equivalent to
 `echo 1 > cgroup.kill`, which the kernel atomically applies to every process
 in the group.
 
-**What lohar does today.** Every service runs as a bare process with `Setsid`,
+**What forge does today.** Every service runs as a bare process with `Setsid`,
 sharing the VM's memory pool and CPU. We `kill(-pid, SIGTERM)` to the PGID,
 which catches the daemon and its direct children but not anything that
 `setsid()`s itself out, double-forks, or escapes via dbus-activated helpers.
@@ -992,7 +992,7 @@ which catches the daemon and its direct children but not anything that
   "another instance is already running". The user hunts orphans with `ps -ef
   | grep postgres` for 40 minutes.
 - A service that `setsid()`s in `ExecStartPre=` is invisible to `systemctl
-  stop` entirely. It runs forever, consuming resources, until `bhatti destroy`.
+  stop` entirely. It runs forever, consuming resources, until `ahvm destroy`.
 
 **Why this is what makes systemd *systemd*.** The cgroup-per-unit decision is
 the original Lennart-era choice that distinguished systemd from upstart,
@@ -1002,7 +1002,7 @@ service launcher that happens to read .service files — not a process
 supervisor. We already mount cgroup v2 in `runAgent` for Docker; the substrate
 is there, we just don't use it.
 
-**Effort.** ~250 LOC in lohar plus ~50 LOC of cgroup plumbing. Approach: on
+**Effort.** ~250 LOC in forge plus ~50 LOC of cgroup plumbing. Approach: on
 `svcStart`, mkdir the slice and write the PID into `cgroup.procs` after fork;
 parse `MemoryMax=`/`CPUQuota=`/`TasksMax=` into the corresponding cgroup
 files; on `svcStop`, write `1` to `cgroup.kill` (kernel ≥5.14, fine on Pi 5).
@@ -1016,11 +1016,11 @@ finished initialising. PID 1 transitions ActiveState from `activating` to
 shown by `systemctl status`. `WATCHDOG=1` pings keep an `WatchdogSec=` timer
 alive.
 
-**What lohar does today.** `Type=notify` is treated identically to
+**What forge does today.** `Type=notify` is treated identically to
 `Type=simple`. We report `active` the moment fork+exec succeeds.
 
 **Failure modes you'll spend hours on.**
-- `bhatti exec dev -- 'systemctl start postgres && psql -c "select 1"'`
+- `ahvm exec dev -- 'systemctl start postgres && psql -c "select 1"'`
   fails with "connection refused". The user verifies postgres is `active`,
   re-reads their script, blames psql, blames networking, eventually realises
   postgres wasn't actually ready when we said it was.
@@ -1031,7 +1031,7 @@ alive.
   Postgres 14+, NetworkManager, podman, systemd-resolved, almost any Go web
   server with a startup procedure.
 
-**Effort.** ~120 LOC inside the registry built in C1. PID 1 lohar listens on
+**Effort.** ~120 LOC inside the registry built in C1. PID 1 forge listens on
 unix dgram at `/run/systemd/notify`, attributes incoming messages to Units
 (via cgroup membership lookup if F1 has landed, or via PID-to-Unit map
 otherwise), parses `READY=1`/`STATUS=`/`MAINPID=`/`WATCHDOG=1`, transitions
@@ -1044,7 +1044,7 @@ enabled units, runs a topological sort, starts units in waves with barrier
 synchronisation. `After=postgresql.service` actually waits for postgres to
 reach `active` before pgbouncer starts.
 
-**What lohar does today.** Parses these directives into `Unit.Sections` and
+**What forge does today.** Parses these directives into `Unit.Sections` and
 ignores them. `startEnabledServices` iterates `multi-user.target.wants/` in
 directory-listing order, starts everything in parallel.
 
@@ -1054,7 +1054,7 @@ directory-listing order, starts everything in parallel.
   postgres has its socket open, crashes; once F6 (Restart=) lands, it
   thrashes. The user reads pgbouncer logs, postgres logs, network configs,
   spends two hours convinced their stack is broken before discovering boot
-  order is racy on bhatti specifically.
+  order is racy on ahvm specifically.
 - Custom service depends on a mount unit (`After=workspace.mount`); the mount
   isn't ready when the service starts; service fails on missing files. User
   blames the volume code.
@@ -1071,7 +1071,7 @@ barrier between waves depends on F2 to know when a unit is genuinely active
 fails, the unit is skipped without an error — the conventional admin escape
 hatch.
 
-**What lohar does today.** Ignored entirely. Touching the file an admin
+**What forge does today.** Ignored entirely. Touching the file an admin
 thinks will disable a service has no effect.
 
 **Failure modes you'll spend hours on.**
@@ -1093,7 +1093,7 @@ enough to defer until someone asks.
 **What systemd does.** Auto-creates these directories at start time with the
 unit's `User=`/`Group=` ownership. `systemctl clean` removes them.
 
-**What lohar does today.** Ignored. The unit assumes the directory exists.
+**What forge does today.** Ignored. The unit assumes the directory exists.
 
 **Failure modes you'll spend hours on.**
 - A unit declares `StateDirectory=foo` without an explicit `mkdir` in
@@ -1113,7 +1113,7 @@ directives, mkdir each as `/var/lib/<dir>`, `/var/cache/<dir>`,
 `/usr/lib/tmpfiles.d/*.conf` + `/etc/tmpfiles.d/*.conf` to create runtime
 directories declared by packages.
 
-**What lohar does today.** Hardcodes `/run/bhatti/services` and
+**What forge does today.** Hardcodes `/run/ahvm/services` and
 `/run/systemd/system` and that's it. Packages that depend on `/run/sshd`
 happen to work because their postinst does its own `mkdir`; packages that
 rely on tmpfiles.d alone (some NixOS-derived units, some custom daemons)
@@ -1164,7 +1164,7 @@ benefit for our use case:
 
 - **Real systemd as PID 1.** The reasoning from PLAN-systemd-rc.md still
   applies — under Firecracker snapshot/restore on ARM64, child processes of
-  systemd lose their network poller state. lohar stays as PID 1.
+  systemd lose their network poller state. forge stays as PID 1.
 - **D-Bus / sd-bus.** The C4 IPC uses our own UDS protocol, not D-Bus. We
   don't run dbus-daemon and don't intend to. `libpam-systemd` is pinned out
   of the rootfs.
@@ -1172,7 +1172,7 @@ benefit for our use case:
   `tmux new-session` and similar work today because they don't depend on
   logind.
 - **journald binary log format.** Plain-text per-unit logs in
-  `/var/log/bhatti/` are easier to operate, snapshot, and grep. We keep
+  `/var/log/ahvm/` are easier to operate, snapshot, and grep. We keep
   journalctl for compatibility, not for the format.
 - **PrivateTmp / ProtectSystem / sandboxing directives.** The VM is the
   sandbox; process-level hardening inside it is decoration. We honour
@@ -1186,7 +1186,7 @@ benefit for our use case:
 - **udev rules processing.** devtmpfs handles basic device nodes; rule-based
   naming isn't needed for a microVM with known fixed devices.
 - **Socket activation runtime.** Our `resolveSocketToService` already maps
-  `.socket` to `.service` and starts eagerly. True socket activation (lohar
+  `.socket` to `.service` and starts eagerly. True socket activation (forge
   listens, hands the fd to the service on first connection) is a lot of
   code for marginal benefit — services start fast in our VMs anyway.
 - **`OnFailure=`** (start unit X when unit Y fails). Niche, easy to add
@@ -1209,7 +1209,7 @@ Each row: gap → fix → release item → test that proves it.
 | 3 | `svcStop` ignores kill() errors → silent success for non-root | High | Error propagation | C4 | `TestSvcStopErrorPropagation`, `TestSystemctlPrivilegeBoundary` |
 | 4 | Drop-in directories silently ignored | High | Drop-in loader | C2 | `TestRegistryDropInLoad`, `TestDropInOverride` |
 | 5 | `[Install] Alias=` symlinks not created on enable | Medium | Symlink creation | C3 | `TestEnableCreatesAliasSymlink` |
-| 6 | `bhatti exec` (non-root) systemctl ops silently succeed | High | Privilege boundary IPC | C4 | `TestSystemctlPrivilegeBoundary` |
+| 6 | `ahvm exec` (non-root) systemctl ops silently succeed | High | Privilege boundary IPC | C4 | `TestSystemctlPrivilegeBoundary` |
 | 7 | `journalctl -u sshd` and `-u ssh` read different files | Medium | Unit registry in journalctl | C4b | `TestServiceLogsByAlias` |
 | 8 | Syslog logs split between `<canonical>.log` and `<binary>.log` | Medium | Tag→Unit reconcile | C5 | `TestSyslogReconciledToUnit` |
 | 9 | `Restart=on-failure` ignored → crashed services stay dead | Medium | Watcher goroutine | C6 | `TestRestartOnFailure` |
@@ -1242,22 +1242,22 @@ Each row: gap → fix → release item → test that proves it.
 Four reasons.
 
 First, the alias bug Fastidious found is one report; the architectural shape
-that produced it produces the same class of bug everywhere lohar shims
+that produced it produces the same class of bug everywhere forge shims
 something. Fixing the shape once eliminates a class instead of an instance.
 
 Second, the cost is modest — ~600 LOC of new code spread across the Cn
 patches, ~400 LOC of net change in existing files, ~12 new tests. The on-disk
 format doesn't change. The CLI doesn't change. There's no rootfs rebuild
-required (the shim is the lohar
-binary; rebuilding lohar is `make build` + the existing release flow).
+required (the shim is the forge
+binary; rebuilding forge is `make build` + the existing release flow).
 
-Third, the systemctl shim is increasingly the surface bhatti users touch
+Third, the systemctl shim is increasingly the surface ahvm users touch
 when they "really use" their VM (apt install something, expect it to work).
 Each interaction either reinforces "this is a real Linux machine that happens
 to be a sandbox" or breaks the illusion. The bugs in this plan all live on
 the wrong side of that line.
 
-Fourth, building this shim is one of the better learning surfaces in bhatti.
+Fourth, building this shim is one of the better learning surfaces in ahvm.
 The Cn patches teach us systemd's data model (Unit identity, n:1 lookup,
 state-on-identity); the F-items teach us *why* systemd made the choices it
 did (cgroup-per-unit, sd_notify, dependency DAG). We get those lessons by

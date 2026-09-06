@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/agent"
 )
 
 func (s *Server) handleSandboxFiles(w http.ResponseWriter, r *http.Request, id string) {

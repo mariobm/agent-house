@@ -1,6 +1,6 @@
-# Bhatti — Website & Brand Plan
+# AHVM — Website & Brand Plan
 
-A design document for bhatti.sh — the public face of the project.
+A design document for ahvm.sh — the public face of the project.
 Covers brand identity, logo direction, website structure, copy, and
 the two primary conversion paths (self-host install and hosted demo).
 
@@ -8,108 +8,39 @@ the two primary conversion paths (self-host install and hosted demo).
 
 ## 1. Brand Identity
 
-### 1.1 The Metaphor
+> **Archived plan:** the original brand direction in this section has been
+> superseded by the Agent House fork.
 
-Bhatti (भट्टी) is a furnace. Lohar (लोहार) is the blacksmith who works
-inside it. This is the core visual and verbal metaphor — a place where
-raw material (code, agents, workloads) is shaped by fire into something
-useful. The furnace provides the controlled environment; the blacksmith
-does the work.
+### 1.1 The Name
 
-This metaphor is strong because it maps cleanly to the product:
-
-| Metaphor | Product |
-|----------|---------|
-| The furnace (bhatti) | The host daemon — manages fire (VMs), controls temperature (thermal states), provides the environment |
-| The blacksmith (lohar) | The guest agent — PID 1 inside every VM, the one doing the actual work |
-| Fire | Firecracker microVMs — literal fire in the name |
-| Hot/warm/cold | Thermal management states — the furnace regulating itself |
-| Forging | Creating sandboxes — shaping isolated environments from raw compute |
+AHVM expands to **Agent House Virtual Machine**. It describes the product
+plainly: isolated virtual machines operated for Agent House workloads. AHVM is
+a fork of [Bhatti](https://github.com/sahil-shubham/bhatti), but does not carry
+forward the original name's visual or verbal metaphor.
 
 ### 1.2 Logo Direction
 
-The current logo is the hammer-and-pick emoji (⚒). It's placeholder
-energy. The new logo should be a proper mark that works at 16px (favicon),
-32px (GitHub), and full size (website hero).
-
-**Concept: The Bhatti Mark**
-
-A stylized furnace opening — an arch shape with the suggestion of
-contained heat/fire inside. Think of the mouth of a traditional Indian
-bhatti (a clay or brick furnace with an arched opening). Abstract it to
-a geometric form:
-
-```
-     ╭─────────╮
-    ╱     ∆     ╲        ← arch/dome (the furnace opening)
-   │    ∆ ∆ ∆    │       ← abstract flame shapes inside
-   │             │
-   └─────────────┘        ← base/foundation
-```
-
-**Design principles for the mark:**
-
-- **Geometric, not illustrative.** No realistic flames, no clipart
-  anvils. A clean symbol that reads at small sizes.
-- **Single color works.** Must be legible in monochrome (README, CLI
-  output, terminal). Color is additive, not required.
-- **The arch is the signature.** The curved top of a furnace opening is
-  the most distinctive shape. It should be recognizable even without
-  the fire elements.
-- **Warmth, not aggression.** The fire metaphor should feel like a
-  craftsman's tool, not destruction. Warm amber/orange tones, not red.
-
-**Color palette:**
-
-| Role | Color | Usage |
-|------|-------|-------|
-| Primary | `#F97316` (amber-500) | Logo fire element, primary accent, CTAs |
-| Primary dark | `#EA580C` (amber-600) | Hover states, secondary emphasis |
-| Ember | `#FB923C` (amber-400) | Highlights, gradients, glow effects |
-| Background | `#09090B` (zinc-950) | Page background (dark mode default) |
-| Surface | `#18181B` (zinc-900) | Cards, code blocks, elevated surfaces |
-| Border | `#27272A` (zinc-800) | Subtle dividers |
-| Text | `#FAFAFA` (zinc-50) | Primary text |
-| Text muted | `#A1A1AA` (zinc-400) | Secondary text, descriptions |
-
-The amber/orange sits naturally in the furnace metaphor and stands out
-against the dark zinc palette. It's warm without being alarming.
-
-**Alternative concept: The Anvil Silhouette**
-
-If the furnace arch feels too abstract, an anvil silhouette is the other
-strong option — it's the tool of the lohar, universally recognizable,
-and has a distinctive angular profile. However, the furnace opening is
-more unique (anvils are overused in forge/blacksmith branding) and maps
-better to "the environment that contains fire."
-
-**Recommendation:** Commission the furnace-arch mark from a designer,
-provide this brief. For immediate use, a typographic lockup (the word
-"bhatti" in a clean geometric sans with the arch shape integrated into
-a letterform — perhaps the "h" or "tt") works well as a stand-in.
+Use an AHVM or Agent House wordmark. The mark should remain legible at favicon,
+GitHub avatar, and website-hero sizes, work in a single color, and avoid imagery
+tied to the former product name.
 
 ### 1.3 Wordmark
 
-**"bhatti"** — always lowercase. The Hindi origin is the identity; keep
-it. No need for "Bhatti Cloud" or "Bhatti VM" — the single word is the
-brand.
-
-**Typography:** Use a geometric sans-serif for the wordmark and headings.
-Inter, Geist, or Satoshi. The monospace font (for code examples) should
-be Geist Mono, JetBrains Mono, or Berkeley Mono.
+Use **AHVM** for the product name and `ahvm` for commands, binaries, paths, and
+other technical identifiers. Expand it as **Agent House Virtual Machine** on
+first mention.
 
 ### 1.4 Voice & Tone
 
-Bhatti's voice is **direct, technical, and confident without being loud.**
+AHVM's voice is **direct, technical, and confident without being loud.**
 
 - Write like you're explaining to a peer engineer, not selling to a VP.
 - State what it does, show the numbers, let the reader decide.
 - No superlatives ("blazing fast", "revolutionary"). The benchmarks
   speak louder than adjectives.
 - Okay to be opinionated ("We chose X because Y" > "X is supported").
-- Hindi/Urdu names are a feature, not something to explain away. The
-  name section exists for those who are curious; the homepage doesn't
-  need to apologize for non-English naming.
+- Product and component names are plain English. No etymology section needed;
+  the homepage doesn't need to explain naming.
 
 **Examples of voice:**
 
@@ -125,7 +56,7 @@ Bhatti's voice is **direct, technical, and confident without being loud.**
 
 ## 2. Website Structure
 
-One HTML file at `bhatti.sh`. No framework, no build step, no routing.
+One HTML file at `ahvm.sh`. No framework, no build step, no routing.
 
 ### 2.1 Page Flow
 
@@ -133,7 +64,7 @@ One page. Scroll down.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  [bhatti]                       GitHub  Try Demo │
+│  [ahvm]                       GitHub  Try Demo │
 ├─────────────────────────────────────────────────┤
 │  HERO — headline, two CTAs (curl | demo)         │
 ├─────────────────────────────────────────────────┤
@@ -166,7 +97,7 @@ in-place to show the API key.
 Minimal. Logo + wordmark on the left. Links on the right:
 
 ```
-[⚒ bhatti]                                GitHub    Try Demo
+[⚒ ahvm]                                GitHub    Try Demo
 ```
 
 Two links. "GitHub" is plain text (docs live there too — the repo's
@@ -176,7 +107,7 @@ over the hero, gains a background on scroll.
 
 ### 3.2 Hero
 
-The hero has one job: make the visitor understand what bhatti is in
+The hero has one job: make the visitor understand what ahvm is in
 5 seconds, then give them a clear next action.
 
 **Headline:**
@@ -193,7 +124,7 @@ The hero has one job: make the visitor understand what bhatti is in
 
 ```
 ┌──────────────────────────────┐  ┌─────────────────────────┐
-│  curl -fsSL bhatti.sh/i | sh │  │  Try the hosted demo →  │
+│  curl -fsSL ahvm.sh/i | sh │  │  Try the hosted demo →  │
 └──────────────────────────────┘  └─────────────────────────┘
   Self-host (Linux + KVM)            No install — just an API key
 ```
@@ -210,17 +141,17 @@ Below the CTAs, a single line of social proof / orientation:
 static screenshot showing:
 
 ```
-$ bhatti create --name dev --cpus 2 --memory 1024
+$ ahvm create --name dev --cpus 2 --memory 1024
 Created sandbox "dev" (a1b2c3d4) in 3.4s
 
-$ bhatti exec dev -- uname -a
+$ ahvm exec dev -- uname -a
 Linux dev 6.1.155 #1 SMP aarch64 GNU/Linux
 
-$ bhatti exec dev -- node --version
+$ ahvm exec dev -- node --version
 v22.16.0
 
-$ bhatti shell dev
-lohar@dev:/workspace$
+$ ahvm shell dev
+forge@dev:/workspace$
 ```
 
 Keep it real — actual commands, actual output. No mocked-up fantasy
@@ -243,7 +174,7 @@ namespace trick — a separate machine.
 
 **Memory snapshots. Not just filesystem.**
 
-When bhatti snapshots a VM, it captures everything: running processes,
+When ahvm snapshots a VM, it captures everything: running processes,
 open file descriptors, TCP connections, in-memory state. Resume picks up
 exactly where it left off. An `npm install` running when you paused
 continues running after resume.
@@ -284,7 +215,7 @@ but a cleaner version that shows the flow:
   Your code / AI agent
         │
         ▼
-  bhatti daemon (host)
+  ahvm daemon (host)
   REST API · Thermal manager · Multi-tenant auth
         │
         ▼
@@ -292,7 +223,7 @@ but a cleaner version that shows the flow:
   ┌──────────────────────┐
   │  Linux kernel 6.1    │
   │  Ubuntu 24.04 rootfs │
-  │  lohar (PID 1)       │
+  │  forge (PID 1)       │
   │  Your code runs here │
   └──────────────────────┘
 ```
@@ -321,7 +252,7 @@ go from reading to running in 30 seconds.
 One command. Any Linux machine with KVM.
 
 ```bash
-curl -fsSL bhatti.sh/install | bash
+curl -fsSL ahvm.sh/install | bash
 ```
 
 This downloads pre-built binaries (~15MB total), a kernel, and a minimal
@@ -331,23 +262,23 @@ about 30 seconds.
 Then:
 
 ```bash
-sudo bhatti serve
+sudo ahvm serve
 ```
 
 Your server is running. Create an API key:
 
 ```bash
-sudo bhatti user create --name alice
-# → API key: bht_...
+sudo ahvm user create --name alice
+# → API key: ahv_...
 ```
 
 Give alice the key. She installs the CLI on her Mac:
 
 ```bash
-curl -fsSL bhatti.sh/install | bash
-bhatti setup   # paste the API key
-bhatti create --name dev
-bhatti shell dev
+curl -fsSL ahvm.sh/install | bash
+ahvm setup   # paste the API key
+ahvm create --name dev
+ahvm shell dev
 ```
 
 ---
@@ -363,7 +294,7 @@ bhatti shell dev
 ---
 
 One install URL for everything:
-- `bhatti.sh/install` — unified installer (detects platform, prompts on Linux for CLI vs server)
+- `ahvm.sh/install` — unified installer (detects platform, prompts on Linux for CLI vs server)
 
 The same script handles macOS CLI, Linux CLI, and Linux server installs.
 Re-running updates an existing installation.
@@ -392,19 +323,19 @@ Sandboxes are limited to 1 vCPU, 512MB RAM, and are destroyed after
 After submitting, the same page reveals:
 
 ```
-Your API key: bht_abc123...          [Copy]
+Your API key: ahv_abc123...          [Copy]
 
 Get started:
-  curl -fsSL https://bhatti.sh/cli | sh
-  bhatti setup
-  # Endpoint: https://demo.bhatti.sh
-  # API key:  bht_abc123...
+  curl -fsSL https://ahvm.sh/cli | sh
+  ahvm setup
+  # Endpoint: https://demo.ahvm.sh
+  # API key:  ahv_abc123...
 ```
 
 No page change. The form section transforms into the setup instructions.
 One scroll position, zero navigation.
 
-We'll only email you about bhatti launches. Nothing else. (Say this
+We'll only email you about ahvm launches. Nothing else. (Say this
 next to the input.) See §5 for the server-side implementation.
 
 ### 3.7 Use Cases
@@ -421,11 +352,11 @@ snapshotted and resumed. Streaming exec, server-side file truncation,
 and process group kill are built for the agent workload.
 
 ```bash
-bhatti create --name agent-run-42 --cpus 2 --memory 1024
-bhatti exec agent-run-42 -- npm install
-bhatti exec agent-run-42 -- npm test
-bhatti file read agent-run-42 /workspace/results.json
-bhatti destroy agent-run-42
+ahvm create --name agent-run-42 --cpus 2 --memory 1024
+ahvm exec agent-run-42 -- npm install
+ahvm exec agent-run-42 -- npm test
+ahvm file read agent-run-42 /workspace/results.json
+ahvm destroy agent-run-42
 ```
 
 ---
@@ -437,8 +368,8 @@ Chromium starts automatically on CDP port 9222. Snapshot a logged-in
 browser state, resume it 100 times — no re-login, no cookie management.
 
 ```bash
-bhatti create --name scraper --image browser
-bhatti exec scraper -- python3 -c "
+ahvm create --name scraper --image browser
+ahvm exec scraper -- python3 -c "
 from playwright.sync_api import sync_playwright
 with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp('http://localhost:9222')
@@ -457,13 +388,13 @@ filesystem, `docker compose`. Snapshot your entire stack — Postgres,
 Redis, your app — and resume it instantly with all containers running.
 
 ```bash
-bhatti create --name ci --image docker --memory 2048
-bhatti exec ci -- docker compose up -d
-bhatti exec ci -- docker compose ps
+ahvm create --name ci --image docker --memory 2048
+ahvm exec ci -- docker compose up -d
+ahvm exec ci -- docker compose ps
 # snapshot the entire running stack
-bhatti stop ci
+ahvm stop ci
 # ... later ...
-bhatti start ci
+ahvm start ci
 # everything is back, containers running, data intact
 ```
 
@@ -471,10 +402,10 @@ bhatti start ci
 
 ### 3.8 Comparison
 
-A table that's honest about tradeoffs. Don't pretend bhatti wins
+A table that's honest about tradeoffs. Don't pretend ahvm wins
 everywhere — it doesn't. The honesty builds trust.
 
-| | bhatti | Docker | E2B | Fly Machines | EC2 |
+| | ahvm | Docker | E2B | Fly Machines | EC2 |
 |---|---|---|---|---|---|
 | **Isolation** | VM (own kernel) | Container (shared kernel) | VM | VM | VM |
 | **Boot time** | ~3.5s | <1s | ~2s | ~1s | 30-60s |
@@ -486,7 +417,7 @@ everywhere — it doesn't. The honesty builds trust.
 | **Multi-tenant** | ✓ (per-user isolation) | Manual | ✓ | ✓ | IAM |
 | **Hardware** | Any Linux + KVM | Any Linux | Their cloud | Their cloud | AWS |
 
-**Where bhatti is not the right choice:**
+**Where ahvm is not the right choice:**
 - You need sub-second boot (Docker is faster to start)
 - You need GPU access (Firecracker doesn't support GPU passthrough)
 - You need Windows VMs (Firecracker is Linux-only)
@@ -496,14 +427,14 @@ everywhere — it doesn't. The honesty builds trust.
 
 ## 4. It's One Page
 
-`bhatti.sh` is a single HTML file. No subdomains, no `/docs` renderer,
+`ahvm.sh` is a single HTML file. No subdomains, no `/docs` renderer,
 no dashboard route. One file, one domain.
 
 | URL | What |
 |-----|------|
-| `bhatti.sh` | The page. Everything above lives here. |
-| `bhatti.sh/install` | Serves `scripts/install.sh` (unified installer) |
-| `bhatti.sh/install.sh` | Alias for `/install` |
+| `ahvm.sh` | The page. Everything above lives here. |
+| `ahvm.sh/install` | Serves `scripts/install.sh` (unified installer) |
+| `ahvm.sh/install.sh` | Alias for `/install` |
 
 That's it. Three routes. Two of them serve the install script.
 
@@ -511,11 +442,11 @@ That's it. Three routes. Two of them serve the install script.
 GitHub. No need to build a docs site — the audience reads markdown.
 
 **The demo API** runs on the Hetzner box at its own address (e.g.,
-`demo.bhatti.sh` or just an IP with a port). The demo section of the
-page points users at it. It's not part of the website — it's a bhatti
+`demo.ahvm.sh` or just an IP with a port). The demo section of the
+page points users at it. It's not part of the website — it's a ahvm
 server that happens to be public.
 
-**The dashboard** (`web/index.html`) is served by the bhatti daemon
+**The dashboard** (`web/index.html`) is served by the ahvm daemon
 itself at `/` — it already does this. Anyone who has the demo API
 address can open it in a browser and get the terminal UI. No separate
 hosting needed.
@@ -523,7 +454,7 @@ hosting needed.
 The hero CTA is:
 
 ```bash
-curl -fsSL bhatti.sh/install | bash
+curl -fsSL ahvm.sh/install | bash
 ```
 
 This must work. Currently served as a 302 redirect to GitHub raw.
@@ -533,11 +464,11 @@ Could self-host the script for zero GitHub CDN dependency.
 
 ## 5. The Demo Server
 
-A bhatti server running on the Hetzner box. Same binary, same config,
-tighter user limits. The email form on `bhatti.sh` hits a `/register`
+A ahvm server running on the Hetzner box. Same binary, same config,
+tighter user limits. The email form on `ahvm.sh` hits a `/register`
 endpoint on this server.
 
-**The flow:** User enters email on `bhatti.sh` → JS `POST`s to the demo
+**The flow:** User enters email on `ahvm.sh` → JS `POST`s to the demo
 server's `/register` → server creates a user with tight limits → returns
 the API key → page shows the key + CLI setup instructions. All on one
 page, no redirects, no "check your inbox."
@@ -546,7 +477,7 @@ page, no redirects, no "check your inbox."
 
 1. Validate email format (basic regex).
 2. If email already registered → return existing key (idempotent).
-3. `bhatti user create --max-sandboxes 3 --max-cpus 1 --max-memory 512`.
+3. `ahvm user create --max-sandboxes 3 --max-cpus 1 --max-memory 512`.
 4. Store email → user mapping in SQLite.
 5. Return the key immediately.
 
@@ -561,7 +492,7 @@ inactivity TTL. Clearly stated on the page.
 destroys sandboxes idle >24h and users with no sandboxes for >7 days.
 If abuse happens, add a CAPTCHA later. Don't pre-optimize.
 
-**The dashboard comes free.** The bhatti daemon already serves
+**The dashboard comes free.** The ahvm daemon already serves
 `web/index.html` at `/`. Anyone with the demo server URL can open it
 in a browser and get the full terminal UI. No extra work.
 
@@ -570,12 +501,12 @@ in a browser and get the full terminal UI. No extra work.
 ## 6. Meta Tags
 
 ```html
-<title>bhatti — self-hostable microVMs for AI agents</title>
+<title>ahvm — self-hostable microVMs for AI agents</title>
 <meta name="description" content="Open-source Firecracker microVM orchestrator. Real Linux VMs with memory snapshots, sub-millisecond resume, and three-tier thermal management. Self-host on any Linux machine with KVM.">
-<meta property="og:title" content="bhatti — self-hostable microVMs for AI agents">
+<meta property="og:title" content="ahvm — self-hostable microVMs for AI agents">
 <meta property="og:description" content="Real Linux VMs. Memory snapshots. Sub-millisecond resume. Self-host on a Raspberry Pi or bare metal.">
-<meta property="og:image" content="https://bhatti.sh/og.png">
-<meta property="og:url" content="https://bhatti.sh">
+<meta property="og:image" content="https://ahvm.sh/og.png">
+<meta property="og:url" content="https://ahvm.sh">
 <meta name="twitter:card" content="summary_large_image">
 ```
 
@@ -589,11 +520,11 @@ generated.
 
 ### Phase 1: Domain + install URLs
 
-1. Register `bhatti.sh`.
+1. Register `ahvm.sh`.
 2. Host a static site (Cloudflare Pages, Vercel, or nginx on the
    Hetzner box itself).
 3. Serve the install scripts at `/install`, `/install-cli`, `/i`, `/cli`.
-4. Verify: `curl -fsSL bhatti.sh/i | sh` works on a fresh Linux box.
+4. Verify: `curl -fsSL ahvm.sh/i | sh` works on a fresh Linux box.
 
 ### Phase 2: The page
 
@@ -602,9 +533,9 @@ server — 20 lines of JS.
 
 ### Phase 3: Demo server
 
-1. The Hetzner box already exists (agni-01 or a new one). Install bhatti.
+1. The Hetzner box already exists (agni-01 or a new one). Install ahvm.
 2. Add the `/register` endpoint (small handler, see §5).
-3. Point `demo.bhatti.sh` at it.
+3. Point `demo.ahvm.sh` at it.
 4. Wire the email form.
 5. Add the cleanup cron.
 
@@ -628,29 +559,27 @@ Every piece of copy the website needs, in one place. Use as-is or adapt.
 
 ### Elevator pitch (about section, README opening)
 
-> Bhatti gives every coding agent its own Linux VM — full kernel, full
+> AHVM gives every coding agent its own Linux VM — full kernel, full
 > filesystem, full process isolation — with sub-millisecond pause/resume
 > and transparent resource management. Self-host it on a Raspberry Pi,
 > a Hetzner box, or any Linux machine with KVM.
 
-### The name (footer or about page, for the curious)
+### The name (footer or about page)
 
-> **Bhatti** (भट्टी) is Hindi for *furnace* — the system that manages
-> fire, provides the environment where work happens.
-> **Lohar** (लोहार) means *blacksmith* — the guest agent that runs as
-> PID 1 inside every microVM, the one doing the actual work.
+> **AHVM** means **Agent House Virtual Machine**. It is an Agent House fork of
+> [Bhatti](https://github.com/sahil-shubham/bhatti).
 
 ### CTA labels
 
 | Element | Copy |
 |---------|------|
-| Primary CTA (hero) | `curl -fsSL bhatti.sh/i \| sh` with "Copy" button |
+| Primary CTA (hero) | `curl -fsSL ahvm.sh/i \| sh` with "Copy" button |
 | Secondary CTA (hero) | "Try the hosted demo →" |
 | Demo form button | "Get API key" |
 | Demo form label | "Enter your email — get an API key instantly." |
 | Demo disclaimer | "Free demo on shared hardware in Europe. Sandboxes limited to 1 vCPU, 512MB, 24h TTL. For production, self-host." |
 | Nav demo link | "Try Demo" |
-| Post-demo self-host nudge | "Ready for production? Self-host in 30 seconds: `bhatti.sh/install`" |
+| Post-demo self-host nudge | "Ready for production? Self-host in 30 seconds: `ahvm.sh/install`" |
 
 ### Section headers
 
@@ -662,13 +591,13 @@ Every piece of copy the website needs, in one place. Use as-is or adapt.
 | Demo | "Try it now" | "No signup. No credit card. Just an API key." |
 | Use cases | "Built for" | (none) |
 | Comparison | "How it compares" | (none) |
-| Footer | (none) | "bhatti — open-source microVM orchestrator · Apache 2.0 · GitHub · Made by Sahil" |
+| Footer | (none) | "ahvm — open-source microVM orchestrator · Apache 2.0 · GitHub · Made by Sahil" |
 
 ---
 
 ## 9. Things to Explicitly Not Do
 
-- **No pricing page.** Bhatti is open source. The demo is free. There's
+- **No pricing page.** AHVM is open source. The demo is free. There's
   nothing to price. If managed hosting becomes a thing later, that's a
   separate product with a separate page.
 

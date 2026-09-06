@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/gateway"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/gateway"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // --- Sandboxes ---
@@ -182,7 +182,7 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 				for _, m := range tmpl.Mounts {
 					volName := m.VolumeName
 					if volName == "" {
-						volName = "bhatti-" + name + "-workspace"
+						volName = "ahvm-" + name + "-workspace"
 					}
 					if m.AutoCreate {
 						s.store.CreateVolume(volName) // idempotent
@@ -362,7 +362,7 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 		if spec.Name != "" {
 			existing, err := s.store.GetActiveSandboxByName(user.ID, spec.Name)
 			if err == nil {
-				w.Header().Set("X-Bhatti-Existing", "true")
+				w.Header().Set("X-AHVM-Existing", "true")
 				writeJSON(w, 200, existing)
 				return
 			}
@@ -561,7 +561,7 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 				}
 				existing, lookupErr := s.store.GetActiveSandboxByName(user.ID, spec.Name)
 				if lookupErr == nil {
-					w.Header().Set("X-Bhatti-Existing", "true")
+					w.Header().Set("X-AHVM-Existing", "true")
 					writeJSON(w, 200, existing)
 					return
 				}
@@ -888,7 +888,7 @@ func (s *Server) handleSandboxStart(w http.ResponseWriter, r *http.Request, id s
 	// the CLI returns names as-is when GET-by-name succeeds), and
 	// these store methods all key on the primary key. Passing a name
 	// is a silent no-op that leaves the store out of sync with the
-	// engine — e.g. running VMs showing stopped in `bhatti list`.
+	// engine — e.g. running VMs showing stopped in `ahvm list`.
 	info, err := s.engine.Status(r.Context(), sb.EngineID)
 	if err == nil {
 		s.store.UpdateSandboxStatus(sb.ID, info.Status)

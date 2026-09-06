@@ -1,4 +1,4 @@
-# bhatti lean microVM kernel config (x86_64) — for the krucible external-kernel
+# ahvm lean microVM kernel config (x86_64) — for the krucible external-kernel
 # boot path (krun_set_kernel, KRUN_KERNEL_FORMAT_ELF / vmlinux). Minimal microVM
 # config: virtio (mmio/blk/console/vsock/fs) + ext4 + core net + cgroup2 +
 # kvm-clock, with the desktop/server driver surface stripped — the leanness is

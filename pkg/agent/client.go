@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // AgentClient communicates with the guest agent running inside a microVM.
@@ -66,7 +66,7 @@ func NewTestClient(controlSock, forwardSock string) *AgentClient {
 	}
 }
 
-// NewKrucibleClient connects to lohar through the libkrun-bridged vsock UDS
+// NewKrucibleClient connects to forge through the libkrun-bridged vsock UDS
 // paths (one per guest port: control=1024, forward=1025). libkrun listens on
 // these host UDS and bridges to the guest vsock port, so we dial them directly
 // as plain Unix sockets — no Firecracker CONNECT handshake. Carries the auth
@@ -742,7 +742,7 @@ func (c *AgentClient) FileRead(ctx context.Context, path string, w io.Writer, op
 	}
 	defer conn.Close()
 
-	// Close connection on context cancellation — this makes lohar's
+	// Close connection on context cancellation — this makes forge's
 	// WriteFrame fail with broken pipe, stopping the transfer immediately.
 	// Without this, a cancelled FileRead of a 100MB file would run to
 	// completion on the guest side.

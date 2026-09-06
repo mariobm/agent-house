@@ -1,4 +1,4 @@
-# Bhatti — FUSE Support
+# AHVM — FUSE Support
 
 FUSE (Filesystem in USErspace) lets userspace programs implement filesystem
 interfaces. The kernel handles VFS routing and forwards read/write/readdir
@@ -8,7 +8,7 @@ rclone mount, s3fs-fuse, gcsfuse, AppImage, fuse-overlayfs, and Mesa
 needed inside development sandboxes.
 
 Currently FUSE doesn't work. Three things are wrong, and fixing them
-requires touching three layers of the stack: kernel, rootfs, and lohar.
+requires touching three layers of the stack: kernel, rootfs, and forge.
 
 ---
 
@@ -54,8 +54,8 @@ Even if the kernel had FUSE support, there's no `fusermount3` binary, no
 `libfuse3`, and no `/etc/fuse.conf`.
 
 `fusermount3` is the setuid-root helper that non-root users call to mount
-FUSE filesystems. Without it, only root can mount FUSE. Since lohar runs
-exec as uid 1000 (the `lohar` user), FUSE mounts would fail even with a
+FUSE filesystems. Without it, only root can mount FUSE. Since forge runs
+exec as uid 1000 (the `forge` user), FUSE mounts would fail even with a
 working kernel.
 
 ### validate.go: actively warns against FUSE
@@ -75,7 +75,7 @@ this plan is implemented, the warning becomes wrong.
 ## The Fix
 
 Three changes, one per layer. No API changes, no wire protocol changes,
-no lohar code changes beyond what `/dev/fuse` needs. We add only
+no forge code changes beyond what `/dev/fuse` needs. We add only
 `CONFIG_FUSE_FS` — the other undocumented flags (TUN, WireGuard, TLS,
 AppArmor, Landlock) can be added in separate releases when driven by
 concrete use cases.
@@ -197,18 +197,18 @@ apt-get install -y --no-install-recommends \
 
 ### Part 3 — Permissions: /dev/fuse and fuse.conf
 
-Three things must be right for the `lohar` user (uid 1000) to mount FUSE
+Three things must be right for the `forge` user (uid 1000) to mount FUSE
 filesystems.
 
 #### 3.1 /dev/fuse device node
 
 When `CONFIG_FUSE_FS=y`, the kernel registers FUSE as a misc device at
 boot. The FUSE misc driver calls `misc_register()` with minor 229. When
-lohar mounts devtmpfs on `/dev` (`mustMount("devtmpfs", "/dev", ...)`
-in `cmd/lohar/main.go`), the kernel auto-populates `/dev/fuse` with the
+forge mounts devtmpfs on `/dev` (`mustMount("devtmpfs", "/dev", ...)`
+in `cmd/forge/main.go`), the kernel auto-populates `/dev/fuse` with the
 correct major/minor numbers.
 
-**No lohar changes needed.** The existing `mustMount("devtmpfs", "/dev",
+**No forge changes needed.** The existing `mustMount("devtmpfs", "/dev",
 "devtmpfs", 0, "")` already handles this. devtmpfs is kernel-managed —
 it automatically creates device nodes for all registered devices. Once
 the kernel has FUSE, `/dev/fuse` appears in devtmpfs automatically.
@@ -216,7 +216,7 @@ the kernel has FUSE, `/dev/fuse` appears in devtmpfs automatically.
 Verification (after deploying new kernel):
 
 ```bash
-bhatti exec test -- ls -la /dev/fuse
+ahvm exec test -- ls -la /dev/fuse
 # crw-rw-rw- 1 root root 10, 229 ... /dev/fuse
 ```
 
@@ -260,7 +260,7 @@ out of the box.
 Verification:
 
 ```bash
-bhatti exec test -- stat -c '%a %U %n' /usr/bin/fusermount3
+ahvm exec test -- stat -c '%a %U %n' /usr/bin/fusermount3
 # 4755 root /usr/bin/fusermount3
 ```
 
@@ -271,7 +271,7 @@ The mount is invisible to other UIDs, including root. This is a security
 feature — it prevents a malicious FUSE filesystem from trapping root into
 a fake directory tree.
 
-For bhatti, this default is usually fine. The `lohar` user (uid 1000)
+For ahvm, this default is usually fine. The `forge` user (uid 1000)
 mounts FUSE filesystems and accesses them as uid 1000. No other UID
 needs to see the mount.
 
@@ -288,7 +288,7 @@ commented out by default:
 # user_allow_other
 ```
 
-**Enable it in the rootfs build.** A bhatti sandbox is a single-user VM.
+**Enable it in the rootfs build.** A ahvm sandbox is a single-user VM.
 The isolation boundary is the VM, not filesystem permissions within it.
 Enabling `user_allow_other` lets tools like rclone work with `-o allow_other`
 when they need it, without requiring the user to edit fuse.conf.
@@ -324,16 +324,16 @@ for opening the device.
 
 However, some FUSE client tools check for group membership as an additional
 safety measure, and `fusermount3` may check it on some configurations. Add
-the lohar user to the fuse group as defense-in-depth — but guard the call,
+the forge user to the fuse group as defense-in-depth — but guard the call,
 because `fuse3` on Ubuntu 24.04 (noble) may not create the group (the
 fuse2-era group is unnecessary when `/dev/fuse` is 0666):
 
 ```bash
 # In the chroot, after useradd:
-getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
+getent group fuse >/dev/null 2>&1 && usermod -aG fuse forge || true
 ```
 
-If the group exists, lohar is added. If not, the command is a no-op.
+If the group exists, forge is added. If not, the command is a no-op.
 This prevents the rootfs build from failing on a missing group while
 still covering edge cases where a FUSE tool checks gid.
 
@@ -375,7 +375,7 @@ for flag in IP_NF_RAW IP6_NF_RAW BRIDGE VETH OVERLAY_FS NF_CONNTRACK \
 \`\`\`
 ```
 
-**Seccomp.** Verified: lohar (`cmd/lohar/main.go`) does not install
+**Seccomp.** Verified: forge (`cmd/forge/main.go`) does not install
 seccomp filters, and Firecracker's default seccomp policy does not block
 `mount(2)` or `/dev/fuse` ioctl calls — these are needed by the existing
 devtmpfs mount logic and fusermount3 respectively. No seccomp changes
@@ -395,7 +395,7 @@ updated.
 --- a/scripts/build-kernel.sh
 +++ b/scripts/build-kernel.sh
 @@ -35,7 +35,7 @@
- echo "==> Current state of bhatti flags in CI config:"
+ echo "==> Current state of ahvm flags in CI config:"
  for flag in IP_NF_RAW IP6_NF_RAW BRIDGE VETH OVERLAY_FS NF_CONNTRACK \
      NETFILTER_XT_MATCH_CONNTRACK IP_NF_SECURITY IP6_NF_SECURITY \
 -    NET_CLS_CGROUP NETFILTER_XT_MARK; do
@@ -403,9 +403,9 @@ updated.
      grep "CONFIG_${flag}[= ]" .config 2>/dev/null || echo "# CONFIG_${flag} is not set"
  done
  
--# Apply bhatti additions (idempotent — safe if already =y)
--echo "==> Applying bhatti kernel config (13 flags)..."
-+echo "==> Applying bhatti kernel config (12 flags)..."
+-# Apply ahvm additions (idempotent — safe if already =y)
+-echo "==> Applying ahvm kernel config (13 flags)..."
++echo "==> Applying ahvm kernel config (12 flags)..."
  
  # Docker bridge networking (hard blockers)
  scripts/config --enable CONFIG_IP_NF_RAW
@@ -441,11 +441,11 @@ updated.
  # Locale
  sed -i "/en_US.UTF-8/s/^# //g" /etc/locale.gen
 @@ -18,6 +18,10 @@
- useradd -m -s /bin/bash -G sudo lohar
- echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+ useradd -m -s /bin/bash -G sudo forge
+ echo "forge ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
  
-+# FUSE: add lohar to fuse group (if group exists), enable user_allow_other
-+getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
++# FUSE: add forge to fuse group (if group exists), enable user_allow_other
++getent group fuse >/dev/null 2>&1 && usermod -aG fuse forge || true
 +sed -i "s/^#[[:space:]]*user_allow_other$/user_allow_other/" /etc/fuse.conf
 +
  apt-get clean
@@ -467,9 +467,9 @@ updated.
  
  ...
  
- useradd -m -s /bin/zsh -G sudo lohar
- echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-+getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
+ useradd -m -s /bin/zsh -G sudo forge
+ echo "forge ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
++getent group fuse >/dev/null 2>&1 && usermod -aG fuse forge || true
 +sed -i "s/^#[[:space:]]*user_allow_other$/user_allow_other/" /etc/fuse.conf
 ```
 
@@ -489,10 +489,10 @@ updated.
 
 ## What Doesn't Need to Change
 
-- **Lohar (guest agent).** devtmpfs already handles `/dev/fuse`. FUSE is a guest userspace concern.
-- **Bhatti daemon / API.** FUSE is entirely guest-side. No new endpoints, config, or feature flags.
+- **Forge (guest agent).** devtmpfs already handles `/dev/fuse`. FUSE is a guest userspace concern.
+- **AHVM daemon / API.** FUSE is entirely guest-side. No new endpoints, config, or feature flags.
 - **Firecracker configuration.** No VM boot parameter or drive changes. FUSE is a kernel filesystem.
-- **Firecracker seccomp.** Verified: Firecracker's default seccomp policy does not block `mount(2)` or the `/dev/fuse` ioctls. Lohar also installs no seccomp filters.
+- **Firecracker seccomp.** Verified: Firecracker's default seccomp policy does not block `mount(2)` or the `/dev/fuse` ioctls. Forge also installs no seccomp filters.
 - **Config drive.** No FUSE-related config is needed per-sandbox.
 - **Snapshots.** FUSE state is per-process. Warm pause/resume: mounts survive (daemon + kernel both frozen). Cold stop/start: daemon is killed, mount is gone, user remounts. Same as any userspace daemon (dockerd, sshd).
 
@@ -507,26 +507,26 @@ After adding FUSE_FS to the loop, a failed build exits with a clear
 error. Additionally, boot a VM and check:
 
 ```bash
-bhatti exec test -- zcat /proc/config.gz | grep CONFIG_FUSE_FS
+ahvm exec test -- zcat /proc/config.gz | grep CONFIG_FUSE_FS
 # CONFIG_FUSE_FS=y
 
-bhatti exec test -- ls -la /dev/fuse
+ahvm exec test -- ls -la /dev/fuse
 # crw-rw-rw- 1 root root 10, 229 ... /dev/fuse
 ```
 
 ### Rootfs verification (post-build)
 
 ```bash
-bhatti exec test -- which fusermount3
+ahvm exec test -- which fusermount3
 # /usr/bin/fusermount3
 
-bhatti exec test -- stat -c '%a %U' /usr/bin/fusermount3
+ahvm exec test -- stat -c '%a %U' /usr/bin/fusermount3
 # 4755 root
 
-bhatti exec test -- id lohar
-# uid=1000(lohar) gid=1000(lohar) groups=1000(lohar),27(sudo),<fuse-gid>(fuse)
+ahvm exec test -- id forge
+# uid=1000(forge) gid=1000(forge) groups=1000(forge),27(sudo),<fuse-gid>(fuse)
 
-bhatti exec test -- cat /etc/fuse.conf
+ahvm exec test -- cat /etc/fuse.conf
 # user_allow_other
 ```
 
@@ -538,11 +538,11 @@ filesystem, mounts, reads, unmounts.
 
 ```bash
 # Install build deps (gcc + fuse3 headers)
-bhatti exec test -- sudo apt-get update -qq
-bhatti exec test -- sudo apt-get install -y --no-install-recommends gcc libfuse3-dev
+ahvm exec test -- sudo apt-get update -qq
+ahvm exec test -- sudo apt-get install -y --no-install-recommends gcc libfuse3-dev
 
 # Write the FUSE hello world
-bhatti exec test -- sh -c 'cat > /tmp/hellofs.c << "EOF"
+ahvm exec test -- sh -c 'cat > /tmp/hellofs.c << "EOF"
 #define FUSE_USE_VERSION 30
 #include <fuse3/fuse.h>
 #include <string.h>
@@ -575,13 +575,13 @@ int main(int argc, char *argv[]) { return fuse_main(argc, argv, &ops, NULL); }
 EOF'
 
 # Compile, mount, verify, unmount
-bhatti exec test -- gcc -Wall /tmp/hellofs.c -o /tmp/hellofs $(pkg-config --cflags --libs fuse3)
-bhatti exec test -- mkdir -p /home/lohar/mnt
-bhatti exec test -- /tmp/hellofs /home/lohar/mnt -f &   # foreground, backgrounded
+ahvm exec test -- gcc -Wall /tmp/hellofs.c -o /tmp/hellofs $(pkg-config --cflags --libs fuse3)
+ahvm exec test -- mkdir -p /home/forge/mnt
+ahvm exec test -- /tmp/hellofs /home/forge/mnt -f &   # foreground, backgrounded
 sleep 1
-bhatti exec test -- cat /home/lohar/mnt/hello
+ahvm exec test -- cat /home/forge/mnt/hello
 # fuse works!
-bhatti exec test -- fusermount3 -u /home/lohar/mnt
+ahvm exec test -- fusermount3 -u /home/forge/mnt
 ```
 
 For the Go integration test suite (see CI section below), this becomes a
@@ -594,46 +594,46 @@ layer for AI agents that uses FUSE to mount Git repositories as local
 directories. The `mesa mount --daemonize` command starts a FUSE daemon
 that translates filesystem calls into Mesa API requests over gRPC/TLS.
 This makes it an ideal real-world smoke test for FUSE behavior across
-bhatti's thermal states.
+ahvm's thermal states.
 
 **This section is a post-release experiment, not a CI gate.** It requires
 a Mesa API key and external network access. Run manually after the
 release ships.
 
 **What we're testing:** How a long-lived FUSE process with network
-connections behaves across bhatti's three thermal transitions.
+connections behaves across ahvm's three thermal transitions.
 
 #### Setup
 
 ```bash
 # Create a sandbox
-bhatti create --name mesa-test
+ahvm create --name mesa-test
 
 # Install mesa CLI (uses apt on Linux)
-bhatti exec mesa-test -- sh -c 'curl -fsSL https://mesa.dev/install.sh | sudo sh'
+ahvm exec mesa-test -- sh -c 'curl -fsSL https://mesa.dev/install.sh | sudo sh'
 
 # Install FUSE dependencies (already in rootfs after this plan, but
 # mesa also needs ca-certificates, libssl3, openssl for gRPC/TLS)
-bhatti exec mesa-test -- sudo apt-get update
-bhatti exec mesa-test -- sudo apt-get install -y ca-certificates libssl3 openssl
+ahvm exec mesa-test -- sudo apt-get update
+ahvm exec mesa-test -- sudo apt-get install -y ca-certificates libssl3 openssl
 
 # Write mesa config (API key from environment)
-bhatti exec mesa-test -- mkdir -p /home/lohar/.config/mesa
-bhatti exec mesa-test -- sh -c 'cat > /home/lohar/.config/mesa/config.toml << EOF
+ahvm exec mesa-test -- mkdir -p /home/forge/.config/mesa
+ahvm exec mesa-test -- sh -c 'cat > /home/forge/.config/mesa/config.toml << EOF
 api_key = "mesa_sk_..."
 EOF'
 
 # Mount mesa repos as a FUSE filesystem
-bhatti exec mesa-test -- mesa mount --daemonize
+ahvm exec mesa-test -- mesa mount --daemonize
 
 # Verify the mount works
-bhatti exec mesa-test -- ls ~/.local/share/mesa/mnt/my-org/my-repo
-bhatti exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/README.md
+ahvm exec mesa-test -- ls ~/.local/share/mesa/mnt/my-org/my-repo
+ahvm exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/README.md
 ```
 
 #### Test 1: Hot → Warm → Hot (pause/resume vCPUs)
 
-When bhatti pauses a VM (hot→warm), vCPUs freeze. The mesa daemon's
+When ahvm pauses a VM (hot→warm), vCPUs freeze. The mesa daemon's
 event loop stops mid-iteration. The kernel's FUSE request queue freezes
 with it. The gRPC connection to Mesa's API sits idle with TCP keepalive
 timers frozen.
@@ -644,16 +644,16 @@ connection either resumes (if the server kept it alive) or reconnects.
 
 ```bash
 # Write a file through the FUSE mount
-bhatti exec mesa-test -- sh -c 'echo "before pause" > ~/.local/share/mesa/mnt/my-org/my-repo/test.txt'
+ahvm exec mesa-test -- sh -c 'echo "before pause" > ~/.local/share/mesa/mnt/my-org/my-repo/test.txt'
 
 # Wait for thermal manager to pause (or set a short warm timeout)
 # Then wake with any exec:
-bhatti exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/test.txt
+ahvm exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/test.txt
 # Expected: "before pause" — mount survived pause/resume
 
 # Write another file to verify the daemon is still functional
-bhatti exec mesa-test -- sh -c 'echo "after pause" > ~/.local/share/mesa/mnt/my-org/my-repo/test2.txt'
-bhatti exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/test2.txt
+ahvm exec mesa-test -- sh -c 'echo "after pause" > ~/.local/share/mesa/mnt/my-org/my-repo/test2.txt'
+ahvm exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/test2.txt
 # Expected: "after pause"
 ```
 
@@ -680,7 +680,7 @@ bhatti exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/test2.txt
 
 #### Test 2: Hot → Cold → Hot (snapshot/restore)
 
-When bhatti stops a VM (hot→cold), it creates a snapshot (CPU + memory
+When ahvm stops a VM (hot→cold), it creates a snapshot (CPU + memory
 + disk), then kills the Firecracker process. The mesa daemon, as a
 userspace process, is included in the memory snapshot.
 
@@ -695,29 +695,29 @@ daemon's process is resurrected with its exact memory state. But:
 
 ```bash
 # Write through mesa, verify
-bhatti exec mesa-test -- sh -c 'echo "before stop" > ~/.local/share/mesa/mnt/my-org/my-repo/snap-test.txt'
-bhatti exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/snap-test.txt
+ahvm exec mesa-test -- sh -c 'echo "before stop" > ~/.local/share/mesa/mnt/my-org/my-repo/snap-test.txt'
+ahvm exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/snap-test.txt
 
 # Snapshot and stop
-bhatti stop mesa-test
+ahvm stop mesa-test
 
 # Wait a while (simulates real cold storage)
 sleep 30
 
 # Restore
-bhatti start mesa-test
+ahvm start mesa-test
 
 # Test 1: Is the mount point still there?
-bhatti exec mesa-test -- mount | grep fuse
+ahvm exec mesa-test -- mount | grep fuse
 # Expected: shows the mesa FUSE mount
 
 # Test 2: Can we read?
-bhatti exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/snap-test.txt
+ahvm exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/snap-test.txt
 # Expected: "before stop" — from daemon's cache or re-fetched from API
 # OR: "Transport endpoint is not connected" — daemon died
 
 # Test 3: Can we write?
-bhatti exec mesa-test -- sh -c 'echo "after restore" > ~/.local/share/mesa/mnt/my-org/my-repo/snap-test2.txt'
+ahvm exec mesa-test -- sh -c 'echo "after restore" > ~/.local/share/mesa/mnt/my-org/my-repo/snap-test2.txt'
 # Expected: works (daemon reconnected to API)
 # OR: Input/output error (daemon's gRPC channel is dead, no reconnect)
 ```
@@ -735,7 +735,7 @@ bhatti exec mesa-test -- sh -c 'echo "after restore" > ~/.local/share/mesa/mnt/m
   client wrote to the Mesa repo while the VM was cold, the restored
   daemon's cache doesn't know about it. The next read may return
   stale data until the daemon's cache invalidation kicks in. This is
-  a mesa-side concern, not a bhatti concern, but worth observing.
+  a mesa-side concern, not a ahvm concern, but worth observing.
 
 - **Everything works perfectly.** If mesa's gRPC client library has
   reconnect logic (most modern gRPC clients do), and the FUSE fd
@@ -752,7 +752,7 @@ management:
 ```bash
 # Run a workload that reads from mesa, with deliberate idle gaps
 for i in $(seq 1 10); do
-    bhatti exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/README.md > /dev/null
+    ahvm exec mesa-test -- cat ~/.local/share/mesa/mnt/my-org/my-repo/README.md > /dev/null
     echo "Read $i OK"
     sleep 15  # long enough for warm timeout (default 10s)
 done
@@ -774,17 +774,17 @@ If cold→hot kills the mesa mount (likely), the fix is to add a mesa
 remount to the sandbox's init script:
 
 ```bash
-# /etc/bhatti/init.sh — re-establish mesa mount after cold restore
-if command -v mesa >/dev/null 2>&1 && [ -f /home/lohar/.config/mesa/config.toml ]; then
+# /etc/ahvm/init.sh — re-establish mesa mount after cold restore
+if command -v mesa >/dev/null 2>&1 && [ -f /home/forge/.config/mesa/config.toml ]; then
     # Check if mount is healthy
     if ! ls ~/.local/share/mesa/mnt/ >/dev/null 2>&1; then
         fusermount3 -u ~/.local/share/mesa/mnt 2>/dev/null || true
-        su - lohar -c 'mesa mount --daemonize'
+        su - forge -c 'mesa mount --daemonize'
     fi
 fi
 ```
 
-This is a user-level workaround, not a bhatti infrastructure change.
+This is a user-level workaround, not a ahvm infrastructure change.
 The same pattern applies to any FUSE daemon that doesn't survive
 snapshot/restore (sshfs, rclone mount, etc.).
 
@@ -794,25 +794,25 @@ Verify the basic kernel-level FUSE behavior across thermal states:
 
 ```bash
 # Mount a FUSE filesystem (using hellofs from above)
-bhatti exec test -- cat /home/lohar/mnt/hello
+ahvm exec test -- cat /home/forge/mnt/hello
 # fuse works!
 
 # Warm (pause) — FUSE mount should survive
 # Wait for thermal manager to pause, then wake:
-bhatti exec test -- cat /home/lohar/mnt/hello
+ahvm exec test -- cat /home/forge/mnt/hello
 # fuse works!    ← mount survived pause/resume
 
 # Cold (stop + start) — FUSE mount should be gone
-bhatti stop test
-bhatti start test
-bhatti exec test -- cat /home/lohar/mnt/hello
-# cat: /home/lohar/mnt/hello: No such file or directory
+ahvm stop test
+ahvm start test
+ahvm exec test -- cat /home/forge/mnt/hello
+# cat: /home/forge/mnt/hello: No such file or directory
 # OR: Transport endpoint is not connected
 ```
 
 The "Transport endpoint is not connected" error is the expected Linux
 behavior when a FUSE daemon dies but the mount point still exists. The
-user runs `fusermount3 -u /home/lohar/mnt` and remounts.
+user runs `fusermount3 -u /home/forge/mnt` and remounts.
 
 ### validate.go test update
 
@@ -913,13 +913,13 @@ the rootfs, or as a manual post-build check.
 ### Phase 2: Release + upgrade path
 
 The kernel and rootfs are release artifacts. They ship as part of the next
-bhatti release. Users get FUSE support automatically on `bhatti update`
+ahvm release. Users get FUSE support automatically on `ahvm update`
 (which downloads the new kernel + rootfs).
 
 **The upgrade problem.** Existing sandboxes do NOT get FUSE automatically.
 Both the kernel and rootfs are baked in at create time:
 
-| Sandbox state | What happens on `bhatti update` |
+| Sandbox state | What happens on `ahvm update` |
 |---------------|--------------------------------|
 | Hot (running) | Nothing. Kernel is loaded, rootfs is the copy from create time. |
 | Warm (paused) | Nothing. Resume uses the in-memory kernel + rootfs. |
@@ -933,22 +933,22 @@ kernel change we've ever shipped.
 
 **Preserving user data across recreate.** Volumes (`/workspace` and
 user-attached volumes) are stored as separate ext4 images on the host.
-They survive `bhatti destroy` + `bhatti create` — only the rootfs and
-kernel are replaced. User files in `/home/lohar` (dotfiles, SSH keys,
+They survive `ahvm destroy` + `ahvm create` — only the rootfs and
+kernel are replaced. User files in `/home/forge` (dotfiles, SSH keys,
 installed packages) are on the rootfs and are lost on recreate.
 
 For users who have significant environment customization, the
 recommended workflow is:
 
-1. Export dotfiles: `bhatti exec dev -- tar czf /workspace/.dotfiles.tar.gz -C /home/lohar .bashrc .ssh .gitconfig` (or whatever they care about)
-2. Destroy + recreate: `bhatti destroy dev && bhatti create --name dev --volume mydata:/workspace`
-3. Re-import: `bhatti exec dev -- tar xzf /workspace/.dotfiles.tar.gz -C /home/lohar`
+1. Export dotfiles: `ahvm exec dev -- tar czf /workspace/.dotfiles.tar.gz -C /home/forge .bashrc .ssh .gitconfig` (or whatever they care about)
+2. Destroy + recreate: `ahvm destroy dev && ahvm create --name dev --volume mydata:/workspace`
+3. Re-import: `ahvm exec dev -- tar xzf /workspace/.dotfiles.tar.gz -C /home/forge`
 
-**Detection.** The `bhatti` CLI should detect sandboxes running with an
+**Detection.** The `ahvm` CLI should detect sandboxes running with an
 old kernel and surface a one-line hint:
 
 ```
-$ bhatti ls
+$ ahvm ls
 NAME    STATE   KERNEL          NOTE
 dev     hot     6.1.155-old     → recreate to get FUSE support
 prod    cold    6.1.155-old     → recreate to get FUSE support
@@ -969,23 +969,23 @@ task — not blocking this release, but should ship soon after.
 FUSE filesystems now work inside sandboxes. Install and use sshfs, rclone
 mount, s3fs-fuse, gcsfuse, or any FUSE-based tool:
 
-    bhatti exec dev -- sudo apt-get install -y sshfs
-    bhatti exec dev -- sshfs user@server:/data /mnt/remote
+    ahvm exec dev -- sudo apt-get install -y sshfs
+    ahvm exec dev -- sshfs user@server:/data /mnt/remote
 
 Existing sandboxes must be recreated to pick up the new kernel and rootfs.
 Volumes are preserved across recreate:
 
     # Save any dotfiles/config to your volume first
-    bhatti exec dev -- cp ~/.gitconfig /workspace/
-    bhatti destroy dev
-    bhatti create --name dev --volume mydata:/workspace
+    ahvm exec dev -- cp ~/.gitconfig /workspace/
+    ahvm destroy dev
+    ahvm create --name dev --volume mydata:/workspace
 ```
 
 ### Phase 3: Mesa experiment
 
 After the kernel + rootfs ship, run the Mesa test suite above on a
 real deployment. Document findings — particularly cold→hot behavior —
-and decide whether bhatti needs any infrastructure-level support for
+and decide whether ahvm needs any infrastructure-level support for
 FUSE daemon recovery or whether it's purely a user-space concern.
 
 ### Dependency graph
@@ -995,14 +995,14 @@ Kernel rebuild ────────────────────┐
                                    ├──→ Phase 2: Release (kernel + rootfs + binary)
 Rootfs rebuild (needs fuse3 pkg) ──┘
                                    ↑
-validate.go + integration test ────┘ (ships with the bhatti binary)
+validate.go + integration test ────┘ (ships with the ahvm binary)
                                    ↓
                             Phase 3: Mesa experiment (post-release)
 ```
 
 The kernel and rootfs rebuilds are independent of each other — they can
 happen in parallel. Both must complete before the release. The validate.go
-change and `TestFUSEBasic` ship with the bhatti binary (Go code), which is
+change and `TestFUSEBasic` ship with the ahvm binary (Go code), which is
 also part of the release. The Mesa experiment runs after deployment.
 
 ---
@@ -1025,15 +1025,15 @@ requires vhost-user, which FC doesn't implement). virtiofs would be the
 limitation, not a kernel limitation. FUSE inside the guest is the
 workaround — mount remote filesystems from within the guest.
 
-**FUSE-specific bhatti API.** No `bhatti mount` command. FUSE mounts are
-a guest-side concern — the user runs sshfs/rclone via `bhatti exec`. The
+**FUSE-specific ahvm API.** No `ahvm mount` command. FUSE mounts are
+a guest-side concern — the user runs sshfs/rclone via `ahvm exec`. The
 host doesn't need to know about FUSE mounts.
 
 **Persisting FUSE mounts across cold snapshot/restore.** FUSE daemons are
 userspace processes — they die on snapshot and don't come back. The user
 remounts after restore. This could theoretically be handled by an init
-script (`/etc/bhatti/init.sh`) that re-establishes mounts on boot, but
-that's user-level configuration, not bhatti infrastructure.
+script (`/etc/ahvm/init.sh`) that re-establishes mounts on boot, but
+that's user-level configuration, not ahvm infrastructure.
 
 **fuse-overlayfs in the rootfs.** The Docker tier uses kernel overlayfs
 (`CONFIG_OVERLAY_FS=y`). `fuse-overlayfs` is only needed for rootless
@@ -1043,7 +1043,7 @@ overlayfs works. fuse-overlayfs is unnecessary.
 
 **Automatic FUSE daemon recovery after cold restore.** If the Mesa
 experiment shows that cold→hot kills FUSE daemons (likely), we could
-add infrastructure to lohar that detects stale FUSE mounts on restore
+add infrastructure to forge that detects stale FUSE mounts on restore
 and cleans them up. But this is premature — the user can handle it
 via init scripts, and different FUSE daemons have different restart
 semantics. Wait for the experiment results.

@@ -6,28 +6,28 @@ import (
 	"strings"
 )
 
-// injectLohar copies the lohar binary into the image tree and ensures
+// injectForge copies the forge binary into the image tree and ensures
 // the boot directories and uid 1000 user exist.
-func injectLohar(rootDir, loharPath string) error {
-	// Copy lohar binary
-	dst := filepath.Join(rootDir, "usr/local/bin/lohar")
+func injectForge(rootDir, forgePath string) error {
+	// Copy forge binary
+	dst := filepath.Join(rootDir, "usr/local/bin/forge")
 	os.MkdirAll(filepath.Dir(dst), 0755)
-	if err := copyFile(loharPath, dst); err != nil {
+	if err := copyFile(forgePath, dst); err != nil {
 		return err
 	}
 	os.Chmod(dst, 0755)
 
-	// /init.krun -> /usr/local/bin/lohar. The krucible block-root boot execs
+	// /init.krun -> /usr/local/bin/forge. The krucible block-root boot execs
 	// init=/init.krun (kernel-direct, no init-blob), while the FC engine execs
-	// init=/usr/local/bin/lohar. The symlink makes one OCI image bootable on
+	// init=/usr/local/bin/forge. The symlink makes one OCI image bootable on
 	// both engines; FC simply ignores the extra link.
 	initLink := filepath.Join(rootDir, "init.krun")
 	os.Remove(initLink)
-	if err := os.Symlink("/usr/local/bin/lohar", initLink); err != nil {
+	if err := os.Symlink("/usr/local/bin/forge", initLink); err != nil {
 		return err
 	}
 
-	// Ensure boot directories exist (lohar mounts these)
+	// Ensure boot directories exist (forge mounts these)
 	for _, dir := range []string{
 		"proc", "sys", "dev", "dev/pts", "tmp", "run", "workspace",
 	} {
@@ -45,7 +45,7 @@ func injectLohar(rootDir, loharPath string) error {
 }
 
 // ensureUser1000 checks if uid 1000 exists in /etc/passwd.
-// If not, creates a 'lohar' user with uid 1000.
+// If not, creates a 'forge' user with uid 1000.
 // If uid 1000 exists (e.g., 'node' in node images), leaves it as-is.
 func ensureUser1000(rootDir string) error {
 	passwdPath := filepath.Join(rootDir, "etc/passwd")
@@ -59,7 +59,7 @@ func ensureUser1000(rootDir string) error {
 		fields := strings.Split(line, ":")
 		if len(fields) >= 4 && fields[2] == "1000" {
 			// uid 1000 exists — ensure home directory exists
-			homeDir := "/home/lohar"
+			homeDir := "/home/forge"
 			if len(fields) >= 6 && fields[5] != "" {
 				homeDir = fields[5]
 			}
@@ -74,7 +74,7 @@ func ensureUser1000(rootDir string) error {
 	if err != nil {
 		return err
 	}
-	f.WriteString("lohar:x:1000:1000::/home/lohar:/bin/sh\n")
+	f.WriteString("forge:x:1000:1000::/home/forge:/bin/sh\n")
 	f.Close()
 
 	// Add group entry if gid 1000 doesn't exist
@@ -90,7 +90,7 @@ func ensureUser1000(rootDir string) error {
 	}
 	if !gid1000Exists {
 		if g, err := os.OpenFile(groupPath, os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-			g.WriteString("lohar:x:1000:\n")
+			g.WriteString("forge:x:1000:\n")
 			g.Close()
 		}
 	}
@@ -99,12 +99,12 @@ func ensureUser1000(rootDir string) error {
 	shadowPath := filepath.Join(rootDir, "etc/shadow")
 	if _, err := os.Stat(shadowPath); err == nil {
 		if s, err := os.OpenFile(shadowPath, os.O_APPEND|os.O_WRONLY, 0640); err == nil {
-			s.WriteString("lohar:!:19000:0:99999:7:::\n")
+			s.WriteString("forge:!:19000:0:99999:7:::\n")
 			s.Close()
 		}
 	}
 
-	os.MkdirAll(filepath.Join(rootDir, "home/lohar"), 0755)
-	os.Chown(filepath.Join(rootDir, "home/lohar"), 1000, 1000)
+	os.MkdirAll(filepath.Join(rootDir, "home/forge"), 0755)
+	os.Chown(filepath.Join(rootDir, "home/forge"), 1000, 1000)
 	return nil
 }

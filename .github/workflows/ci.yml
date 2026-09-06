@@ -30,30 +30,30 @@ jobs:
 
       - name: Test (with -race)
         # -race on the full unit-test surface catches the class of
-        # concurrency bug that Tranche 0a of PLAN-bhatti-v2.md is
+        # concurrency bug that Tranche 0a of PLAN-ahvm-v2.md is
         # chasing — sync.Map LoadOrStore+Store races on the thermal
         # manager, route-cache LRU under churn, rate-limiter eviction.
-        # cmd/lohar is excluded here because some of its tests need a
+        # cmd/forge is excluded here because some of its tests need a
         # real sandbox (PID 1 dirs, vsock); the shim subset runs with
         # -race in the next step. Timeout bumped to 240s — -race adds
         # ~2× overhead on the SQLite-backed store tests.
-        run: go test -race $(go list ./... | grep -v cmd/lohar) -count=1 -timeout=240s
+        run: go test -race $(go list ./... | grep -v cmd/forge) -count=1 -timeout=240s
 
-      # The systemctl/journalctl/syslog/cgroup shim tests in cmd/lohar are
+      # The systemctl/journalctl/syslog/cgroup shim tests in cmd/forge are
       # tempdir-sandboxed unit tests that don't need a real Firecracker
       # VM. Run them here with -race to catch concurrency bugs in the
       # Registry mutex, the IPC dispatch's captureOutputMu, and the
       # watcher's restartBurst map. The agent/session tests need a real
       # sandbox (PID 1 dirs, vsock, etc.) so they're skipped here and
       # left to the integration workflow.
-      - name: Test lohar shim (with -race)
+      - name: Test forge shim (with -race)
         run: |
-          go test -race -count=1 -timeout=120s ./cmd/lohar/ \
+          go test -race -count=1 -timeout=120s ./cmd/forge/ \
             -skip '^(TestAgent|TestHelperAgent|TestSession|TestPipedSession)'
 
   krucible-build:
     # The krucible engine's safety net: build the Rust fork (libkrun) + the cgo
-    # helper (bhatti-vmm) + the krucible-tagged Go, then run the pure-unit tests.
+    # helper (ahvm-vmm) + the krucible-tagged Go, then run the pure-unit tests.
     # This is a build/link + unit gate only — the VM suites need a hypervisor and
     # self-skip here (no /dev/kvm on GitHub-hosted runners); they run on the
     # self-hosted KVM cluster in krucible-integration.yml. No libkrunfw is needed: libkrun
@@ -87,7 +87,7 @@ jobs:
         # Catches Rust / cfg breakage in the fork on x86-linux.
         run: make krucible
 
-      - name: Build bhatti-vmm (cgo link against libkrun)
+      - name: Build ahvm-vmm (cgo link against libkrun)
         # Catches cgo/link breakage in the helper (the class that's been invisible
         # to CI). No codesigning on Linux (the Makefile gates that on Darwin).
         run: make vmm
@@ -176,6 +176,6 @@ jobs:
         run: bats scripts/install_test.bats
 
       - name: Smoke tests (install_smoke.bats)
-        # Sets BHATTI_TEST_* env vars to redirect the script at a local
+        # Sets AHVM_TEST_* env vars to redirect the script at a local
         # fake-release tree; doesn't touch GitHub or /usr/local/bin.
         run: bats scripts/install_smoke.bats

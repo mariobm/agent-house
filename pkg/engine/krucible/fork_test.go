@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // TestKrucibleFork is the Phase-2 fork gate (the agent-swarm primitive behind

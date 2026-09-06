@@ -7,13 +7,13 @@ import (
 	"sync"
 )
 
-// This file is the link layer between bhatti-netd and the guest's virtio-net
+// This file is the link layer between ahvm-netd and the guest's virtio-net
 // device. libkrun's unixstream backend (src/devices/src/virtio/net/unixstream.rs)
 // frames each ethernet frame on the UDS as a 4-byte big-endian length prefix
 // followed by the raw frame — the QEMU `-netdev socket` / gvproxy wire format.
 // netd's gVisor-netstack link endpoint reads/writes frames through FrameConn.
 //
-// Design: DESIGN-bhatti-v2-networking.md §0c (the unified gateway).
+// Design: DESIGN-ahvm-v2-networking.md §0c (the unified gateway).
 
 const (
 	frameHeaderLen = 4          // big-endian u32 length prefix

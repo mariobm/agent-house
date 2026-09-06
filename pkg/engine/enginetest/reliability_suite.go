@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // RunReliabilitySuite is the cold-tier hardening gate — the VMM-agnostic "spec"

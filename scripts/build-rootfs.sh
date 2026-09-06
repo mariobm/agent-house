@@ -4,7 +4,7 @@
 # Supports aarch64 and x86_64.
 #
 # Usage:
-#   sudo ./build-rootfs.sh /path/to/lohar-binary
+#   sudo ./build-rootfs.sh /path/to/forge-binary
 #
 # Environment:
 #   IMG — output path (default: auto-detected by arch)
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 SIZE_MB=2048
-MOUNT="/mnt/bhatti-rootfs"
+MOUNT="/mnt/ahvm-rootfs"
 AGENT="${1:-}"
 SANDBOX_DIR="${SANDBOX_DIR:-}"
 
@@ -35,7 +35,7 @@ case "$HOST_ARCH" in
         ;;
 esac
 
-IMG="${IMG:-/var/lib/bhatti/images/rootfs-minimal-${DEB_ARCH}.ext4}"
+IMG="${IMG:-/var/lib/ahvm/images/rootfs-minimal-${DEB_ARCH}.ext4}"
 
 if [[ $EUID -ne 0 ]]; then
     echo "error: must run as root (need mount/chroot)" >&2
@@ -44,7 +44,7 @@ fi
 
 if [[ -z "$AGENT" || ! -f "$AGENT" ]]; then
     echo "error: agent binary not found: $AGENT" >&2
-    echo "usage: sudo $0 /path/to/lohar" >&2
+    echo "usage: sudo $0 /path/to/forge" >&2
     exit 1
 fi
 
@@ -108,11 +108,11 @@ locale-gen
 curl -fsSL https://starship.rs/install.sh | sh -s -- -y
 
 # Create user
-useradd -m -s /bin/zsh -G sudo lohar
-echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+useradd -m -s /bin/zsh -G sudo forge
+echo "forge ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# FUSE: add lohar to fuse group (if group exists), enable user_allow_other
-getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
+# FUSE: add forge to fuse group (if group exists), enable user_allow_other
+getent group fuse >/dev/null 2>&1 && usermod -aG fuse forge || true
 sed -i "s/^#[[:space:]]*user_allow_other$/user_allow_other/" /etc/fuse.conf
 
 # Node.js
@@ -139,16 +139,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="${SANDBOX_DIR:-$(dirname "$SCRIPT_DIR")/sandbox}"
 
 if [[ -f "$SRC/zshrc" ]]; then
-    cp "$SRC/zshrc" "$MOUNT/home/lohar/.zshrc"
-    chown 1000:1000 "$MOUNT/home/lohar/.zshrc"
+    cp "$SRC/zshrc" "$MOUNT/home/forge/.zshrc"
+    chown 1000:1000 "$MOUNT/home/forge/.zshrc"
     echo "  copied zshrc"
 else
     echo "  warning: $SRC/zshrc not found, skipping"
 fi
 
 if [[ -f "$SRC/tmux.conf" ]]; then
-    cp "$SRC/tmux.conf" "$MOUNT/home/lohar/.tmux.conf"
-    chown 1000:1000 "$MOUNT/home/lohar/.tmux.conf"
+    cp "$SRC/tmux.conf" "$MOUNT/home/forge/.tmux.conf"
+    chown 1000:1000 "$MOUNT/home/forge/.tmux.conf"
     echo "  copied tmux.conf"
 else
     echo "  warning: $SRC/tmux.conf not found, skipping"
@@ -156,7 +156,7 @@ fi
 
 # --- Shell plugins ---
 echo "==> Installing shell plugins..."
-chroot "$MOUNT" su - lohar -c '
+chroot "$MOUNT" su - forge -c '
 # tmux plugins
 mkdir -p ~/.tmux/plugins
 git clone --depth 1 https://github.com/tmux-plugins/tmux-sensible ~/.tmux/plugins/tmux-sensible
@@ -176,8 +176,8 @@ echo "==> Installing agent and workspace..."
 mkdir -p "$MOUNT/workspace"
 chown 1000:1000 "$MOUNT/workspace"
 
-cp "$AGENT" "$MOUNT/usr/local/bin/lohar"
-chmod 755 "$MOUNT/usr/local/bin/lohar"
+cp "$AGENT" "$MOUNT/usr/local/bin/forge"
+chmod 755 "$MOUNT/usr/local/bin/forge"
 
 # Static DNS for the guest VM (no NetworkManager).
 cat > "$MOUNT/etc/resolv.conf" << 'DNSEOF'

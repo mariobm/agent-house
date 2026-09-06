@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build bhatti's lean microVM kernel for the krucible external-kernel boot path
+# Build ahvm's lean microVM kernel for the krucible external-kernel boot path
 # (krun_set_kernel). A leaner kernel = faster cold-start: measured ~2x vs the
 # stock bundled libkrunfw kernel (boot→agent ~312ms vs ~610ms on HVF).
 #

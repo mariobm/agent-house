@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // TestKrucibleCheckpointResume is the Phase-2 named-snapshot gate (the server's

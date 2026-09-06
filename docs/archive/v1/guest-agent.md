@@ -1,21 +1,21 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/under-the-hood/lohar-the-blacksmith/>.
+> <https://ahvm.sh/docs/under-the-hood/forge-the-blacksmith/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
 ---
 
-# Guest Agent (Lohar)
+# Guest Agent (Forge)
 
-Lohar is a single static Go binary that runs as PID 1 — the init process — inside every Firecracker microVM. It replaces systemd, handles all system initialization, and serves as the execution and file operations backend for the host.
+Forge is a single static Go binary that runs as PID 1 — the init process — inside every Firecracker microVM. It replaces systemd, handles all system initialization, and serves as the execution and file operations backend for the host.
 
 No libc, no initramfs, no dynamic linking. Cross-compiled from macOS with `CGO_ENABLED=0`, it runs on any Linux kernel.
 
 ## Boot Sequence
 
-The kernel boots with `init=/usr/local/bin/lohar` on the command line. Lohar is the first and only userspace process. Here's what it does:
+The kernel boots with `init=/usr/local/bin/forge` on the command line. Forge is the first and only userspace process. Here's what it does:
 
 ```go
 func main() {
@@ -69,7 +69,7 @@ Boot to agent-ready takes ~3.5 seconds on a Pi 5. The host polls with `exec true
 
 ## Config Drive
 
-A 1MB ext4 image attached as `/dev/vdb`, mounted read-only at `/run/bhatti/config`. Contains a single `config.json`:
+A 1MB ext4 image attached as `/dev/vdb`, mounted read-only at `/run/ahvm/config`. Contains a single `config.json`:
 
 ```json
 {
@@ -85,17 +85,17 @@ A 1MB ext4 image attached as `/dev/vdb`, mounted read-only at `/run/bhatti/confi
   ],
   "init": "cd /workspace && npm install",
   "dns": ["1.1.1.1", "8.8.8.8"],
-  "user": "lohar"
+  "user": "forge"
 }
 ```
 
 This is built on the host during `Create()` using `mkfs.ext4` + mount + write + umount. It's attached to Firecracker as a read-only virtio-blk drive before boot.
 
-The config drive is how bhatti avoids the exec-after-boot pattern for configuration injection. Everything — hostname, environment variables, secrets, volumes, DNS, init scripts — is available before the agent starts listening. No race conditions, no retries.
+The config drive is how ahvm avoids the exec-after-boot pattern for configuration injection. Everything — hostname, environment variables, secrets, volumes, DNS, init scripts — is available before the agent starts listening. No race conditions, no retries.
 
 ## PTY Allocation
 
-Lohar allocates PTYs using raw syscalls (no `creack/pty`, no cgo):
+Forge allocates PTYs using raw syscalls (no `creack/pty`, no cgo):
 
 ```go
 func openPTY() (master, slave *os.File, err error) {
@@ -115,9 +115,9 @@ func openPTY() (master, slave *os.File, err error) {
 }
 ```
 
-The child process is started with `Setsid: true` and `Setctty: true` to create a new session and make the slave PTY its controlling terminal. The master side is used by lohar for I/O relay and scrollback capture.
+The child process is started with `Setsid: true` and `Setctty: true` to create a new session and make the slave PTY its controlling terminal. The master side is used by forge for I/O relay and scrollback capture.
 
-Window size is set via `TIOCSWINSZ` ioctl on the master — the host sends `RESIZE` frames when the terminal changes size, and lohar applies them immediately.
+Window size is set via `TIOCSWINSZ` ioctl on the master — the host sends `RESIZE` frames when the terminal changes size, and forge applies them immediately.
 
 ## Session Model
 
@@ -142,7 +142,7 @@ Every TTY exec creates a *session* — a persistent handle to a running process 
 
 The previous client (if still connected) gets an `EXIT` frame and is disconnected.
 
-**Init scripts are sessions.** The `init` field from the config drive runs as a TTY session with the well-known ID `"init"`. The host can attach to it to monitor progress: `bhatti ps dev` shows it, and it appears in `SessionList` responses.
+**Init scripts are sessions.** The `init` field from the config drive runs as a TTY session with the well-known ID `"init"`. The host can attach to it to monitor progress: `ahvm ps dev` shows it, and it appears in `SessionList` responses.
 
 ### Ring Buffer
 
@@ -161,7 +161,7 @@ type ringBuffer struct {
 
 ## Piped Exec (Non-TTY)
 
-For one-shot commands (`bhatti exec dev -- npm install`):
+For one-shot commands (`ahvm exec dev -- npm install`):
 
 1. Create `exec.Command` with `Setpgid: true` (own process group)
 2. Create stdin/stdout/stderr pipes
@@ -178,7 +178,7 @@ The stdout/stderr goroutines send through a channel to a single writer goroutine
 
 ## Process Group Kill
 
-Piped exec runs children with `Setpgid: true`, which puts the child and all its descendants in a new process group. When the host sends `KILL` (or the connection drops for non-TTY exec), lohar sends `SIGKILL` to the negative PID:
+Piped exec runs children with `Setpgid: true`, which puts the child and all its descendants in a new process group. When the host sends `KILL` (or the connection drops for non-TTY exec), forge sends `SIGKILL` to the negative PID:
 
 ```go
 syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -190,7 +190,7 @@ TTY sessions use `SIGTERM` instead — allowing the shell to clean up and preser
 
 ## Signal Handling
 
-Lohar does *not* install a `SIGCHLD` handler. Go's runtime manages `SIGCHLD` for processes started via `exec.Command`. A manual `Wait4(-1)` reaper would race with `cmd.Wait()` and corrupt exit codes. Orphan zombies from grandchild processes are acceptable — they're cleaned up when the VM is destroyed.
+Forge does *not* install a `SIGCHLD` handler. Go's runtime manages `SIGCHLD` for processes started via `exec.Command`. A manual `Wait4(-1)` reaper would race with `cmd.Wait()` and corrupt exit codes. Orphan zombies from grandchild processes are acceptable — they're cleaned up when the VM is destroyed.
 
 `SIGTERM`/`SIGINT` triggers a clean shutdown: `syscall.Sync()` followed by `syscall.Reboot(LINUX_REBOOT_CMD_POWER_OFF)`.
 
@@ -210,4 +210,4 @@ This means secrets from the config drive are available in every command without 
 
 ## Testing Without VMs
 
-Lohar has a test mode (`LOHAR_TEST=1`) that listens on Unix sockets instead of vsock/TCP. The agent test suite (40+ tests) starts lohar as a subprocess, connects via Unix socket, and exercises every protocol handler — exec, TTY, sessions, files, port forwarding. All tests run on macOS with `go test ./cmd/lohar/`, no VM or root required.
+Forge has a test mode (`FORGE_TEST=1`) that listens on Unix sockets instead of vsock/TCP. The agent test suite (40+ tests) starts forge as a subprocess, connects via Unix socket, and exercises every protocol handler — exec, TTY, sessions, files, port forwarding. All tests run on macOS with `go test ./cmd/forge/`, no VM or root required.

@@ -1,7 +1,7 @@
 # Exec API Hardening — Detached Exec, Idempotent Create, Timeout Fix
 
 Three related pain points discovered while building karkhana (the agent
-orchestrator that runs Claude turns inside bhatti sandboxes). All three
+orchestrator that runs Claude turns inside ahvm sandboxes). All three
 are API-level issues — the VM engine, guest agent protocol, and thermal
 cycle are uninvolved.
 
@@ -28,11 +28,11 @@ additions to the existing API surface.
 ### Detached Exec
 
 The exec flow: HTTP request → server `handleSandboxExec` → engine
-`Exec`/`ExecStream` → agent client `DialControl` → lohar
+`Exec`/`ExecStream` → agent client `DialControl` → forge
 `handlePipedExec` → `cmd.StdoutPipe()`/`cmd.StderrPipe()` → read
 until EOF → `cmd.Wait()` → return exit code.
 
-The problem is in `handlePipedExec` (cmd/lohar/exec.go):
+The problem is in `handlePipedExec` (cmd/forge/exec.go):
 
 ```go
 stdoutPipe, _ := cmd.StdoutPipe()
@@ -128,11 +128,11 @@ error handling. Existing clients that don't use the new fields see
 identical behavior.
 
 **Solve at the right layer.** Detached exec is a guest agent concern
-(lohar). Idempotent create is a server concern (sandbox_handlers).
+(forge). Idempotent create is a server concern (sandbox_handlers).
 Timeout cap is a server concern (exec_handlers). Don't conflate them.
 
-**Minimal protocol changes.** The vsock framing protocol is bhatti's
-most sensitive interface — it's baked into every running lohar binary
+**Minimal protocol changes.** The vsock framing protocol is ahvm's
+most sensitive interface — it's baked into every running forge binary
 inside every VM. Adding an optional JSON field to `ExecRequest` is safe.
 Adding new frame types is not necessary here.
 
@@ -150,7 +150,7 @@ The simplest change. Raise the cap from 3600 to 86400 (24 hours).
 
 An unbounded exec with no timeout is a resource leak vector. If the
 client disappears (network failure, crash), the exec hangs forever,
-consuming one of lohar's 50 concurrent connection slots
+consuming one of forge's 50 concurrent connection slots
 (`maxConcurrentConns` in handler.go). A 24h cap is effectively "no
 timeout" for any real workload while still providing a safety net.
 
@@ -208,7 +208,7 @@ non-destroyed) returns the existing sandbox with HTTP 200, not 409 or
 500. This makes the endpoint idempotent: calling it N times with the
 same name produces the same result.
 
-The response includes `X-Bhatti-Existing: true` header so callers can
+The response includes `X-AHVM-Existing: true` header so callers can
 distinguish "created" (201) from "already existed" (200) if they care.
 
 ### 2.2 Why 200 Not 409
@@ -265,7 +265,7 @@ With:
 if spec.Name != "" {
     existing, err := s.store.GetSandbox(user.ID, spec.Name)
     if err == nil && existing.Status != "destroyed" {
-        w.Header().Set("X-Bhatti-Existing", "true")
+        w.Header().Set("X-AHVM-Existing", "true")
         writeJSON(w, 200, existing)
         return
     }
@@ -290,7 +290,7 @@ if err := s.store.CreateSandbox(sb); err != nil {
         }
         existing, lookupErr := s.store.GetSandbox(user.ID, spec.Name)
         if lookupErr == nil {
-            w.Header().Set("X-Bhatti-Existing", "true")
+            w.Header().Set("X-AHVM-Existing", "true")
             writeJSON(w, 200, existing)
             return
         }
@@ -328,8 +328,8 @@ func TestDuplicateSandboxNameHTTP(t *testing.T) {
         body, _ := io.ReadAll(resp.Body)
         t.Fatalf("duplicate: expected 200, got %d: %s", resp.StatusCode, body)
     }
-    if resp.Header.Get("X-Bhatti-Existing") != "true" {
-        t.Error("missing X-Bhatti-Existing header")
+    if resp.Header.Get("X-AHVM-Existing") != "true" {
+        t.Error("missing X-AHVM-Existing header")
     }
     var sb2 store.Sandbox
     decodeJSON(t, resp, &sb2)
@@ -343,7 +343,7 @@ func TestDuplicateSandboxNameHTTP(t *testing.T) {
 
 - [ ] First `POST /sandboxes {"name":"foo"}` returns 201
 - [ ] Second `POST /sandboxes {"name":"foo"}` returns 200 with same ID
-- [ ] Response has `X-Bhatti-Existing: true` header on the second call
+- [ ] Response has `X-AHVM-Existing: true` header on the second call
 - [ ] Concurrent creates with same name: one wins with 201, other gets
       200 (no 500, no leaked VM)
 - [ ] Different users can have sandboxes with the same name (existing
@@ -357,12 +357,12 @@ func TestDuplicateSandboxNameHTTP(t *testing.T) {
 ### 3.1 Why Option A (Not Option B)
 
 Option A (detach flag) adds a `detach` boolean to ExecRequest. When
-true, lohar wraps the command in `setsid`, redirects stdio to a file,
+true, forge wraps the command in `setsid`, redirects stdio to a file,
 and returns immediately with the child PID. The caller reads output via
 a second exec call (`tail -f /tmp/output.jsonl`).
 
 Option B (Task API) adds new REST routes (`/tasks`), new proto messages,
-new store tables, and lohar-side state management for background
+new store tables, and forge-side state management for background
 processes. It's 3-5x the work.
 
 The session system we already have (`session.go`, `EXEC_LIST_REQ`,
@@ -394,13 +394,13 @@ type ExecRequest struct {
 }
 ```
 
-These are optional JSON fields. Old lohar binaries ignore them (Go's
-`json.Unmarshal` skips unknown fields). New lohar binaries with old
+These are optional JSON fields. Old forge binaries ignore them (Go's
+`json.Unmarshal` skips unknown fields). New forge binaries with old
 hosts never see them set. Fully backwards compatible.
 
-### 3.3 Guest Agent (lohar) Changes
+### 3.3 Guest Agent (forge) Changes
 
-**`cmd/lohar/handler.go`** — dispatch detached exec before TTY/piped:
+**`cmd/forge/handler.go`** — dispatch detached exec before TTY/piped:
 
 ```go
 case proto.EXEC_REQ:
@@ -423,12 +423,12 @@ case proto.EXEC_REQ:
     }
 ```
 
-**`cmd/lohar/exec.go`** — new handler:
+**`cmd/forge/exec.go`** — new handler:
 
 ```go
 func handleDetachedExec(conn net.Conn, req proto.ExecRequest) {
     // Determine output file
-    outputFile := fmt.Sprintf("/tmp/bhatti-detach-%d.log", time.Now().UnixNano())
+    outputFile := fmt.Sprintf("/tmp/ahvm-detach-%d.log", time.Now().UnixNano())
     if req.OutputFile != nil && *req.OutputFile != "" {
         outputFile = *req.OutputFile
     }
@@ -438,7 +438,7 @@ func handleDetachedExec(conn net.Conn, req proto.ExecRequest) {
     if req.Cwd != nil {
         cmd.Dir = *req.Cwd
     }
-    // New session — fully detached from lohar's process group.
+    // New session — fully detached from forge's process group.
     // Child survives even if the vsock connection closes.
     cmd.SysProcAttr = &syscall.SysProcAttr{
         Setsid:     true,
@@ -538,7 +538,7 @@ detachment:
 
 ```go
 if req.Detach {
-    // The lohar agent sees a simple command — setsid + redirect
+    // The forge agent sees a simple command — setsid + redirect
     // happens at the shell level
     wrapped := fmt.Sprintf("setsid bash -c %s > %s 2>&1 &",
         shellescape(strings.Join(req.Cmd, " ")),
@@ -641,7 +641,7 @@ func (s *Server) handleSandboxExec(w http.ResponseWriter, r *http.Request, id st
         }
         outputFile := req.OutputFile
         if outputFile == "" {
-            outputFile = fmt.Sprintf("/tmp/bhatti-exec-%s.log", genID()[:8])
+            outputFile = fmt.Sprintf("/tmp/ahvm-exec-%s.log", genID()[:8])
         }
         pid, err := de.ExecDetached(r.Context(), sb.EngineID, req.Cmd, outputFile)
         if err != nil {
@@ -697,10 +697,10 @@ POST /sandboxes/:id/exec
 - [ ] `kill -0 <pid>` returns exit_code 0 while running, 1 after done
 - [ ] `kill <pid>` terminates the process
 - [ ] Process survives vsock connection close (the whole point)
-- [ ] Process runs as uid 1000 (lohar user)
+- [ ] Process runs as uid 1000 (forge user)
 - [ ] Zombie is reaped (the `go cmd.Wait()` goroutine)
 - [ ] Non-detached exec is completely unchanged
-- [ ] Old lohar binaries ignore the `detach` field (JSON backwards compat)
+- [ ] Old forge binaries ignore the `detach` field (JSON backwards compat)
 
 ---
 
@@ -721,7 +721,7 @@ All three are independent. Ship in any order.
 2. **Part 2** second — 30 minutes, eliminates TOCTOU race and simplifies
    karkhana's create flow
 3. **Part 3** third — 1-2 hours, eliminates the setsid+polling
-   workaround, requires lohar rebuild + image update
+   workaround, requires forge rebuild + image update
 
 ---
 
@@ -737,8 +737,8 @@ All three are independent. Ship in any order.
 
 ### Part 3 (detached exec)
 - `pkg/agent/proto/messages.go` — add `Detach`, `OutputFile` fields to `ExecRequest`
-- `cmd/lohar/handler.go` — add dispatch for detached exec
-- `cmd/lohar/exec.go` — add `handleDetachedExec`
+- `cmd/forge/handler.go` — add dispatch for detached exec
+- `cmd/forge/exec.go` — add `handleDetachedExec`
 - `pkg/agent/client.go` — add `ExecDetached` method
 - `pkg/engine/engine.go` — add `DetachedExecEngine` interface
 - `pkg/engine/firecracker/exec.go` — implement `ExecDetached`

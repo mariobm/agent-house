@@ -1,7 +1,7 @@
-# Bhatti — Multi-Tenant Production Hardening
+# AHVM — Multi-Tenant Production Hardening
 
 Server: agni-01 (Ryzen 9 3900, 128GB ECC, 2×1.92TB NVMe RAID1, FSN1)
-Endpoint: https://api.bhatti.sh (Cloudflare Tunnel)
+Endpoint: https://api.ahvm.sh (Cloudflare Tunnel)
 Status: Running single-tenant. This plan takes it to secure multi-tenant.
 
 Everything in this plan is a firm decision. No "nice to have" — each item
@@ -18,7 +18,7 @@ Part 2 (network)   — per-user bridge networks, iptables isolation
      ↓
 Part 3 (proxy)     — remove TCP auto-forward, harden HTTP reverse proxy
      ↓
-Part 4 (agent)     — guest hardening (exec as lohar, limits, unmount config drive)
+Part 4 (agent)     — guest hardening (exec as forge, limits, unmount config drive)
      ↓
 Part 5 (secrets)   — wire up age encryption, scope to users
      ↓
@@ -196,8 +196,8 @@ echo "  API key: $API_KEY"
 Future users are created via a CLI command:
 
 ```bash
-bhatti user create --name alice --max-sandboxes 5
-# → API key: bht_abc123...  (shown once, never stored plaintext)
+ahvm user create --name alice --max-sandboxes 5
+# → API key: ahv_abc123...  (shown once, never stored plaintext)
 ```
 
 ### 1.5 Secret Scoping
@@ -268,8 +268,8 @@ func (s *Store) DeleteUser(id string) error {
 }
 ```
 
-An admin who wants to remove a user runs `bhatti destroy` for each sandbox,
-`bhatti secret delete` for each secret, then `bhatti user delete`. Tedious
+An admin who wants to remove a user runs `ahvm destroy` for each sandbox,
+`ahvm secret delete` for each secret, then `ahvm user delete`. Tedious
 but safe. A `--force` flag that cascades can come later.
 
 ### 1.8 API Key Rotation
@@ -278,8 +278,8 @@ If a key is compromised, the user needs to rotate without losing their
 sandboxes, secrets, subnet, or identity.
 
 ```bash
-bhatti user rotate-key alice
-# → New API key: bht_xyz789...  (shown once)
+ahvm user rotate-key alice
+# → New API key: ahv_xyz789...  (shown once)
 #   Old key is immediately invalidated.
 ```
 
@@ -344,9 +344,9 @@ so there's nothing to go stale behaviorally.
 - `pkg/engine/docker/parse_test.go`
 
 **Update:**
-- `cmd/bhatti/main.go` — remove `docker.New()` case, remove import
-- `cmd/bhatti/engine_other.go` — return clear error:
-  `"bhatti requires Linux with KVM (firecracker engine only)"`
+- `cmd/ahvm/main.go` — remove `docker.New()` case, remove import
+- `cmd/ahvm/engine_other.go` — return clear error:
+  `"ahvm requires Linux with KVM (firecracker engine only)"`
 - `pkg/config.go` — change default engine from `"docker"` to `"firecracker"`
 - `go.mod` — `go mod tidy` to remove `github.com/docker/docker` and its
   transitive dependencies
@@ -488,11 +488,11 @@ iptables rules, this provides complete network isolation.
 **Scheme:** `10.{hi}.{lo}.0/24`
 
 ```
-User subnet_index=1:   10.0.1.0/24   bridge brbhatti-1   gateway 10.0.1.1
-User subnet_index=2:   10.0.2.0/24   bridge brbhatti-2   gateway 10.0.2.1
+User subnet_index=1:   10.0.1.0/24   bridge brahvm-1   gateway 10.0.1.1
+User subnet_index=2:   10.0.2.0/24   bridge brahvm-2   gateway 10.0.2.1
 ...
-User subnet_index=254: 10.0.254.0/24 bridge brbhatti-254 gateway 10.0.254.1
-User subnet_index=255: 10.1.0.0/24   bridge brbhatti-255 gateway 10.1.0.1
+User subnet_index=254: 10.0.254.0/24 bridge brahvm-254 gateway 10.0.254.1
+User subnet_index=255: 10.1.0.0/24   bridge brahvm-255 gateway 10.1.0.1
 ...
 Max: 10.255.254.0/24 → 65,024 users, 253 VMs each
 ```
@@ -517,7 +517,7 @@ func subnetFromIndex(index int) (gateway, subnet, bridge string) {
     lo := ((index - 1) % 254) + 1
     gateway = fmt.Sprintf("10.%d.%d.1", hi, lo)
     subnet = fmt.Sprintf("10.%d.%d.0/24", hi, lo)
-    bridge = fmt.Sprintf("brbhatti-%d", index)
+    bridge = fmt.Sprintf("brahvm-%d", index)
     return
 }
 ```
@@ -593,7 +593,7 @@ func setupGlobalFirewall() error {
 
         // 4. Allow return traffic from VMs to host (agent TCP responses).
         //
-        // The bhatti daemon initiates TCP connections to VMs (net.Dial to
+        // The ahvm daemon initiates TCP connections to VMs (net.Dial to
         // 10.X.Y.Z:1024). The kernel picks the bridge IP as source. The
         // SYN-ACK from the VM enters the INPUT chain with source 10.0.0.0/8.
         // Without this ACCEPT rule, a blanket DROP would kill every agent
@@ -607,7 +607,7 @@ func setupGlobalFirewall() error {
         // 5. Block VM-initiated connections to host (API, SSH, everything).
         //
         // Only NEW connections from VMs are dropped. This prevents a
-        // compromised VM from connecting to the bhatti API (port 8080),
+        // compromised VM from connecting to the ahvm API (port 8080),
         // SSH (port 22), or any other host service. Combined with rule 4,
         // the host can maintain agent connections while VMs cannot initiate
         // new connections to the host.
@@ -838,9 +838,9 @@ through the authenticated proxy URL.
 
 ## Part 4 — Guest Agent Hardening
 
-### 4.1 Exec as lohar (uid 1000), Not Root
+### 4.1 Exec as forge (uid 1000), Not Root
 
-**File:** `cmd/lohar/exec.go`
+**File:** `cmd/forge/exec.go`
 
 Add `Credential` to `SysProcAttr` in `handlePipedExec`:
 
@@ -854,7 +854,7 @@ cmd.SysProcAttr = &syscall.SysProcAttr{
 }
 ```
 
-**File:** `cmd/lohar/tty.go`
+**File:** `cmd/forge/tty.go`
 
 Same for `handleTTYSession`:
 
@@ -870,7 +870,7 @@ cmd.SysProcAttr = &syscall.SysProcAttr{
 }
 ```
 
-The user `lohar` already exists in the rootfs with uid 1000, has sudo
+The user `forge` already exists in the rootfs with uid 1000, has sudo
 with NOPASSWD, and owns `/workspace`. This is the correct default. If a
 user needs root, they use `sudo` — the sudoers entry already allows it.
 
@@ -879,7 +879,7 @@ change needed there.
 
 ### 4.2 Unmount Config Drive After Boot
 
-**File:** `cmd/lohar/main.go`
+**File:** `cmd/forge/main.go`
 
 After `loadConfigDrive()` returns, unmount and remove:
 
@@ -890,14 +890,14 @@ if cfg != nil {
 
     // Unmount config drive — it contains the agent token and env vars
     // in plaintext JSON. No reason to keep it accessible.
-    syscall.Unmount("/run/bhatti/config", 0)
-    os.RemoveAll("/run/bhatti/config")
+    syscall.Unmount("/run/ahvm/config", 0)
+    os.RemoveAll("/run/ahvm/config")
 }
 ```
 
 ### 4.3 Connection and Session Limits
 
-**File:** `cmd/lohar/handler.go`
+**File:** `cmd/forge/handler.go`
 
 Add limits at the top of `handleControlConnection`:
 
@@ -936,7 +936,7 @@ func newSession(argv []string, tty bool, maxIdle time.Duration) *Session {
 
 ### 4.4 File Write Size Limit
 
-**File:** `cmd/lohar/files.go`
+**File:** `cmd/forge/files.go`
 
 ```go
 const maxWriteSize = 100 << 20 // 100 MB
@@ -1018,7 +1018,7 @@ of the problem in production.
 
 ### 4.6 Constant-Time Token Comparison in Agent
 
-**File:** `cmd/lohar/handler.go`
+**File:** `cmd/forge/handler.go`
 
 ```go
 import "crypto/subtle"
@@ -1036,13 +1036,13 @@ if agentToken != "" {
 }
 ```
 
-Same change in `cmd/lohar/forward.go`.
+Same change in `cmd/forge/forward.go`.
 
 ### 4.7 Testing
 
-- `TestExecRunsAsLohar` — exec `whoami`, verify output is `lohar`, not `root`
+- `TestExecRunsAsForge` — exec `whoami`, verify output is `forge`, not `root`
 - `TestExecCanSudo` — exec `sudo whoami`, verify output is `root`
-- `TestConfigDriveUnmounted` — exec `cat /run/bhatti/config/config.json`,
+- `TestConfigDriveUnmounted` — exec `cat /run/ahvm/config/config.json`,
   verify error (no such file or directory)
 - `TestSessionLimit` — create 20 sessions, verify 21st returns error
 - `TestFileWriteSizeLimit` — attempt to write 200MB file, verify error
@@ -1086,13 +1086,13 @@ envMap[secretName] = string(plaintext)
 
 ### 5.2 Age Key Backup Documentation
 
-The `age.key` file at `/var/lib/bhatti/age.key` is the master decryption
+The `age.key` file at `/var/lib/ahvm/age.key` is the master decryption
 key. If lost, all encrypted secrets are unrecoverable.
 
 Add to install script output:
 
 ```
-⚠  BACK UP THIS FILE: /var/lib/bhatti/age.key
+⚠  BACK UP THIS FILE: /var/lib/ahvm/age.key
    If lost, all encrypted secrets become unrecoverable.
 ```
 
@@ -1241,7 +1241,7 @@ as they arrive without buffering.
 
 ### 7.1 JSON Structured Logging
 
-**File:** `cmd/bhatti/main.go`
+**File:** `cmd/ahvm/main.go`
 
 At the top of `runDaemon()`:
 
@@ -1364,14 +1364,14 @@ atomic int64s in the logging middleware.
 
 ### 8.1 Version Injection
 
-**File:** `cmd/bhatti/main.go`
+**File:** `cmd/ahvm/main.go`
 
 ```go
 var version = "dev"
 
 // In runCLI():
 case "version":
-    fmt.Printf("bhatti %s\n", version)
+    fmt.Printf("ahvm %s\n", version)
     fmt.Printf("api: %s\n", apiURL)
 ```
 
@@ -1381,7 +1381,7 @@ case "version":
 VERSION ?= $(shell git describe --tags --always --dirty)
 
 build:
-	go build -ldflags="-s -w -X main.version=$(VERSION)" -o bhatti ./cmd/bhatti/
+	go build -ldflags="-s -w -X main.version=$(VERSION)" -o ahvm ./cmd/ahvm/
 ```
 
 ### 8.2 Cross-Compile Matrix
@@ -1390,13 +1390,13 @@ build:
 release:
 	@mkdir -p dist
 	GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=$(VERSION)" \
-		-o dist/bhatti-darwin-arm64 ./cmd/bhatti/
+		-o dist/ahvm-darwin-arm64 ./cmd/ahvm/
 	GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=$(VERSION)" \
-		-o dist/bhatti-darwin-amd64 ./cmd/bhatti/
+		-o dist/ahvm-darwin-amd64 ./cmd/ahvm/
 	GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=$(VERSION)" \
-		-o dist/bhatti-linux-amd64 ./cmd/bhatti/
+		-o dist/ahvm-linux-amd64 ./cmd/ahvm/
 	GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.version=$(VERSION)" \
-		-o dist/bhatti-linux-arm64 ./cmd/bhatti/
+		-o dist/ahvm-linux-arm64 ./cmd/ahvm/
 ```
 
 ### 8.3 Git Tag
@@ -1409,13 +1409,13 @@ git push --tags
 
 ### 8.4 CLI Install Script
 
-Host at `https://bhatti.sh/install.sh` (Cloudflare Pages or R2):
+Host at `https://ahvm.sh/install.sh` (Cloudflare Pages or R2):
 
 ```bash
 #!/bin/bash
 set -euo pipefail
-VERSION="${BHATTI_VERSION:-latest}"
-REPO="sahil-shubham/bhatti"
+VERSION="${AHVM_VERSION:-latest}"
+REPO="mariobm/agent-house"
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -1427,22 +1427,22 @@ if [ "$VERSION" = "latest" ]; then
     VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
         | grep tag_name | cut -d'"' -f4)
 fi
-URL="https://github.com/$REPO/releases/download/${VERSION}/bhatti-${OS}-${ARCH}"
-echo "Installing bhatti $VERSION ($OS/$ARCH)..."
-curl -fsSL "$URL" -o /tmp/bhatti && chmod +x /tmp/bhatti
+URL="https://github.com/$REPO/releases/download/${VERSION}/ahvm-${OS}-${ARCH}"
+echo "Installing ahvm $VERSION ($OS/$ARCH)..."
+curl -fsSL "$URL" -o /tmp/ahvm && chmod +x /tmp/ahvm
 INSTALL_DIR="/usr/local/bin"
-if [ -w "$INSTALL_DIR" ]; then mv /tmp/bhatti "$INSTALL_DIR/bhatti"
-else sudo mv /tmp/bhatti "$INSTALL_DIR/bhatti"; fi
-echo "bhatti $VERSION installed"
+if [ -w "$INSTALL_DIR" ]; then mv /tmp/ahvm "$INSTALL_DIR/ahvm"
+else sudo mv /tmp/ahvm "$INSTALL_DIR/ahvm"; fi
+echo "ahvm $VERSION installed"
 ```
 
 ### 8.5 CLI User Setup Command
 
 ```bash
-$ bhatti setup
-API endpoint [https://api.bhatti.sh]:
+$ ahvm setup
+API endpoint [https://api.ahvm.sh]:
 API key: ****
-Saved to ~/.bhatti/config.yaml
+Saved to ~/.ahvm/config.yaml
 Testing connection... ✓ connected (user: alice, 2 sandboxes)
 ```
 
@@ -1454,54 +1454,54 @@ Run on agni-01 after all parts are implemented:
 
 ```bash
 # 1. Create two test users
-bhatti user create --name alice --max-sandboxes 5
-bhatti user create --name bob --max-sandboxes 5
+ahvm user create --name alice --max-sandboxes 5
+ahvm user create --name bob --max-sandboxes 5
 
 # 2. As alice: create sandbox, verify isolation
-BHATTI_TOKEN=$ALICE_KEY bhatti create --name alice-dev
-BHATTI_TOKEN=$ALICE_KEY bhatti exec alice-dev -- whoami
-# → lohar (not root)
+AHVM_TOKEN=$ALICE_KEY ahvm create --name alice-dev
+AHVM_TOKEN=$ALICE_KEY ahvm exec alice-dev -- whoami
+# → forge (not root)
 
-BHATTI_TOKEN=$ALICE_KEY bhatti exec alice-dev -- cat /run/bhatti/config/config.json
+AHVM_TOKEN=$ALICE_KEY ahvm exec alice-dev -- cat /run/ahvm/config/config.json
 # → error: no such file (config drive unmounted)
 
 # 3. As bob: verify cannot see alice's sandbox
-BHATTI_TOKEN=$BOB_KEY bhatti list
+AHVM_TOKEN=$BOB_KEY ahvm list
 # → empty
 
 # 4. Network isolation
-ALICE_IP=$(BHATTI_TOKEN=$ALICE_KEY bhatti exec alice-dev -- hostname -I | tr -d ' ')
-BHATTI_TOKEN=$BOB_KEY bhatti create --name bob-dev
-BHATTI_TOKEN=$BOB_KEY bhatti exec bob-dev -- ping -c1 -W1 $ALICE_IP
+ALICE_IP=$(AHVM_TOKEN=$ALICE_KEY ahvm exec alice-dev -- hostname -I | tr -d ' ')
+AHVM_TOKEN=$BOB_KEY ahvm create --name bob-dev
+AHVM_TOKEN=$BOB_KEY ahvm exec bob-dev -- ping -c1 -W1 $ALICE_IP
 # → 100% packet loss (different bridges)
 
 # 5. VM cannot reach host API
-BHATTI_TOKEN=$ALICE_KEY bhatti exec alice-dev -- \
+AHVM_TOKEN=$ALICE_KEY ahvm exec alice-dev -- \
   curl -s --connect-timeout 2 http://10.0.1.1:8080/health
 # → connection refused or timeout
 
 # 6. VM can reach internet
-BHATTI_TOKEN=$ALICE_KEY bhatti exec alice-dev -- \
+AHVM_TOKEN=$ALICE_KEY ahvm exec alice-dev -- \
   curl -s https://httpbin.org/ip
 # → {"origin": "..."}
 
 # 7. No TCP auto-forward ports exposed
-ss -tlnp | grep bhatti
+ss -tlnp | grep ahvm
 # → only :8080 (the API), nothing else
 
 # 8. Rate limiting
 for i in $(seq 20); do
-  BHATTI_TOKEN=$ALICE_KEY bhatti create --name "spam-$i" 2>&1
+  AHVM_TOKEN=$ALICE_KEY ahvm create --name "spam-$i" 2>&1
 done
 # → last few return "rate limit exceeded" or "sandbox limit reached"
 
 # 9. Exec timeout
-BHATTI_TOKEN=$ALICE_KEY bhatti exec alice-dev -- sleep 600
+AHVM_TOKEN=$ALICE_KEY ahvm exec alice-dev -- sleep 600
 # → times out after 300s (default)
 
 # 10. Cleanup
-BHATTI_TOKEN=$ALICE_KEY bhatti destroy alice-dev
-BHATTI_TOKEN=$BOB_KEY bhatti destroy bob-dev
+AHVM_TOKEN=$ALICE_KEY ahvm destroy alice-dev
+AHVM_TOKEN=$BOB_KEY ahvm destroy bob-dev
 ```
 
 ---
@@ -1533,7 +1533,7 @@ a feature, not a bug. The sandbox is the user's environment — they should be
 able to set any environment variable. The security boundary is between users
 (API scoping + network isolation), not within a single user's sandbox.
 
-**WebSocket auth via query parameter.** Removed. The bhatti API is
+**WebSocket auth via query parameter.** Removed. The ahvm API is
 machine-to-machine. The CLI and all programmatic WebSocket clients (Go,
 Python, Node, Rust) support custom headers on upgrade — they send
 `Authorization: Bearer` in the header. The only client that can't set
@@ -1541,7 +1541,7 @@ headers on WebSocket upgrade is the browser's native `new WebSocket(url)`.
 Since the web UI is a separate project, it should solve its own auth:
 authenticate to its backend, get a short-lived single-use WebSocket ticket,
 connect with `ws://...?ticket=xyz`. The ticket is validated once and
-discarded. This is the standard pattern (Slack, Discord, etc.). Bhatti's
+discarded. This is the standard pattern (Slack, Discord, etc.). AHVM's
 API should not weaken its auth model to accommodate browser limitations
 that belong to a different project.
 
@@ -1567,7 +1567,7 @@ hardening.
 Today every sandbox copies the same base rootfs. To support custom images:
 
 1. **Image registry** — a directory of named rootfs ext4 images at
-   `/var/lib/bhatti/images/`. Each built via `build-rootfs.sh` with
+   `/var/lib/ahvm/images/`. Each built via `build-rootfs.sh` with
    different packages (e.g., `python-ml.ext4`, `rust-dev.ext4`).
 2. **API field** — `POST /sandboxes` gets `"image": "python-ml"`. If
    omitted, uses the default base image.
@@ -1586,7 +1586,7 @@ Today `NewVolumes` creates fresh ext4 images inside the sandbox directory,
 destroyed with the sandbox. For persistent storage:
 
 1. **Store volumes outside sandbox dir** — at
-   `/var/lib/bhatti/volumes/{user_id}/{name}.ext4`. Not deleted on
+   `/var/lib/ahvm/volumes/{user_id}/{name}.ext4`. Not deleted on
    sandbox destroy.
 2. **Attach existing volumes** — the engine resolves a volume name to an
    existing file path instead of always creating fresh:

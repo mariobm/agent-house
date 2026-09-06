@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // TestKrucibleClockFreeze verifies warm-tier freeze semantics: a ~3s pause must NOT advance the guest's monotonic

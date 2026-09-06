@@ -12,7 +12,7 @@ to calibrate understanding.
 ```
 Host-side (rootfs copy → FC API calls):    ~130ms
 Kernel boot:                                ~125ms
-Lohar init (mounts → TCP listen):           ~28ms
+Forge init (mounts → TCP listen):           ~28ms
 WaitReady probing:                          ~80ms
 ────────────────────────────────────────────────
 Total create p50:                           365ms
@@ -31,15 +31,15 @@ starts PID 1.
 ```
 systemd PID 1 parses units:                ~15-25ms
 systemd mounts proc/sys/dev/tmpfs/cgroup:  ~10-15ms
-  (batched, parallel — faster than lohar's sequential mounts)
+  (batched, parallel — faster than forge's sequential mounts)
 systemd reaches basic.target:              ~10-20ms
-systemd forks lohar.service:               ~5-10ms
-lohar runAsAgent() config drive + listen:  ~15-25ms
+systemd forks forge.service:               ~5-10ms
+forge runAsAgent() config drive + listen:  ~15-25ms
 ────────────────────────────────────────────────
 Total PID 1 to agent ready:                ~55-95ms
 ```
 
-vs lohar's current 28ms. Delta: **+30-65ms inside the VM.**
+vs forge's current 28ms. Delta: **+30-65ms inside the VM.**
 
 But the WaitReady impact isn't just the delta. It depends on where the
 agent-ready moment falls in the probe cycle:
@@ -92,8 +92,8 @@ including the TSC (Time Stamp Counter). When the VM resumes:
   (apt-daily, fstrim, man-db, motd-news, e2scrub). No calendar timers
   exist to misfire.
 
-- **lohar.service has `WatchdogSec=0`.** Even if the monotonic clock
-  had a hiccup, the watchdog won't kill lohar.
+- **forge.service has `WatchdogSec=0`.** Even if the monotonic clock
+  had a hiccup, the watchdog won't kill forge.
 
 - **journald** sees the realtime jump and might write a few log entries
   ("system resumed" or similar). With `Storage=volatile` and
@@ -106,7 +106,7 @@ including the TSC (Time Stamp Counter). When the VM resumes:
 | Background process survives snapshot/restore | **Yes** — memory snapshot preserves process state regardless of init |
 | DNS works after restore | **Yes** — static resolv.conf (or configured resolved) persists |
 | Network works after restore | **Yes** — virtio-net survives, kernel TCP stack intact |
-| systemctl is-active lohar | **active** — lohar was running when snapshotted |
+| systemctl is-active forge | **active** — forge was running when snapshotted |
 | systemctl is-system-running | **running** or **degraded** — degraded if a masked unit tried to start |
 | journalctl shows errors | **No errors**, maybe a "system resumed" informational line |
 | Restore latency delta vs Image A | **<10ms** — the restore path doesn't re-run PID 1, it restores memory |
@@ -214,14 +214,14 @@ With our stripped config:
 - `systemd` (PID 1): ~8-12 MB RSS
 - `systemd-journald`: ~6-10 MB RSS (volatile, 8MB cap)
 - `dbus-daemon`: ~3-5 MB RSS (systemd needs it for IPC)
-- `lohar`: ~10-15 MB RSS (same as today)
+- `forge`: ~10-15 MB RSS (same as today)
 
 Masked (NOT running): resolved, networkd, timesyncd, logind, udevd,
 all gettys, all timers.
 
 ### Prediction
 
-| Metric | Image A (lohar PID 1) | Image B (systemd) | Delta |
+| Metric | Image A (forge PID 1) | Image B (systemd) | Delta |
 |--------|----------------------|-------------------|-------|
 | Total system RSS | ~15-20 MB | ~35-45 MB | **+18-27 MB** |
 | Free memory (2048MB VM) | ~2020 MB | ~1995 MB | **-25 MB (~1.2%)** |
@@ -260,7 +260,7 @@ Simplest path to the numbers. We can enable it later if we ship.
 
 ### Prediction
 
-| Package | Image A (lohar PID 1) | Image B (systemd, resolved masked) |
+| Package | Image A (forge PID 1) | Image B (systemd, resolved masked) |
 |---------|----------------------|-------------------------------------|
 | `openssh-server` | ❌ DNS breaks (resolved postinst clobbers resolv.conf) | **✅ installs, sshd starts, DNS intact** |
 | `postgresql` | ⚠️ installs, pg doesn't start (systemctl fails) | **✅ installs, pg starts, pg_isready works** |
@@ -304,7 +304,7 @@ This needs to be verified in the experiment.
 
 The hot path is:
 ```
-host CLI → HTTP API → TCP to guest → lohar agent → fork+exec → collect output → TCP back
+host CLI → HTTP API → TCP to guest → forge agent → fork+exec → collect output → TCP back
 ```
 
 Every component in this chain is identical between Image A and B. The

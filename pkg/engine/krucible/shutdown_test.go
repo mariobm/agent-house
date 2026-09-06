@@ -15,7 +15,7 @@ import (
 )
 
 // spawnStandin starts a long-lived child process that stands in for a live
-// bhatti-vmm helper, returning its *exec.Cmd + pid. Cleanup kills it (best
+// ahvm-vmm helper, returning its *exec.Cmd + pid. Cleanup kills it (best
 // effort) so a failed assertion never leaks a `sleep`.
 func spawnStandin(t *testing.T) (*exec.Cmd, int) {
 	t.Helper()

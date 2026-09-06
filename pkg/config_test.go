@@ -108,17 +108,17 @@ func TestEnsureKeypairCreatesDir(t *testing.T) {
 	}
 }
 
-// TestLoadConfigExplicitPath verifies $BHATTI_CONFIG takes priority.
+// TestLoadConfigExplicitPath verifies $AHVM_CONFIG takes priority.
 func TestLoadConfigExplicitPath(t *testing.T) {
-	origEnv := os.Getenv("BHATTI_CONFIG")
-	t.Cleanup(func() { os.Setenv("BHATTI_CONFIG", origEnv) })
+	origEnv := os.Getenv("AHVM_CONFIG")
+	t.Cleanup(func() { os.Setenv("AHVM_CONFIG", origEnv) })
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "custom.yaml")
 	os.WriteFile(cfgPath, []byte(
-		"listen: :9999\ndata_dir: /tmp/test-bhatti\n"), 0644)
+		"listen: :9999\ndata_dir: /tmp/test-ahvm\n"), 0644)
 
-	os.Setenv("BHATTI_CONFIG", cfgPath)
+	os.Setenv("AHVM_CONFIG", cfgPath)
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -127,8 +127,8 @@ func TestLoadConfigExplicitPath(t *testing.T) {
 	if cfg.Listen != ":9999" {
 		t.Errorf("listen=%q, want :9999", cfg.Listen)
 	}
-	if cfg.DataDir != "/tmp/test-bhatti" {
-		t.Errorf("data_dir=%q, want /tmp/test-bhatti", cfg.DataDir)
+	if cfg.DataDir != "/tmp/test-ahvm" {
+		t.Errorf("data_dir=%q, want /tmp/test-ahvm", cfg.DataDir)
 	}
 	if cfg.ConfigPath != cfgPath {
 		t.Errorf("config_path=%q, want %q", cfg.ConfigPath, cfgPath)
@@ -136,10 +136,10 @@ func TestLoadConfigExplicitPath(t *testing.T) {
 }
 
 // TestLoadConfigDataDirDefault verifies that when a config file has no
-// data_dir field, it defaults to ~/.bhatti.
+// data_dir field, it defaults to ~/.ahvm.
 func TestLoadConfigDataDirDefault(t *testing.T) {
-	origEnv := os.Getenv("BHATTI_CONFIG")
-	t.Cleanup(func() { os.Setenv("BHATTI_CONFIG", origEnv) })
+	origEnv := os.Getenv("AHVM_CONFIG")
+	t.Cleanup(func() { os.Setenv("AHVM_CONFIG", origEnv) })
 
 	// Config with no data_dir
 	dir := t.TempDir()
@@ -147,7 +147,7 @@ func TestLoadConfigDataDirDefault(t *testing.T) {
 	os.WriteFile(cfgPath, []byte(
 		"api_url: https://example.com\nauth_token: tok\n"), 0644)
 
-	os.Setenv("BHATTI_CONFIG", cfgPath)
+	os.Setenv("AHVM_CONFIG", cfgPath)
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -159,27 +159,27 @@ func TestLoadConfigDataDirDefault(t *testing.T) {
 
 	// Config WITH explicit data_dir
 	os.WriteFile(cfgPath, []byte(
-		"data_dir: /var/lib/bhatti\napi_url: https://example.com\n"), 0644)
+		"data_dir: /var/lib/ahvm\napi_url: https://example.com\n"), 0644)
 
 	cfg, err = LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DataDir != "/var/lib/bhatti" {
-		t.Errorf("data_dir=%q, want /var/lib/bhatti", cfg.DataDir)
+	if cfg.DataDir != "/var/lib/ahvm" {
+		t.Errorf("data_dir=%q, want /var/lib/ahvm", cfg.DataDir)
 	}
 }
 
 // TestLoadConfigPathIsSet verifies ConfigPath is populated.
 func TestLoadConfigPathIsSet(t *testing.T) {
-	origEnv := os.Getenv("BHATTI_CONFIG")
-	t.Cleanup(func() { os.Setenv("BHATTI_CONFIG", origEnv) })
+	origEnv := os.Getenv("AHVM_CONFIG")
+	t.Cleanup(func() { os.Setenv("AHVM_CONFIG", origEnv) })
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	os.WriteFile(cfgPath, []byte("listen: :7777\n"), 0644)
 
-	os.Setenv("BHATTI_CONFIG", cfgPath)
+	os.Setenv("AHVM_CONFIG", cfgPath)
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -192,16 +192,16 @@ func TestLoadConfigPathIsSet(t *testing.T) {
 
 // TestDefaultDataDirHonorsSudoUser verifies that running under sudo
 // resolves the data dir to the *invoking* user's home, not root's.
-// This is the bug that caused `sudo bhatti setup` to write to
-// /var/root/.bhatti while `bhatti list` looked at /home/alice/.bhatti.
+// This is the bug that caused `sudo ahvm setup` to write to
+// /var/root/.ahvm while `ahvm list` looked at /home/alice/.ahvm.
 func TestDefaultDataDirHonorsSudoUser(t *testing.T) {
 	orig := os.Getenv("SUDO_USER")
 	t.Cleanup(func() { os.Setenv("SUDO_USER", orig) })
 
-	// Without SUDO_USER: returns the current user's home/.bhatti.
+	// Without SUDO_USER: returns the current user's home/.ahvm.
 	os.Unsetenv("SUDO_USER")
 	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".bhatti")
+	want := filepath.Join(home, ".ahvm")
 	if got := DefaultDataDir(); got != want {
 		t.Errorf("no SUDO_USER: DefaultDataDir()=%q, want %q", got, want)
 	}
@@ -220,9 +220,9 @@ func TestDefaultDataDirHonorsSudoUser(t *testing.T) {
 		t.Skip("cannot resolve current user")
 	}
 	os.Setenv("SUDO_USER", curUser.Username)
-	if got := DefaultDataDir(); got != filepath.Join(curUser.HomeDir, ".bhatti") {
+	if got := DefaultDataDir(); got != filepath.Join(curUser.HomeDir, ".ahvm") {
 		t.Errorf("SUDO_USER=%s: DefaultDataDir()=%q, want %q",
-			curUser.Username, got, filepath.Join(curUser.HomeDir, ".bhatti"))
+			curUser.Username, got, filepath.Join(curUser.HomeDir, ".ahvm"))
 	}
 
 	// Same expectation for InvokingUID: when SUDO_USER points at a real
@@ -240,22 +240,22 @@ func TestDefaultDataDirHonorsSudoUser(t *testing.T) {
 
 // TestLoadConfigNoFile verifies defaults when no config exists.
 func TestLoadConfigNoFile(t *testing.T) {
-	origEnv := os.Getenv("BHATTI_CONFIG")
-	t.Cleanup(func() { os.Setenv("BHATTI_CONFIG", origEnv) })
+	origEnv := os.Getenv("AHVM_CONFIG")
+	t.Cleanup(func() { os.Setenv("AHVM_CONFIG", origEnv) })
 
-	os.Setenv("BHATTI_CONFIG", "/nonexistent/config.yaml")
+	os.Setenv("AHVM_CONFIG", "/nonexistent/config.yaml")
 
-	// This will fail the BHATTI_CONFIG candidate, then try /etc/bhatti/
-	// and ~/.bhatti/. On a test machine without those, we get defaults.
+	// This will fail the AHVM_CONFIG candidate, then try /etc/ahvm/
+	// and ~/.ahvm/. On a test machine without those, we get defaults.
 	// To be deterministic, point to a dir with no config.yaml.
-	os.Setenv("BHATTI_CONFIG", "")
+	os.Setenv("AHVM_CONFIG", "")
 
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.ConfigPath != "" {
-		// May pick up ~/.bhatti/config.yaml if it exists on the dev machine.
+		// May pick up ~/.ahvm/config.yaml if it exists on the dev machine.
 		// That's OK — this test just verifies no crash on missing config.
 		t.Logf("found config at %s (dev machine has config)", cfg.ConfigPath)
 	}

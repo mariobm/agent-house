@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // RunSnapshotSuite is the cold-tier gate: a sandbox survives a Stop (snapshot to

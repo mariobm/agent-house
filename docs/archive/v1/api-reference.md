@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/reference/api/>.
+> <https://ahvm.sh/docs/reference/api/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -100,7 +100,7 @@ PATCH /sandboxes/:id
 Toggles mutable sandbox properties. All fields are optional; supply only the ones you want to change. Returns the updated sandbox object.
 
 - `keep_hot` — prevent thermal transitions (see Thermal management).
-- `name` — rename the sandbox. Must match `[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}` and be unique among the user's non-destroyed sandboxes; returns 409 on conflict. The in-guest hostname is set at create time and is *not* changed by rename. Public URLs from `bhatti publish` keep their original alias and remain stable. Active shells, exec sessions, and websockets continue uninterrupted.
+- `name` — rename the sandbox. Must match `[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}` and be unique among the user's non-destroyed sandboxes; returns 409 on conflict. The in-guest hostname is set at create time and is *not* changed by rename. Public URLs from `ahvm publish` keep their original alias and remain stable. Active shells, exec sessions, and websockets continue uninterrupted.
 
 ### Destroy
 
@@ -295,7 +295,7 @@ Response (201):
   "sandbox_id": "a1b2c3d4",
   "port": 3000,
   "alias": "my-app",
-  "url": "https://my-app.bhatti.sh",
+  "url": "https://my-app.ahvm.sh",
   "created_at": "2026-03-30T17:00:00Z"
 }
 ```

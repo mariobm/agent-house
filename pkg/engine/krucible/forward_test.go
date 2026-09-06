@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/forward"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/forward"
 )
 
 // TestKrucibleForward proves the host↔guest forward end to end with no mocking:
