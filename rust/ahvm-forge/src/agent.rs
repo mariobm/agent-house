@@ -96,37 +96,62 @@ pub fn handle(stream: TcpStream, cfg: &Config) {
                 return;
             }
         };
-        let resp = match frame.msg_type {
+        // One serialization per response: the payload is encoded once here,
+        // so handlers never double-encode to pre-check sizes. Anything past
+        // the frame budget becomes an explicit error frame — the connection
+        // stays usable, unlike a failed write that just drops it.
+        let (msg_type, body): (FrameType, Vec<u8>) = match frame.msg_type {
             FrameType::ExecReq => match parse::<ExecReq>(&frame.payload) {
                 Ok(req) => {
                     let out = crate::exec::run(&req, cfg);
                     let body = serde_json::to_vec(&out).expect("serialize exec resp");
-                    Frame {
-                        msg_type: FrameType::ExecResp,
-                        payload: body,
-                    }
+                    (FrameType::ExecResp, body)
                 }
-                Err(f) => f,
+                Err(f) => {
+                    send_frame(&mut w, f);
+                    continue;
+                }
             },
             FrameType::FileReq => match parse::<FileReq>(&frame.payload) {
                 Ok(req) => match crate::files::serve(&req, cfg) {
                     Ok(resp) => {
                         let body = serde_json::to_vec(&resp).expect("serialize file resp");
-                        Frame {
-                            msg_type: FrameType::FileResp,
-                            payload: body,
-                        }
+                        (FrameType::FileResp, body)
                     }
-                    Err(message) => err_frame(message),
+                    Err(message) => {
+                        send_frame(&mut w, err_frame(message));
+                        continue;
+                    }
                 },
-                Err(f) => f,
+                Err(f) => {
+                    send_frame(&mut w, f);
+                    continue;
+                }
             },
-            other => err_frame(format!("unexpected frame type {other:?}")),
+            other => {
+                send_frame(&mut w, err_frame(format!("unexpected frame type {other:?}")));
+                continue;
+            }
         };
-        if write_frame(&mut w, &resp).is_err() {
+        if 1 + body.len() > ahvm_proto::MAX_FRAME_SIZE as usize {
+            // Pagination/clamps should prevent this; if it fires, the
+            // handler needs a smaller page, not a dropped connection.
+            return send_frame(
+                &mut w,
+                err_frame(format!(
+                    "response too large ({} bytes): retry with a smaller limit",
+                    body.len()
+                )),
+            );
+        }
+        if write_frame(&mut w, &Frame { msg_type, payload: body }).is_err() {
             return;
         }
     }
+}
+
+fn send_frame(w: &mut TcpStream, frame: Frame) {
+    let _ = write_frame(w, &frame);
 }
 
 fn constant_eq(a: &str, b: &str) -> bool {

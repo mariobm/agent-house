@@ -302,8 +302,19 @@ fn exec_exited_parent_with_live_descendant_still_responds() {
     // by the 20s test exec timeout + 5s drain grace, all under our 25s cap.
     // Either a clean short response or a 124 timeout response is acceptable;
     // hanging is not.
+    let start = std::time::Instant::now();
     let f = read_frame(&mut c.r).unwrap();
     assert_eq!(f.msg_type, FrameType::ExecResp);
+    let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
+    // Parent exited 0 but a stray held the pipe: partial output preserved,
+    // flagged truncated, and answered in ~2s grace — not at stray death.
+    assert_eq!(b64str(&v, "stdout_b64"), b"out\n");
+    assert_eq!(v["truncated"], true);
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "took {:?}",
+        start.elapsed()
+    );
 }
 
 #[test]
@@ -334,4 +345,46 @@ fn large_listing_pages_instead_of_dropping() {
         assert!(seen < 6000, "paging looped");
     }
     assert_eq!(seen, 5000);
+}
+
+#[test]
+fn long_filename_write_works() {
+    // Regression: temp names embedding the full stem overflowed NAME_MAX
+    // on long destinations (and retried the permanent error 100x).
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    let long = "n".repeat(240);
+    let data = B64.encode(b"long-name-ok");
+    let v = file_op(
+        &mut c,
+        serde_json::json!({ "op": "write", "path": long, "data_b64": data }),
+    );
+    assert_eq!(v["bytes"], 12);
+    assert_eq!(std::fs::read(agent.dir.join(&long)).unwrap(), b"long-name-ok");
+}
+
+#[test]
+fn failed_write_leaves_no_tmp() {
+    // Writing over an existing directory fails at rename; the temp file
+    // must not be left behind to accumulate across failures.
+    let agent = Agent::spawn("");
+    std::fs::create_dir_all(agent.dir.join("adir")).unwrap();
+    let mut c = agent.connect();
+    let data = B64.encode(b"x");
+    let body = serde_json::json!({ "op": "write", "path": "adir", "data_b64": data })
+        .to_string()
+        .into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::FileReq, payload: body }).unwrap();
+    let msg = expect_error(&mut c);
+    assert!(msg.contains("rename"), "{msg}");
+    let leftovers: Vec<_> = std::fs::read_dir(&agent.dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name())
+        .filter(|n| n.to_string_lossy().starts_with(".ahvm-tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "stray temps: {leftovers:?}");
+    // Connection still usable after the error.
+    let out = exec(&mut c, &["echo", "alive"]);
+    assert_eq!(out["exit_code"], 0);
 }

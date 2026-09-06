@@ -10,18 +10,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Sibling temp path unique to this process: pid + counter + nanos, created
-/// with `create_new` by the caller so planting it first always fails.
+/// Sibling temp file with a SHORT name independent of the destination:
+/// embedding the full stem overflows NAME_MAX on long filenames (and
+/// retries a permanent error forever). Created exclusively: pre-planting
+/// the path always fails, so a symlink at the temp location can neither
+/// redirect the write nor be destroyed. Only true name collisions retry.
 fn unique_sibling(dest: &std::path::Path) -> Option<(PathBuf, std::fs::File)> {
-    let stem = dest.file_name()?.to_string_lossy();
     let pid = std::process::id();
-    for _ in 0..100 {
+    for _ in 0..10 {
         let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
-        let name = format!(".{stem}.{pid}.{nanos}.{n}.tmp");
+        // ~30 chars regardless of destination length.
+        let name = format!(".ahvm-tmp-{pid}-{nanos}-{n}");
         let cand = dest.with_file_name(name);
         match std::fs::OpenOptions::new()
             .write(true)
@@ -29,7 +32,8 @@ fn unique_sibling(dest: &std::path::Path) -> Option<(PathBuf, std::fs::File)> {
             .open(&cand)
         {
             Ok(f) => return Some((cand, f)),
-            Err(_) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
         }
     }
     None
@@ -108,10 +112,23 @@ pub fn serve(req: &FileReq, cfg: &Config) -> Result<FileResp, String> {
             // a pre-planted symlink redirect the write outside the jail
             // (or destroy a sibling file), and concurrent writes collide.
             let (tmp, mut tmp_f) = unique_sibling(&p).ok_or("write: temp name exhausted")?;
+            // Cleanup guard: a failed write or rename must not leave the
+            // temp file behind (repeated failures would consume disk).
+            // Disarmed by forgetting after a successful rename.
+            struct RmGuard(Option<PathBuf>);
+            impl Drop for RmGuard {
+                fn drop(&mut self) {
+                    if let Some(p) = self.0.take() {
+                        let _ = std::fs::remove_file(p);
+                    }
+                }
+            }
+            let mut guard = RmGuard(Some(tmp.clone()));
             use std::io::Write as _;
             tmp_f.write_all(&data).map_err(|e| format!("write: {e}"))?;
             drop(tmp_f);
             std::fs::rename(&tmp, &p).map_err(|e| format!("rename: {e}"))?;
+            guard.0.take();
             Ok(FileResp::Write {
                 bytes: data.len() as u64,
             })
@@ -119,9 +136,10 @@ pub fn serve(req: &FileReq, cfg: &Config) -> Result<FileResp, String> {
         FileReq::List { path, offset, limit } => {
             // Pages, not dumps: entries stream unbounded while one response
             // frame caps at 1 MiB, so an unbounded listing used to kill the
-            // connection with no response at all.
+            // connection with no response at all. Oversized pages are still
+            // possible with pathological names; the single encode in the
+            // dispatcher turns those into an explicit error frame.
             const MAX_PAGE: u64 = 1000;
-            const FRAME_BUDGET: usize = 768 << 10;
             let p = jail(&cfg.root, path)?;
             let take = (*limit).clamp(1, MAX_PAGE) as usize;
             let skip = (*offset) as usize;
@@ -156,16 +174,6 @@ pub fn serve(req: &FileReq, cfg: &Config) -> Result<FileResp, String> {
                 entries,
                 next_offset: has_more.then_some(end as u64),
             };
-            // Directories can still shift under us; if even one clamped page
-            // won't fit the frame, say so explicitly instead of dropping
-            // the connection.
-            let probe = serde_json::to_vec(&resp).map_err(|e| format!("encode: {e}"))?;
-            if probe.len() > FRAME_BUDGET {
-                return Err(format!(
-                    "listing page too large ({} bytes): retry with a smaller limit (<= {MAX_PAGE})",
-                    probe.len()
-                ));
-            }
             Ok(resp)
         }
     }
