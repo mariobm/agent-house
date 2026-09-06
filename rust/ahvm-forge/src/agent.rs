@@ -32,17 +32,89 @@ pub struct ExecResp {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum FileReq {
-    Read { path: String, offset: u64, limit: u64 },
-    Write { path: String, data_b64: String },
-    List { path: String, offset: u64, limit: u64 },
+    Read {
+        path: String,
+        offset: u64,
+        limit: u64,
+    },
+    Write {
+        path: String,
+        data_b64: String,
+    },
+    List {
+        path: String,
+        offset: u64,
+        limit: u64,
+    },
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum FileResp {
-    Read { data_b64: String, eof: bool },
-    Write { bytes: u64 },
-    List { entries: Vec<DirEntry>, next_offset: Option<u64> },
+    Read {
+        data_b64: String,
+        eof: bool,
+    },
+    Write {
+        bytes: u64,
+    },
+    List {
+        entries: Vec<DirEntry>,
+        next_offset: Option<u64>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SessionReq {
+    Create {
+        argv: Vec<String>,
+        #[serde(default)]
+        env: std::collections::HashMap<String, String>,
+        cwd: Option<String>,
+        #[serde(default)]
+        pty: bool,
+    },
+    Attach {
+        session_id: String,
+        #[serde(default)]
+        from_seq: u64,
+    },
+    Input {
+        session_id: String,
+        data_b64: String,
+    },
+    Kill {
+        session_id: String,
+    },
+    List,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SessionResp {
+    Started {
+        session_id: String,
+    },
+    InputAcked {
+        bytes: u64,
+    },
+    Killed {
+        session_id: String,
+    },
+    Listed {
+        sessions: Vec<crate::sessions::SessionInfo>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionData {
+    pub session_id: String,
+    pub seq: u64,
+    pub data_b64: String,
+    pub eof: bool,
+    pub exit_code: Option<i32>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,7 +125,9 @@ pub struct DirEntry {
 }
 
 fn err_frame(message: String) -> Frame {
-    let body = serde_json::json!({ "message": message }).to_string().into_bytes();
+    let body = serde_json::json!({ "message": message })
+        .to_string()
+        .into_bytes();
     Frame {
         msg_type: FrameType::Error,
         payload: body,
@@ -128,8 +202,25 @@ pub fn handle(stream: TcpStream, cfg: &Config) {
                     continue;
                 }
             },
+            FrameType::SessionReq => match parse::<SessionReq>(&frame.payload) {
+                Ok(req) => {
+                    // Attach streams to EOF but keeps the connection alive
+                    // for the next request; only a broken pipe closes it.
+                    if serve_session(&mut r, &mut w, req) {
+                        return;
+                    }
+                    continue;
+                }
+                Err(f) => {
+                    send_frame(&mut w, f);
+                    continue;
+                }
+            },
             other => {
-                send_frame(&mut w, err_frame(format!("unexpected frame type {other:?}")));
+                send_frame(
+                    &mut w,
+                    err_frame(format!("unexpected frame type {other:?}")),
+                );
                 continue;
             }
         };
@@ -144,7 +235,15 @@ pub fn handle(stream: TcpStream, cfg: &Config) {
                 )),
             );
         }
-        if write_frame(&mut w, &Frame { msg_type, payload: body }).is_err() {
+        if write_frame(
+            &mut w,
+            &Frame {
+                msg_type,
+                payload: body,
+            },
+        )
+        .is_err()
+        {
             return;
         }
     }
@@ -154,11 +253,134 @@ fn send_frame(w: &mut TcpStream, frame: Frame) {
     let _ = write_frame(w, &frame);
 }
 
+/// Serve one session request. Returns true when the connection should close
+/// (client went away); false to keep serving requests on it.
+fn serve_session(_r: &mut BufReader<TcpStream>, w: &mut TcpStream, req: SessionReq) -> bool {
+    let mgr = crate::sessions::manager();
+    let reply = |msg_type: FrameType, body: Vec<u8>| Frame {
+        msg_type,
+        payload: body,
+    };
+    match req {
+        SessionReq::Create {
+            argv,
+            env,
+            cwd,
+            pty,
+        } => {
+            if pty {
+                send_frame(w, err_frame("pty sessions not yet supported".into()));
+                return false;
+            }
+            match mgr.create(argv, env, cwd, false) {
+                Ok(id) => {
+                    let body = serde_json::to_vec(&SessionResp::Started { session_id: id })
+                        .expect("serialize");
+                    send_frame(w, reply(FrameType::SessionResp, body));
+                }
+                Err(message) => send_frame(w, err_frame(message)),
+            }
+            false
+        }
+        SessionReq::Input {
+            session_id,
+            data_b64,
+        } => {
+            use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+            let out = (|| {
+                let data = B64.decode(&data_b64).map_err(|e| format!("base64: {e}"))?;
+                let s = mgr
+                    .get(&session_id)
+                    .ok_or_else(|| format!("no such session: {session_id}"))?;
+                s.write_stdin(&data)?;
+                Ok::<u64, String>(data.len() as u64)
+            })();
+            match out {
+                Ok(n) => {
+                    let body = serde_json::to_vec(&SessionResp::InputAcked { bytes: n })
+                        .expect("serialize");
+                    send_frame(w, reply(FrameType::SessionResp, body));
+                }
+                Err(message) => send_frame(w, err_frame(message)),
+            }
+            false
+        }
+        SessionReq::Kill { session_id } => {
+            match mgr.kill(&session_id) {
+                Ok(()) => {                    let body =
+                        serde_json::to_vec(&SessionResp::Killed { session_id }).expect("serialize");
+                    send_frame(w, reply(FrameType::SessionResp, body));
+                }
+                Err(message) => send_frame(w, err_frame(message)),
+            }
+            false
+        }
+        SessionReq::List => {
+            let body = serde_json::to_vec(&SessionResp::Listed {
+                sessions: mgr.list(),
+            })
+            .expect("serialize");
+            send_frame(w, reply(FrameType::SessionResp, body));
+            false
+        }
+        SessionReq::Attach {
+            session_id,
+            from_seq,
+        } => {
+            let Some(s) = mgr.get(&session_id) else {
+                send_frame(w, err_frame(format!("no such session: {session_id}")));
+                return false;
+            };
+            let mut sent = from_seq;
+            loop {
+                let (chunk, next, exit, truncated) = s.read_from(sent);
+                let drained = next == s.total();
+                let eof = exit.is_some() && drained;
+                // Never emit empty non-EOF frames: attachers blocking on
+                // the first frame would otherwise have to distinguish
+                // "nothing yet" from data.
+                if chunk.is_empty() && !eof {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    continue;
+                }
+                let data = SessionData {
+                    session_id: session_id.clone(),
+                    seq: sent,
+                    data_b64: b64(&chunk),
+                    eof,
+                    exit_code: if eof { exit } else { None },
+                    truncated,
+                };
+                let body = serde_json::to_vec(&data).expect("serialize session data");
+                if write_frame(
+                    w,
+                    &Frame {
+                        msg_type: FrameType::SessionData,
+                        payload: body,
+                    },
+                )
+                .is_err()
+                {
+                    return true; // reader went away; nothing more to do
+                }
+                if eof {
+                    return false;
+                }
+                sent = next;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 fn constant_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 pub(crate) fn b64(data: &[u8]) -> String {

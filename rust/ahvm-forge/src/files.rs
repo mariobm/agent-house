@@ -74,14 +74,21 @@ fn jail(root: &std::path::Path, req: &str) -> Result<PathBuf, String> {
 
 pub fn serve(req: &FileReq, cfg: &Config) -> Result<FileResp, String> {
     match req {
-        FileReq::Read { path, offset, limit } => {
+        FileReq::Read {
+            path,
+            offset,
+            limit,
+        } => {
             let p = jail(&cfg.root, path)?;
             let mut f = std::fs::File::open(&p).map_err(|e| format!("open: {e}"))?;
             use std::io::Seek;
-            f.seek(std::io::SeekFrom::Start(*offset)).map_err(|e| format!("seek: {e}"))?;
+            f.seek(std::io::SeekFrom::Start(*offset))
+                .map_err(|e| format!("seek: {e}"))?;
             // Clamp to what fits one response frame (see exec::STREAM_CAP);
             // callers page with offset/limit for more.
-            let n = (*limit).min(cfg.max_output_bytes as u64).min(crate::exec::STREAM_CAP as u64) as usize;
+            let n = (*limit)
+                .min(cfg.max_output_bytes as u64)
+                .min(crate::exec::STREAM_CAP as u64) as usize;
             let mut buf = vec![0u8; n];
             let mut got = 0;
             while got < n {
@@ -133,7 +140,11 @@ pub fn serve(req: &FileReq, cfg: &Config) -> Result<FileResp, String> {
                 bytes: data.len() as u64,
             })
         }
-        FileReq::List { path, offset, limit } => {
+        FileReq::List {
+            path,
+            offset,
+            limit,
+        } => {
             // Pages, not dumps: entries stream unbounded while one response
             // frame caps at 1 MiB, so an unbounded listing used to kill the
             // connection with no response at all. Oversized pages are still
@@ -151,9 +162,7 @@ pub fn serve(req: &FileReq, cfg: &Config) -> Result<FileResp, String> {
             for ent in std::fs::read_dir(&p).map_err(|e| format!("list: {e}"))? {
                 let ent = ent.map_err(|e| format!("list: {e}"))?;
                 if names.len() >= MAX_SCAN {
-                    return Err(format!(
-                        "directory too large to list (>{MAX_SCAN} entries)"
-                    ));
+                    return Err(format!("directory too large to list (>{MAX_SCAN} entries)"));
                 }
                 names.push(ent.file_name());
             }
@@ -162,8 +171,8 @@ pub fn serve(req: &FileReq, cfg: &Config) -> Result<FileResp, String> {
             let end = skip.saturating_add(take).min(names.len());
             let has_more = end < names.len();
             for name in &names[skip.min(names.len())..end] {
-                let meta = std::fs::symlink_metadata(p.join(name))
-                    .map_err(|e| format!("stat: {e}"))?;
+                let meta =
+                    std::fs::symlink_metadata(p.join(name)).map_err(|e| format!("stat: {e}"))?;
                 entries.push(DirEntry {
                     name: name.to_string_lossy().into_owned(),
                     is_dir: meta.is_dir(),

@@ -24,24 +24,16 @@ struct AgentConn {
 }
 
 /// Block until the child prints its bound address (or dies/exhausts).
-fn wait_listen_addr(err: &mut BufReader<std::process::ChildStderr>, child: &mut Child) -> String {
-    use std::io::BufRead as _;
-    let mut line = String::new();
+fn wait_listen_addr(log: &std::path::Path, child: &mut Child) -> String {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        line.clear();
         if std::time::Instant::now() > deadline {
             panic!("timed out waiting for forge listen address");
         }
-        match err.read_line(&mut line) {
-            Ok(0) => {
-                let _ = child.try_wait();
-                panic!("forge stderr closed before listen address");
-            }
-            Ok(_) => {
+        if let Ok(text) = std::fs::read_to_string(log) {
+            for line in text.lines() {
                 if let Some(addr) = line.strip_prefix("forge: listening on ") {
                     let addr = addr.trim().to_owned();
-                    // Confirm connectable before returning.
                     for _ in 0..50 {
                         if TcpStream::connect(&addr).is_ok() {
                             return addr;
@@ -51,8 +43,11 @@ fn wait_listen_addr(err: &mut BufReader<std::process::ChildStderr>, child: &mut 
                     panic!("forge reported {addr} but it never accepted");
                 }
             }
-            Err(e) => panic!("reading forge stderr: {e}"),
         }
+        if child.try_wait().unwrap().is_some() {
+            panic!("forge exited early: {}", std::fs::read_to_string(log).unwrap_or_default());
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -63,7 +58,8 @@ impl Agent {
 
     /// Short timeouts keep the suite fast; the bulk-output test opts into
     /// a longer one explicitly.
-    fn spawn_with_timeout(token: &str, exec_timeout_secs: u64) -> Self {        let bin = env!("CARGO_BIN_EXE_ahvm-forge");
+    fn spawn_with_timeout(token: &str, exec_timeout_secs: u64) -> Self {
+        let bin = env!("CARGO_BIN_EXE_ahvm-forge");
         // No port probing: bind :0, spawn, and read the bound address back
         // from the child's stderr. Probing (bind-then-release-then-rebind)
         // lets a parallel test steal the port between release and rebind.
@@ -74,17 +70,18 @@ impl Agent {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("forge-stderr.log");
+        let logf = std::fs::File::create(&log).unwrap();
         let mut child = Command::new(bin)
             .env("AHVM_FORGE_LISTEN", "127.0.0.1:0")
             .env("AHVM_FORGE_TOKEN", token)
             .env("AHVM_FORGE_ROOT", &dir)
             .env("AHVM_FORGE_EXEC_TIMEOUT", exec_timeout_secs.to_string())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
+            .stderr(logf)
             .spawn()
             .unwrap();
-        let mut err = std::io::BufReader::new(child.stderr.take().unwrap());
-        let addr = wait_listen_addr(&mut err, &mut child);
+        let addr = wait_listen_addr(&log, &mut child);
         Self { child, addr, dir }
     }
 
@@ -105,13 +102,29 @@ impl Drop for Agent {
 }
 
 fn auth(c: &mut AgentConn, token: &str) {
-    let body = serde_json::json!({ "token": token }).to_string().into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::Auth, payload: body }).unwrap();
+    let body = serde_json::json!({ "token": token })
+        .to_string()
+        .into_bytes();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::Auth,
+            payload: body,
+        },
+    )
+    .unwrap();
 }
 
 fn exec(c: &mut AgentConn, argv: &[&str]) -> serde_json::Value {
     let body = serde_json::json!({ "argv": argv }).to_string().into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::ExecReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::ExecReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let f = read_frame(&mut c.r).unwrap();
     assert_eq!(f.msg_type, FrameType::ExecResp);
     serde_json::from_slice(&f.payload).unwrap()
@@ -157,7 +170,14 @@ fn token_auth_exec_and_env() {
     })
     .to_string()
     .into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::ExecReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::ExecReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let f = read_frame(&mut c.r).unwrap();
     assert_eq!(f.msg_type, FrameType::ExecResp);
     let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
@@ -189,20 +209,44 @@ fn file_write_read_list_roundtrip() {
     let body = serde_json::json!({ "op": "write", "path": "sub/dir/note.txt", "data_b64": data })
         .to_string()
         .into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::FileReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::FileReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let f = read_frame(&mut c.r).unwrap();
     assert_eq!(f.msg_type, FrameType::FileResp);
 
-    let body = serde_json::json!({ "op": "read", "path": "sub/dir/note.txt", "offset": 5, "limit": 8 })
-        .to_string()
-        .into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::FileReq, payload: body }).unwrap();
+    let body =
+        serde_json::json!({ "op": "read", "path": "sub/dir/note.txt", "offset": 5, "limit": 8 })
+            .to_string()
+            .into_bytes();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::FileReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let f = read_frame(&mut c.r).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
     assert_eq!(b64str(&v, "data_b64"), b"contents");
 
-    let body = serde_json::json!({ "op": "list", "path": "sub/dir", "offset": 0, "limit": 100 }).to_string().into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::FileReq, payload: body }).unwrap();
+    let body = serde_json::json!({ "op": "list", "path": "sub/dir", "offset": 0, "limit": 100 })
+        .to_string()
+        .into_bytes();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::FileReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let f = read_frame(&mut c.r).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
     assert_eq!(v["entries"][0]["name"], "note.txt");
@@ -217,7 +261,14 @@ fn file_traversal_rejected() {
         let body = serde_json::json!({ "op": "read", "path": evil, "offset": 0, "limit": 8 })
             .to_string()
             .into_bytes();
-        write_frame(&mut c.w, &Frame { msg_type: FrameType::FileReq, payload: body }).unwrap();
+        write_frame(
+            &mut c.w,
+            &Frame {
+                msg_type: FrameType::FileReq,
+                payload: body,
+            },
+        )
+        .unwrap();
         let msg = expect_error(&mut c);
         assert!(msg.contains("jail"), "{msg}");
     }
@@ -229,14 +280,24 @@ fn output_is_capped() {
     let agent = Agent::spawn_with_timeout("", 15);
     let mut c = agent.connect();
     // 30 MiB of output against the 256 KiB single-response cap.
-    let out = exec(&mut c, &["sh", "-c", "head -c 30000000 /dev/zero | tr '\\0' x"]);
+    let out = exec(
+        &mut c,
+        &["sh", "-c", "head -c 30000000 /dev/zero | tr '\\0' x"],
+    );
     assert_eq!(out["truncated"], true);
     assert_eq!(b64str(&out, "stdout_b64").len(), 256 << 10);
 }
 
 fn file_op(c: &mut AgentConn, body: serde_json::Value) -> serde_json::Value {
     let body = body.to_string().into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::FileReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::FileReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let f = read_frame(&mut c.r).unwrap();
     assert_eq!(f.msg_type, FrameType::FileResp);
     serde_json::from_slice(&f.payload).unwrap()
@@ -275,20 +336,29 @@ fn exec_timeout_kills_descendants() {
     // Unique sleep duration doubles as a leak marker (see assert_no_stray).
     let agent = Agent::spawn("");
     let mut c = agent.connect();
-    c.w
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .unwrap();
+    c.w.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
     let start = std::time::Instant::now();
     let body = serde_json::json!({ "argv": ["sh", "-c", "sleep 45 & wait"] })
         .to_string()
         .into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::ExecReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::ExecReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let f = read_frame(&mut c.r).unwrap();
     assert_eq!(f.msg_type, FrameType::ExecResp);
     let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
     assert_eq!(v["exit_code"], 124);
     assert_eq!(v["truncated"], true);
-    assert!(start.elapsed() < Duration::from_secs(12), "took {:?}", start.elapsed());
+    assert!(
+        start.elapsed() < Duration::from_secs(12),
+        "took {:?}",
+        start.elapsed()
+    );
     assert_no_stray("sleep 45");
 }
 
@@ -316,13 +386,18 @@ fn exec_exited_parent_with_live_descendant_still_responds() {
     // must still arrive (bounded drain), not hang on the orphan.
     let agent = Agent::spawn("");
     let mut c = agent.connect();
-    c.w
-        .set_read_timeout(Some(Duration::from_secs(25)))
-        .unwrap();
+    c.w.set_read_timeout(Some(Duration::from_secs(25))).unwrap();
     let body = serde_json::json!({ "argv": ["sh", "-c", "echo out; sleep 46 &"] })
         .to_string()
         .into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::ExecReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::ExecReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let start = std::time::Instant::now();
     let f = read_frame(&mut c.r).unwrap();
     assert_eq!(f.msg_type, FrameType::ExecResp);
@@ -347,8 +422,13 @@ fn large_listing_pages_instead_of_dropping() {
     let big = agent.dir.join("big");
     std::fs::create_dir_all(&big).unwrap();
     for i in 0..5000 {
-        std::fs::write(big.join(format!("file-{i:05}-with-a-long-name-to-bloat-the-listing.txt")), b"x")
-            .unwrap();
+        std::fs::write(
+            big.join(format!(
+                "file-{i:05}-with-a-long-name-to-bloat-the-listing.txt"
+            )),
+            b"x",
+        )
+        .unwrap();
     }
     let mut c = agent.connect();
     let mut seen = 0usize;
@@ -382,7 +462,10 @@ fn long_filename_write_works() {
         serde_json::json!({ "op": "write", "path": long, "data_b64": data }),
     );
     assert_eq!(v["bytes"], 12);
-    assert_eq!(std::fs::read(agent.dir.join(&long)).unwrap(), b"long-name-ok");
+    assert_eq!(
+        std::fs::read(agent.dir.join(&long)).unwrap(),
+        b"long-name-ok"
+    );
 }
 
 #[test]
@@ -396,7 +479,14 @@ fn failed_write_leaves_no_tmp() {
     let body = serde_json::json!({ "op": "write", "path": "adir", "data_b64": data })
         .to_string()
         .into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::FileReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::FileReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let msg = expect_error(&mut c);
     assert!(msg.contains("rename"), "{msg}");
     let leftovers: Vec<_> = std::fs::read_dir(&agent.dir)
@@ -410,3 +500,166 @@ fn failed_write_leaves_no_tmp() {
     let out = exec(&mut c, &["echo", "alive"]);
     assert_eq!(out["exit_code"], 0);
 }
+
+fn session_req(c: &mut AgentConn, body: serde_json::Value) -> serde_json::Value {
+    let body = body.to_string().into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    let f = read_frame(&mut c.r).unwrap();
+    assert_eq!(f.msg_type, FrameType::SessionResp);
+    serde_json::from_slice(&f.payload).unwrap()
+}
+
+/// Attach and collect to EOF. Returns (bytes, truncated, exit_code).
+fn attach_collect(c: &mut AgentConn, id: &str, from_seq: u64) -> (Vec<u8>, bool, Option<i64>) {
+    let body = serde_json::json!({ "op": "attach", "session_id": id, "from_seq": from_seq })
+        .to_string()
+        .into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    let mut out = Vec::new();
+    let mut truncated = false;
+    loop {
+        let f = read_frame(&mut c.r).unwrap();
+        assert_eq!(f.msg_type, FrameType::SessionData);
+        let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
+        out.extend_from_slice(&B64.decode(v["data_b64"].as_str().unwrap()).unwrap());
+        truncated |= v["truncated"].as_bool().unwrap();
+        if v["eof"].as_bool().unwrap() {
+            return (out, truncated, v["exit_code"].as_i64());
+        }
+    }
+}
+
+#[test]
+fn session_create_attach_echo() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "create", "argv": ["sh", "-c", "echo hello"] }),
+    );
+    let id = v["session_id"].as_str().unwrap().to_owned();
+    let (out, truncated, exit) = attach_collect(&mut c, &id, 0);
+    assert_eq!(out, b"hello\n");
+    assert!(!truncated);
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn session_reattach_resumes_from_seq() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "create", "argv": ["sh", "-c", "echo one; sleep 0.5; echo two"] }),
+    );
+    let id = v["session_id"].as_str().unwrap().to_owned();
+    // First attach: read exactly one data frame, then drop the connection.
+    let body = serde_json::json!({ "op": "attach", "session_id": id, "from_seq": 0 })
+        .to_string()
+        .into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    let f = read_frame(&mut c.r).unwrap();
+    let first: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
+    let first_bytes = B64.decode(first["data_b64"].as_str().unwrap()).unwrap();
+    let first_seq = first["seq"].as_u64().unwrap() as usize;
+    assert!(!first_bytes.is_empty());
+    drop(c);
+    // Re-attach where we left off on a fresh connection.
+    let mut c2 = agent.connect();
+    let (rest, truncated, exit) =
+        attach_collect(&mut c2, &id, (first_seq + first_bytes.len()) as u64);
+    let mut full = first_bytes;
+    full.extend_from_slice(&rest);
+    assert_eq!(full, b"one\ntwo\n");
+    assert!(!truncated);
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn session_input_reaches_child() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "create", "argv": ["sh", "-c", "read line; echo got:$line"] }),
+    );
+    let id = v["session_id"].as_str().unwrap().to_owned();
+    // Attach in background; feed stdin from here once the reader is live.
+    let id2 = id.clone();
+    let addr = agent.addr.clone();
+    let reader = std::thread::spawn(move || {
+        let w = std::net::TcpStream::connect(&addr).unwrap();
+        w.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+        let r = BufReader::new(w.try_clone().unwrap());
+        let mut c = AgentConn { r, w };
+        attach_collect(&mut c, &id2, 0)
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let data = B64.encode(b"ping\n");
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "input", "session_id": id, "data_b64": data }),
+    );
+    assert_eq!(v["bytes"], 5);
+    let (out, _, exit) = reader.join().unwrap();
+    assert_eq!(out, b"got:ping\n");
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn session_kill_and_list() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "create", "argv": ["sleep", "60"] }),
+    );
+    let id = v["session_id"].as_str().unwrap().to_owned();
+    let v = session_req(&mut c, serde_json::json!({ "op": "list" }));
+    let items = v["sessions"].as_array().unwrap();
+    assert!(items.iter().any(|s| s["id"] == id && s["running"] == true));
+    let v = session_req(&mut c, serde_json::json!({ "op": "kill", "session_id": id }));
+    assert_eq!(v["session_id"], id);
+    let (out, _, exit) = attach_collect(&mut c, &id, 0);
+    assert!(out.is_empty());
+    assert_eq!(exit, Some(124));
+    let v = session_req(&mut c, serde_json::json!({ "op": "list" }));
+    let item = v["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap();
+    assert_eq!(item["running"], false);
+    assert_no_stray("sleep 60");
+}
+
+#[test]
+fn session_unknown_id_errors_without_dropping() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    let body = serde_json::json!({ "op": "attach", "session_id": "s-nope", "from_seq": 0 })
+        .to_string()
+        .into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    let msg = expect_error(&mut c);
+    assert!(msg.contains("no such session"), "{msg}");
+    // Connection still usable.
+    let out = exec(&mut c, &["echo", "alive"]);
+    assert_eq!(out["exit_code"], 0);
+}
+
+#[test]
+fn session_pty_rejected_explicitly() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    let body = serde_json::json!({ "op": "create", "argv": ["sh"], "pty": true })
+        .to_string()
+        .into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    let msg = expect_error(&mut c);
+    assert!(msg.contains("pty"), "{msg}");
+}
+
+
+

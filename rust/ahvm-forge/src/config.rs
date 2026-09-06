@@ -24,7 +24,9 @@ impl Config {
             exec_timeout_secs: get("AHVM_FORGE_EXEC_TIMEOUT")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(300),
-            root: get("AHVM_FORGE_ROOT").map(std::path::PathBuf::from).unwrap_or_else(|| "/".into()),
+            root: get("AHVM_FORGE_ROOT")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| "/".into()),
         }
     }
 }

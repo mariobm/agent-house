@@ -24,6 +24,9 @@ pub enum FrameType {
     Error = 0x5,
     FileReq = 0x6,
     FileResp = 0x7,
+    SessionReq = 0x8,
+    SessionResp = 0x9,
+    SessionData = 0xA,
 }
 
 impl FrameType {
@@ -37,6 +40,9 @@ impl FrameType {
             0x5 => Some(Self::Error),
             0x6 => Some(Self::FileReq),
             0x7 => Some(Self::FileResp),
+            0x8 => Some(Self::SessionReq),
+            0x9 => Some(Self::SessionResp),
+            0xA => Some(Self::SessionData),
             _ => None,
         }
     }
@@ -191,6 +197,9 @@ mod tests {
             FrameType::Error,
             FrameType::FileReq,
             FrameType::FileResp,
+            FrameType::SessionReq,
+            FrameType::SessionResp,
+            FrameType::SessionData,
         ] {
             roundtrip(t, b"");
             roundtrip(t, b"hello-token-bytes");
