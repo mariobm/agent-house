@@ -9,6 +9,7 @@ mod agent;
 mod config;
 mod exec;
 mod files;
+mod sessions;
 
 use std::net::TcpListener;
 
@@ -20,7 +21,10 @@ fn main() {
     });
     // Report the BOUND address (differs from config when :0 was given) —
     // integration tests parse this line to find us without port probing.
-    let bound = listener.local_addr().map(|a| a.to_string()).unwrap_or(cfg.listen_addr.clone());
+    let bound = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or(cfg.listen_addr.clone());
     eprintln!("forge: listening on {bound}");
     for conn in listener.incoming() {
         match conn {

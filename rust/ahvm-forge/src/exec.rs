@@ -161,6 +161,8 @@ pub fn run(req: &ExecReq, cfg: &Config) -> ExecResp {
 /// window to a just-observed live group.
 #[allow(unsafe_code)]
 fn kill_group(pgid: i32) {
+    // SAFETY: pgid is the spawned leader's pid (setpgid in pre_exec makes
+    // group id == leader pid). Worst case the group is gone and kill fails.
     unsafe {
         libc::kill(-pgid, libc::SIGKILL);
     }
