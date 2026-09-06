@@ -43,7 +43,19 @@ fn build_sockaddr(port: u32) -> (libc::sockaddr_vm, libc::socklen_t) {
 }
 
 // SAFETY: socket(2) with constant family/type/protocol takes no pointers and
-// returns an owned fd (or -1); nothing shared to alias.
+// returns an owned fd (or -1); nothing shared to alias. SOCK_CLOEXEC is
+// mandatory on Linux: without it every forge exec/session child inherits the
+// listener (and, below, accepted connections) — a guest child could accept()
+// agent connections as us.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+fn vsock_socket() -> libc::c_int {
+    unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) }
+}
+
+// No SOCK_CLOEXEC on macOS (dev-only path; vsock bind fails there anyway and
+// tests use TCP). Documented gap, not a guest risk.
+#[cfg(not(target_os = "linux"))]
 #[allow(unsafe_code)]
 fn vsock_socket() -> libc::c_int {
     unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM, 0) }
@@ -68,11 +80,40 @@ fn vsock_listen(fd: libc::c_int) -> bool {
     unsafe { libc::listen(fd, 128) == 0 }
 }
 
-// SAFETY: accept(2) with NULL addr/len returns an owned fd (or -1); no
-// out-pointers to keep alive.
+// SAFETY: accept4(2) with NULL addr/len returns an owned fd (or -1); no
+// out-pointers to keep alive. SOCK_CLOEXEC for the same reason as the
+// listener (Linux-only call; the fallback below covers other targets).
+#[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 fn vsock_accept(fd: libc::c_int) -> libc::c_int {
-    unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) }
+    unsafe {
+        libc::accept4(
+            fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            libc::SOCK_CLOEXEC,
+        )
+    }
+}
+
+// SAFETY: accept(2) with NULL addr/len returns an owned fd (or -1).
+// Non-Linux fallback (dev-only path; the guest agent runs on Linux): accept
+// cannot set CLOEXEC atomically here, so set it explicitly before the fd can
+// be inherited — racy against a concurrent fork+exec in theory, absent in
+// practice on this path (dev/test only).
+#[cfg(not(target_os = "linux"))]
+#[allow(unsafe_code)]
+fn vsock_accept(fd: libc::c_int) -> libc::c_int {
+    let cfd = unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) };
+    if cfd >= 0 {
+        unsafe {
+            let flags = libc::fcntl(cfd, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(cfd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
+    }
+    cfd
 }
 
 // SAFETY: `fd` is owned by the caller and never used afterwards; single close.

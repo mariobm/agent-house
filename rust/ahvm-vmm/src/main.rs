@@ -238,16 +238,14 @@ fn run(spec: VmSpec) {
 
     if !external_kernel {
         let exec = arena.put(&spec.exec_path);
-        if spec.env.is_empty() {
-            // argv NULL, envp NULL: no args, inherit host environment.
-            krun::set_exec(cid, exec, &[]);
-        } else {
-            let env_cs: Vec<CString> =
-                spec.env.iter().map(|e| CString::new(e.as_str()).unwrap()).collect();
-            let mut ptrs: Vec<*const c_char> = env_cs.iter().map(|c| c.as_ptr()).collect();
-            ptrs.push(std::ptr::null());
-            krun::set_exec(cid, exec, &ptrs);
-        }
+        // NEVER pass a null envp: libkrun interprets NULL as "copy the
+        // worker's environment" (daemon credentials, host config). An empty
+        // spec.env means an explicitly EMPTY guest environment ([NULL]).
+        let env_cs: Vec<CString> =
+            spec.env.iter().map(|e| CString::new(e.as_str()).unwrap()).collect();
+        let mut ptrs: Vec<*const c_char> = env_cs.iter().map(|c| c.as_ptr()).collect();
+        ptrs.push(std::ptr::null());
+        krun::set_exec(cid, exec, &ptrs);
     }
 
     eprintln!(
