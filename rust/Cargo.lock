@@ -29,6 +29,9 @@ version = "0.1.0"
 name = "ahvm-engine"
 version = "0.1.0"
 dependencies = [
+ "ahvm-proto",
+ "base64",
+ "libc",
  "serde",
  "serde_json",
  "thiserror",
