@@ -28,7 +28,7 @@ func writeBundle(t *testing.T, dir, manifest string, withPayload bool) {
 	}
 }
 
-// TestValidateBundle exercises bhatti's cold/move portability gate: it must
+// TestValidateBundle exercises ahvm's cold/move portability gate: it must
 // accept a well-formed same-arch bundle and refuse incompatible ones (wrong
 // proto version, cross-arch, incomplete, malformed) before any helper spawns.
 func TestValidateBundle(t *testing.T) {

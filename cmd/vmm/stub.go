@@ -11,6 +11,6 @@ import (
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "bhatti-vmm was built without krucible support; build with `make vmm`")
+	fmt.Fprintln(os.Stderr, "ahvm-vmm was built without krucible support; build with `make vmm`")
 	os.Exit(1)
 }

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build a rootfs tier image.
-# Usage: sudo ./scripts/build-tier.sh <tier> <arch> <lohar-binary>
+# Usage: sudo ./scripts/build-tier.sh <tier> <arch> <forge-binary>
 #   tier: minimal, browser, docker, computer
 #   arch: amd64, arm64
 #
@@ -10,10 +10,10 @@
 #
 # For cross-arch builds (e.g., arm64 on amd64 host):
 #   sudo apt-get install qemu-user-static  # registers binfmt_misc handlers
-#   sudo ./scripts/build-tier.sh minimal arm64 ./lohar-arm64
+#   sudo ./scripts/build-tier.sh minimal arm64 ./forge-arm64
 set -euo pipefail
 
-TIER="${1:?usage: build-tier.sh <tier> <arch> <lohar-binary>}"
+TIER="${1:?usage: build-tier.sh <tier> <arch> <forge-binary>}"
 ARCH="${2:?}"
 AGENT="${3:?}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,7 +24,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 if [[ ! -f "$AGENT" ]]; then
-    echo "error: lohar binary not found: $AGENT" >&2
+    echo "error: forge binary not found: $AGENT" >&2
     exit 1
 fi
 
@@ -44,7 +44,7 @@ case "$ARCH" in
 esac
 
 IMG="${IMG:-dist/rootfs-${TIER}-${ARCH}.ext4}"
-MOUNT="/mnt/bhatti-${TIER}-$$"
+MOUNT="/mnt/ahvm-${TIER}-$$"
 
 mkdir -p dist
 
@@ -89,13 +89,13 @@ echo "==> Running tier script: ${TIER}.sh"
 "$SCRIPT_DIR/tiers/${TIER}.sh"
 
 # The krucible engine boots /init.krun as PID 1 (engine ExecPath, cmd/vmm PID-1
-# mode). Tier scripts install lohar at /usr/local/bin/lohar (for the systemctl/
+# mode). Tier scripts install forge at /usr/local/bin/forge (for the systemctl/
 # journalctl shims); also place it at /init.krun so the release image is
 # bootable on krucible — without this the guest panics with
 # "Requested init /init.krun failed (error -2)". (Integration CI builds its own
 # rootfs with /init.krun, so this only surfaced on a real release image.)
 cp "$AGENT" "$MOUNT/init.krun"
 chmod 755 "$MOUNT/init.krun"
-echo "==> installed /init.krun (lohar PID 1)"
+echo "==> installed /init.krun (forge PID 1)"
 
 echo "==> Built: $IMG ($(du -h "$IMG" | cut -f1))"

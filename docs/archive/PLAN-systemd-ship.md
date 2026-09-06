@@ -9,20 +9,20 @@ this can go to production.
 
 | Test | Pi 5 (ARM64) | agni (x86_64) |
 |------|-------------|---------------|
-| systemd boots, lohar runs as service | ✅ | ✅ |
+| systemd boots, forge runs as service | ✅ | ✅ |
 | exec works | ✅ | ✅ |
 | hostname from config drive | ✅ | ✅ |
 | /etc/hosts written correctly | ✅ | ✅ |
 | DNS (static resolv.conf) | ✅ | ✅ |
 | systemctl is-system-running | ✅ running | ✅ running |
 | Only 4 units running | ✅ | ✅ |
-| lohar PID 1 path unbroken | ✅ 6ms boot | ✅ same |
+| forge PID 1 path unbroken | ✅ 6ms boot | ✅ same |
 
 ### Boot timing (measured, honest)
 
 | | Pi 5 (ARM64) | agni (x86_64) |
 |---|---|---|
-| lohar PID 1 | **367ms** | **345ms** |
+| forge PID 1 | **367ms** | **345ms** |
 | systemd | **708ms** | **568ms** |
 | Delta | +341ms | +223ms |
 | systemd-analyze userspace | 320ms | 253ms |
@@ -36,8 +36,8 @@ These must pass before shipping:
 ### 1. Snapshot/restore with systemd
 
 Never tested. The POC only did fresh creates. Need to verify:
-- `bhatti stop` (snapshot) works on a systemd VM
-- `bhatti start` (restore from snapshot) works
+- `ahvm stop` (snapshot) works on a systemd VM
+- `ahvm start` (restore from snapshot) works
 - systemd doesn't misbehave after restore (timer storms, service
   restarts, degraded state)
 - `systemctl is-system-running` returns `running` after restore
@@ -63,7 +63,7 @@ actual package installs.
 
 ### 4. Docker/browser/computer tier boot profiles
 
-The tier boot profiles (`/etc/bhatti/init.sh`) run in both modes.
+The tier boot profiles (`/etc/ahvm/init.sh`) run in both modes.
 But in systemd mode, they run as root inside a systemd-managed
 service context. Need to verify:
 - Docker tier: dockerd starts, docker commands work
@@ -77,13 +77,13 @@ to verify no exec/file latency regression.
 
 ### 6. /tmp/boot-timing.txt broken in agent mode
 
-During the POC, `bhatti file read` on the boot timing file returned
+During the POC, `ahvm file read` on the boot timing file returned
 an error. The file doesn't exist in /tmp after boot. Likely cause:
-lohar writes it before systemd's tmpfiles-setup runs, then tmpfiles
+forge writes it before systemd's tmpfiles-setup runs, then tmpfiles
 cleans /tmp. Or the write happens to the rootfs /tmp but systemd
 later mounts tmpfs over it.
 
-**Fix:** Write to `/run/bhatti/boot-timing.txt` instead of `/tmp/`.
+**Fix:** Write to `/run/ahvm/boot-timing.txt` instead of `/tmp/`.
 `/run` is a tmpfs mounted by systemd very early and not cleaned by
 tmpfiles.
 
@@ -132,9 +132,9 @@ only checks the image path, not the rootfs itself.
 
 **Fix for production:** Add an explicit field to the create API or
 store the init mode in the image metadata. For a cleaner approach,
-check for `/sbin/init` existence inside the rootfs (the lohar
+check for `/sbin/init` existence inside the rootfs (the forge
 injection code already mounts the image). Or use a marker file
-like `/etc/bhatti/systemd-mode` in the rootfs.
+like `/etc/ahvm/systemd-mode` in the rootfs.
 
 ### 9. No `ensureResolvConf()` fallback in agent mode
 
@@ -157,7 +157,7 @@ path, or handle it in the shared `runAgent()` refactor.
 If `loadConfigDrive()` returns nil (shouldn't happen in normal
 operation but the PID 1 path handles it), the agent mode skips
 hostname and /etc/hosts entirely. The PID 1 path sets hostname to
-"bhatti" and writes hosts as fallback.
+"ahvm" and writes hosts as fallback.
 
 **Fix:** Add the same fallback to the agent path.
 
@@ -186,7 +186,7 @@ We discovered services to mask through trial-and-error
 built across multiple iterations. Need a canonical list in the
 build script, with comments explaining why each is masked.
 
-### 14. lohar.service unit file is not in the repo
+### 14. forge.service unit file is not in the repo
 
 The systemd unit file was created inline during chroot. Needs to
 live in `scripts/` or `sandbox/` so it's version-controlled and
@@ -207,9 +207,9 @@ rebuilds without it, openssh installs will break DNS again.
 
 Options:
 - **a)** New tier: `rootfs-systemd-minimal`. Users choose with
-  `--image systemd-minimal`. All other tiers stay on lohar PID 1.
+  `--image systemd-minimal`. All other tiers stay on forge PID 1.
 - **b)** Replace minimal: the default `rootfs-minimal` gets systemd.
-  All tiers inherit it. `--fast` flag or env var for lohar PID 1.
+  All tiers inherit it. `--fast` flag or env var for forge PID 1.
 - **c)** Build flag: `scripts/build-tier.sh` takes `--systemd` flag.
   Each tier can be built with or without.
 
@@ -219,8 +219,8 @@ tier, get user feedback, graduate to default if stable.
 ### 17. How do other tiers adopt systemd?
 
 If systemd-minimal becomes the base, docker/browser/computer tiers
-inherit systemd. Their boot profiles (`/etc/bhatti/init.sh`) still
-work — lohar runs them in both modes. But the long-term win is
+inherit systemd. Their boot profiles (`/etc/ahvm/init.sh`) still
+work — forge runs them in both modes. But the long-term win is
 converting them to proper systemd units:
 - `dockerd.service` (ships with docker-ce, just enable it)
 - `headless-chrome.service` (custom unit)
@@ -244,22 +244,22 @@ args. Clean.
 
 ### 19. Pi (raspi-5a)
 
-- `/var/lib/bhatti/images/rootfs-systemd-arm64.ext4` — 1GB test rootfs
-- `/usr/local/bin/bhatti` — POC binary (has systemd create.go change)
-- `/var/lib/bhatti/lohar` — POC lohar (has runAsAgent)
+- `/var/lib/ahvm/images/rootfs-systemd-arm64.ext4` — 1GB test rootfs
+- `/usr/local/bin/ahvm` — POC binary (has systemd create.go change)
+- `/var/lib/ahvm/forge` — POC forge (has runAsAgent)
 
 The Pi is running the POC binaries, not the released v1.8.7. Need to
 update to v1.8.7 (which only has the TAP fix, not the systemd changes).
 
 ### 20. agni
 
-- `/var/lib/bhatti-test/` — 10GB test btrfs (mounted)
-- `/var/lib/bhatti-test.img` — 10GB loopback file
-- `/usr/local/bin/bhatti-test` — test binary
+- `/var/lib/ahvm-test/` — 10GB test btrfs (mounted)
+- `/var/lib/ahvm-test.img` — 10GB loopback file
+- `/usr/local/bin/ahvm-test` — test binary
 - `/usr/local/bin/bt` — wrapper script
-- `/etc/bhatti-test/` — test config
-- `/root/.bhatti-test/` — test client config
-- Production bhatti has the TAP fix (v1.8.7 equivalent, `dev` build)
+- `/etc/ahvm-test/` — test config
+- `/root/.ahvm-test/` — test client config
+- Production ahvm has the TAP fix (v1.8.7 equivalent, `dev` build)
 
 Need to unmount and clean the test artifacts. Production binary
 should be updated to the tagged v1.8.7 from CI.
@@ -281,9 +281,9 @@ should be updated to the tagged v1.8.7 from CI.
 ```
 [ ] Refactor runAsAgent() — extract shared logic, eliminate duplication (#7)
 [ ] Add cfg==nil fallback in agent mode (hostname, resolv.conf) (#9, #10)
-[ ] Write to /run/bhatti/boot-timing.txt instead of /tmp/ (#6)
+[ ] Write to /run/ahvm/boot-timing.txt instead of /tmp/ (#6)
 [ ] Replace strings.Contains("systemd") with a robust detection (#8)
-[ ] Add lohar.service to repo (scripts/ or sandbox/) (#14)
+[ ] Add forge.service to repo (scripts/ or sandbox/) (#14)
 [ ] Create scripts/tiers/systemd-minimal.sh with canonical mask list (#11, #13)
 [ ] Add systemd-resolved apt pin to build script (#15)
 ```

@@ -11,15 +11,15 @@ on the same hardware, same kernel, same network, same bench suite.
 | Dimension | Why it matters |
 |-----------|---------------|
 | Cold boot (create) | The headline number. Currently p50=365ms. |
-| Guest-side init time | lohar's 28ms vs systemd userspace. Isolated from host overhead. |
+| Guest-side init time | forge's 28ms vs systemd userspace. Isolated from host overhead. |
 | Snapshot/restore | The unknown. systemd sees a time jump on resume. |
 | Warm resume | vCPU unpause. Does systemd react to small time jumps? |
 | Exec latency (hot) | Must not regress. Agent protocol is identical. |
 | File read/write | Must not regress. |
-| Memory overhead | RSS of systemd processes vs lohar-only. |
+| Memory overhead | RSS of systemd processes vs forge-only. |
 | Disk usage | Rootfs size difference. |
 | Package install | The whole point — does `apt-get install openssh-server` work? |
-| Zombie reaping | Does systemd clean up what lohar doesn't? |
+| Zombie reaping | Does systemd clean up what forge doesn't? |
 | Service supervision | Does `Restart=always` work after crash? |
 
 ---
@@ -31,29 +31,29 @@ same Ubuntu 24.04 Noble base. The only difference is what runs as PID 1.
 
 ### Image A: `rootfs-minimal-arm64.ext4` (current, control)
 
-- `init=/usr/local/bin/lohar` on kernel cmdline
-- lohar IS PID 1, does all mounts/config/networking
+- `init=/usr/local/bin/forge` on kernel cmdline
+- forge IS PID 1, does all mounts/config/networking
 - This is what we ship today. No changes.
 
 ### Image B: `rootfs-systemd-arm64.ext4` (experiment)
 
 - `init=/sbin/init` on kernel cmdline (systemd)
-- lohar runs as `lohar.service` (Type=simple, Restart=always)
+- forge runs as `forge.service` (Type=simple, Restart=always)
 - systemd handles mounts, cgroups, zombie reaping
-- Stripped to minimal: only lohar.service + dependencies enabled
+- Stripped to minimal: only forge.service + dependencies enabled
 
 ---
 
 ## Changes required (total: ~4 files, ~80 lines)
 
-### 1. Lohar: agent-only mode (~15 lines in `cmd/lohar/main.go`)
+### 1. Forge: agent-only mode (~15 lines in `cmd/forge/main.go`)
 
 Add a `--agent` flag (or detect `getpid() != 1`) that skips the init
 path and only runs the agent listeners + config drive:
 
 ```go
 func main() {
-    if os.Getenv("LOHAR_TEST") == "1" {
+    if os.Getenv("FORGE_TEST") == "1" {
         runTestMode()
         return
     }
@@ -71,7 +71,7 @@ func main() {
 func runAsAgent() {
     bootStart := time.Now()
     bp := func(name string) {
-        fmt.Fprintf(os.Stderr, "lohar: agent +%dms %s\n",
+        fmt.Fprintf(os.Stderr, "forge: agent +%dms %s\n",
             time.Since(bootStart).Milliseconds(), name)
     }
     bp("start")
@@ -88,8 +88,8 @@ func runAsAgent() {
         writeConfigFiles(cfg.Files)
         // Volumes: systemd mount units or mount here
         mountVolumes(cfg.Volumes)
-        syscall.Unmount("/run/bhatti/config", 0)
-        os.RemoveAll("/run/bhatti/config")
+        syscall.Unmount("/run/ahvm/config", 0)
+        os.RemoveAll("/run/ahvm/config")
         bp("config_applied")
     }
 
@@ -120,19 +120,19 @@ func runAsAgent() {
     os.WriteFile("/tmp/boot-timing.txt",
         []byte(fmt.Sprintf("agent-mode\n+%dms ready\n",
             time.Since(bootStart).Milliseconds())), 0644)
-    fmt.Fprintln(os.Stderr, "lohar: ready (agent mode)")
+    fmt.Fprintln(os.Stderr, "forge: ready (agent mode)")
 
     // Boot profile + init script (same as PID 1 mode)
-    if _, err := os.Stat("/etc/bhatti/init.sh"); err == nil {
+    if _, err := os.Stat("/etc/ahvm/init.sh"); err == nil {
         ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-        cmd := exec.CommandContext(ctx, "/bin/sh", "/etc/bhatti/init.sh")
+        cmd := exec.CommandContext(ctx, "/bin/sh", "/etc/ahvm/init.sh")
         cmd.Stdout = os.Stderr
         cmd.Stderr = os.Stderr
         cmd.Env = buildEnv(map[string]string{"HOME": "/root"})
         cmd.Run()
         cancel()
     }
-    if data, err := os.ReadFile("/run/bhatti/env"); err == nil {
+    if data, err := os.ReadFile("/run/ahvm/env"); err == nil {
         if configEnv == nil { configEnv = make(map[string]string) }
         for _, line := range strings.Split(string(data), "\n") {
             if k, v, ok := strings.Cut(line, "="); ok && k != "" {
@@ -166,10 +166,10 @@ set -euo pipefail
 
 echo "==> Configuring systemd mode..."
 
-# 1. Install lohar.service
-cat > "$MOUNT/etc/systemd/system/lohar.service" << 'UNIT'
+# 1. Install forge.service
+cat > "$MOUNT/etc/systemd/system/forge.service" << 'UNIT'
 [Unit]
-Description=Bhatti Guest Agent
+Description=AHVM Guest Agent
 After=network.target
 # Start as early as possible — before multi-user.target is fully reached
 DefaultDependencies=no
@@ -177,7 +177,7 @@ After=sysinit.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/lohar
+ExecStart=/usr/local/bin/forge
 Restart=always
 RestartSec=1
 # Agent must not be stopped by users
@@ -191,8 +191,8 @@ MemoryMax=64M
 WantedBy=multi-user.target
 UNIT
 
-# 2. Enable lohar.service
-chroot "$MOUNT" systemctl enable lohar.service
+# 2. Enable forge.service
+chroot "$MOUNT" systemctl enable forge.service
 
 # 3. Disable everything we don't need.
 #    This is the critical step for boot time.
@@ -217,7 +217,7 @@ systemctl mask getty@.service
 
 # Reduce journal to memory-only, no persistent log
 mkdir -p /etc/systemd/journald.conf.d
-cat > /etc/systemd/journald.conf.d/bhatti.conf << JCONF
+cat > /etc/systemd/journald.conf.d/ahvm.conf << JCONF
 [Journal]
 Storage=volatile
 RuntimeMaxUse=8M
@@ -225,7 +225,7 @@ JCONF
 
 # Reduce systemd's own overhead
 mkdir -p /etc/systemd/system.conf.d
-cat > /etc/systemd/system.conf.d/bhatti.conf << SCONF
+cat > /etc/systemd/system.conf.d/ahvm.conf << SCONF
 [Manager]
 RuntimeWatchdogSec=0
 ShutdownWatchdogSec=0
@@ -235,7 +235,7 @@ SCONF
 '
 
 # 4. Hostname and hosts (systemd will set from /etc/hostname)
-echo "bhatti" > "$MOUNT/etc/hostname"
+echo "ahvm" > "$MOUNT/etc/hostname"
 
 echo "==> systemd-minimal tier done."
 ```
@@ -246,7 +246,7 @@ For the experiment, we just need a way to pick which init to use.
 Simplest: check if the rootfs image name contains "systemd":
 
 ```go
-initBin := "/usr/local/bin/lohar"
+initBin := "/usr/local/bin/forge"
 if strings.Contains(filepath.Base(spec.BaseImage), "systemd") ||
    strings.Contains(filepath.Base(e.cfg.FirecrackerRootfs), "systemd") {
     initBin = "/sbin/init"
@@ -258,18 +258,18 @@ bootArgs := fmt.Sprintf(
 ```
 
 For the experiment, we can also just hardcode it behind an env var:
-`BHATTI_SYSTEMD=1 bhatti serve`.
+`AHVM_SYSTEMD=1 ahvm serve`.
 
 ### 4. Build the experiment rootfs on the Pi
 
 ```bash
 # On the Pi, build both images side by side
-cd /var/lib/bhatti
+cd /var/lib/ahvm
 
 # Image A already exists: rootfs-minimal-arm64.ext4
 
 # Image B: build systemd variant (uses same base, adds systemd config)
-sudo SIZE_MB=1024 ./scripts/build-tier.sh systemd-minimal arm64 ./lohar
+sudo SIZE_MB=1024 ./scripts/build-tier.sh systemd-minimal arm64 ./forge
 sudo cp dist/rootfs-systemd-minimal-arm64.ext4 images/
 ```
 
@@ -283,23 +283,23 @@ systemd's journal and tmpfiles use some space at runtime.
 ### Phase 1: Boot timing (the headline number)
 
 ```bash
-# === Baseline (Image A, lohar PID 1) ===
-echo "=== BASELINE: lohar PID 1 ===" | tee results-a.txt
+# === Baseline (Image A, forge PID 1) ===
+echo "=== BASELINE: forge PID 1 ===" | tee results-a.txt
 for i in $(seq 1 20); do
     name="bench-a-$i"
     START=$(python3 -c 'import time; print(time.monotonic_ns())')
-    bhatti create --name "$name" --cpus 1 --memory 2048
+    ahvm create --name "$name" --cpus 1 --memory 2048
     END=$(python3 -c 'import time; print(time.monotonic_ns())')
     MS=$(python3 -c "print(($END - $START) / 1_000_000)")
     echo "create $i: ${MS}ms" | tee -a results-a.txt
 
     # Grab guest-side boot timing
-    bhatti file read "$name" /tmp/boot-timing.txt 2>/dev/null | tee -a results-a.txt
+    ahvm file read "$name" /tmp/boot-timing.txt 2>/dev/null | tee -a results-a.txt
     
     # Grab systemd-analyze if available
-    bhatti exec "$name" -- systemd-analyze 2>/dev/null | tee -a results-a.txt || echo "(no systemd)" | tee -a results-a.txt
+    ahvm exec "$name" -- systemd-analyze 2>/dev/null | tee -a results-a.txt || echo "(no systemd)" | tee -a results-a.txt
 
-    bhatti destroy "$name"
+    ahvm destroy "$name"
     sleep 1
 done
 
@@ -308,61 +308,61 @@ echo "=== EXPERIMENT: systemd PID 1 ===" | tee results-b.txt
 for i in $(seq 1 20); do
     name="bench-b-$i"
     START=$(python3 -c 'import time; print(time.monotonic_ns())')
-    bhatti create --name "$name" --cpus 1 --memory 2048 --image systemd-minimal
+    ahvm create --name "$name" --cpus 1 --memory 2048 --image systemd-minimal
     END=$(python3 -c 'import time; print(time.monotonic_ns())')
     MS=$(python3 -c "print(($END - $START) / 1_000_000)")
     echo "create $i: ${MS}ms" | tee -a results-b.txt
 
-    bhatti file read "$name" /tmp/boot-timing.txt 2>/dev/null | tee -a results-b.txt
-    bhatti exec "$name" -- systemd-analyze 2>/dev/null | tee -a results-b.txt
+    ahvm file read "$name" /tmp/boot-timing.txt 2>/dev/null | tee -a results-b.txt
+    ahvm exec "$name" -- systemd-analyze 2>/dev/null | tee -a results-b.txt
     
-    bhatti destroy "$name"
+    ahvm destroy "$name"
     sleep 1
 done
 ```
 
 **What we learn:** Exact p50/p95 create time delta. Guest-side
 `systemd-analyze` shows kernel vs userspace split. `/tmp/boot-timing.txt`
-shows when lohar reached ready inside the VM.
+shows when forge reached ready inside the VM.
 
 ### Phase 2: Snapshot/restore (the risk)
 
 ```bash
 # For each image (A and B):
 name="snap-test"
-bhatti create --name "$name" --cpus 1 --memory 2048 [--image systemd-minimal]
+ahvm create --name "$name" --cpus 1 --memory 2048 [--image systemd-minimal]
 
 # Start a long-running process
-bhatti exec "$name" -- sh -c 'while true; do date >> /tmp/ticker.log; sleep 1; done &'
-bhatti exec "$name" -- sh -c 'echo "pre-snapshot" > /tmp/state.txt'
+ahvm exec "$name" -- sh -c 'while true; do date >> /tmp/ticker.log; sleep 1; done &'
+ahvm exec "$name" -- sh -c 'echo "pre-snapshot" > /tmp/state.txt'
 
 # Verify process is running
-bhatti exec "$name" -- ps aux | grep ticker
-bhatti exec "$name" -- wc -l /tmp/ticker.log
+ahvm exec "$name" -- ps aux | grep ticker
+ahvm exec "$name" -- wc -l /tmp/ticker.log
 
 # Stop (snapshot to disk)
-bhatti stop "$name"
+ahvm stop "$name"
 sleep 5
 
 # Resume
 START=$(python3 -c 'import time; print(time.monotonic_ns())')
-bhatti start "$name"
+ahvm start "$name"
 END=$(python3 -c 'import time; print(time.monotonic_ns())')
 echo "resume: $(python3 -c "print(($END - $START) / 1_000_000)")ms"
 
 # Verify everything survived
-bhatti exec "$name" -- cat /tmp/state.txt          # should say "pre-snapshot"
-bhatti exec "$name" -- ps aux | grep ticker         # should still be running
-bhatti exec "$name" -- wc -l /tmp/ticker.log        # should have more lines
-bhatti exec "$name" -- cat /etc/resolv.conf         # DNS intact?
-bhatti exec "$name" -- curl -s ifconfig.me          # network works?
+ahvm exec "$name" -- cat /tmp/state.txt          # should say "pre-snapshot"
+ahvm exec "$name" -- ps aux | grep ticker         # should still be running
+ahvm exec "$name" -- wc -l /tmp/ticker.log        # should have more lines
+ahvm exec "$name" -- cat /etc/resolv.conf         # DNS intact?
+ahvm exec "$name" -- curl -s ifconfig.me          # network works?
 
 # For Image B only: check systemd state after resume
-bhatti exec "$name" -- systemctl is-active lohar
-bhatti exec "$name" -- systemctl is-system-running
-bhatti exec "$name" -- journalctl --no-pager -n 20  # any errors?
+ahvm exec "$name" -- systemctl is-active forge
+ahvm exec "$name" -- systemctl is-system-running
+ahvm exec "$name" -- journalctl --no-pager -n 20  # any errors?
 
-bhatti destroy "$name"
+ahvm destroy "$name"
 ```
 
 **Repeat with longer gap:** Stop, wait 1 hour, start. Check for
@@ -372,23 +372,23 @@ timer storms or watchdog kills.
 
 ```bash
 name="thermal-test"
-bhatti create --name "$name" --cpus 1 --memory 2048 [--image systemd-minimal]
-bhatti exec "$name" -- echo "warm up"
+ahvm create --name "$name" --cpus 1 --memory 2048 [--image systemd-minimal]
+ahvm exec "$name" -- echo "warm up"
 
 # Wait for warm transition (35s)
 sleep 35
 
 # Exec on warm sandbox — triggers transparent resume
 START=$(python3 -c 'import time; print(time.monotonic_ns())')
-bhatti exec "$name" -- echo "after warm"
+ahvm exec "$name" -- echo "after warm"
 END=$(python3 -c 'import time; print(time.monotonic_ns())')
 echo "warm resume+exec: $(python3 -c "print(($END - $START) / 1_000_000)")ms"
 
 # For Image B: check systemd state after warm resume
-bhatti exec "$name" -- systemctl is-system-running
-bhatti exec "$name" -- journalctl --no-pager -n 10
+ahvm exec "$name" -- systemctl is-system-running
+ahvm exec "$name" -- journalctl --no-pager -n 10
 
-bhatti destroy "$name"
+ahvm destroy "$name"
 ```
 
 ### Phase 4: Memory overhead
@@ -396,18 +396,18 @@ bhatti destroy "$name"
 ```bash
 for img in "" "--image systemd-minimal"; do
     name="mem-test"
-    bhatti create --name "$name" --cpus 1 --memory 2048 $img
+    ahvm create --name "$name" --cpus 1 --memory 2048 $img
     
     # Total memory used by system processes
-    bhatti exec "$name" -- sh -c 'ps aux --sort=-rss | head -20'
+    ahvm exec "$name" -- sh -c 'ps aux --sort=-rss | head -20'
     
     # Specific: systemd + journald + resolved
-    bhatti exec "$name" -- sh -c 'ps -eo pid,rss,comm | grep -E "systemd|journal|resolv|lohar" | sort -k2 -n -r'
+    ahvm exec "$name" -- sh -c 'ps -eo pid,rss,comm | grep -E "systemd|journal|resolv|forge" | sort -k2 -n -r'
     
     # Free memory
-    bhatti exec "$name" -- free -m
+    ahvm exec "$name" -- free -m
     
-    bhatti destroy "$name"
+    ahvm destroy "$name"
 done
 ```
 
@@ -416,30 +416,30 @@ done
 ```bash
 for img in "" "--image systemd-minimal"; do
     name="pkg-test"
-    bhatti create --name "$name" --cpus 1 --memory 2048 --disk-size 4096 $img
+    ahvm create --name "$name" --cpus 1 --memory 2048 --disk-size 4096 $img
 
-    echo "--- Testing with: ${img:-lohar PID 1} ---"
+    echo "--- Testing with: ${img:-forge PID 1} ---"
     
     # Test 1: openssh-server (the issue #12 case)
-    bhatti exec "$name" -- sudo apt-get update -qq
-    bhatti exec "$name" -- sudo apt-get install -y openssh-server 2>&1 | tail -5
-    bhatti exec "$name" -- cat /etc/resolv.conf        # DNS still works?
-    bhatti exec "$name" -- curl -s ifconfig.me          # network still works?
-    bhatti exec "$name" -- sudo systemctl is-active ssh 2>/dev/null || echo "ssh not active"
+    ahvm exec "$name" -- sudo apt-get update -qq
+    ahvm exec "$name" -- sudo apt-get install -y openssh-server 2>&1 | tail -5
+    ahvm exec "$name" -- cat /etc/resolv.conf        # DNS still works?
+    ahvm exec "$name" -- curl -s ifconfig.me          # network still works?
+    ahvm exec "$name" -- sudo systemctl is-active ssh 2>/dev/null || echo "ssh not active"
     
     # Test 2: postgresql
-    bhatti exec "$name" -- sudo apt-get install -y postgresql 2>&1 | tail -5
-    bhatti exec "$name" -- sudo pg_isready 2>/dev/null || echo "pg not ready"
+    ahvm exec "$name" -- sudo apt-get install -y postgresql 2>&1 | tail -5
+    ahvm exec "$name" -- sudo pg_isready 2>/dev/null || echo "pg not ready"
     
     # Test 3: nginx
-    bhatti exec "$name" -- sudo apt-get install -y nginx 2>&1 | tail -5
-    bhatti exec "$name" -- curl -s localhost 2>/dev/null | head -1 || echo "nginx not serving"
+    ahvm exec "$name" -- sudo apt-get install -y nginx 2>&1 | tail -5
+    ahvm exec "$name" -- curl -s localhost 2>/dev/null | head -1 || echo "nginx not serving"
     
     # Test 4: redis
-    bhatti exec "$name" -- sudo apt-get install -y redis-server 2>&1 | tail -5
-    bhatti exec "$name" -- redis-cli ping 2>/dev/null || echo "redis not responding"
+    ahvm exec "$name" -- sudo apt-get install -y redis-server 2>&1 | tail -5
+    ahvm exec "$name" -- redis-cli ping 2>/dev/null || echo "redis not responding"
     
-    bhatti destroy "$name"
+    ahvm destroy "$name"
 done
 ```
 
@@ -448,22 +448,22 @@ done
 ```bash
 # Run the existing bench/run.sh on both images:
 # Image A:
-bhatti create --name perf-bench --cpus 2 --memory 2048
+ahvm create --name perf-bench --cpus 2 --memory 2048
 bash bench/run.sh 30
-mv bench/results bench/results-lohar
-bhatti destroy perf-bench
+mv bench/results bench/results-forge
+ahvm destroy perf-bench
 
 # Image B:
-bhatti create --name perf-bench --cpus 2 --memory 2048 --image systemd-minimal
+ahvm create --name perf-bench --cpus 2 --memory 2048 --image systemd-minimal
 bash bench/run.sh 30
 mv bench/results bench/results-systemd
-bhatti destroy perf-bench
+ahvm destroy perf-bench
 
 # Diff the results:
-for f in bench/results-lohar/*.txt; do
+for f in bench/results-forge/*.txt; do
     base=$(basename "$f")
     echo "=== $base ==="
-    paste <(sort -n "bench/results-lohar/$base" | awk '{a[NR]=$1} END {printf "lohar p50=%.1f p95=%.1f", a[int(NR*0.5)+1], a[int(NR*0.95)+1]}') \
+    paste <(sort -n "bench/results-forge/$base" | awk '{a[NR]=$1} END {printf "forge p50=%.1f p95=%.1f", a[int(NR*0.5)+1], a[int(NR*0.95)+1]}') \
           <(sort -n "bench/results-systemd/$base" | awk '{a[NR]=$1} END {printf "  systemd p50=%.1f p95=%.1f", a[int(NR*0.5)+1], a[int(NR*0.95)+1]}')
     echo
 done
@@ -474,7 +474,7 @@ done
 ```bash
 # Run the existing integration test suite against the systemd image.
 # Set the rootfs to the systemd variant:
-BHATTI_ROOTFS=/var/lib/bhatti/images/rootfs-systemd-minimal-arm64.ext4 \
+AHVM_ROOTFS=/var/lib/ahvm/images/rootfs-systemd-minimal-arm64.ext4 \
     go test ./pkg/engine/firecracker/ -run Integration -v -count=1
 
 # Specifically:
@@ -513,11 +513,11 @@ If any "reject" criterion hits: investigate whether it's fixable
 
 ## What stays untouched
 
-- **lohar PID 1 code path**: not modified, not deleted. The `if getpid()!=1`
+- **forge PID 1 code path**: not modified, not deleted. The `if getpid()!=1`
   branch is the only new code. The existing path runs exactly as before.
 - **Existing rootfs images**: not modified. The systemd image is a new
   variant built alongside them.
-- **Kernel cmdline for existing images**: still `init=/usr/local/bin/lohar`.
+- **Kernel cmdline for existing images**: still `init=/usr/local/bin/forge`.
   Only the systemd image gets `init=/sbin/init`.
 - **All existing tests**: run against the current rootfs first, then
   against the systemd rootfs as a second pass.
@@ -532,14 +532,14 @@ If any "reject" criterion hits: investigate whether it's fixable
 
 ```
 1. Branch: git checkout -b sahil-systemd-experiment
-2. Edit cmd/lohar/main.go — add runAsAgent() function
-3. Cross-compile: GOOS=linux GOARCH=arm64 go build -o lohar-arm64 ./cmd/lohar/
-4. scp lohar-arm64 to Pi
+2. Edit cmd/forge/main.go — add runAsAgent() function
+3. Cross-compile: GOOS=linux GOARCH=arm64 go build -o forge-arm64 ./cmd/forge/
+4. scp forge-arm64 to Pi
 5. Create scripts/tiers/systemd-minimal.sh
-6. Build: sudo SIZE_MB=1024 ./scripts/build-tier.sh systemd-minimal arm64 ./lohar-arm64
+6. Build: sudo SIZE_MB=1024 ./scripts/build-tier.sh systemd-minimal arm64 ./forge-arm64
 7. Copy to images dir
 8. Edit create.go — add init= selection (or use env var hack)
-9. Rebuild bhatti, restart server
+9. Rebuild ahvm, restart server
 10. Run Phase 1-7 tests
 11. Compile results, make decision
 ```

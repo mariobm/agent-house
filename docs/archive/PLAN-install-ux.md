@@ -1,7 +1,7 @@
 # Install & Update UX Overhaul
 
 The install script (`scripts/install.sh`) is the primary entry point for
-every bhatti user — CLI users, server operators, CI pipelines. It works,
+every ahvm user — CLI users, server operators, CI pipelines. It works,
 but has accumulated UX issues as the project grew from one tier to four,
 and from "install once" to "install and update."
 
@@ -16,14 +16,14 @@ The script handles four flows:
 3. **Linux CLI update** → update CLI binary
 4. **Linux server update** → update all server components
 
-Configuration is via `BHATTI_` env vars only (`BHATTI_MODE`, `BHATTI_TIER`,
-`BHATTI_TIERS`), designed for the piped `curl | bash` case. No `--flag`
+Configuration is via `AHVM_` env vars only (`AHVM_MODE`, `AHVM_TIER`,
+`AHVM_TIERS`), designed for the piped `curl | bash` case. No `--flag`
 parsing for direct execution.
 
-`bhatti update` is a CLI command that shells out to `curl | bash` with
-`BHATTI_MODE=cli` hardcoded — it only ever updates the CLI binary.
+`ahvm update` is a CLI command that shells out to `curl | bash` with
+`AHVM_MODE=cli` hardcoded — it only ever updates the CLI binary.
 
-`bhatti version` checks CLI vs server version via the `X-Bhatti-Version`
+`ahvm version` checks CLI vs server version via the `X-AHVM-Version`
 response header. It shows an "Update available" notice when the CLI is
 behind the server. But it never checks whether the server itself is
 behind the latest GitHub release.
@@ -32,16 +32,16 @@ behind the latest GitHub release.
 
 ## Problems
 
-### 1. `bhatti update` silently does the wrong thing on servers
+### 1. `ahvm update` silently does the wrong thing on servers
 
-A server admin running `bhatti update` gets only a CLI binary update.
-Firecracker, lohar, kernel, and rootfs are silently skipped because the
-command hardcodes `BHATTI_MODE=cli`. The admin thinks they're up to date.
+A server admin running `ahvm update` gets only a CLI binary update.
+Firecracker, forge, kernel, and rootfs are silently skipped because the
+command hardcodes `AHVM_MODE=cli`. The admin thinks they're up to date.
 This is the biggest footgun.
 
 ### 2. No visibility into available releases
 
-`bhatti version` compares CLI vs server, but never checks GitHub releases.
+`ahvm version` compares CLI vs server, but never checks GitHub releases.
 A server operator running v1.6.3 with CLI v1.6.3 sees matching versions
 and thinks everything is current, even if v1.6.5 is out. There's no
 mechanism to surface available updates for the server itself.
@@ -62,10 +62,10 @@ the user chooses "server."
 
 ### 4. No `--flag` parsing
 
-The script only accepts `BHATTI_` env vars. Running it directly looks like:
+The script only accepts `AHVM_` env vars. Running it directly looks like:
 
 ```bash
-sudo BHATTI_TIERS=all ./scripts/install.sh
+sudo AHVM_TIERS=all ./scripts/install.sh
 ```
 
 Every other install script in the ecosystem (rustup, Homebrew, Deno, nvm)
@@ -80,7 +80,7 @@ Env vars should remain as the CI/piped fallback. Flags override env vars.
 ### 5. No way to discover or add tiers post-install
 
 After a fresh server install with `minimal`, the user isn't told other
-tiers exist. `BHATTI_TIERS` was added but is undocumented outside of
+tiers exist. `AHVM_TIERS` was added but is undocumented outside of
 `docs/tiers.md`. A server admin who wants to add the `computer` tier has
 to know the exact env var name.
 
@@ -88,37 +88,37 @@ to know the exact env var name.
 
 The README has one sentence: "Re-running updates an existing installation."
 There's no `--help` on the install script, no version comparison output,
-and `bhatti update` doesn't mention it's CLI-only. Server operators have
+and `ahvm update` doesn't mention it's CLI-only. Server operators have
 no documented update path beyond "run the install command again."
 
 ### 7. Non-systemd daemon not detected on update
 
-`do_server_update` checks `systemctl is-active bhatti` to decide whether
-to stop/restart the daemon. If someone runs `bhatti serve` in a foreground
+`do_server_update` checks `systemctl is-active ahvm` to decide whether
+to stop/restart the daemon. If someone runs `ahvm serve` in a foreground
 terminal (no systemd), the script replaces the binary on disk but prints a
 generic "Restart the daemon to use the new version" without checking
 whether the daemon is actually running. It should detect the running
 process and warn with a PID.
 
-Note: `kill`-ing a manual `bhatti serve` is safe — it handles SIGINT and
+Note: `kill`-ing a manual `ahvm serve` is safe — it handles SIGINT and
 SIGTERM identically to `systemctl stop` (drains connections, snapshots all
 VMs, cleans up). But we avoid auto-killing because the user would lose
 their terminal session and the new process would need to be started in
 the same context. Detect and warn is the right call.
 
-### 8. `bhatti update` doesn't forward flags to install script
+### 8. `ahvm update` doesn't forward flags to install script
 
-After Fix 1, `bhatti update` on a server triggers `do_server_update()`.
-But if someone runs `sudo bhatti update --tiers all`, the `--tiers` flag
+After Fix 1, `ahvm update` on a server triggers `do_server_update()`.
+But if someone runs `sudo ahvm update --tiers all`, the `--tiers` flag
 is not forwarded to the install script. The `updateCmd` doesn't accept
 or pass through any flags.
 
 ### 9. No rollback or partial update recovery
 
-`do_server_update` replaces components sequentially: Firecracker → bhatti
-→ lohar → kernel → rootfs. If the script dies at step 4 (OOM, network
-drop, disk full, `kill -9`), you have a new Firecracker + new bhatti
-binary + new lohar but an old kernel and old rootfs. On restart, there's
+`do_server_update` replaces components sequentially: Firecracker → ahvm
+→ forge → kernel → rootfs. If the script dies at step 4 (OOM, network
+drop, disk full, `kill -9`), you have a new Firecracker + new ahvm
+binary + new forge but an old kernel and old rootfs. On restart, there's
 no guarantee these versions are compatible.
 
 There is no:
@@ -128,8 +128,8 @@ There is no:
 
 ### 10. Binary replacement not atomic across filesystems
 
-`install_bhatti_binary` downloads to `/tmp/bhatti.tmp` then
-`mv`s to `/usr/local/bin/bhatti`. If `/tmp` and `/usr/local/bin` are on
+`install_ahvm_binary` downloads to `/tmp/ahvm.tmp` then
+`mv`s to `/usr/local/bin/ahvm`. If `/tmp` and `/usr/local/bin` are on
 different filesystems (extremely common — `/tmp` is often tmpfs), `mv`
 falls back to copy + delete, which is not atomic. A power failure
 mid-copy = corrupted binary.
@@ -143,7 +143,7 @@ doesn't strip it.
 
 ### 12. Shell completions not mentioned on install
 
-`bhatti setup` suggests shell completions, but the install script doesn't.
+`ahvm setup` suggests shell completions, but the install script doesn't.
 Tab-completing sandbox names is a high-value first-use experience that
 most users never discover.
 
@@ -151,14 +151,14 @@ most users never discover.
 
 ## Fixes
 
-### Fix 1: Make `bhatti update` server-aware
+### Fix 1: Make `ahvm update` server-aware
 
-`bhatti update` currently hardcodes `BHATTI_MODE=cli`. Instead, it should
+`ahvm update` currently hardcodes `AHVM_MODE=cli`. Instead, it should
 let the install script auto-detect:
 
 ```go
 // Current:
-install.Env = append(os.Environ(), "BHATTI_MODE=cli")
+install.Env = append(os.Environ(), "AHVM_MODE=cli")
 
 // Fixed — let install.sh detect server vs CLI:
 install.Env = os.Environ()
@@ -178,7 +178,7 @@ upfront root check in the Go command before shelling out:
 ```go
 // Before shelling out to install.sh:
 if !cliOnly && isServer() && os.Getuid() != 0 {
-    return fmt.Errorf("server update requires root\n  Re-run with: sudo bhatti update")
+    return fmt.Errorf("server update requires root\n  Re-run with: sudo ahvm update")
 }
 ```
 
@@ -187,23 +187,23 @@ This avoids downloading the install script just to fail immediately.
 Add a `--cli-only` flag for the rare case where someone explicitly wants
 just the binary on a server host.
 
-Update help text — currently says "Update bhatti CLI to the latest version",
+Update help text — currently says "Update ahvm CLI to the latest version",
 should reflect the new behavior:
 
 ```go
 var updateCmd = &cobra.Command{
     Use:   "update",
-    Short: "Update bhatti to the latest version",
-    Long: `Update bhatti to the latest release. On a server, updates all
-components (bhatti, Firecracker, lohar, kernel, rootfs). On a CLI-only
+    Short: "Update ahvm to the latest version",
+    Long: `Update ahvm to the latest release. On a server, updates all
+components (ahvm, Firecracker, forge, kernel, rootfs). On a CLI-only
 machine, updates just the binary.
 
 Use --cli-only to update only the binary on a server.
 Use --tiers to install additional rootfs tiers during the update.`,
-    Example: `  bhatti update                   # auto-detect CLI vs server
-  sudo bhatti update               # server update (requires root)
-  sudo bhatti update --tiers all   # server update + pull all tiers
-  bhatti update --cli-only         # binary only, even on a server`,
+    Example: `  ahvm update                   # auto-detect CLI vs server
+  sudo ahvm update               # server update (requires root)
+  sudo ahvm update --tiers all   # server update + pull all tiers
+  ahvm update --cli-only         # binary only, even on a server`,
 }
 ```
 
@@ -218,10 +218,10 @@ RunE: func(cmd *cobra.Command, args []string) error {
 
     env := os.Environ()
     if cliOnly {
-        env = append(env, "BHATTI_MODE=cli")
+        env = append(env, "AHVM_MODE=cli")
     }
     if tiers != "" {
-        env = append(env, "BHATTI_TIERS="+tiers)
+        env = append(env, "AHVM_TIERS="+tiers)
     }
     install.Env = env
     // ...
@@ -230,16 +230,16 @@ RunE: func(cmd *cobra.Command, args []string) error {
 
 #### Version coordination
 
-`bhatti update` (and the install script) always pulls the **latest
+`ahvm update` (and the install script) always pulls the **latest
 GitHub release** via `resolve_latest_version()`. There is no version
 pinning — you can't say "update to v1.6.3 specifically."
 
 This is fine for now because:
-- The CLI and server are the same binary (`bhatti`). On a server,
-  `do_server_update` updates the binary that `bhatti serve` runs,
+- The CLI and server are the same binary (`ahvm`). On a server,
+  `do_server_update` updates the binary that `ahvm serve` runs,
   so CLI and server stay in sync after a restart.
 - On a remote CLI machine, the CLI may be newer than the server.
-  This is guarded by `X-Bhatti-Min-CLI` (server rejects too-old CLIs)
+  This is guarded by `X-AHVM-Min-CLI` (server rejects too-old CLIs)
   and is generally safe because the API is backward-compatible within
   a major version.
 - `do_server_update` already has a major version crossing guard that
@@ -249,53 +249,53 @@ Output for each case:
 
 ```
 # CLI-only machine:
-Updating bhatti CLI
+Updating ahvm CLI
   v1.6.4 → v1.6.5
-  ✓ bhatti v1.6.5 → /usr/local/bin/bhatti
+  ✓ ahvm v1.6.5 → /usr/local/bin/ahvm
 
 # Server (with root):
-Updating bhatti server (browser tier)
+Updating ahvm server (browser tier)
   v1.6.4 → v1.6.5
   ✓ Firecracker 1.14.0 + jailer (up to date)
-  ✓ bhatti v1.6.5
-  ✓ lohar (4.1M)
+  ✓ ahvm v1.6.5
+  ✓ forge (4.1M)
   ✓ kernel (8.2M)
   ✓ rootfs browser (600M)
 
 # Server (without root):
 error: server update requires root
-  Re-run with: sudo bhatti update
+  Re-run with: sudo ahvm update
 
 # Already up to date:
-✓ bhatti v1.6.5 is already up to date
+✓ ahvm v1.6.5 is already up to date
 ```
 
-This output already comes from the install script — `bhatti update`
+This output already comes from the install script — `ahvm update`
 pipes stdout/stderr through, so no extra work needed there.
 
-### Fix 2: Release check in `bhatti version`
+### Fix 2: Release check in `ahvm version`
 
-`bhatti version` already makes a request to the server. Add a second
+`ahvm version` already makes a request to the server. Add a second
 check: the CLI itself queries the GitHub releases API directly to find
 the latest version. This is a lazy, on-demand check — no background
 goroutines, no server-side changes, no caching infrastructure.
 
-`bhatti version` is an explicit "tell me about versions" command, so an
+`ahvm version` is an explicit "tell me about versions" command, so an
 extra ~200ms HTTP call is acceptable. This is what `npm outdated`,
 `pip`, and `terraform version` do.
 
 **Implementation:**
 
-- `bhatti version` makes a non-blocking call to
+- `ahvm version` makes a non-blocking call to
   `api.github.com/repos/.../releases/latest` with a 2s timeout.
 - If the call succeeds, compare against both the CLI version and the
-  server version (from `X-Bhatti-Version`).
+  server version (from `X-AHVM-Version`).
 - If the call fails (air-gapped, GitHub down, timeout), skip silently.
   No errors, no noise.
-- Cache the result to `~/.bhatti/.latest-version` with a timestamp.
+- Cache the result to `~/.ahvm/.latest-version` with a timestamp.
   Reuse cached value if < 1 hour old to avoid redundant calls. This
   means the check fires at most once per hour regardless of how often
-  `bhatti version` is run.
+  `ahvm version` is run.
 
 No server-side changes needed. No background goroutine. No new
 response headers.
@@ -304,21 +304,21 @@ response headers.
 
 ```
 # Everything up to date:
-bhatti v1.6.5
-api: https://api.bhatti.sh
+ahvm v1.6.5
+api: https://api.ahvm.sh
 server: v1.6.5
 
 # CLI or server behind:
-bhatti v1.6.3
-api: https://api.bhatti.sh
+ahvm v1.6.3
+api: https://api.ahvm.sh
 server: v1.6.3
 
-Update available: v1.6.3 → v1.6.5 (bhatti update)
+Update available: v1.6.3 → v1.6.5 (ahvm update)
 ```
 
-Also surface in `bhatti admin status`. Air-gapped / GitHub down = no
-notice, no error. Update notices only appear on `bhatti version` and
-`bhatti admin status` — never on regular commands.
+Also surface in `ahvm admin status`. Air-gapped / GitHub down = no
+notice, no error. Update notices only appear on `ahvm version` and
+`ahvm admin status` — never on regular commands.
 
 ### Fix 3: Root check before prompts
 
@@ -331,7 +331,7 @@ case "$mode" in
         # Check root BEFORE asking for tier
         [ "$(id -u)" -eq 0 ] || die "server installation requires root" \
                                     "Re-run with:" \
-                                    "  curl -fsSL bhatti.sh/install | sudo bash"
+                                    "  curl -fsSL ahvm.sh/install | sudo bash"
         # ... then prompt for tier ...
 ```
 
@@ -343,13 +343,13 @@ that already exist as env vars:
 ```bash
 while [ $# -gt 0 ]; do
     case "$1" in
-        --tier)    BHATTI_TIER="$2"; shift 2 ;;
-        --tier=*)  BHATTI_TIER="${1#--tier=}"; shift ;;
-        --tiers)   BHATTI_TIERS="$2"; shift 2 ;;
-        --tiers=*) BHATTI_TIERS="${1#--tiers=}"; shift ;;
-        --mode)    BHATTI_MODE="$2"; shift 2 ;;
-        --mode=*)  BHATTI_MODE="${1#--mode=}"; shift ;;
-        --force)   BHATTI_FORCE=1; shift ;;
+        --tier)    AHVM_TIER="$2"; shift 2 ;;
+        --tier=*)  AHVM_TIER="${1#--tier=}"; shift ;;
+        --tiers)   AHVM_TIERS="$2"; shift 2 ;;
+        --tiers=*) AHVM_TIERS="${1#--tiers=}"; shift ;;
+        --mode)    AHVM_MODE="$2"; shift 2 ;;
+        --mode=*)  AHVM_MODE="${1#--mode=}"; shift ;;
+        --force)   AHVM_FORCE=1; shift ;;
         --quiet)   QUIET=1; shift ;;
         --verbose) VERBOSE=1; set -x; shift ;;
         --help|-h) usage; exit 0 ;;
@@ -387,12 +387,12 @@ Flags:
   -h, --help          Show this help
 
 Environment variables (equivalent, for piped installs):
-  BHATTI_TIER, BHATTI_TIERS, BHATTI_MODE, BHATTI_FORCE=1
+  AHVM_TIER, AHVM_TIERS, AHVM_MODE, AHVM_FORCE=1
 
 Examples:
-  curl -fsSL bhatti.sh/install | bash                             # CLI (auto-detected)
-  curl -fsSL bhatti.sh/install | sudo bash                        # server (prompted)
-  curl -fsSL bhatti.sh/install | sudo bash -s -- --tiers all      # flags via pipe
+  curl -fsSL ahvm.sh/install | bash                             # CLI (auto-detected)
+  curl -fsSL ahvm.sh/install | sudo bash                        # server (prompted)
+  curl -fsSL ahvm.sh/install | sudo bash -s -- --tiers all      # flags via pipe
   sudo ./scripts/install.sh --tier computer                       # server, computer tier
   sudo ./scripts/install.sh --tiers all                           # update + pull all tiers
 EOF
@@ -401,64 +401,64 @@ EOF
 
 ### Fix 5: Detect non-systemd daemon on update
 
-Add a `pgrep -x bhatti` fallback in `do_server_update` when systemd
-isn't managing the service. If a manual `bhatti serve` is running,
+Add a `pgrep -x ahvm` fallback in `do_server_update` when systemd
+isn't managing the service. If a manual `ahvm serve` is running,
 print its PID and tell the user to restart it. Don't auto-kill — the
 user would lose their terminal session.
 
 ### Fix 6: Post-install tier hint
 
 After a fresh server install, list the other available tiers and show
-`sudo bhatti update --tiers all`. After a server update, mention any
+`sudo ahvm update --tiers all`. After a server update, mention any
 new tiers that exist upstream but aren't installed locally.
 
 ### Fix 7: Update error messages and docs
 
 **Install script error messages** — `do_server_update` die message
-currently only suggests `curl -fsSL bhatti.sh/install | sudo bash`.
-After Fix 1, users will also reach this via `bhatti update`. Update to
+currently only suggests `curl -fsSL ahvm.sh/install | sudo bash`.
+After Fix 1, users will also reach this via `ahvm update`. Update to
 suggest both:
 
 ```bash
 die "server update requires root" \
     "Re-run with:" \
-    "  sudo bhatti update" \
-    "  curl -fsSL bhatti.sh/install | sudo bash"
+    "  sudo ahvm update" \
+    "  curl -fsSL ahvm.sh/install | sudo bash"
 ```
 
 Same for the root check in `do_server_install` (Fix 3).
 
 **README.md** — The update story is a single sentence ("Re-running
-updates an existing installation"). Expand to mention `bhatti update`
+updates an existing installation"). Expand to mention `ahvm update`
 as the primary update path:
 
 ```markdown
 ## Updating
 
 ```bash
-bhatti update                   # CLI: updates the binary
-sudo bhatti update              # Server: updates all components
-sudo bhatti update --tiers all  # Server: also pull additional tiers
+ahvm update                   # CLI: updates the binary
+sudo ahvm update              # Server: updates all components
+sudo ahvm update --tiers all  # Server: also pull additional tiers
 ```
 
 Or re-run the install command directly:
 
 ```bash
-curl -fsSL bhatti.sh/install | bash         # CLI
-curl -fsSL bhatti.sh/install | sudo bash    # server
+curl -fsSL ahvm.sh/install | bash         # CLI
+curl -fsSL ahvm.sh/install | sudo bash    # server
 ```
 ```
 
 **docs/quickstart.md** — Same treatment. Add a section after the
 install steps explaining how to update.
 
-**Fallback install URL** — `bhatti.sh/install` is a redirect, and a
+**Fallback install URL** — `ahvm.sh/install` is a redirect, and a
 single point of failure. Document the raw GitHub URL as a fallback in
 the README:
 
 ```bash
-# If bhatti.sh is unreachable:
-curl -fsSL https://raw.githubusercontent.com/sahil-shubham/bhatti/main/scripts/install.sh | bash
+# If ahvm.sh is unreachable:
+curl -fsSL https://raw.githubusercontent.com/mariobm/agent-house/main/scripts/install.sh | bash
 ```
 
 ### Fix 8: Staged downloads with rollback
@@ -470,9 +470,9 @@ system is untouched.
 **Binary staging on same filesystem (atomic rename):**
 
 ```bash
-install_bhatti_binary() {
-    local binary="bhatti-${OS}-${ARCH}"
-    local dest="/usr/local/bin/bhatti"
+install_ahvm_binary() {
+    local binary="ahvm-${OS}-${ARCH}"
+    local dest="/usr/local/bin/ahvm"
     local tmp="${dest}.tmp.$$"
 
     # Stage to same filesystem as destination — mv is atomic rename
@@ -510,9 +510,9 @@ Extend the existing `_cleanup` trap to remove staged files:
 
 ```bash
 _cleanup() {
-    rm -f /tmp/bhatti.tmp
-    rm -f /usr/local/bin/bhatti.tmp.$$
-    rm -f "$DATA_DIR/lohar.tmp.$$" 2>/dev/null || true
+    rm -f /tmp/ahvm.tmp
+    rm -f /usr/local/bin/ahvm.tmp.$$
+    rm -f "$DATA_DIR/forge.tmp.$$" 2>/dev/null || true
 }
 ```
 
@@ -522,15 +522,15 @@ rollback path:
 
 ```bash
 # If the new version is broken:
-sudo mv /usr/local/bin/bhatti.old /usr/local/bin/bhatti
-sudo systemctl restart bhatti
+sudo mv /usr/local/bin/ahvm.old /usr/local/bin/ahvm
+sudo systemctl restart ahvm
 ```
 
 Mention this in the update completion output:
 
 ```
-  Previous version saved to /usr/local/bin/bhatti.old
-  Rollback: sudo mv /usr/local/bin/bhatti.old /usr/local/bin/bhatti
+  Previous version saved to /usr/local/bin/ahvm.old
+  Rollback: sudo mv /usr/local/bin/ahvm.old /usr/local/bin/ahvm
 ```
 
 ### Fix 9: `detect_tier` glob fallback
@@ -558,31 +558,31 @@ Tests first, then the most impactful fix, then build outward.
 Safety net before changing anything. Validates existing behavior so
 we catch regressions as we refactor.
 
-1. Add `BHATTI_TEST` guard to `install.sh` so functions can be sourced
+1. Add `AHVM_TEST` guard to `install.sh` so functions can be sourced
 2. Add `scripts/install_test.bats` with tier consistency, `version_gt`,
    `detect_tier`, and flag parsing tests
 3. Add bats-core to CI alongside Go tests
 
-### Phase 2: `bhatti update` server-awareness
+### Phase 2: `ahvm update` server-awareness
 
 The most impactful fix — prevents silent partial updates on servers.
 
-1. Remove `BHATTI_MODE=cli` hardcoding in `updateCmd`
-2. Add `--cli-only` and `--tiers` flags to `bhatti update`, forward as
+1. Remove `AHVM_MODE=cli` hardcoding in `updateCmd`
+2. Add `--cli-only` and `--tiers` flags to `ahvm update`, forward as
    env vars to the install script
-3. Update `bhatti update` Short, Long, and Example text
-4. Update error messages in install script to suggest `sudo bhatti update`
+3. Update `ahvm update` Short, Long, and Example text
+4. Update error messages in install script to suggest `sudo ahvm update`
 
 ### Phase 3: Install script hardening
 
 Binary staging, verification, atomic replacement, rollback. Fixes 8–10.
 
-1. Rewrite `install_bhatti_binary` with same-filesystem staging,
+1. Rewrite `install_ahvm_binary` with same-filesystem staging,
    binary verification, `.old` backup, and macOS quarantine stripping
 2. Fix `detect_tier` glob fallback to prefer `minimal`
 3. Fix `download()` to not rely on `-f` for HTTP error detection
 4. Add config preservation invariant comment to `do_server_update`
-   (it correctly never overwrites `/etc/bhatti/config.yaml` — document
+   (it correctly never overwrites `/etc/ahvm/config.yaml` — document
    this as a rule so future changes don't break it)
 
 ### Phase 4: Install script flag parsing + root check
@@ -597,29 +597,29 @@ Two changes to the install script, low risk.
 
 Cosmetic/safety improvements, low risk.
 
-1. Add `pgrep -x` detection for non-systemd `bhatti serve` in
+1. Add `pgrep -x` detection for non-systemd `ahvm serve` in
    `do_server_update`
 2. Add tier hint after fresh server install
 3. Update README.md and docs/quickstart.md with update instructions
 4. Document fallback install URL
 
-### Phase 6: Release check in `bhatti version`
+### Phase 6: Release check in `ahvm version`
 
 Least urgent — lazy CLI-side GitHub check, no server changes.
 
-1. Add GitHub releases API check to `bhatti version` (2s timeout)
-2. Add `~/.bhatti/.latest-version` cache (1h TTL)
+1. Add GitHub releases API check to `ahvm version` (2s timeout)
+2. Add `~/.ahvm/.latest-version` cache (1h TTL)
 3. Display update notices for CLI and server
-4. Surface in `bhatti admin status`
+4. Surface in `ahvm admin status`
 
 ---
 
 ## What's Not in This Plan
 
-**Version pinning** (`bhatti update --version v1.6.3`). Not needed yet —
+**Version pinning** (`ahvm update --version v1.6.3`). Not needed yet —
 single release stream, backward-compatible within major versions.
 
-**Auto-updating / background update daemon.** `bhatti update` is explicit.
+**Auto-updating / background update daemon.** `ahvm update` is explicit.
 No surprises.
 
 **Auto-restarting non-systemd daemon.** Detecting and warning is safe.
@@ -629,14 +629,14 @@ Auto-killing a foreground process loses the user's terminal context.
 there's a reason to split.
 
 **Passive update nagging on regular commands.** Update notices only appear
-on `bhatti version` and `bhatti admin status`. Regular commands (`exec`,
+on `ahvm version` and `ahvm admin status`. Regular commands (`exec`,
 `list`, `shell`) never show update notices. The only exception is the
-existing `X-Bhatti-Min-CLI` hard-warning for critically outdated CLIs.
+existing `X-AHVM-Min-CLI` hard-warning for critically outdated CLIs.
 
 **Concurrent install locking.** Unlikely for a single-operator tool.
 
 **GitHub API rate limit mitigation.** Install script runs infrequently
-per host; `bhatti version` cache is 1h. Add `GITHUB_TOKEN` passthrough
+per host; `ahvm version` cache is 1h. Add `GITHUB_TOKEN` passthrough
 if CI pipelines start hitting the 60 req/hr limit.
 
 **Proxy / corporate firewall docs.** `curl` respects `HTTPS_PROXY`
@@ -652,28 +652,28 @@ Independent of the phased fixes above — can ship in any order.
 
 ### 5.1 Install systemd service directly
 
-The install script writes the unit file to `/var/lib/bhatti/bhatti.service`
+The install script writes the unit file to `/var/lib/ahvm/ahvm.service`
 and tells the user to `cp` it to `/etc/systemd/system/`. This is an
 unnecessary manual step — the script already runs as root.
 
-Write directly to `/etc/systemd/system/bhatti.service` in both
+Write directly to `/etc/systemd/system/ahvm.service` in both
 `do_server_install` and `do_server_update`. Then offer to start:
 
 ```bash
-cp "$DATA_DIR/bhatti.service" /etc/systemd/system/bhatti.service
+cp "$DATA_DIR/ahvm.service" /etc/systemd/system/ahvm.service
 systemctl daemon-reload
 
 # Only prompt in interactive mode — skip in CI/piped installs
-if command -v systemctl >/dev/null 2>&1 && [ -t 0 ] && [ "${BHATTI_NO_PROMPT:-}" != "1" ]; then
+if command -v systemctl >/dev/null 2>&1 && [ -t 0 ] && [ "${AHVM_NO_PROMPT:-}" != "1" ]; then
     echo ""
-    printf "  Start bhatti now? [Y/n]: "
+    printf "  Start ahvm now? [Y/n]: "
     read -r start_choice < /dev/tty 2>/dev/null || start_choice="y"
     case "${start_choice:-y}" in
-        n|N|no|NO) echo "  Skipped. Start later with: sudo systemctl enable --now bhatti" ;;
-        *) systemctl enable --now bhatti; success "bhatti service started" ;;
+        n|N|no|NO) echo "  Skipped. Start later with: sudo systemctl enable --now ahvm" ;;
+        *) systemctl enable --now ahvm; success "ahvm service started" ;;
     esac
 else
-    info "Start with: sudo systemctl enable --now bhatti"
+    info "Start with: sudo systemctl enable --now ahvm"
 fi
 ```
 
@@ -770,7 +770,7 @@ check_disk_space() {
 
 Call before `install_rootfs`. Tier sizes are already known from the
 prompt text (`~200MB`, `~600MB`, etc.) — use those plus a 20% margin.
-Also check before `install_kernel` and `install_lohar`.
+Also check before `install_kernel` and `install_forge`.
 
 ### 5.7 Elapsed time per step and total
 
@@ -778,10 +778,10 @@ The single biggest "this feels professional" signal in a CLI installer.
 rustup, Homebrew, and Tailscale all do this.
 
 ```
-==> Installing bhatti v1.6.5 (server, browser tier) on myhost (aarch64)
+==> Installing ahvm v1.6.5 (server, browser tier) on myhost (aarch64)
   ✓ Firecracker 1.14.0 + jailer (up to date)
-  ✓ bhatti v1.6.5 (2.1s)
-  ✓ lohar (4.1M, 0.8s)
+  ✓ ahvm v1.6.5 (2.1s)
+  ✓ forge (4.1M, 0.8s)
   ✓ kernel (8.2M, 1.2s)
   ✓ rootfs browser (612M, 48.3s)
   ✓ systemd service installed
@@ -802,7 +802,7 @@ Capture total at the top of `main()` and print in the completion block.
 ### 5.8 Shell completions in install output
 
 Detect `$SHELL` and suggest the completion command in install output.
-`bhatti setup` already does this — mirror it in the install script.
+`ahvm setup` already does this — mirror it in the install script.
 
 ### Implementation order
 
@@ -863,25 +863,25 @@ Extracts the tier name from `config.yaml`'s `firecracker_rootfs` path.
 If it parses wrong, `do_server_update` downloads the wrong rootfs.
 Test against real config formats:
 
-- `firecracker_rootfs: /var/lib/bhatti/images/rootfs-browser-arm64.ext4` → `browser`
-- `firecracker_rootfs: /var/lib/bhatti/images/rootfs-computer-amd64.ext4` → `computer`
+- `firecracker_rootfs: /var/lib/ahvm/images/rootfs-browser-arm64.ext4` → `browser`
+- `firecracker_rootfs: /var/lib/ahvm/images/rootfs-computer-amd64.ext4` → `computer`
 - Quoted paths (`"..."`, `'...'`) → still parses correctly
 - Missing config → falls back to glob, then to `minimal`
 
-Uses temp directories with mock config files — no real `/etc/bhatti`
+Uses temp directories with mock config files — no real `/etc/ahvm`
 needed.
 
 ### 7.4 Flag parsing
 
 After Fix 4, flags drive the entire install flow. Test that:
 
-- `--tier browser` sets `BHATTI_TIER=browser`
-- `--tiers all` sets `BHATTI_TIERS=all`
-- `--tiers computer,browser` sets `BHATTI_TIERS=computer,browser`
-- `--force` sets `BHATTI_FORCE=1`
+- `--tier browser` sets `AHVM_TIER=browser`
+- `--tiers all` sets `AHVM_TIERS=all`
+- `--tiers computer,browser` sets `AHVM_TIERS=computer,browser`
+- `--force` sets `AHVM_FORCE=1`
 - `--help` prints usage and exits 0
 - Unknown flag `--bogus` exits non-zero with error
-- Flags override env vars (`BHATTI_TIER=minimal --tier browser` → browser wins)
+- Flags override env vars (`AHVM_TIER=minimal --tier browser` → browser wins)
 - `--tier=browser` (equals syntax) works same as `--tier browser`
 
 ### Implementation
@@ -892,7 +892,7 @@ Add `bats-core` as a git submodule or download in CI. Test file at
 
 ```bash
 # At the bottom of install.sh, replace bare `main` call:
-if [ "${BHATTI_TEST:-}" != "1" ]; then
+if [ "${AHVM_TEST:-}" != "1" ]; then
     main
 fi
 ```
@@ -901,7 +901,7 @@ Then tests source the script and call functions directly:
 
 ```bash
 setup() {
-    export BHATTI_TEST=1
+    export AHVM_TEST=1
     source scripts/install.sh
 }
 

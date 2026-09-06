@@ -18,7 +18,7 @@
 # These are different optimisation targets — knobs that help one don't always
 # help the other.
 #
-# Designed to run on the same host as the bhatti daemon (loopback to
+# Designed to run on the same host as the ahvm daemon (loopback to
 # 127.0.0.1:8080). Bench output joins bench/results/ alongside run.sh.
 #
 # Usage:
@@ -41,7 +41,7 @@ set -uo pipefail
 SECTIONS="${SECTIONS:-human,agent}"
 CPUS="${CPUS:-4}"
 MEMORY_MB="${MEMORY_MB:-4096}"
-TARGET_URL="${TARGET_URL:-https://bhatti.sh}"
+TARGET_URL="${TARGET_URL:-https://ahvm.sh}"
 HUMAN_DURATION="${HUMAN_DURATION:-60}"
 AGENT_ITERATIONS="${AGENT_ITERATIONS:-30}"
 RESULTS_DIR="${RESULTS_DIR:-bench/results}"
@@ -63,7 +63,7 @@ RUN_META="$RESULTS_DIR/computer_run.txt"
 
 # ── Tooling check ─────────────────────────────────────────────────────────────
 
-for cmd in bhatti jq awk; do
+for cmd in ahvm jq awk; do
     command -v "$cmd" >/dev/null 2>&1 || {
         echo "error: $cmd not found in PATH" >&2
         exit 1
@@ -85,7 +85,7 @@ cleanup() {
     set +e
     if [ -z "$REUSE" ] && [ -n "${NAME:-}" ]; then
         echo "==> Destroying $NAME..."
-        bhatti destroy "$NAME" -y >/dev/null 2>&1 || true
+        ahvm destroy "$NAME" -y >/dev/null 2>&1 || true
     fi
 }
 on_signal() {
@@ -98,7 +98,7 @@ trap on_signal INT TERM
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # bvm: run a command inside the bench VM. Trims output trailing newline.
-bvm() { bhatti exec "$NAME" -- "$@"; }
+bvm() { ahvm exec "$NAME" -- "$@"; }
 
 # wait_for_port: poll inside the VM until a TCP port is listening.
 wait_for_port() {
@@ -144,19 +144,19 @@ stat_or_empty() {
 
 if [ -z "$REUSE" ]; then
     echo "==> Creating sandbox $NAME (${CPUS} vCPU, ${MEMORY_MB} MB)"
-    bhatti create --name "$NAME" --image computer \
+    ahvm create --name "$NAME" --image computer \
         --cpus "$CPUS" --memory "$MEMORY_MB" >/dev/null
 
     echo "==> Waiting for KasmVNC to bind 6080..."
     if ! wait_for_port 6080 30; then
         echo "FAIL: KasmVNC didn't come up. Check init.sh."
-        echo "  bhatti exec $NAME -- ps auxf"
-        echo "  bhatti exec $NAME -- ls -la /root/.kasmpasswd /tmp/kasm.log"
+        echo "  ahvm exec $NAME -- ps auxf"
+        echo "  ahvm exec $NAME -- ls -la /root/.kasmpasswd /tmp/kasm.log"
         exit 1
     fi
 else
     echo "==> Reusing sandbox $NAME"
-    if ! bhatti list 2>/dev/null | grep -q "^$NAME "; then
+    if ! ahvm list 2>/dev/null | grep -q "^$NAME "; then
         echo "FAIL: sandbox '$NAME' not found"
         exit 1
     fi
@@ -179,7 +179,7 @@ if [ -z "$REUSE" ]; then
     # --detach returns once the command has been spawned; the chromium process
     # keeps running inside the VM until the desktop session ends. Logs go to
     # /tmp/chromium.log inside the VM in case we need to debug a render hang.
-    bhatti exec "$NAME" --detach -- \
+    ahvm exec "$NAME" --detach -- \
         sh -c "DISPLAY=:99 chromium-browser --kiosk --no-first-run \
                 --disable-features=TranslateUI '$TARGET_URL' \
                 >/tmp/chromium.log 2>&1" >/dev/null
@@ -190,7 +190,7 @@ fi
 
 # ── Publish 6080 + capture a Mac-reachable URL ────────────────────────────────
 
-# `bhatti publish` is the right call here: it registers the port mapping and
+# `ahvm publish` is the right call here: it registers the port mapping and
 # emits a public URL when a custom domain is configured on the server, or the
 # localhost proxy URL otherwise. We constructed the proxy URL ourselves in an
 # earlier rev, which was wrong for any operator running the script over SSH
@@ -199,17 +199,17 @@ fi
 # The output format isn't structured (no --json on publish today) so we grep
 # for an http(s):// token and prefer one that isn't localhost.
 echo "==> Publishing 6080..."
-PUBLISH_OUT=$(bhatti publish "$NAME" -p 6080 2>&1 || true)
+PUBLISH_OUT=$(ahvm publish "$NAME" -p 6080 2>&1 || true)
 PUBLIC_URL=$(echo "$PUBLISH_OUT" | grep -oE 'https?://[^[:space:]<>]+' | grep -vE '127\.0\.0\.1|localhost' | head -1)
 if [ -z "$PUBLIC_URL" ]; then
     PUBLIC_URL=$(echo "$PUBLISH_OUT" | grep -oE 'https?://[^[:space:]<>]+' | head -1)
     echo "    note: no custom-domain URL configured \u2014 falling back to localhost"
     echo "          (SSH-tunnel localhost:8080 to your laptop to reach it,"
-    echo "           or set up a custom domain: bhatti.sh/docs/managing/custom-domain)"
+    echo "           or set up a custom domain: ahvm.sh/docs/managing/custom-domain)"
 fi
 
 # Capture run parameters for later result-diffing. Anything that affects the
-# numbers (cpus, memory, target page, bhatti+git versions) goes here so a
+# numbers (cpus, memory, target page, ahvm+git versions) goes here so a
 # diff between two runs can call out the relevant deltas.
 {
     echo "ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -221,7 +221,7 @@ fi
     echo "sections=$SECTIONS"
     echo "human_duration=$HUMAN_DURATION"
     echo "agent_iterations=$AGENT_ITERATIONS"
-    echo "bhatti=$(bhatti version 2>&1 | awk '/^bhatti/{print $2}')"
+    echo "ahvm=$(ahvm version 2>&1 | awk '/^ahvm/{print $2}')"
     echo "git=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || echo unknown)"
     echo "host=$(uname -n)"
     echo "kernel=$(uname -r)"

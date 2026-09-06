@@ -1,8 +1,8 @@
 # Shell & Session Hardening
 
-Status: `bhatti shell` silently drops under production conditions.
+Status: `ahvm shell` silently drops under production conditions.
 A champion user reported their shell disconnecting while running a
-long-running command through `api.bhatti.sh` (Cloudflare Tunnel).
+long-running command through `api.ahvm.sh` (Cloudflare Tunnel).
 Screenshot confirms: no error, no "detached" message, no bash prompt —
 just silent return to the Mac shell.
 
@@ -14,7 +14,7 @@ it uses it). This plan fixes all of them.
 
 ## Root Cause Analysis
 
-The user runs `bhatti shell rory`, starts `hermes gateway` (a daemon
+The user runs `ahvm shell rory`, starts `hermes gateway` (a daemon
 that prints a banner then waits for events). The CLI drops silently
 back to the Mac prompt.
 
@@ -26,7 +26,7 @@ keepalives, Cloudflare sees an idle connection and closes it. The CLI's
 `defer term.Restore()` restores the terminal. Nothing is printed because
 the error path is silent.
 
-**Why there's no recovery:** `bhatti shell rory` always creates a new
+**Why there's no recovery:** `ahvm shell rory` always creates a new
 session (`s2`). The old session (`s1`) keeps running inside the VM with
 `hermes gateway` still alive and scrollback accumulating, but the user
 has no way to get back to it. The session leaks until the VM is destroyed.
@@ -39,7 +39,7 @@ has no way to get back to it. The session leaks until the VM is destroyed.
 |---|----------|-----|----------|
 | 1 | **Critical** | No WebSocket ping/pong — proxies kill idle connections | CLI + server WS handler |
 | 2 | **Critical** | Concurrent WebSocket writes — data race corrupts frames | CLI shellCmd |
-| 3 | **Critical** | No session reattach — `bhatti shell` always creates new | Engine, server, CLI |
+| 3 | **Critical** | No session reattach — `ahvm shell` always creates new | Engine, server, CLI |
 | 4 | **High** | CLI prints nothing on shell disconnect | CLI shellCmd |
 | 5 | **High** | No cleanup coordination between server goroutines | Server WS handler |
 | 6 | **Medium** | Guest ignores WriteFrame errors on attached conn | Guest tty.go |
@@ -256,7 +256,7 @@ func (s *Server) handleSandboxWS(w http.ResponseWriter, r *http.Request, id stri
 
 #### 1.2 CLI Side
 
-**File:** `cmd/bhatti/cli.go` — `shellCmd`
+**File:** `cmd/ahvm/cli.go` — `shellCmd`
 
 The CLI needs to respond to pings (gorilla does this automatically) and
 set its own read deadline.
@@ -325,7 +325,7 @@ stdin→WS, SIGWINCH resize, and now the PingHandler (pong reply). Any
 concurrent write can corrupt an in-flight WebSocket frame, causing the
 server to close the connection.
 
-**File:** `cmd/bhatti/cli.go` — `shellCmd`
+**File:** `cmd/ahvm/cli.go` — `shellCmd`
 
 Add a write mutex. All writes go through it:
 
@@ -405,7 +405,7 @@ race wide enough to hit in practice.
 Fixes Bug 4. The CLI currently prints nothing when the shell drops.
 The user has no idea what happened.
 
-**File:** `cmd/bhatti/cli.go` — `shellCmd`
+**File:** `cmd/ahvm/cli.go` — `shellCmd`
 
 After `<-done`, before returning, print a message:
 
@@ -424,7 +424,7 @@ term.Restore(int(os.Stdin.Fd()), oldState)
 // print a reconnect hint.
 if !userDetached.Load() {
     fmt.Fprintf(os.Stderr, "\r\nconnection lost\r\n")
-    fmt.Fprintf(os.Stderr, "session may still be running — reconnect with: bhatti shell %s\r\n", args[0])
+    fmt.Fprintf(os.Stderr, "session may still be running — reconnect with: ahvm shell %s\r\n", args[0])
 }
 return nil
 ```
@@ -451,7 +451,7 @@ go func() {
 ```
 
 **Why "session may still be running":** after Phase 2 ships, this
-becomes accurate — the session IS still running and `bhatti shell`
+becomes accurate — the session IS still running and `ahvm shell`
 WILL reconnect to it. Before Phase 2, it's aspirational but still
 better than silence. The user at least knows the connection dropped
 (not that their VM died).
@@ -476,21 +476,21 @@ where you left off."
 
 **Decision: auto-reattach by default, `--new` to force fresh.**
 
-When the user runs `bhatti shell dev`:
+When the user runs `ahvm shell dev`:
 1. Query sessions in the sandbox (`GET /sandboxes/:id/sessions`)
 2. If there's a detached, running TTY session → reattach to it
 3. If there are multiple detached sessions → reattach to the most
    recently created one
 4. If there are no detached sessions → create a new one
-5. `bhatti shell dev --new` always creates a new session
+5. `ahvm shell dev --new` always creates a new session
 
 This matches what the README already promises ("reconnect with
-`bhatti shell dev` again") and follows the tmux mental model. It
+`ahvm shell dev` again") and follows the tmux mental model. It
 requires no new API endpoints — session listing already exists, and
 the WS handler just needs a query parameter.
 
 Why not explicit `--session s1`? The user doesn't know the session ID.
-They'd have to `bhatti ps dev` first. Auto-reattach is what they want
+They'd have to `ahvm ps dev` first. Auto-reattach is what they want
 99% of the time: "give me back my shell."
 
 ### Part 4 — Engine `ShellAttach` Method
@@ -755,7 +755,7 @@ This preserves backwards compatibility. `Engine.Shell` is untouched.
 
 ### Part 6 — CLI Auto-Reattach
 
-**File:** `cmd/bhatti/cli.go` — `shellCmd`
+**File:** `cmd/ahvm/cli.go` — `shellCmd`
 
 The CLI changes:
 
@@ -834,7 +834,7 @@ var shellCmd = &cobra.Command{
             if sessionID != "" {
                 fmt.Fprintf(os.Stderr, " (session %s still running)", sessionID)
             }
-            fmt.Fprintf(os.Stderr, "\r\nreconnect: bhatti shell %s\r\n", args[0])
+            fmt.Fprintf(os.Stderr, "\r\nreconnect: ahvm shell %s\r\n", args[0])
         }
         return nil
     },
@@ -995,7 +995,7 @@ Instead, when the PTY reader detects a `WriteFrame` error, it **closes
 the connection**. This causes `ReadFrame` in `readHostInput` to return
 an error, which triggers the canonical detach cleanup in one place.
 
-**File:** `cmd/lohar/tty.go` — background goroutine in `handleTTYSession`
+**File:** `cmd/forge/tty.go` — background goroutine in `handleTTYSession`
 
 ```go
 go func() {
@@ -1074,17 +1074,17 @@ entry.
 ### Part 12 — Guest Disconnect Logging
 
 Fixes Bug 11. Add minimal logging to `readHostInput` so guest-side
-disconnects are observable in lohar's stderr (visible with daemon
+disconnects are observable in forge's stderr (visible with daemon
 debug logging).
 
-**File:** `cmd/lohar/tty.go` — `readHostInput`
+**File:** `cmd/forge/tty.go` — `readHostInput`
 
 ```go
 func readHostInput(conn net.Conn, sess *Session) {
     for {
         msgType, payload, err := proto.ReadFrame(conn)
         if err != nil {
-            fmt.Fprintf(os.Stderr, "lohar: session %s: host disconnected: %v\n",
+            fmt.Fprintf(os.Stderr, "forge: session %s: host disconnected: %v\n",
                 sess.ID, err)
             sess.mu.Lock()
             sess.Attached = nil
@@ -1127,7 +1127,7 @@ This is the simplest correct approach. The scrollback is always
 accessed in a context where `sess.mu` is nearby, so extending the
 critical section is low-friction.
 
-**File:** `cmd/lohar/tty.go` — PTY reader goroutine (both
+**File:** `cmd/forge/tty.go` — PTY reader goroutine (both
 `handleTTYSession` and `runInitSession`)
 
 Move `Scrollback.Write` inside the existing `sess.mu.Lock()` block
@@ -1157,7 +1157,7 @@ if n > 0 {
 }
 ```
 
-**File:** `cmd/lohar/tty.go` — `handleSessionAttach`
+**File:** `cmd/forge/tty.go` — `handleSessionAttach`
 
 Move `Scrollback.Bytes()` inside `sess.mu`:
 
@@ -1209,9 +1209,9 @@ concurrency awareness.
 After all phases ship, the user's experience:
 
 ```bash
-$ bhatti shell rory
-lohar@rory:/$ cd /opt/hermes
-lohar@rory:/opt/hermes$ hermes gateway
+$ ahvm shell rory
+forge@rory:/$ cd /opt/hermes
+forge@rory:/opt/hermes$ hermes gateway
 ┌──────────────────────────────────────┐
 │  ✦ Hermes Gateway Starting...        │
 │                                      │
@@ -1225,13 +1225,13 @@ lohar@rory:/opt/hermes$ hermes gateway
 # a different IP. The WebSocket dies.
 
 connection lost (session s3 still running)
-reconnect: bhatti shell rory
+reconnect: ahvm shell rory
 
-$ bhatti shell rory
+$ ahvm shell rory
 # ← auto-reattaches to session s3
 # ← 64KB of scrollback replayed (hermes logs since disconnect)
 # ← hermes gateway is still running, user picks up where they left off
-lohar@rory:/opt/hermes$
+forge@rory:/opt/hermes$
 ```
 
 ---
@@ -1243,7 +1243,7 @@ WebSocket connection on disconnect instead of exiting. Tools like
 `mosh` and `tmux` do this. Deferred — it adds complexity (exponential
 backoff, max retries, display handling during reconnect) and the
 reattach-on-next-invocation model is sufficient. The user runs
-`bhatti shell dev` again and is back in <1 second with scrollback.
+`ahvm shell dev` again and is back in <1 second with scrollback.
 
 **Server-side session creation via REST API.** Creating sessions via
 `POST /sandboxes/:id/sessions` and then attaching via WS would be
@@ -1254,7 +1254,7 @@ sufficient.
 
 **Session naming.** Sessions could have user-chosen names instead of
 auto-generated IDs (`s1`, `s2`). Not needed — the auto-reattach logic
-doesn't require the user to know session IDs. `bhatti ps` shows them
+doesn't require the user to know session IDs. `ahvm ps` shows them
 for debugging.
 
 **Multiple simultaneous viewers.** Two clients attached to the same

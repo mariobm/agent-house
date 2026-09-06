@@ -15,14 +15,14 @@ import (
 	"time"
 )
 
-// startTestAgent starts the lohar binary in test mode.
-// The LOHAR_BIN env var must point to the compiled agent binary.
+// startTestAgent starts the forge binary in test mode.
+// The FORGE_BIN env var must point to the compiled agent binary.
 func startTestAgent(t *testing.T) (controlSock, forwardSock string, cleanup func()) {
 	t.Helper()
 
-	agentBin := os.Getenv("LOHAR_BIN")
+	agentBin := os.Getenv("FORGE_BIN")
 	if agentBin == "" {
-		t.Skip("LOHAR_BIN not set — skipping agent client test")
+		t.Skip("FORGE_BIN not set — skipping agent client test")
 	}
 
 	dir := t.TempDir()
@@ -31,9 +31,9 @@ func startTestAgent(t *testing.T) (controlSock, forwardSock string, cleanup func
 
 	cmd := exec.Command(agentBin)
 	cmd.Env = append(os.Environ(),
-		"LOHAR_TEST=1",
-		"LOHAR_SOCK="+controlSock,
-		"LOHAR_FWD_SOCK="+forwardSock,
+		"FORGE_TEST=1",
+		"FORGE_SOCK="+controlSock,
+		"FORGE_FWD_SOCK="+forwardSock,
 	)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -316,7 +316,7 @@ func TestClientWaitReady(t *testing.T) {
 
 func TestClientWaitReadyTimeout(t *testing.T) {
 	// Point at a socket that doesn't exist — should timeout.
-	client := NewTestClient("/tmp/nonexistent-bhatti-ctrl.sock", "/tmp/nonexistent-bhatti-fwd.sock")
+	client := NewTestClient("/tmp/nonexistent-ahvm-ctrl.sock", "/tmp/nonexistent-ahvm-fwd.sock")
 	err := client.WaitReady(context.Background(), 200*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error")

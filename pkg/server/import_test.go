@@ -12,7 +12,7 @@ func TestImageImportEndpoint(t *testing.T) {
 	_, ts := setup(t)
 
 	// Create a minimal but valid tarball — the server will fail at
-	// oci.ImportFromTarball because we don't have mke2fs / lohar on
+	// oci.ImportFromTarball because we don't have mke2fs / forge on
 	// the CI runner. But we can test the endpoint routing, name
 	// validation, and duplicate detection.
 
@@ -42,7 +42,9 @@ func TestImageImportEndpoint(t *testing.T) {
 		t.Fatal("method not allowed — routing broken")
 	}
 	// 400 is expected (invalid tarball)
-	var errResp struct{ Error string `json:"error"` }
+	var errResp struct {
+		Error string `json:"error"`
+	}
 	json.NewDecoder(resp.Body).Decode(&errResp)
 	t.Logf("import response: %d %s", resp.StatusCode, errResp.Error)
 }

@@ -2,7 +2,7 @@ package proto
 
 // Frame types for the guest agent protocol.
 //
-// All communication between the bhatti host process and a guest VM happens
+// All communication between the ahvm host process and a guest VM happens
 // over vsock using a binary framing protocol. This protocol is
 // engine-independent — it can be tested over net.Pipe() or a Unix socket
 // without any VM.
@@ -26,7 +26,7 @@ const (
 	// Auth
 	AUTH byte = 0x11 // host → guest: token bytes (first frame after connect)
 
-	// Config fetch (guest → host, boot-time). lohar pulls its SandboxConfig over
+	// Config fetch (guest → host, boot-time). forge pulls its SandboxConfig over
 	// vsock instead of reading an on-disk config drive (DESIGN §3.4). The UDS the
 	// host serves this on is per-sandbox, so the channel is the capability: a
 	// guest can only fetch its own config.
@@ -58,14 +58,14 @@ const (
 	FILE_LS_RESP    byte = 0x57 // guest → host: JSON []FileInfo
 
 	// Systemctl IPC: privileged unit operations are forwarded from the
-	// systemctl shim binary (running as caller uid) to PID-1 lohar (running
-	// as root) over a Unix domain socket. Spoken on /run/bhatti/systemctl.sock
+	// systemctl shim binary (running as caller uid) to PID-1 forge (running
+	// as root) over a Unix domain socket. Spoken on /run/ahvm/systemctl.sock
 	// inside the guest — not over vsock, because this is in-guest IPC.
 	// Caller uid is established via SO_PEERCRED on the server side, NOT
 	// from any client-claimed field; the request payload is just the op +
 	// args.
-	SYSTEMCTL_REQ  byte = 0x60 // client → lohar: JSON SystemctlRequest
-	SYSTEMCTL_RESP byte = 0x61 // lohar → client: JSON SystemctlResponse
+	SYSTEMCTL_REQ  byte = 0x60 // client → forge: JSON SystemctlRequest
+	SYSTEMCTL_RESP byte = 0x61 // forge → client: JSON SystemctlResponse
 )
 
 // Vsock ports

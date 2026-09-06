@@ -16,7 +16,7 @@ import (
 
 	_ "embed"
 
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 //go:embed shell.html

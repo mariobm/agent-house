@@ -17,11 +17,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	pkg "github.com/sahil-shubham/bhatti/pkg"
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
-	"github.com/sahil-shubham/bhatti/pkg/backup"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	pkg "github.com/mariobm/agent-house/pkg"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/backup"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 type contextKey string
@@ -81,8 +81,8 @@ type Server struct {
 	stopRetention context.CancelFunc
 
 	// Public proxy (set via options)
-	proxyZone       string              // e.g. "bhatti.sh"
-	apiHost         string              // e.g. "api.bhatti.sh" (must be under proxyZone)
+	proxyZone       string              // e.g. "ahvm.sh"
+	apiHost         string              // e.g. "api.ahvm.sh" (must be under proxyZone)
 	publicProxyAddr string              // e.g. "host:8443" (for URL generation)
 	publicProxy     *PublicProxyHandler // nil until configured
 	resumeSem       chan struct{}       // bounds concurrent cold resumes
@@ -769,12 +769,12 @@ func (s *Server) ensureHot(ctx context.Context, engineID string) error {
 }
 
 // ServerVersion is set by the main package at startup from the build-time
-// version string. Advertised to CLI clients via the X-Bhatti-Version header
+// version string. Advertised to CLI clients via the X-AHVM-Version header
 // so they can detect when an update is available (push, not pull).
 var ServerVersion = "dev"
 
 // MinCLIVersion is the minimum CLI version the server requires. CLI clients
-// older than this receive an X-Bhatti-Min-CLI header and should warn the user.
+// older than this receive an X-AHVM-Min-CLI header and should warn the user.
 // Bump this when making breaking API changes that old CLIs can't handle.
 var MinCLIVersion = ""
 
@@ -787,8 +787,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		host := stripPort(r.Host)
 
 		// API host and localhost always fall through to auth.
-		// Check BEFORE proxy zone match because api.bhatti.sh also
-		// matches *.bhatti.sh when proxy zone is bhatti.sh.
+		// Check BEFORE proxy zone match because api.ahvm.sh also
+		// matches *.ahvm.sh when proxy zone is ahvm.sh.
 		if host == s.apiHost || host == "localhost" || host == "127.0.0.1" {
 			// fall through to auth
 		} else if strings.HasSuffix(host, "."+s.proxyZone) {
@@ -807,9 +807,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Advertise server version on every API response so CLI clients can
 	// detect when an update is available (push, not pull).
-	w.Header().Set("X-Bhatti-Version", ServerVersion)
+	w.Header().Set("X-AHVM-Version", ServerVersion)
 	if MinCLIVersion != "" {
-		w.Header().Set("X-Bhatti-Min-CLI", MinCLIVersion)
+		w.Header().Set("X-AHVM-Min-CLI", MinCLIVersion)
 	}
 
 	// Normalize path before any checks to prevent path confusion attacks

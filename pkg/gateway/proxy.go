@@ -13,9 +13,9 @@ import (
 // audits. The guard's vetting Dialer is wired into the upstream Transport so the
 // SSRF/private-range guard applies to every upstream connection. Transparent
 // CONNECT-MITM (for HTTPS the guest speaks directly) is a follow-on layer that
-// reuses this same substitution+dial core once the CA plumbing (lohar) lands.
+// reuses this same substitution+dial core once the CA plumbing (forge) lands.
 //
-// Design: DESIGN-bhatti-v2-secrets-and-trust.md §3.2/§3.6, §3.9.
+// Design: DESIGN-ahvm-v2-secrets-and-trust.md §3.2/§3.6, §3.9.
 
 // hopByHop + proxy-only headers are stripped before the request leaves the proxy
 // so secret-selection headers never reach the upstream.

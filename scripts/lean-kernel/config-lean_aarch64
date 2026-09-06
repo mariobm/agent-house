@@ -1,4 +1,4 @@
-# bhatti lean microVM kernel config (aarch64) — for the krucible external-kernel
+# ahvm lean microVM kernel config (aarch64) — for the krucible external-kernel
 # boot path (krun_set_kernel, KRUN_KERNEL_FORMAT_RAW). A minimal microVM config:
 # virtio (mmio/blk/console/vsock/fs) + ext4 + core net + cgroup2 + the essentials,
 # with the desktop/server driver surface (sound, USB/HID, MTD, extra FS, most

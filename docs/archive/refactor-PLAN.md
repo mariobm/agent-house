@@ -13,7 +13,7 @@ refactoring — just mechanical moves with tests between each step.
 | `pkg/engine/firecracker/engine.go` | 1908 | 14+ (create, stop, start, destroy, pause, resume, exec, shell, tunnel, files, sessions, ports, FC process mgmt, helpers) |
 | `pkg/server/routes.go` | 3064 | 16+ (sandbox CRUD, exec, files, proxy, secrets, templates, volumes, images, snapshots, tasks, publish, sessions, checkpoints, metrics, health) |
 | `pkg/store/store.go` | 1683 | 12+ (users, sandboxes, templates, secrets, volumes, persistent volumes, images, snapshots, tasks, publish rules, backups, FC state) |
-| `cmd/bhatti/cli.go` | 2683 | 10+ (sandbox ops, user mgmt, file ops, publish, setup, serve, volumes, images, snapshots, backup) |
+| `cmd/ahvm/cli.go` | 2683 | 10+ (sandbox ops, user mgmt, file ops, publish, setup, serve, volumes, images, snapshots, backup) |
 
 Target: each file covers one domain concept. No hard line-count ceiling —
 a 600-line file that owns one concept is better than two 300-line files
@@ -87,11 +87,11 @@ the next change.
    the concept. E.g. `fcProcess` and `startFCOpts` move with the FC
    process management functions, not with the callers.
 
-6. **`init()` functions are the landmine.** `cmd/bhatti/cli.go` has 11
+6. **`init()` functions are the landmine.** `cmd/ahvm/cli.go` has 11
    `init()` functions that register cobra commands and flags. Each one
    must move with its associated command variable. If an `init()` is
    missed, the command silently disappears from the CLI with zero
-   compile errors. Verification: `bhatti --help` after every commit.
+   compile errors. Verification: `ahvm --help` after every commit.
 
 7. **Test on the Pi cluster, not agni-01.** agni-01 runs the production
    workflow. Do not run test builds or integration tests there during
@@ -195,7 +195,7 @@ import issues.
 snapshot resume, agent reconnection, and status transitions. It calls
 into `snapshot.go` for `ResumeSnapshot`. This is the most complex
 function being moved — test it carefully after the move. It also
-references `injectLoharIntoRootfs` (line 1577), which should be in
+references `injectForgeIntoRootfs` (line 1577), which should be in
 `fc.go` or `helpers.go`.
 
 **Issue to watch:** `Destroy()` calls `killFC()`, `removeUserNetworkIfEmpty()`,
@@ -272,7 +272,7 @@ stateBool(m, key)                   line 1546   (package-level)
 
 generateID()                        line 1560   (package-level)
 generateMAC()                       line 1566   (package-level)
-injectLoharIntoRootfs(...)          line 1577   (package-level)
+injectForgeIntoRootfs(...)          line 1577   (package-level)
 verifySnapshotArtifacts(...)        line 1601   (package-level)
 ```
 
@@ -280,13 +280,13 @@ verifySnapshotArtifacts(...)        line 1601   (package-level)
 this file contains four distinct things: crash recovery
 (`VMState`/`RestoreVM`), state serialization (`stateStr`/`stateInt64`),
 ID generation (`generateID`/`generateMAC`), and rootfs preparation
-(`injectLoharIntoRootfs`/`verifySnapshotArtifacts`). None of these are
+(`injectForgeIntoRootfs`/`verifySnapshotArtifacts`). None of these are
 purely about "restore." `helpers.go` is honest about what this file is:
 the grab-bag of utilities that don't belong to a specific domain.
 
 **Alternative:** Split further into `state.go` (VMState, RestoreVM,
 Status, List, state* helpers) and `util.go` (generateID, generateMAC,
-injectLohar, verifySnapshot). But this creates two 100-line files
+injectForge, verifySnapshot). But this creates two 100-line files
 where one 200-line file is fine. Split if either grows past 400 lines.
 
 **Issue to watch:** `SaveImage` (line 635) is 55 lines and calls
@@ -319,15 +319,15 @@ an Engine *is* rather than what it *does*.
 
 **Issue to watch:** `Create` calls functions that will be in three
 different files after the split:
-- `fc.go`: `copyRootfs`, `injectLoharIntoRootfs` (wait —
-  `injectLoharIntoRootfs` is in `helpers.go`, not `fc.go`), `startFC`,
+- `fc.go`: `copyRootfs`, `injectForgeIntoRootfs` (wait —
+  `injectForgeIntoRootfs` is in `helpers.go`, not `fc.go`), `startFC`,
   `waitForSocket`, `fcPut` ×10, `fcAPIClient`, `generateID`, `generateMAC`
-- `helpers.go`: `generateID`, `generateMAC`, `injectLoharIntoRootfs`
+- `helpers.go`: `generateID`, `generateMAC`, `injectForgeIntoRootfs`
 - `engine.go`: `getOrCreateUserNetwork`
 - `configdrive.go`: `buildConfigDrive` (already separate)
 - `network.go`: `setupTapDevice` (already separate)
 
-All same-package calls. No import issues. But `injectLoharIntoRootfs`
+All same-package calls. No import issues. But `injectForgeIntoRootfs`
 and `generateID`/`generateMAC` are called from both `Create` (in
 `create.go`) and `RestoreVM`/`startVM` (in `lifecycle.go`/`helpers.go`).
 Keep them in `helpers.go` — the shared utility file.
@@ -362,7 +362,7 @@ lifecycle.go    ~400   Stop, Start, Pause, Resume, EnsureHot, Destroy, Balloon, 
 exec.go         ~170   Exec, ExecStream, Shell*, SessionList, ListeningPorts
 files.go        ~100   FileRead, FileWrite, FileStat, FileList, Tunnel
 fc.go           ~250   startFC*, killFC, copyBlock, copyRootfs, fcAPI*, waitForSocket, validateSocketPath, verifySnapshotArtifacts
-helpers.go      ~250   VMState, RestoreVM, Status, List, SaveImage, state* helpers, generateID/MAC, injectLohar
+helpers.go      ~250   VMState, RestoreVM, Status, List, SaveImage, state* helpers, generateID/MAC, injectForge
 snapshot.go     ~458   Checkpoint, ResumeSnapshot (already separate)
 network.go      ~346   (already separate)
 configdrive.go  ~100   (already separate)
@@ -912,7 +912,7 @@ After each step:
 
 ---
 
-## Phase 4 — `cmd/bhatti/cli.go` (2683 → ~300)
+## Phase 4 — `cmd/ahvm/cli.go` (2683 → ~300)
 
 ### The `init()` problem
 
@@ -923,7 +923,7 @@ each file. The registration order doesn't matter for Cobra — commands
 are added to the tree, not to a sequential list. But each `init()` must
 move with the command variable it registers.
 
-**Verification after every step:** Run `go run ./cmd/bhatti/ --help`
+**Verification after every step:** Run `go run ./cmd/ahvm/ --help`
 and count the commands. If a command disappeared, an `init()` was missed.
 
 ### Step 4.1: `sandbox_cmd.go` (~400 lines)
@@ -1005,7 +1005,7 @@ sha256HexCLI(s)                     line 1648   (only called by user commands)
 `sha256HexCLI()` are only called from user commands (they open the
 SQLite DB directly on the server). Verify with:
 ```bash
-grep -n "openLocalStore\|generateAPIKey\|sha256HexCLI" cmd/bhatti/cli.go
+grep -n "openLocalStore\|generateAPIKey\|sha256HexCLI" cmd/ahvm/cli.go
 ```
 If any other command calls them, keep them in `cli.go`.
 
@@ -1117,10 +1117,10 @@ groups. Verify with `diff` that every `AddCommand` call has a home.
 
 After each step:
 1. **Line-by-line diff** — verify moved functions are byte-identical to originals (Principle #1)
-2. `go build ./cmd/bhatti/`
-3. `go run ./cmd/bhatti/ --help` — count commands, compare with before
-4. `go run ./cmd/bhatti/ <moved-command> --help` — verify flags present
-5. `go test ./cmd/bhatti/...`
+2. `go build ./cmd/ahvm/`
+3. `go run ./cmd/ahvm/ --help` — count commands, compare with before
+4. `go run ./cmd/ahvm/ <moved-command> --help` — verify flags present
+5. `go test ./cmd/ahvm/...`
 
 ---
 
@@ -1160,7 +1160,7 @@ every new file to clean up unused imports and sort them.
 goimports -w pkg/engine/firecracker/*.go
 goimports -w pkg/server/*.go
 goimports -w pkg/store/*.go
-goimports -w cmd/bhatti/*.go
+goimports -w cmd/ahvm/*.go
 ```
 
 ### 5.3 Verify no behavior change
@@ -1205,7 +1205,7 @@ Tests for exec handlers → `exec_handlers_test.go`. Shared test setup
 
 Split by entity, matching the source split.
 
-### 6.4 `cmd/bhatti/cli_test.go`
+### 6.4 `cmd/ahvm/cli_test.go`
 
 Split by command group, matching the source split.
 
@@ -1292,7 +1292,7 @@ the store. Add a comment block explaining the distinction:
 //    Used for --volume flags that aren't persistent volumes.
 //
 // 2. PersistentVolume / VolumeBackup (v0.3): User-owned volumes that
-//    survive sandbox destruction. Created via `bhatti volume create`,
+//    survive sandbox destruction. Created via `ahvm volume create`,
 //    attached/detached independently, support backup/restore.
 ```
 
@@ -1327,13 +1327,13 @@ the code will still compile (the `init()` references a variable that
 exists in the package) but the registration may happen in wrong order
 or the variable may be zero-valued if it depends on another `init()`.
 
-**Mitigation:** After each Phase 4 step, run `go run ./cmd/bhatti/ --help`
+**Mitigation:** After each Phase 4 step, run `go run ./cmd/ahvm/ --help`
 and manually verify the moved commands appear. Automate this:
 
 ```bash
-BEFORE=$(go run ./cmd/bhatti/ --help 2>&1 | grep -c "^  ")
+BEFORE=$(go run ./cmd/ahvm/ --help 2>&1 | grep -c "^  ")
 # ... do the move ...
-AFTER=$(go run ./cmd/bhatti/ --help 2>&1 | grep -c "^  ")
+AFTER=$(go run ./cmd/ahvm/ --help 2>&1 | grep -c "^  ")
 if [ "$BEFORE" != "$AFTER" ]; then
     echo "COMMAND COUNT CHANGED: $BEFORE → $AFTER"
     exit 1
@@ -1457,4 +1457,4 @@ their current names. Even if `server.go` would be better named
 `lifecycle.go` after routes move out — don't rename. One change at a time.
 
 **No `go:generate` or build tag changes.** The `engine_linux.go` /
-`engine_other.go` files in `cmd/bhatti/` use build tags. Don't touch them.
+`engine_other.go` files in `cmd/ahvm/` use build tags. Don't touch them.

@@ -16,15 +16,15 @@ import (
 //           (boolean-style labels: `--label experimental=`).
 //   - Max labels per sandbox: 16 (same as kubelet's default node label
 //           limit). Larger sets are almost always a misuse.
-//   - Reserved key prefix `bhatti.sh/` for future system labels (e.g.
-//           bhatti.sh/snapshot-id). User-supplied labels with that
+//   - Reserved key prefix `ahvm.sh/` for future system labels (e.g.
+//           ahvm.sh/snapshot-id). User-supplied labels with that
 //           prefix are rejected so operators don't accidentally shadow
 //           system metadata.
 
 const (
 	maxLabelsPerSandbox = 16
 	maxLabelValueLen    = 256
-	reservedLabelPrefix = "bhatti.sh/"
+	reservedLabelPrefix = "ahvm.sh/"
 )
 
 var labelKeyRe = regexp.MustCompile(

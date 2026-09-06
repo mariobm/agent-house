@@ -19,27 +19,27 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent"
-	"github.com/sahil-shubham/bhatti/pkg/configdrive"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/gateway"
+	"github.com/mariobm/agent-house/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/configdrive"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/gateway"
 )
 
 // Config holds paths and defaults for the krucible engine. All pure Go — the
-// engine spawns the cgo `bhatti-vmm` helper and talks to lohar over sockets.
+// engine spawns the cgo `ahvm-vmm` helper and talks to forge over sockets.
 type Config struct {
 	DataDir    string // sandboxes live under DataDir/sandboxes/<id>
-	BaseRootfs string // host dir tree (virtiofs root): /init.krun=lohar + mountpoints
+	BaseRootfs string // host dir tree (virtiofs root): /init.krun=forge + mountpoints
 	// BaseImage is a prebuilt ext4 root image (e.g. from oci.PullAndConvert: a
-	// real userland with /init.krun -> lohar). When set with BlockRoot, sandboxes
+	// real userland with /init.krun -> forge). When set with BlockRoot, sandboxes
 	// CoW-clone it directly instead of building one from BaseRootfs via mke2fs.
 	// This is the production rootfs path.
 	BaseImage string
-	VMMBinary string // path to the bhatti-vmm helper (built with `make vmm`)
+	VMMBinary string // path to the ahvm-vmm helper (built with `make vmm`)
 	LibDir    string // dir with libkrun/libkrunfw (DYLD_FALLBACK_LIBRARY_PATH / LD_LIBRARY_PATH)
 	// SocketDir holds the per-VM vsock UDS. It must be SHORT: AF_UNIX paths cap
 	// at ~104 bytes (macOS) / 108 (Linux), and macOS $TMPDIR/DataDir can be deep.
-	// Empty defaults to /tmp/bhatti-kr.
+	// Empty defaults to /tmp/ahvm-kr.
 	SocketDir     string
 	DefaultVcpus  uint8
 	DefaultMemMiB uint32
@@ -53,18 +53,18 @@ type Config struct {
 	// /dev/vda). arm64 = raw `Image`, x86 = ELF vmlinux.
 	KernelImage string
 	// NetBackend switches the guest off TSI onto a virtio-net device wired to a
-	// per-sandbox userspace gateway (bhatti-netd). Requires NetdBinary. Egress
+	// per-sandbox userspace gateway (ahvm-netd). Requires NetdBinary. Egress
 	// policy + host-isolation + (later) secret substitution live in the gateway.
 	NetBackend bool
-	// NetdBinary is the path to the bhatti-netd gateway helper (built from
-	// cmd/bhatti-netd). Required when NetBackend is set.
+	// NetdBinary is the path to the ahvm-netd gateway helper (built from
+	// cmd/ahvm-netd). Required when NetBackend is set.
 	NetdBinary string
 }
 
 // maxUnixPath is the conservative AF_UNIX sun_path cap (macOS = 104).
 const maxUnixPath = 104
 
-// Per-owner virtio-net gateway addressing. One bhatti-netd serves all of an
+// Per-owner virtio-net gateway addressing. One ahvm-netd serves all of an
 // owner's sandboxes on 100.64.<subnetIdx>.0/24 as an L2 switch: gw=.1, guests=
 // .2, .3, ... Siblings on the same netd reach each other; different owners get
 // separate netds (isolation). Sandboxes with no owner (UserID unset) get their
@@ -83,7 +83,7 @@ func netGuestIPFor(subnetIdx, guestIdx int) string {
 	return fmt.Sprintf("100.64.%d.%d", subnetIdx, 2+guestIdx)
 }
 
-// netdInstance is one owner's shared bhatti-netd gateway process. It is spawned
+// netdInstance is one owner's shared ahvm-netd gateway process. It is spawned
 // detached (survives a daemon restart) and identified by pid so recovery can
 // re-adopt it instead of respawning onto a socket it still holds.
 type netdInstance struct {
@@ -118,7 +118,7 @@ func waitForSocket(path string, d time.Duration) error {
 	return fmt.Errorf("socket %s not present after %s", path, d)
 }
 
-// netdKeyFor is the key that groups sandboxes onto a shared bhatti-netd. Same
+// netdKeyFor is the key that groups sandboxes onto a shared ahvm-netd. Same
 // owner (UserID) ⇒ same netd ⇒ siblings reach each other. No owner ⇒ keyed by
 // sandbox id, so each unowned sandbox gets its own isolated netd (prior
 // single-sandbox behavior is preserved).
@@ -186,7 +186,7 @@ func (e *Engine) releaseNetd(ownerKey string) {
 	os.RemoveAll(inst.dir)
 }
 
-// ensureNetd spawns the owner's bhatti-netd (LISTENING on inst.sock) if it is
+// ensureNetd spawns the owner's ahvm-netd (LISTENING on inst.sock) if it is
 // not already running. Idempotent: siblings and cold Start reuse a live gateway.
 func (e *Engine) ensureNetd(ownerKey string) error {
 	e.netdMu.Lock()
@@ -232,17 +232,17 @@ func (e *Engine) ensureNetd(ownerKey string) error {
 	cmd.Stderr = lf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start bhatti-netd: %w", err)
+		return fmt.Errorf("start ahvm-netd: %w", err)
 	}
 	if werr := waitForSocket(inst.sock, 5*time.Second); werr != nil {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
-		return fmt.Errorf("bhatti-netd not listening: %w", werr)
+		return fmt.Errorf("ahvm-netd not listening: %w", werr)
 	}
 	if werr := waitForSocket(inst.ctlSock, 5*time.Second); werr != nil {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
-		return fmt.Errorf("bhatti-netd control socket not listening: %w", werr)
+		return fmt.Errorf("ahvm-netd control socket not listening: %w", werr)
 	}
 	inst.cmd = cmd
 	inst.pid = cmd.Process.Pid
@@ -301,7 +301,7 @@ func (e *Engine) delSandboxPolicy(vm *VM) {
 }
 
 // VM is per-sandbox state. The helper process IS the VM; we hold its cmd to
-// stop it and the agent client to drive lohar.
+// stop it and the agent client to drive forge.
 type VM struct {
 	mu sync.Mutex
 	// launchMu serializes lifecycle transitions (Create's launch / Start / Stop /
@@ -329,24 +329,24 @@ type VM struct {
 	BundleDir  string // cold-snapshot bundle dir (Stop writes, Start restores from)
 	baseSpec   VMSpec // the spec to (re-)launch with; Start adds SnapshotDir
 	logPath    string
-	HelperPID  int // bhatti-vmm pid, persisted so recovery can adopt/kill it after a daemon restart
+	HelperPID  int // ahvm-vmm pid, persisted so recovery can adopt/kill it after a daemon restart
 	cmd        *exec.Cmd
 	cancel     context.CancelFunc
 	configSrv  *configServer          // host-side boot config server (§3.4); launchMu-guarded
-	netdKey    string                 // owner key of the shared bhatti-netd (net backend); "" on TSI
+	netdKey    string                 // owner key of the shared ahvm-netd (net backend); "" on TSI
 	subnetIdx  int                    // owner's vnet subnet index (net backend); persisted for recovery
 	netIP      string                 // guest IP on the netd gateway subnet (net backend); "" on TSI; reported in SandboxInfo + persisted for restart
 	netPolicy  *gateway.NetPolicyWire // per-sandbox egress rules pushed to netd; nil = default (public)
 }
 
-// Engine implements engine.Engine on libkrun via the per-VM bhatti-vmm helper.
+// Engine implements engine.Engine on libkrun via the per-VM ahvm-vmm helper.
 type Engine struct {
 	mu        sync.RWMutex
 	vms       map[string]*VM
 	cfg       Config
 	baseImgMu sync.Mutex               // guards the one-time base-image build
 	netdMu    sync.Mutex               // guards netds
-	netds     map[string]*netdInstance // owner key → shared bhatti-netd gateway
+	netds     map[string]*netdInstance // owner key → shared ahvm-netd gateway
 }
 
 var _ engine.Engine = (*Engine)(nil)
@@ -364,7 +364,7 @@ func New(cfg Config) (*Engine, error) {
 			return nil, fmt.Errorf("krucible: NetBackend set but NetdBinary is empty")
 		}
 		if _, err := os.Stat(cfg.NetdBinary); err != nil {
-			return nil, fmt.Errorf("krucible: bhatti-netd not found at %s: %w", cfg.NetdBinary, err)
+			return nil, fmt.Errorf("krucible: ahvm-netd not found at %s: %w", cfg.NetdBinary, err)
 		}
 	}
 	// Need a rootfs source: a prebuilt block image (production) or a dir tree.
@@ -384,7 +384,7 @@ func New(cfg Config) (*Engine, error) {
 		cfg.DefaultMemMiB = 1024
 	}
 	if cfg.SocketDir == "" {
-		cfg.SocketDir = "/tmp/bhatti-kr"
+		cfg.SocketDir = "/tmp/ahvm-kr"
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "sandboxes"), 0700); err != nil {
 		return nil, fmt.Errorf("krucible: create data dir: %w", err)
@@ -441,7 +441,7 @@ type restoreVol struct {
 }
 
 // Create boots a new sandbox: prepare the rootfs (block image clone or
-// virtio-fs dir), spawn bhatti-vmm, wait for lohar's agent over the bridged vsock.
+// virtio-fs dir), spawn ahvm-vmm, wait for forge's agent over the bridged vsock.
 func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.SandboxInfo, error) {
 	return e.create(ctx, spec, createOpts{})
 }
@@ -516,7 +516,7 @@ func (e *Engine) create(ctx context.Context, spec engine.SandboxSpec, opts creat
 		LogLevel:         2,
 	}
 	// virtio-net gateway backend (opt-in): the guest gets eth0 wired to a
-	// per-sandbox bhatti-netd; lohar configures it from cdNet.
+	// per-sandbox ahvm-netd; forge configures it from cdNet.
 	var cdNet *configdrive.NetConfig
 	var netIP string
 	if netUDS != "" {
@@ -541,7 +541,7 @@ func (e *Engine) create(ctx context.Context, spec engine.SandboxSpec, opts creat
 	token := opts.forcedToken
 
 	// virtio-fs --mount binds: assign a per-mount tag; the VMM exposes each host
-	// dir (krun_add_virtiofs3) and lohar mounts the tag at its guest path (carried
+	// dir (krun_add_virtiofs3) and forge mounts the tag at its guest path (carried
 	// in the config drive). Live + shared, unlike an owned/versioned volume.
 	var cdMounts []configdrive.FsMountConfig
 	for i, m := range spec.Mounts {
@@ -552,7 +552,7 @@ func (e *Engine) create(ctx context.Context, spec engine.SandboxSpec, opts creat
 
 	// Data volumes (create --volume / persistent): attach each resolved volume as a
 	// block disk AFTER root (vda) — so /dev/vdb+ in order (the config drive is gone,
-	// §3.4) — and tell lohar where to mount it. The libkrun get_block_cfg fix lets
+	// §3.4) — and tell forge where to mount it. The libkrun get_block_cfg fix lets
 	// add_disk2 compose with the root setter.
 	var cdVolumes []configdrive.VolumeMountConfig
 	for i, v := range spec.ResolvedVolumes {
@@ -666,7 +666,7 @@ func (e *Engine) create(ctx context.Context, spec engine.SandboxSpec, opts creat
 	return engine.SandboxInfo{ID: id, Name: name, Status: "running", EngineID: id, IP: vm.netIP}, nil
 }
 
-// launch spawns the bhatti-vmm helper for vm and waits for the agent. When
+// launch spawns the ahvm-vmm helper for vm and waits for the agent. When
 // snapshotDir is non-empty the helper cold-restores from that bundle instead of
 // cold booting. Sets vm.cmd/cancel/Agent/Status on success.
 func (e *Engine) launch(ctx context.Context, vm *VM, snapshotDir string) error {
@@ -690,7 +690,7 @@ func (e *Engine) launch(ctx context.Context, vm *VM, snapshotDir string) error {
 	}
 	defer logFile.Close()
 
-	// virtio-net gateway: ensure the owner's shared bhatti-netd is LISTENING on
+	// virtio-net gateway: ensure the owner's shared ahvm-netd is LISTENING on
 	// the net UDS before the VMM connects to it (spawned once per owner; siblings
 	// reuse it). The VMM will connect and netd will add it as a switch port.
 	if vm.netdKey != "" {
@@ -705,7 +705,7 @@ func (e *Engine) launch(ctx context.Context, vm *VM, snapshotDir string) error {
 	}
 
 	// Serve the boot config over the guest→host config vsock (§3.4). Must be
-	// listening before the helper starts, since lohar dials it early in boot; a
+	// listening before the helper starts, since forge dials it early in boot; a
 	// cold re-launch replaces any prior server.
 	vm.closeConfigSrv()
 	if spec.VsockConfigUDS != "" {
@@ -774,7 +774,7 @@ func (vm *VM) kill() {
 		// Adopted helper (not our child) — signal by pid; init reaps it.
 		_ = syscall.Kill(vm.HelperPID, syscall.SIGKILL)
 	}
-	// The bhatti-netd gateway is shared per owner and outlives a single VM; it is
+	// The ahvm-netd gateway is shared per owner and outlives a single VM; it is
 	// torn down by releaseNetd on Destroy of the owner's last sandbox.
 	if vm.cancel != nil {
 		vm.cancel()
@@ -927,7 +927,7 @@ func hostSnapshotArch() string {
 	}
 }
 
-// validateBundle is bhatti's portability gate (Tier-2 of the cold/move design):
+// validateBundle is ahvm's portability gate (Tier-2 of the cold/move design):
 // refuse a snapshot bundle that can't be restored on this host — incomplete,
 // wrong proto version, or cross-arch (a bundle moved from a different machine)
 // — before spawning the helper, so the failure is a clear error, not a guest
@@ -966,7 +966,7 @@ func genToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// buildSandboxConfig assembles the per-sandbox config lohar fetches over vsock at
+// buildSandboxConfig assembles the per-sandbox config forge fetches over vsock at
 // boot (§3.4). Secrets are pre-resolved into spec.Env by the server layer (same
 // contract as the FC engine).
 func buildSandboxConfig(id, name, token string, spec engine.SandboxSpec, mounts []configdrive.FsMountConfig, volumes []configdrive.VolumeMountConfig, net *configdrive.NetConfig) configdrive.SandboxConfig {
@@ -986,10 +986,10 @@ func buildSandboxConfig(id, name, token string, spec engine.SandboxSpec, mounts 
 		Mounts:    mounts,
 		Volumes:   volumes,
 		Net:       net,
-		// Init: the once-after-boot command (create --init); lohar runs it as a
+		// Init: the once-after-boot command (create --init); forge runs it as a
 		// TTY session named "init", as the sandbox user.
 		Init: spec.Init,
-		User: "lohar",
+		User: "forge",
 	}
 }
 

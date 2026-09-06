@@ -1,6 +1,6 @@
-# Bhatti v4 — Hardening, SDK Readiness, Performance, Test Coverage
+# AHVM v4 — Hardening, SDK Readiness, Performance, Test Coverage
 
-Parts 1–20 are done: wire protocol, lohar agent, FC engine, sessions,
+Parts 1–20 are done: wire protocol, forge agent, FC engine, sessions,
 thermals, filesystem, CLI, deployment, install. 229 tests on real
 Firecracker VMs. ~16k lines of Go.
 
@@ -13,7 +13,7 @@ suitable for agentic frameworks (pi, Claude Code, etc.). Four phases:
 4. **Test coverage** — fill gaps in proxy, recovery, benchmarks
 
 Phase 2 comes before Phase 3 because external users hit the API first.
-If `bhatti exec dev -- npm install` produces 30 seconds of silence
+If `ahvm exec dev -- npm install` produces 30 seconds of silence
 before dumping output, or a 10MB file read transfers 10MB through the
 wire protocol before the consumer truncates to 50KB, the first impression
 is broken. Diff snapshots and allocation pools are invisible to users —
@@ -278,7 +278,7 @@ if err := json.Unmarshal([]byte(secretsJSON), &t.Secrets); err != nil {
 }
 ```
 
-**`cmd/lohar/handler.go`** — 1 site in EXEC_KILL handler (line 100):
+**`cmd/forge/handler.go`** — 1 site in EXEC_KILL handler (line 100):
 
 ```go
 // Before:
@@ -589,7 +589,7 @@ standard library since Go 1.21, and the project uses Go 1.25.
 ### 42.2 Logger Setup
 
 ```go
-// cmd/bhatti/main.go
+// cmd/ahvm/main.go
 
 func setupLogger(level string, jsonOutput bool) {
     var lvl slog.Level
@@ -693,11 +693,11 @@ slog.Info("snapshot created", "id", id, "type", snapshotType, "duration", dur)
 slog.Debug("agent dial", "id", id, "transport", "tcp", "addr", guestIP)
 ```
 
-**Lohar (guest agent):**
+**Forge (guest agent):**
 
-Lohar already logs to stderr which Firecracker captures. Replace
+Forge already logs to stderr which Firecracker captures. Replace
 `fmt.Fprintf(os.Stderr, ...)` and `logf()` with slog. Guest logs are
-debug-level — only visible when bhatti daemon is run with `--log-level=debug`.
+debug-level — only visible when ahvm daemon is run with `--log-level=debug`.
 
 ```go
 // Before:
@@ -713,10 +713,10 @@ slog.Info("init session started", "pid", cmd.Process.Pid)
 |------|---------------------|-------------------------------|
 | `pkg/server/server.go` | 3 | 0 |
 | `pkg/server/routes.go` | 2 | 0 |
-| `cmd/lohar/handler.go` | 1 | 1 |
-| `cmd/lohar/tty.go` | 0 | 2 |
-| `cmd/lohar/main.go` | 0 | ~5 |
-| `cmd/bhatti/main.go` | ~3 | 0 |
+| `cmd/forge/handler.go` | 1 | 1 |
+| `cmd/forge/tty.go` | 0 | 2 |
+| `cmd/forge/main.go` | 0 | ~5 |
+| `cmd/ahvm/main.go` | ~3 | 0 |
 
 ### 42.5 Verification
 
@@ -769,7 +769,7 @@ func isStaticPath(path string) bool {
 ### 43.2 Graceful Shutdown
 
 ```go
-// cmd/bhatti/main.go — serve command
+// cmd/ahvm/main.go — serve command
 
 httpServer := &http.Server{
     Addr:    cfg.ListenAddr,
@@ -816,14 +816,14 @@ slog.Info("shutdown complete")
 # Phase 2 — SDK Readiness
 
 Driven by research into pi's agentic tool patterns (see `docs/pi-learnings.md`).
-These changes make bhatti usable as a backend for coding agent frameworks.
+These changes make ahvm usable as a backend for coding agent frameworks.
 
 ## Part 35 — Streaming Exec (NDJSON)
 
 ### 35.1 Motivation
 
 Pi's `BashOperations.exec` takes an `onData` callback that receives output
-chunks as they arrive. Bhatti's current `POST /exec` buffers the entire
+chunks as they arrive. AHVM's current `POST /exec` buffers the entire
 stdout/stderr and returns it all at once. For a `npm install` that takes
 30 seconds, the consumer sees nothing until completion.
 
@@ -1003,9 +1003,9 @@ func (e *Engine) ExecStream(ctx context.Context, id string, cmd []string, onEven
 
 ```typescript
 // How a pi BashOperations would consume the NDJSON stream:
-const bhattiBashOps: BashOperations = {
+const ahvmBashOps: BashOperations = {
   async exec(command, cwd, { onData, signal, timeout }) {
-    const resp = await fetch(`${BHATTI_URL}/sandboxes/${id}/exec`, {
+    const resp = await fetch(`${AHVM_URL}/sandboxes/${id}/exec`, {
       method: "POST",
       headers: {
         "Accept": "application/x-ndjson",
@@ -1044,11 +1044,11 @@ const bhattiBashOps: BashOperations = {
 
 ### 35.8 CLI Integration
 
-The `bhatti exec` command can use the streaming endpoint to show live output
+The `ahvm exec` command can use the streaming endpoint to show live output
 instead of waiting for completion:
 
 ```go
-// cmd/bhatti/cli.go — cmdExec
+// cmd/ahvm/cli.go — cmdExec
 
 // Request streaming
 req.Header.Set("Accept", "application/x-ndjson")
@@ -1096,7 +1096,7 @@ os.Exit(exitCode)
 ### 36.1 Motivation
 
 Pi's read tool truncates to 2000 lines / 50KB (whichever comes first).
-Bhatti's `FileRead` currently transfers the **entire file** from guest to
+AHVM's `FileRead` currently transfers the **entire file** from guest to
 host. A 100MB log file transfers 100MB through the wire protocol even
 though the consumer truncates to 50KB. Server-side truncation avoids
 2000x wasted bandwidth.
@@ -1117,12 +1117,12 @@ Add optional `offset`, `limit`, and `max_bytes` fields to `FILE_READ_REQ`:
 
 Pi truncates at 2000 lines OR 50KB — whichever hits first. Supporting
 both `limit` (line count) and `max_bytes` (byte budget) lets the SDK
-pass both constraints and have lohar enforce them guest-side.
+pass both constraints and have forge enforce them guest-side.
 
-### 36.3 Lohar Handler Change
+### 36.3 Forge Handler Change
 
 ```go
-// cmd/lohar/files.go — handleFileRead
+// cmd/forge/files.go — handleFileRead
 
 func handleFileRead(conn net.Conn, payload []byte) {
     var req struct {
@@ -1236,7 +1236,7 @@ type FileEngine interface {
 ### 36.6 Backward Compatibility
 
 `offset=0`, `limit=0`, `max_bytes=0` (the defaults) trigger the existing
-full-file streaming path in lohar. No behavior change for callers that
+full-file streaming path in forge. No behavior change for callers that
 don't pass these parameters.
 
 ### 36.7 Tests
@@ -1286,8 +1286,8 @@ ln -sf /usr/bin/fdfind /usr/local/bin/fd
 After rootfs rebuild:
 
 ```bash
-bhatti exec <sandbox> -- rg --version
-bhatti exec <sandbox> -- fd --version
+ahvm exec <sandbox> -- rg --version
+ahvm exec <sandbox> -- fd --version
 ```
 
 ---
@@ -1296,13 +1296,13 @@ bhatti exec <sandbox> -- fd --version
 
 ### 38.1 Motivation
 
-Pi's tools all support `AbortSignal` for cancellation. Bhatti's file
+Pi's tools all support `AbortSignal` for cancellation. AHVM's file
 operations can't be cancelled mid-stream. A `FileRead` of a 100MB file
 runs to completion even if the client disconnects.
 
 ### 38.2 Solution
 
-Lohar already closes the connection on host disconnect. The
+Forge already closes the connection on host disconnect. The
 `proto.WriteFrame(conn, proto.STDOUT, ...)` call returns an error
 (broken pipe) when the host has closed its end. The for loop breaks on
 write error. This already works on the guest side.
@@ -1320,7 +1320,7 @@ func (c *AgentClient) FileRead(ctx context.Context, path string, w io.Writer,
     if err != nil { return 0, "", err }
     defer conn.Close()
 
-    // Close connection on context cancellation — this makes the lohar
+    // Close connection on context cancellation — this makes the forge
     // write fail with broken pipe, stopping the transfer.
     go func() {
         <-ctx.Done()
@@ -1345,7 +1345,7 @@ Note: `dialControl(ctx)` depends on Part 40 (context-aware dial).
 ### 39.1 Motivation
 
 Pi kills the **entire process tree** on abort:
-`process.kill(-child.pid, SIGKILL)`. Bhatti's KILL frame sends `SIGTERM`
+`process.kill(-child.pid, SIGKILL)`. AHVM's KILL frame sends `SIGTERM`
 to the session's direct process. Child processes (e.g., a shell running
 `npm install` which spawns `node`) survive.
 
@@ -1355,7 +1355,7 @@ Add `Setpgid: true` so the child process gets its own process group,
 then kill the entire group on KILL:
 
 ```go
-// cmd/lohar/exec.go — handlePipedExec
+// cmd/forge/exec.go — handlePipedExec
 
 cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
 cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -1380,7 +1380,7 @@ For TTY sessions, the process group is already set up by `Setsid: true`
 `readHostInput` to use process group kill:
 
 ```go
-// cmd/lohar/tty.go — readHostInput
+// cmd/forge/tty.go — readHostInput
 
 case proto.KILL:
     sess.mu.Lock()
@@ -1684,7 +1684,7 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 
 **`pkg/server/proxy_route_test.go`:**
 
-- `TestProxyHTTPGet` — mock HTTP server, proxy through bhatti, verify
+- `TestProxyHTTPGet` — mock HTTP server, proxy through ahvm, verify
   response body and headers.
 - `TestProxyHTTPPost` — POST with body, verify forwarded correctly.
 - `TestProxyHTTPHeaders` — custom headers round-trip.
@@ -1730,7 +1730,7 @@ Extract recovery logic into engine package. Tests (no root needed):
 - `BenchmarkReadFrame1KB`
 - `BenchmarkFrameRoundTrip100K`
 
-**`cmd/lohar/session_bench_test.go`:**
+**`cmd/forge/session_bench_test.go`:**
 - `BenchmarkRingBufferWrite4KB` / `BenchmarkRingBufferWrite32KB`
 - `BenchmarkRingBufferBytes`
 
@@ -1793,7 +1793,7 @@ All on real Firecracker VMs (`pkg/engine/firecracker/perf_test.go`):
 ### What changed from the original plan
 
 1. **Phase 2 (SDK) and Phase 3 (performance) swapped.** External users hit
-   the API first. If `bhatti exec` produces 30s of silence or file reads
+   the API first. If `ahvm exec` produces 30s of silence or file reads
    transfer 100MB to truncate to 50KB, the first impression is broken.
    Diff snapshots are invisible; streaming exec is not.
 

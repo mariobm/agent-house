@@ -1,4 +1,4 @@
-# Bhatti — Firecracker Implementation Plan
+# AHVM — Firecracker Implementation Plan
 
 Migrating the sandbox engine from Docker to Firecracker microVMs. The goal is
 true pause/resume (snapshot full VM state — processes, memory, file descriptors)
@@ -12,7 +12,7 @@ fallback engine for macOS / environments without KVM.
 ### Why a custom protocol?
 
 With Docker, the Docker daemon provides an API for exec, attach, TTY resize,
-and stdin/stdout multiplexing. Bhatti calls the Docker Go client and gets
+and stdin/stdout multiplexing. AHVM calls the Docker Go client and gets
 structured I/O back — Docker IS the protocol layer.
 
 With Firecracker, there is no daemon between the host and the guest. The only
@@ -49,7 +49,7 @@ Part 7 (persistence) — store changes for crash recovery
 
 ## Part 1 — Guest Agent Protocol
 
-All communication between the bhatti host process and a guest VM happens over
+All communication between the ahvm host process and a guest VM happens over
 vsock using a binary framing protocol. This protocol is engine-independent — it
 can be tested over `net.Pipe()` or a Unix socket without any VM.
 
@@ -242,7 +242,7 @@ A static Linux binary that runs as PID 1 (init) inside the microVM. Compiled
 from Go with `CGO_ENABLED=0`. Does not depend on libc, systemd, or any distro
 packages.
 
-**File:** `cmd/bhatti-agent/main.go` (plus internal packages as needed)
+**File:** `cmd/ahvm-agent/main.go` (plus internal packages as needed)
 
 **Build constraint:** The PID 1 init code (mount, vsock, PTY) uses Linux-only
 syscalls. Use a build tag or `_linux.go` suffix so the package compiles on Mac
@@ -252,11 +252,11 @@ syscalls. Use a build tag or `_linux.go` suffix so the package compiles on Mac
 ### 2.1 Boot Sequence (PID 1 responsibilities)
 
 ```go
-// cmd/bhatti-agent/main.go
+// cmd/ahvm-agent/main.go
 
 func main() {
     // Test mode: skip PID 1 duties, listen on Unix socket (see 2.9)
-    if os.Getenv("BHATTI_AGENT_TEST") == "1" {
+    if os.Getenv("AHVM_AGENT_TEST") == "1" {
         runTestMode()
         return
     }
@@ -277,7 +277,7 @@ func main() {
     mustMount("tmpfs",    "/run",     "tmpfs",   0, "")
 
     // 2. Set hostname
-    syscall.Sethostname([]byte("bhatti"))
+    syscall.Sethostname([]byte("ahvm"))
 
     // 3. Bring up loopback interface (lo)
     //    Without this, localhost/127.0.0.1 doesn't work inside the VM.
@@ -320,7 +320,7 @@ func main() {
 func mustMount(source, target, fstype string, flags uintptr, data string) {
     os.MkdirAll(target, 0755)
     if err := syscall.Mount(source, target, fstype, flags, data); err != nil {
-        fmt.Fprintf(os.Stderr, "bhatti-agent: mount %s on %s: %v\n", source, target, err)
+        fmt.Fprintf(os.Stderr, "ahvm-agent: mount %s on %s: %v\n", source, target, err)
     }
 }
 ```
@@ -649,11 +649,11 @@ func installSignalHandlers() {
 build-agent:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
 		-ldflags='-s -w' \
-		-o bin/bhatti-agent-linux-arm64 \
-		./cmd/bhatti-agent
+		-o bin/ahvm-agent-linux-arm64 \
+		./cmd/ahvm-agent
 
 # Verify it's static:
-#   file bin/bhatti-agent-linux-arm64
+#   file bin/ahvm-agent-linux-arm64
 #   → ELF 64-bit LSB executable, ARM aarch64, statically linked
 ```
 
@@ -669,13 +669,13 @@ Before any Firecracker involvement, test the agent over a Unix socket.
 **Test mode entry point:**
 
 ```go
-// cmd/bhatti-agent/testmode.go (no build tags — runs on Mac and Linux)
+// cmd/ahvm-agent/testmode.go (no build tags — runs on Mac and Linux)
 
 func runTestMode() {
-    controlSock := os.Getenv("BHATTI_AGENT_SOCK")
-    forwardSock := os.Getenv("BHATTI_AGENT_FWD_SOCK")
+    controlSock := os.Getenv("AHVM_AGENT_SOCK")
+    forwardSock := os.Getenv("AHVM_AGENT_FWD_SOCK")
     if controlSock == "" || forwardSock == "" {
-        fmt.Fprintln(os.Stderr, "BHATTI_AGENT_SOCK and BHATTI_AGENT_FWD_SOCK required")
+        fmt.Fprintln(os.Stderr, "AHVM_AGENT_SOCK and AHVM_AGENT_FWD_SOCK required")
         os.Exit(1)
     }
 
@@ -693,7 +693,7 @@ func runTestMode() {
 }
 ```
 
-**Test harness (`cmd/bhatti-agent/agent_test.go`):**
+**Test harness (`cmd/ahvm-agent/agent_test.go`):**
 
 The tests start the agent as a subprocess in test mode, connect to its Unix
 socket, and exercise the protocol. Each test gets a fresh agent process.
@@ -708,9 +708,9 @@ func startTestAgent(t *testing.T) (controlConn, forwardConn net.Conn, cleanup fu
     // Start agent subprocess
     cmd := exec.Command(os.Args[0], "-test.run=TestHelperAgent")
     cmd.Env = append(os.Environ(),
-        "BHATTI_AGENT_TEST=1",
-        "BHATTI_AGENT_SOCK="+controlSock,
-        "BHATTI_AGENT_FWD_SOCK="+forwardSock,
+        "AHVM_AGENT_TEST=1",
+        "AHVM_AGENT_SOCK="+controlSock,
+        "AHVM_AGENT_FWD_SOCK="+forwardSock,
         "GO_WANT_HELPER_PROCESS=1",
     )
     cmd.Start()
@@ -739,7 +739,7 @@ func TestHelperAgent(t *testing.T) {
 }
 ```
 
-**Test cases** (all run on Mac via `go test ./cmd/bhatti-agent/`):
+**Test cases** (all run on Mac via `go test ./cmd/ahvm-agent/`):
 
 Non-TTY exec tests (these work identically on Mac and Linux):
 
@@ -1124,7 +1124,7 @@ func TestClientExec(t *testing.T) {
   fails.
 
 **Note:** `startTestAgent` is a helper shared between Part 2 and Part 3 tests.
-Put it in an internal test helper package, or in `cmd/bhatti-agent/testutil_test.go`
+Put it in an internal test helper package, or in `cmd/ahvm-agent/testutil_test.go`
 and have Part 3 tests import the agent binary's test package (or just duplicate
 the helper — it's ~30 lines).
 
@@ -1164,8 +1164,8 @@ set -eu
 
 SIZE_MB=4096
 IMG=images/rootfs-base-arm64.ext4
-MOUNT=/mnt/bhatti-rootfs
-AGENT=bin/bhatti-agent-linux-arm64
+MOUNT=/mnt/ahvm-rootfs
+AGENT=bin/ahvm-agent-linux-arm64
 
 # Create empty ext4 image
 dd if=/dev/zero of="$IMG" bs=1M count="$SIZE_MB"
@@ -1202,8 +1202,8 @@ chroot "$MOUNT" /bin/bash -c '
   curl -fsSL https://starship.rs/install.sh | sh -s -- -y
 
   # Create user
-  useradd -m -s /bin/zsh -G sudo lohar
-  echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+  useradd -m -s /bin/zsh -G sudo forge
+  echo "forge ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
   # Node.js
   ARCH=$(dpkg --print-architecture)
@@ -1219,12 +1219,12 @@ chroot "$MOUNT" /bin/bash -c '
 '
 
 # Copy zsh/tmux configs
-cp sandbox/zshrc "$MOUNT/home/lohar/.zshrc"
-cp sandbox/tmux.conf "$MOUNT/home/lohar/.tmux.conf"
-chown 1000:1000 "$MOUNT/home/lohar/.zshrc" "$MOUNT/home/lohar/.tmux.conf"
+cp sandbox/zshrc "$MOUNT/home/forge/.zshrc"
+cp sandbox/tmux.conf "$MOUNT/home/forge/.tmux.conf"
+chown 1000:1000 "$MOUNT/home/forge/.zshrc" "$MOUNT/home/forge/.tmux.conf"
 
 # Install tmux plugins (same as Dockerfile.sandbox)
-chroot "$MOUNT" su - lohar -c '
+chroot "$MOUNT" su - forge -c '
   mkdir -p ~/.tmux/plugins
   git clone --depth 1 https://github.com/tmux-plugins/tmux-sensible ~/.tmux/plugins/tmux-sensible
   git clone --depth 1 https://github.com/dracula/tmux ~/.tmux/plugins/tmux
@@ -1232,7 +1232,7 @@ chroot "$MOUNT" su - lohar -c '
 '
 
 # Install zsh plugins (same as Dockerfile.sandbox)
-chroot "$MOUNT" su - lohar -c '
+chroot "$MOUNT" su - forge -c '
   git clone --depth 1 https://github.com/zdharma-continuum/zinit.git ~/.local/share/zinit/zinit.git
   mkdir -p ~/.local/share/zinit/plugins
   git clone --depth 1 https://github.com/zsh-users/zsh-syntax-highlighting ~/.local/share/zinit/plugins/zsh-users---zsh-syntax-highlighting
@@ -1244,9 +1244,9 @@ chroot "$MOUNT" su - lohar -c '
 mkdir -p "$MOUNT/workspace"
 chown 1000:1000 "$MOUNT/workspace"
 
-# Install guest agent as /usr/local/bin/bhatti-agent
-cp "$AGENT" "$MOUNT/usr/local/bin/bhatti-agent"
-chmod 755 "$MOUNT/usr/local/bin/bhatti-agent"
+# Install guest agent as /usr/local/bin/ahvm-agent
+cp "$AGENT" "$MOUNT/usr/local/bin/ahvm-agent"
+chmod 755 "$MOUNT/usr/local/bin/ahvm-agent"
 
 # Set up DNS for the guest (static, since there's no NetworkManager)
 cat > "$MOUNT/etc/resolv.conf" << 'EOF'
@@ -1254,9 +1254,9 @@ nameserver 1.1.1.1
 nameserver 8.8.8.8
 EOF
 
-# Configure init: kernel boots into bhatti-agent as PID 1
+# Configure init: kernel boots into ahvm-agent as PID 1
 # The kernel cmdline (set by Firecracker config) will include:
-#   init=/usr/local/bin/bhatti-agent
+#   init=/usr/local/bin/ahvm-agent
 # No initramfs needed — the agent handles everything.
 
 # Clean up bind mounts from build
@@ -1275,7 +1275,7 @@ Building from Mac via Docker:
 ```makefile
 build-rootfs:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
-		-ldflags='-s -w' -o bin/bhatti-agent-linux-arm64 ./cmd/bhatti-agent
+		-ldflags='-s -w' -o bin/ahvm-agent-linux-arm64 ./cmd/ahvm-agent
 	docker run --rm --privileged \
 		-v $(PWD):/work -w /work \
 		--platform linux/arm64 \
@@ -1334,7 +1334,7 @@ pkg/engine/firecracker/
 
 // Config holds the paths and settings needed to create a Firecracker engine.
 type Config struct {
-    DataDir    string // ~/.bhatti — sandbox dirs created under DataDir/sandboxes/
+    DataDir    string // ~/.ahvm — sandbox dirs created under DataDir/sandboxes/
     KernelPath string // path to vmlinux binary
     BaseRootfs string // path to base rootfs.ext4
     FCBinary   string // path to firecracker binary (e.g. /usr/local/bin/firecracker)
@@ -1431,7 +1431,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.Sa
     cfg := firecracker.Config{
         SocketPath:      socketPath,
         KernelImagePath: e.cfg.KernelPath,
-        KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/bhatti-agent quiet",
+        KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/ahvm-agent quiet",
         Drives:          firecracker.NewDrivesBuilder(rootfsPath).Build(),
         MachineCfg: models.MachineConfiguration{
             VcpuCount:  firecracker.Int64(vcpuCount),
@@ -1804,7 +1804,7 @@ on some machines, it adapts automatically.
 ### 5.9 Wire Into main.go
 
 ```go
-// cmd/bhatti/main.go — engine selection
+// cmd/ahvm/main.go — engine selection
 
 var eng engine.Engine
 switch cfg.Engine {
@@ -1829,7 +1829,7 @@ type Config struct {
     Engine    string `yaml:"engine"`     // "docker" or "firecracker"
     Listen    string `yaml:"listen"`     // e.g. ":8080"
     AuthToken string `yaml:"auth_token"` // bearer token
-    DataDir   string `yaml:"data_dir"`   // defaults to ~/.bhatti
+    DataDir   string `yaml:"data_dir"`   // defaults to ~/.ahvm
 
     // Firecracker-specific (ignored when engine=docker)
     FirecrackerBin    string `yaml:"firecracker_bin"`    // path to firecracker binary
@@ -1838,15 +1838,15 @@ type Config struct {
 }
 ```
 
-Example `~/.bhatti/config.yaml` on Pi:
+Example `~/.ahvm/config.yaml` on Pi:
 
 ```yaml
 engine: firecracker
 listen: :8080
-data_dir: /var/lib/bhatti
+data_dir: /var/lib/ahvm
 firecracker_bin: /usr/local/bin/firecracker
-firecracker_kernel: /var/lib/bhatti/images/vmlinux-arm64
-firecracker_rootfs: /var/lib/bhatti/images/rootfs-base-arm64.ext4
+firecracker_kernel: /var/lib/ahvm/images/vmlinux-arm64
+firecracker_rootfs: /var/lib/ahvm/images/rootfs-base-arm64.ext4
 ```
 
 ---
@@ -1879,21 +1879,21 @@ chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer
 firecracker --version
 
 # Enable IP forwarding (for guest networking)
-echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-bhatti.conf
-sudo sysctl -p /etc/sysctl.d/99-bhatti.conf
+echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-ahvm.conf
+sudo sysctl -p /etc/sysctl.d/99-ahvm.conf
 
 # Create data directories
-sudo mkdir -p /var/lib/bhatti/{images,sandboxes}
-sudo chown $(whoami):$(whoami) /var/lib/bhatti -R
+sudo mkdir -p /var/lib/ahvm/{images,sandboxes}
+sudo chown $(whoami):$(whoami) /var/lib/ahvm -R
 ```
 
 ### 6.2 Deploy From Mac
 
 ```makefile
 PI_HOST ?= user@192.168.1.201
-PI_DIR  ?= /var/lib/bhatti
+PI_DIR  ?= /var/lib/ahvm
 
-# The bhatti server uses go-sqlite3 which requires CGO. Cross-compiling with
+# The ahvm server uses go-sqlite3 which requires CGO. Cross-compiling with
 # CGO needs a cross-compiler toolchain (aarch64-linux-gnu-gcc). Options:
 #   a) Install the cross-compiler: brew install aarch64-elf-gcc (or similar)
 #      and set CC=aarch64-linux-gnu-gcc
@@ -1910,13 +1910,13 @@ PI_DIR  ?= /var/lib/bhatti
 # With modernc.org/sqlite:
 build-pi:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
-		-ldflags='-s -w' -o bin/bhatti-linux-arm64 ./cmd/bhatti
+		-ldflags='-s -w' -o bin/ahvm-linux-arm64 ./cmd/ahvm
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
-		-ldflags='-s -w' -o bin/bhatti-agent-linux-arm64 ./cmd/bhatti-agent
+		-ldflags='-s -w' -o bin/ahvm-agent-linux-arm64 ./cmd/ahvm-agent
 
 deploy: build-pi
-	rsync -avz bin/bhatti-linux-arm64 $(PI_HOST):$(PI_DIR)/bhatti
-	rsync -avz bin/bhatti-agent-linux-arm64 $(PI_HOST):$(PI_DIR)/bhatti-agent
+	rsync -avz bin/ahvm-linux-arm64 $(PI_HOST):$(PI_DIR)/ahvm
+	rsync -avz bin/ahvm-agent-linux-arm64 $(PI_HOST):$(PI_DIR)/ahvm-agent
 	rsync -avz web/ $(PI_HOST):$(PI_DIR)/web/
 ```
 
@@ -1927,7 +1927,7 @@ something the next step depends on.
 
 **Test A: Firecracker boots a VM**
 
-Verify that Firecracker, the kernel, and the rootfs work at all. No bhatti
+Verify that Firecracker, the kernel, and the rootfs work at all. No ahvm
 involved — just raw Firecracker.
 
 **Run as root** (or ensure your user has rw access to `/dev/kvm` and
@@ -1936,7 +1936,7 @@ involved — just raw Firecracker.
 ```bash
 # On Pi — SSH in, then:
 sudo su -
-cd /var/lib/bhatti
+cd /var/lib/ahvm
 
 # Copy base rootfs for this test
 cp images/rootfs-base-arm64.ext4 /tmp/test-rootfs.ext4
@@ -1950,8 +1950,8 @@ FC_PID=$!
 curl --unix-socket /tmp/fc-test.sock -X PUT \
   http://localhost/boot-source \
   -d '{
-    "kernel_image_path": "/var/lib/bhatti/images/vmlinux-arm64",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/bhatti-agent"
+    "kernel_image_path": "/var/lib/ahvm/images/vmlinux-arm64",
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/ahvm-agent"
   }'
 
 curl --unix-socket /tmp/fc-test.sock -X PUT \
@@ -1994,7 +1994,7 @@ booted, the agent started, and vsock is working.
 If the VM doesn't boot, check `dmesg` and Firecracker's stderr for kernel
 panic messages. Common issues:
 - Kernel doesn't match architecture (need aarch64 vmlinux for Pi)
-- rootfs doesn't have the agent at `/usr/local/bin/bhatti-agent`
+- rootfs doesn't have the agent at `/usr/local/bin/ahvm-agent`
 - `/dev/kvm` permissions — run Firecracker as root or add user to kvm group
 
 **Test B: Agent exec over vsock**
@@ -2011,7 +2011,7 @@ Write a small Go test program that:
 
 ```bash
 # On Pi
-cd /var/lib/bhatti
+cd /var/lib/ahvm
 sudo go test -tags=integration -run TestFirecrackerExec -v ./pkg/engine/firecracker/
 ```
 
@@ -2055,9 +2055,9 @@ The core test. Validates that process state survives stop/start.
 This proves that a background process launched before snapshot survives the
 full stop→start cycle.
 
-**Test F: Full bhatti server end-to-end**
+**Test F: Full ahvm server end-to-end**
 
-1. Start `./bhatti` on the Pi with `engine: firecracker`
+1. Start `./ahvm` on the Pi with `engine: firecracker`
 2. From Mac, open browser to `http://192.168.1.201:8080`
 3. Create a template via API:
    ```
@@ -2121,8 +2121,8 @@ seconds for a cold boot, under 500ms when resuming from a pre-warmed snapshot.
 ## Part 7 — State Persistence Across Restarts
 
 The current Docker engine doesn't need to track VM-level state because Docker
-manages container lifecycle independently. With Firecracker, bhatti IS the
-lifecycle manager — if bhatti restarts, it needs to know which VMs exist and
+manages container lifecycle independently. With Firecracker, ahvm IS the
+lifecycle manager — if ahvm restarts, it needs to know which VMs exist and
 their snapshot paths.
 
 ### 7.1 Store Changes
@@ -2170,7 +2170,7 @@ TABLE` lines.
 
 ### 7.2 Startup Recovery
 
-When the bhatti server starts with `engine: firecracker`, it must reconcile
+When the ahvm server starts with `engine: firecracker`, it must reconcile
 the SQLite state with reality. This handles crashes, reboots, and manual
 Firecracker process kills.
 
@@ -2190,11 +2190,11 @@ func (e *Engine) RecoverFromStore(st *store.Store) error {
         }
 
         if sb.Status == "running" {
-            // Was running when bhatti last saved state. Is the process alive?
+            // Was running when ahvm last saved state. Is the process alive?
             alive := pid > 0 && syscall.Kill(pid, 0) == nil
 
             if alive {
-                // Firecracker process survived bhatti restart.
+                // Firecracker process survived ahvm restart.
                 // Reconnect the agent client.
                 vsockPath := filepath.Join(filepath.Dir(rootfs), "vsock.sock")
                 vm := &VM{

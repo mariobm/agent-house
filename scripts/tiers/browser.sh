@@ -8,8 +8,8 @@
 # path: Node.js (already needed for npx) + npx playwright install.
 #
 # Init model (per PLAN-tiers-systemd.md): headless_shell is managed by
-# lohar's systemctl shim via headless-chrome.service. Pre-v1.11.9 this
-# tier started Chromium by hand out of /etc/bhatti/init.sh; the shim's
+# forge's systemctl shim via headless-chrome.service. Pre-v1.11.9 this
+# tier started Chromium by hand out of /etc/ahvm/init.sh; the shim's
 # Restart=on-failure now resurrects a crashed Chromium without action.
 set -euo pipefail
 
@@ -82,7 +82,7 @@ echo "==> headless_shell baked at: $HEADLESS_SHELL"
 # `curl http://localhost:9222/json/version` exactly as before.
 #
 # CHROME_REMOTE_PORT (default 9222) and CHROME_FLAGS are env knobs the
-# user can pass via `bhatti create --env`. The shell's $VAR expansion
+# user can pass via `ahvm create --env`. The shell's $VAR expansion
 # happens inside the shim's `/bin/sh -c "exec ..."` wrapper, so unset
 # CHROME_FLAGS expands cleanly to empty.
 cat > "$MOUNT/etc/systemd/system/headless-chrome.service" << UNIT
@@ -92,10 +92,10 @@ After=network.target
 
 [Service]
 Type=simple
-# Defaults; user-supplied values in /run/bhatti/config-env override.
+# Defaults; user-supplied values in /run/ahvm/config-env override.
 Environment=CHROME_REMOTE_PORT=9222
 Environment=CHROME_FLAGS=
-EnvironmentFile=-/run/bhatti/config-env
+EnvironmentFile=-/run/ahvm/config-env
 ExecStart=$HEADLESS_SHELL --no-sandbox --disable-gpu --disable-dev-shm-usage --remote-debugging-port=\${CHROME_REMOTE_PORT} --remote-debugging-address=0.0.0.0 \$CHROME_FLAGS
 Restart=on-failure
 RestartSec=2s
@@ -108,6 +108,6 @@ ln -sf /etc/systemd/system/headless-chrome.service \
     "$MOUNT/etc/systemd/system/multi-user.target.wants/headless-chrome.service"
 
 # --- Drop the legacy init.sh path entirely ---
-rm -f "$MOUNT/etc/bhatti/init.sh"
+rm -f "$MOUNT/etc/ahvm/init.sh"
 
 echo "==> Browser tier done."

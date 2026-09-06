@@ -1,6 +1,6 @@
 # krucible — engineer hand-off
 
-A practical entry point for picking up the krucible engine (bhatti's libkrun-fork
+A practical entry point for picking up the krucible engine (ahvm's libkrun-fork
 VMM). Read this first, then the design docs it links. **The actionable backlog is
 §5.**
 
@@ -13,14 +13,14 @@ Companion docs (design rationale, deeper context):
 
 ## 1. What krucible is (1 minute)
 
-bhatti runs agent sandboxes in microVMs. Two engines implement `engine.Engine`:
+ahvm runs agent sandboxes in microVMs. Two engines implement `engine.Engine`:
 - **`firecracker`** — production on Hetzner, **do not touch** (untouched on this work).
 - **`krucible`** — a fork of libkrun (`../libkrucible`, an in-process VMM library)
   that we extended with pause/resume, snapshot/restore, a control socket, and
   block-root boot. The daemon never links libkrun; it spawns one cgo helper
-  (`bhatti-vmm`, from `cmd/vmm`) per sandbox and talks to it over UDS.
+  (`ahvm-vmm`, from `cmd/vmm`) per sandbox and talks to it over UDS.
 
-Repos: **`bhatti`** (Go daemon, branch `krucible`) + **`libkrucible`** — now a
+Repos: **`ahvm`** (Go daemon, branch `krucible`) + **`libkrucible`** — now a
 **git submodule** at `./libkrucible` (branch `krucible`, the gitlink SHA is the
 version-of-record; `make krucible` builds it `--no-default-features --features
 blk`). The fork delta lives on `origin/krucible`; bump the gitlink to advance,
@@ -84,7 +84,7 @@ the guest-visible virtual counter (`KVM_REG_ARM_TIMER_CNT`, once on vCPU 0) —
   when `start_paused`). Cold tier now full multi-vCPU on all three platforms.
 - **Validated cross-arch (2026-06-30)** — full krucible suite green on darwin/arm64
   (HVF), linux/arm64 (KVM, raspi-5a: 25 PASS/4 SKIP), linux/amd64 (KVM, asus-i5:
-  25 PASS/4 SKIP). libkrucible `4e82af6`, bhatti `origin/krucible`.
+  25 PASS/4 SKIP). libkrucible `4e82af6`, ahvm `origin/krucible`.
 - **CI** — `krucible-build` (GitHub-hosted, VM suites self-skip without a
   hypervisor) green; `krucible-integration` (self-hosted arc-runner-set) is the
   KVM gate. NOTE: the Firecracker homelab integration workflow was **retired**
@@ -93,18 +93,18 @@ the guest-visible virtual counter (`KVM_REG_ARM_TIMER_CNT`, once on vCPU 0) —
 
 **New this cycle (2026-07-01) — storage Phase 3 (mounts):**
 - **Live `--mount host:guest[:ro]`** — a virtio-fs host-directory bind
-  (`krun_add_virtiofs3` host-side + a guest mount by lohar from the config
+  (`krun_add_virtiofs3` host-side + a guest mount by forge from the config
   drive). Shared, bidirectional, N-writer — edit on the host, run in the sandbox
   (and vice-versa) live. Wired end-to-end (engine.FsMount → CLI/server → vmm +
-  lohar); FC ignores it. `TestKrucibleMount` green on all three platforms.
-- **Codesign safety-net** — a plain `go build -o bhatti-vmm` strips the HVF
+  forge); FC ignores it. `TestKrucibleMount` green on all three platforms.
+- **Codesign safety-net** — a plain `go build -o ahvm-vmm` strips the HVF
   hypervisor entitlement that `make vmm` applies, so `hv_vm_create` fails for
   every VM on darwin (this masqueraded as a bogus “--mount HVF limitation” for a
   while). The test harness now re-signs on darwin (idempotent) so tests pass
   regardless of how the binary was built. **Always `make vmm` on macOS.**
 - **Block `volume` wiring** — krucible now honors `spec.ResolvedVolumes`: each
   attaches as a block disk after root (vda) + config (vdb) → `/dev/vdc+` via
-  `krun_add_disk2`, mounted by lohar from the config drive. `create --volume
+  `krun_add_disk2`, mounted by forge from the config drive. `create --volume
   name:mount[:ro]` works end-to-end (server volume resolution was already
   engine-agnostic). **Substrate fix (libkrun `175f28c`):** `get_block_cfg()`
   treated `set_root_disk*`/`set_data_disk` and `add_disk*` as mutually exclusive
@@ -136,7 +136,7 @@ the guest-visible virtual counter (`KVM_REG_ARM_TIMER_CNT`, once on vCPU 0) —
 ```bash
 git submodule update --init libkrucible   # fork is a submodule now (branch krucible)
 make krucible   # builds libkrucible (cargo --features blk) + the install prefix
-make vmm        # builds + codesigns bhatti-vmm (HVF entitlement)
+make vmm        # builds + codesigns ahvm-vmm (HVF entitlement)
 make build      # the pure-Go daemon/CLI
 ./scripts/build-lean-kernel.sh aarch64    # lean kernel -> dist/kernel/ (Docker; daemon autodetects it)
 go test -tags krucible ./pkg/engine/krucible/ -count=1   # full krucible suite
@@ -148,7 +148,7 @@ go test -tags krucible ./pkg/engine/krucible/ -count=1   # full krucible suite
 
 ### Linux cluster (KVM)
 `scripts/krucible-linux-bringup.sh` builds everything on a node (apt deps + rustup
-+ Go 1.25 + libkrunfw + libkrucible + bhatti-vmm). Run tests with:
++ Go 1.25 + libkrunfw + libkrucible + ahvm-vmm). Run tests with:
 ```bash
 export PATH=/usr/local/go/bin:$HOME/.cargo/bin:$PATH
 export PKG_CONFIG_PATH=$HOME/kr/libkrucible/_install/lib/pkgconfig
@@ -170,8 +170,8 @@ bring-up (libkrunfw is cached; only libkrucible relinks), `go test`.
 | raspi-4b / raspi-5b | 192.168.1.200 / .202 | 100.66.66.124 / 100.79.148.43 | arm64 | spare (4b = k3s master) |
 
 SSH: `ssh -i ~/.ssh/id_ed25519 user@<ip>` (LAN or Tailscale). Sources live under
-`~/kr/{bhatti,libkrucible}` on each node. With the submodule layout, symlink the
-in-repo path to the sibling on each node: `ln -sfn ~/kr/libkrucible ~/kr/bhatti/libkrucible`.
+`~/kr/{ahvm,libkrucible}` on each node. With the submodule layout, symlink the
+in-repo path to the sibling on each node: `ln -sfn ~/kr/libkrucible ~/kr/ahvm/libkrucible`.
 The k3s cluster also hosts the GitHub Actions `arc-runner-set` (self-hosted, has
 `/dev/kvm`) that `integration.yml` uses — the natural home for a krucible CI job (§5.12).
 
@@ -277,12 +277,12 @@ validate · gotchas.**
   CoW (clonefile/reflink/qcow2-overlay) + durable chunked-CDC.
 
 ### 5.6 Inter-sandbox networking + gateway  (medium) — §6a.2 / §6a.3
-- Host↔guest forward (§6a.1) is **done** (`pkg/forward`, the `bhatti forward` CLI).
+- Host↔guest forward (§6a.1) is **done** (`pkg/forward`, the `ahvm forward` CLI).
   Next: server-brokered per-sandbox host endpoints + name resolution (`<name>.sb`),
   and a sandbox→host gateway address.
 
 ### 5.7 Agent-first capability tokens  (medium) — §6b / `internal/PLAN-krucible-v3.md` §12
-- Per-sandbox token is **done** (config drive, enforced by lohar). Next: scoped
+- Per-sandbox token is **done** (config drive, enforced by forge). Next: scoped
   caps `{exec, files:*, publish, net:egress, snapshot, fork}`, route middleware,
   audit to `events`, offline-mint, scoped share URLs. Track-J jail for hostile
   multi-tenant on Linux is separate (§11 of the v3 plan).
@@ -302,7 +302,7 @@ validate · gotchas.**
   external kernel makes `krun_start_enter` skip libkrunfw entirely.
 - **Files:** `cmd/vmm/main.go` (`krun_set_kernel`, arch-aware cmdline),
   `pkg/engine/krucible/{engine,spec}.go` (`Config.KernelImage`),
-  `cmd/bhatti/engine_krucible.go` + `pkg/config.go` (`krucible_kernel_image` +
+  `cmd/ahvm/engine_krucible.go` + `pkg/config.go` (`krucible_kernel_image` +
   autodetect of `dist/kernel/*-lean-*`, fallback to bundle),
   `scripts/lean-kernel/config-lean_{aarch64,x86_64}` + `scripts/build-lean-kernel.sh`.
 - **Follow-ups:** (1) **ship it** — build the lean kernel in `release.yml` + place
@@ -328,7 +328,7 @@ validate · gotchas.**
 
 ### 5.12 Packaging / release / testing expansion  — **CI safety net DONE; release deferred**
 - **CI safety net landed (2026-06-27):** (1) `krucible-build` job in `ci.yml`
-  — builds the fork (libkrun) + cgo helper (bhatti-vmm) + krucible-tagged Go +
+  — builds the fork (libkrun) + cgo helper (ahvm-vmm) + krucible-tagged Go +
   pure-unit tests on GitHub-hosted runners (no KVM; VM suites self-skip via
   `hasHypervisor()`). (2) `krucible-integration.yml` — the full `-tags krucible`
   VM suite on the self-hosted `arc-runner-set` (real KVM), reusing
@@ -339,7 +339,7 @@ validate · gotchas.**
 - **First-run follow-ups (need a push to tune):** cache the libkrunfw kernel
   build in the integration job; split it into an arm64+x86 runner-arch matrix.
 - **Release/install still deferred** (design locked, build later): per-platform
-  `libkrun` + `bhatti-vmm` + lean kernel in `release.yml`/`install.sh`; the macOS
+  `libkrun` + `ahvm-vmm` + lean kernel in `release.yml`/`install.sh`; the macOS
   full-stack install. **macOS distribution is now unblocked** — the operator has
   an Apple Developer membership, so notarization (not just ad-hoc + quarantine
   strip) is on the table. Ship the lean kernel here too (§5.9 follow-up).
@@ -355,7 +355,7 @@ validate · gotchas.**
   (both arm64 + x86 have `/dev/kvm`), mirroring `integration.yml`; (3) the
   **lean-kernel build** in CI (reproducible via `build-lean-kernel.sh`).
 - **Design now, build later (gated on parity + a macOS-distribution decision):**
-  the release/install expansion — per-platform `libkrun` + `bhatti-vmm` + lean
+  the release/install expansion — per-platform `libkrun` + `ahvm-vmm` + lean
   kernel, the macOS full-stack install, a krucible `config.yaml`. **The gating
   decision is macOS codesigning/notarization** (ad-hoc `-s -` + `xattr`
   quarantine-strip like the CLI, vs an Apple Developer cert).
@@ -379,21 +379,21 @@ validate · gotchas.**
   reference libkrun fork) in commits, files, comments, or docs. Refer generically
   ("the reference fork"). The reference fork is Apache-2.0; porting *code* is fine,
   unnamed. Ask the operator for its local clone path.
-- **Hetzner stays on Firecracker, untouched.** krucible is a parallel engine; lohar
+- **Hetzner stays on Firecracker, untouched.** krucible is a parallel engine; forge
   is shared, so guest changes must not break FC (e.g. `setupNetworking` self-skips
   on krucible and is load-bearing on FC).
 - **Single-writer server is the spine** — we deliberately did NOT build a daemonless
   CLI mode (multi-writer hazard). See `PLAN-krucible-productionization.md` §2.
 - **Cold/fork rootfs = block device**, not virtio-fs (self-contained snapshot,
   faster, isolated). virtio-fs stays as the warm/dev profile.
-- **lohar is PID-1 by design** under the kernel-direct block-root boot (M1′); the
+- **forge is PID-1 by design** under the kernel-direct block-root boot (M1′); the
   envisioned "slim" is moot (see `PLAN-krucible-init-model.md` DECISION).
 - Commit per closed unit with descriptive, third-party-free messages; keep both repo
   trees clean.
 
 ## 7. Map of the code
 
-- **bhatti** `pkg/engine/krucible/` — engine (`engine.go`), thermal (`thermal.go`),
+- **ahvm** `pkg/engine/krucible/` — engine (`engine.go`), thermal (`thermal.go`),
   control socket (`control.go`), agent (`agent.go`), recovery (`recovery.go`),
   config drive build (in `engine.go` + `pkg/configdrive/`), tests (`*_test.go`).
   `cmd/vmm/main.go` is the cgo helper. `pkg/forward/` is the host↔guest bridge.

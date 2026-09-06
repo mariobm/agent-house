@@ -17,7 +17,7 @@ every hit — a health probe shouldn't touch the database.
 **slog JSON → stdout → journald** — good structured event names but no aggregation
 beyond `journalctl`.
 
-**Admin CLI** — `bhatti user create/list/delete/rotate-key`. No runtime visibility.
+**Admin CLI** — `ahvm user create/list/delete/rotate-key`. No runtime visibility.
 
 ---
 
@@ -27,7 +27,7 @@ beyond `journalctl`.
 auth failure counters, and sandbox topology to anyone who can reach the port. But the
 fix isn't "move it behind auth" — the fix is to delete it. Nothing consumes it. The
 in-memory counters it exposes reset on every restart. With `metrics_snapshots` persisting
-to SQLite every 60 seconds and `bhatti admin` commands reading from there, the HTTP
+to SQLite every 60 seconds and `ahvm admin` commands reading from there, the HTTP
 endpoint is redundant. The SQLite data is strictly better — it survives restarts and
 has history.
 
@@ -38,7 +38,7 @@ over HTTP.
 
 Also slim `/health` down to `{"status":"ok","uptime":"4d"}` — drop the sandbox count.
 A health probe that queries the database can fail for reasons unrelated to service
-health. Sandbox counts belong in `bhatti admin status`.
+health. Sandbox counts belong in `ahvm admin status`.
 
 ---
 
@@ -47,9 +47,9 @@ health. Sandbox counts belong in `bhatti admin status`.
 Two things, no phases:
 
 1. **Events table + metrics snapshots** — persist everything into SQLite
-2. **`bhatti admin` CLI commands** — query it
+2. **`ahvm admin` CLI commands** — query it
 
-All admin commands are **local-only** (direct SQLite, same as `bhatti user` today).
+All admin commands are **local-only** (direct SQLite, same as `ahvm user` today).
 No remote admin API, no admin auth layer. The admin is always SSH'd into the server.
 
 ### What gets persisted
@@ -64,7 +64,7 @@ event, JSON metadata blob.
 
 Three categories that don't belong:
 
-**`exec` events** — every exec call. The goal of observability is "how is bhatti being
+**`exec` events** — every exec call. The goal of observability is "how is ahvm being
 used" — that's answered by lifecycle events (who creates sandboxes, what images, how long
 they live, what gets published). Exec is the user's workload, not infrastructure behavior.
 Knowing alice ran `npm install` 47 times doesn't change any operational decision. The
@@ -207,9 +207,9 @@ vs separate connect/disconnect events.
 
 | Type | Trigger | Meta |
 |---|---|---|
-| `user.created` | bhatti user create | `name, max_sandboxes, subnet_index` |
-| `user.deleted` | bhatti user delete | `name` |
-| `user.key_rotated` | bhatti user rotate-key | `name` |
+| `user.created` | ahvm user create | `name, max_sandboxes, subnet_index` |
+| `user.deleted` | ahvm user delete | `name` |
+| `user.key_rotated` | ahvm user rotate-key | `name` |
 
 **Daemon:**
 
@@ -367,24 +367,24 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-Sandbox counts belong in `bhatti admin status`.
+Sandbox counts belong in `ahvm admin status`.
 
 ---
 
-## CLI: `bhatti admin`
+## CLI: `ahvm admin`
 
 All commands are **local-only** — they open SQLite directly using `openLocalStore()`,
-same as `bhatti user list`. Run on the server, not remotely. No API endpoints, no
+same as `ahvm user list`. Run on the server, not remotely. No API endpoints, no
 admin auth.
 
-### `bhatti admin status`
+### `ahvm admin status`
 
 One-shot overview. Reads the latest metrics snapshot + recent events from SQLite.
 
 ```
-$ bhatti admin status
+$ ahvm admin status
 
-Bhatti v1.2.0 — up 4d 12h 30m
+AHVM v1.2.0 — up 4d 12h 30m
 Host: 0.45 load, 5.1 / 8.0 GB memory
 
 Sandboxes  12 total (3 hot, 4 warm, 5 cold)
@@ -409,19 +409,19 @@ The "API 84,521 requests" line sums the `api_requests` deltas across all
 metrics_snapshots rows. Since each row is already a delta, `SUM(api_requests)` gives
 the total since retention began. Same for errors, proxy counts, etc.
 
-### `bhatti admin events`
+### `ahvm admin events`
 
 ```
-bhatti admin events                                  # last 50
-bhatti admin events --type sandbox.created           # by type
-bhatti admin events --user alice                     # by user
-bhatti admin events --sandbox dev                    # by sandbox name or id
-bhatti admin events --since 24h                      # relative time
-bhatti admin events --since 2026-04-01               # absolute date
-bhatti admin events --type thermal --since 7d        # combine
-bhatti admin events --limit 200                      # more
-bhatti admin events --json                           # raw JSON
-bhatti admin events --type thermal --since 1h --count   # just the count
+ahvm admin events                                  # last 50
+ahvm admin events --type sandbox.created           # by type
+ahvm admin events --user alice                     # by user
+ahvm admin events --sandbox dev                    # by sandbox name or id
+ahvm admin events --since 24h                      # relative time
+ahvm admin events --since 2026-04-01               # absolute date
+ahvm admin events --type thermal --since 7d        # combine
+ahvm admin events --limit 200                      # more
+ahvm admin events --json                           # raw JSON
+ahvm admin events --type thermal --since 1h --count   # just the count
 ```
 
 Human-readable default:
@@ -438,13 +438,13 @@ TS                   TYPE                 USER        SANDBOX         DETAILS
 `--type` supports prefix matching: `--type thermal` matches all `thermal.*` events,
 `--type sandbox` matches all `sandbox.*` events.
 
-### `bhatti admin metrics`
+### `ahvm admin metrics`
 
 ```
-bhatti admin metrics                    # last hour, 1-min buckets
-bhatti admin metrics --since 24h        # 15-min buckets
-bhatti admin metrics --since 7d         # 1-hr buckets
-bhatti admin metrics --json             # raw snapshots
+ahvm admin metrics                    # last hour, 1-min buckets
+ahvm admin metrics --since 24h        # 15-min buckets
+ahvm admin metrics --since 7d         # 1-hr buckets
+ahvm admin metrics --json             # raw snapshots
 ```
 
 ```
@@ -470,6 +470,6 @@ bucket and dividing by bucket duration.
 - Slim `/health` (remove `ListAllSandboxes()`)
 
 **Second: CLI**
-- `bhatti admin status`
-- `bhatti admin events`
-- `bhatti admin metrics`
+- `ahvm admin status`
+- `ahvm admin events`
+- `ahvm admin metrics`

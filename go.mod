@@ -1,4 +1,4 @@
-module github.com/sahil-shubham/bhatti
+module github.com/mariobm/agent-house
 
 go 1.26.3
 

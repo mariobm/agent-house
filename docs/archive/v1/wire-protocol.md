@@ -1,7 +1,7 @@
 > [!WARNING]
 > **DEPRECATED — do not edit.**
 > The canonical, maintained version of this page is at
-> <https://bhatti.sh/docs/under-the-hood/wire-protocol/>.
+> <https://ahvm.sh/docs/under-the-hood/wire-protocol/>.
 > This file is kept only for git history and may be removed in a future
 > cleanup. See [`docs/README.md`](./README.md) for the redirect index.
 
@@ -9,7 +9,7 @@
 
 # Wire Protocol
 
-All communication between the bhatti host and a guest VM happens over a binary framing protocol. The same protocol runs over vsock (cold boot), TCP over TAP (post-snapshot), or Unix sockets (testing). The protocol is engine-independent — the entire agent test suite runs on macOS over `net.Pipe()` without any VM.
+All communication between the ahvm host and a guest VM happens over a binary framing protocol. The same protocol runs over vsock (cold boot), TCP over TAP (post-snapshot), or Unix sockets (testing). The protocol is engine-independent — the entire agent test suite runs on macOS over `net.Pipe()` without any VM.
 
 ## Frame Format
 
@@ -112,7 +112,7 @@ Two TCP ports, two purposes:
 One connection per operation. The host dials port 1024, optionally sends an `AUTH` frame, sends exactly one request frame, reads responses until the operation completes, then the connection closes.
 
 ```
-Host                                  Lohar
+Host                                  Forge
  │                                      │
  ├──TCP connect :1024──────────────────►│
  ├──AUTH frame (if token configured)───►│
@@ -132,7 +132,7 @@ Exception: TTY sessions keep the connection open for bidirectional I/O. The host
 One connection per tunnel. After the `FWD_REQ`/`FWD_RESP` handshake, the framing protocol is *abandoned* — the connection becomes a raw bidirectional TCP relay.
 
 ```
-Host                                  Lohar                     Target (localhost:8080)
+Host                                  Forge                     Target (localhost:8080)
  │                                      │                          │
  ├──TCP connect :1025──────────────────►│                          │
  ├──AUTH frame─────────────────────────►│                          │
@@ -146,7 +146,7 @@ Host                                  Lohar                     Target (localhos
 
 ## Auth
 
-If a token is configured (via the config drive at boot), the first frame on every connection must be `AUTH` with the token as payload. Lohar validates it within a 5-second deadline. Invalid or missing auth gets an `ERROR` frame and the connection is closed.
+If a token is configured (via the config drive at boot), the first frame on every connection must be `AUTH` with the token as payload. Forge validates it within a 5-second deadline. Invalid or missing auth gets an `ERROR` frame and the connection is closed.
 
 The token is generated per-sandbox during `Create()` — 16 random bytes, hex-encoded. It's injected into the VM via the config drive and stored in the host's `AgentClient`.
 
@@ -171,11 +171,11 @@ EXIT code=0
 
 Whichever limit hits first stops the read. Without any truncation parameters, the full file is streamed (backward compatible). The `FILE_READ_RESP` always contains the *total* file size so the consumer knows whether content was truncated.
 
-Directories and non-regular files are rejected with an `ERROR` frame. File reads are cancellable via context — closing the connection gives lohar a broken pipe, stopping the transfer immediately.
+Directories and non-regular files are rejected with an `ERROR` frame. File reads are cancellable via context — closing the connection gives forge a broken pipe, stopping the transfer immediately.
 
 ## File Write Protocol
 
-Writes are atomic. Lohar writes to a temp file, fsyncs, then renames over the target. Concurrent readers see either the old content or the new content, never partial.
+Writes are atomic. Forge writes to a temp file, fsyncs, then renames over the target. Concurrent readers see either the old content or the new content, never partial.
 
 ```
 FILE_WRITE_REQ {"path": "/workspace/app.js", "mode": "0644", "size": 1234}
@@ -205,4 +205,4 @@ All kill operations target the *process group* (negative PID), not just the sess
 
 ## Forward Compatibility
 
-`ReadFrame` in the client skips unknown frame types rather than erroring. This allows the protocol to be extended without breaking existing clients — a new frame type added to lohar won't crash an older bhatti host.
+`ReadFrame` in the client skips unknown frame types rather than erroring. This allows the protocol to be extended without breaking existing clients — a new frame type added to forge won't crash an older ahvm host.

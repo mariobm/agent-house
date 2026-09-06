@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // saveVMState persists Firecracker VM state to the store if the engine supports it.
@@ -136,7 +136,7 @@ func isValidMountPath(mount string) bool {
 	if strings.Contains(clean, "..") {
 		return false
 	}
-	// Reject system mount points that lohar or the kernel use
+	// Reject system mount points that forge or the kernel use
 	forbidden := []string{"/", "/proc", "/sys", "/dev", "/dev/pts",
 		"/run", "/tmp", "/etc", "/bin", "/sbin", "/lib", "/lib64",
 		"/usr", "/usr/local/bin", "/boot", "/root"}

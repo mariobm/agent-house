@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // End-to-end HTTP tests for the label surface (G1.6). Run against
@@ -168,7 +168,7 @@ func TestSandboxLabels_RejectInvalidOnCreate(t *testing.T) {
 		labels map[string]string
 	}{
 		{"empty key", map[string]string{"": "v"}},
-		{"reserved prefix", map[string]string{"bhatti.sh/owner": "v"}},
+		{"reserved prefix", map[string]string{"ahvm.sh/owner": "v"}},
 		{"bad chars in key", map[string]string{"has spaces": "v"}},
 	}
 	for _, tt := range tests {
@@ -188,7 +188,7 @@ func TestSandboxLabels_RejectInvalidOnCreate(t *testing.T) {
 // future caller probing system labels via the public query API.
 func TestSandboxLabels_FilterRejectsReservedPrefix(t *testing.T) {
 	_, ts := setup(t)
-	resp := doReq(t, ts, "GET", "/sandboxes?label=bhatti.sh%2Fowner=me", nil)
+	resp := doReq(t, ts, "GET", "/sandboxes?label=ahvm.sh%2Fowner=me", nil)
 	if resp.StatusCode != 400 {
 		t.Fatalf("expected 400 for reserved-prefix filter, got %d", resp.StatusCode)
 	}

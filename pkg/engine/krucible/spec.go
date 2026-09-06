@@ -2,12 +2,12 @@
 // fork). Unlike the firecracker engine, libkrun is an in-process, blocking
 // library: krun_start_enter() turns the calling process INTO the VM and never
 // returns. So the daemon never links libkrun — instead it spawns one small
-// `bhatti vmm` helper (cmd/vmm) per sandbox, which links libkrun, becomes the
+// `ahvm vmm` helper (cmd/vmm) per sandbox, which links libkrun, becomes the
 // VM, and is controlled out-of-band (vsock UDS for the agent; shutdown
 // eventfd / control socket for lifecycle).
 //
 // Everything in this package is pure Go and cross-compiles to linux + darwin:
-// it spawns the helper and talks to lohar over sockets. Only cmd/vmm needs cgo
+// it spawns the helper and talks to forge over sockets. Only cmd/vmm needs cgo
 // + libkrun + codesigning.
 package krucible
 
@@ -57,7 +57,7 @@ type VMSpec struct {
 	// VsockConfigUDS, if set, is a host UDS the daemon serves the sandbox's
 	// SandboxConfig JSON on. libkrun bridges the guest's connection on
 	// proto.VsockPortConfig (1026) to this UDS (krun_add_vsock_port2 listen=false);
-	// lohar dials it once at boot to fetch its config — replacing the on-disk
+	// forge dials it once at boot to fetch its config — replacing the on-disk
 	// config drive (DESIGN §3.4). Nothing config-related touches a guest disk or a
 	// snapshot bundle; the config.json lives host-side only.
 	VsockConfigUDS string `json:"vsock_config_uds,omitempty"`
@@ -65,15 +65,15 @@ type VMSpec struct {
 	Vcpus  uint8  `json:"vcpus"`
 	MemMiB uint32 `json:"mem_mib"`
 
-	// Pid1 disables libkrun's implicit init so ExecPath (lohar, placed at
+	// Pid1 disables libkrun's implicit init so ExecPath (forge, placed at
 	// /init.krun in the rootfs) boots as PID 1 — matching FC's
-	// init=/usr/local/bin/lohar. Confirmed working in S0.
+	// init=/usr/local/bin/forge. Confirmed working in S0.
 	Pid1     bool     `json:"pid1"`
 	ExecPath string   `json:"exec_path"` // e.g. "/init.krun"
 	Env      []string `json:"env,omitempty"`
 
 	// Vsock bridges. listen=true on the libkrun side: the host (daemon) dials
-	// these UDS paths; libkrun forwards to the guest vsock port where lohar
+	// these UDS paths; libkrun forwards to the guest vsock port where forge
 	// listens (1024 control, 1025 forward).
 	VsockControlUDS string `json:"vsock_control_uds"`
 	VsockForwardUDS string `json:"vsock_forward_uds"`
@@ -96,7 +96,7 @@ type VMSpec struct {
 	KernelImage string `json:"kernel_image,omitempty"`
 
 	// Mounts are live virtio-fs host-dir binds (create --mount). The VMM exposes
-	// each Tag→HostPath via krun_add_virtiofs3; lohar mounts Tag at its guest path
+	// each Tag→HostPath via krun_add_virtiofs3; forge mounts Tag at its guest path
 	// (carried separately in the config drive). Boot-time only (libkrun device set
 	// is fixed at boot).
 	Mounts []VMFsMount `json:"mounts,omitempty"`
@@ -115,11 +115,11 @@ type VMSpec struct {
 	LogLevel uint32 `json:"log_level"`
 
 	// NetUDS, if set, attaches a virtio-net device wired to the per-owner gateway
-	// (bhatti-netd) LISTENING on this unixstream socket (krun_add_net_unixstream).
+	// (ahvm-netd) LISTENING on this unixstream socket (krun_add_net_unixstream).
 	// Adding a net device disables libkrun's implicit TSI backend, so the guest's
 	// inet flows over eth0 through the gateway (egress policy + secret substitution
 	// + isolation live there). Empty = the legacy TSI backend. NetMAC is the guest
-	// NIC's MAC (e.g. "52:54:00:00:00:02"); lohar configures eth0's IP/gw/dns from
+	// NIC's MAC (e.g. "52:54:00:00:00:02"); forge configures eth0's IP/gw/dns from
 	// the config drive.
 	NetUDS string `json:"net_uds,omitempty"`
 	NetMAC string `json:"net_mac,omitempty"`

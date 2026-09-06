@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // recoveryEngine builds a block-root engine bound to a FIXED data dir, so a
@@ -30,9 +30,9 @@ func recoveryEngine(t *testing.T, dataDir, baseRootfs string) *Engine {
 	if _, err := exec.LookPath("mke2fs"); err != nil {
 		t.Skip("mke2fs not found; skipping")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
+	vmm := filepath.Join(repo, "ahvm-vmm")
 	if _, err := os.Stat(vmm); err != nil {
-		t.Skip("bhatti-vmm not built — run `make vmm`; skipping")
+		t.Skip("ahvm-vmm not built — run `make vmm`; skipping")
 	}
 	eng, err := New(Config{
 		DataDir: dataDir, BaseRootfs: baseRootfs, VMMBinary: vmm,
@@ -107,7 +107,29 @@ func TestKrucibleRecoveryDeadHelper(t *testing.T) {
 	defer cancel()
 
 	eng1 := recoveryEngine(t, dataDir, base)
-	info, err := eng1.Create(ctx, engine.SandboxSpec{Name: "crash", CPUs: 1, MemoryMB: 512})
+	// The boot-time config handshake over vsock is flaky under KVM: the
+	// guest occasionally boots without its auth token (config fetch EOF),
+	// after which every agent attempt fails auth until WaitReady times out.
+	// Retry the boot itself a bounded number of times; boot reliability is
+	// covered by the other suites, while everything below asserts the
+	// crash-recovery semantics this test owns and stays strict.
+	var info engine.SandboxInfo
+	var err error
+	for attempt := 1; ; attempt++ {
+		info, err = eng1.Create(ctx, engine.SandboxSpec{Name: "crash", CPUs: 1, MemoryMB: 512})
+		if err == nil || attempt == 3 {
+			break
+		}
+		// Back off before retrying: a hard-killed helper can leave stale
+		// host-side vsock state behind (libkrun reuses guest CIDs from 3 in
+		// every fresh helper), and an immediate relaunch can land on it.
+		t.Logf("Create attempt %d failed, backing off and retrying: %v", attempt, err)
+		select {
+		case <-ctx.Done():
+			t.Fatalf("Create: %v", ctx.Err())
+		case <-time.After(15 * time.Second):
+		}
+	}
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

@@ -3,16 +3,16 @@
 ## Problem
 
 A developer sees a broken preview environment. The GitHub PR comment has
-URLs to the app — `spc-pr-682-omni.bhatti.sh` shows a 500 error. They
+URLs to the app — `spc-pr-682-omni.ahvm.sh` shows a 500 error. They
 want to check the logs, restart a service, poke at the database. Today
 their only option is:
 
-1. Have the bhatti CLI installed locally
+1. Have the ahvm CLI installed locally
 2. Have a valid API key configured
-3. Run `bhatti shell spc-pr-682`
+3. Run `ahvm shell spc-pr-682`
 
 Three prerequisites to look at a log file. New team members need
-onboarding to bhatti before they can debug a preview. The CLI is for
+onboarding to ahvm before they can debug a preview. The CLI is for
 operators. A web terminal in the browser is for everyone.
 
 The original `web/index.html` was the first thing built in this project,
@@ -48,7 +48,7 @@ what it grants, not just to the lifetime of the container.
 
 For a capability URL (bearer token), the blast radius is bounded by
 VM isolation: the attacker gets one sandbox, not the host, not other
-sandboxes, not the bhatti API. The credentials *inside* the sandbox
+sandboxes, not the ahvm API. The credentials *inside* the sandbox
 (environment variables, staging DB access) are the real exposure.
 
 ### Security is bounded by the distribution channel
@@ -138,14 +138,14 @@ a scoped, per-sandbox token. The terminal UI lives at a canonical path
 on the API host, independent of published aliases.
 
 ```
-api.bhatti.sh/_shell/sbx_abc123         → xterm.js terminal (new)
-api.bhatti.sh/_shell/sbx_abc123/ws      → WebSocket for terminal I/O (new)
+api.ahvm.sh/_shell/sbx_abc123         → xterm.js terminal (new)
+api.ahvm.sh/_shell/sbx_abc123/ws      → WebSocket for terminal I/O (new)
 ```
 
 ### Why on the API host, not the published URL
 
 The original design put the shell at the published URL
-(`preview.bhatti.sh/_bhatti/shell`). This was rejected because:
+(`preview.ahvm.sh/_ahvm/shell`). This was rejected because:
 
 1. **Couples shell to publish.** You can't debug a sandbox that hasn't
    published any ports. You'd have to publish a dummy port just to get
@@ -153,12 +153,12 @@ The original design put the shell at the published URL
 2. **Pollutes the public proxy.** The `PublicProxyHandler` is the hot
    path for all proxied traffic. Adding shell routing, token validation,
    and WebSocket handling to it adds complexity where it doesn't belong.
-3. **Namespace collision risk.** `/_bhatti/` must never collide with the
+3. **Namespace collision risk.** `/_ahvm/` must never collide with the
    proxied app's routes. Unlikely with the underscore prefix, but
    unnecessary when there's a cleaner option.
 4. **One canonical URL per sandbox.** Three published aliases shouldn't
    mean three shell entry points. The shell URL is
-   `api.bhatti.sh/_shell/:id` regardless of how many ports are published.
+   `api.ahvm.sh/_shell/:id` regardless of how many ports are published.
 
 The API host already handles unauthenticated paths (`/health`,
 `/metrics`). Adding `/_shell/` follows the same pattern: intercept
@@ -200,7 +200,7 @@ the `/_shell/:id/ws` handler is the only code that needs to change.
 The shell token is delivered in the URL fragment, not the query string:
 
 ```
-https://api.bhatti.sh/_shell/sbx_abc123#token=a7f3...9e2d
+https://api.ahvm.sh/_shell/sbx_abc123#token=a7f3...9e2d
                                         ↑
                                   fragment, not ?query
 ```
@@ -210,7 +210,7 @@ https://api.bhatti.sh/_shell/sbx_abc123#token=a7f3...9e2d
 
 ```
 Browser sends:  GET /_shell/sbx_abc123 HTTP/1.1
-                Host: api.bhatti.sh
+                Host: api.ahvm.sh
 
 Not sent:       #token=a7f3...9e2d
 ```
@@ -256,16 +256,16 @@ any server processes.
 ### Generating a shell URL
 
 ```bash
-$ bhatti share dev
-Shell: https://api.bhatti.sh/_shell/sbx_a1b2c3d4#token=a7f3...9e2d
+$ ahvm share dev
+Shell: https://api.ahvm.sh/_shell/sbx_a1b2c3d4#token=a7f3...9e2d
 ```
 
 Or as part of a deploy script with publish:
 
 ```bash
 # deploy.sh
-bhatti publish "$SANDBOX" --port 8000 --alias "$ALIAS_OMNI"
-SHARE_OUT=$(bhatti share "$SANDBOX" --json)
+ahvm publish "$SANDBOX" --port 8000 --alias "$ALIAS_OMNI"
+SHARE_OUT=$(ahvm share "$SANDBOX" --json)
 SHELL_URL=$(echo "$SHARE_OUT" | jq -r '.url')
 ```
 
@@ -276,10 +276,10 @@ SHELL_URL=$(echo "$SHARE_OUT" | jq -r '.url')
 
 | Service | URL |
 |---------|-----|
-| Omni (API) | https://spc-pr-682-omni.bhatti.sh |
-| Pando      | https://spc-pr-682-pando.bhatti.sh |
-| Pulse      | https://spc-pr-682-pulse.bhatti.sh |
-| **Shell**  | https://api.bhatti.sh/_shell/sbx_a1b2c3d4#token=a7f3...9e2d |
+| Omni (API) | https://spc-pr-682-omni.ahvm.sh |
+| Pando      | https://spc-pr-682-pando.ahvm.sh |
+| Pulse      | https://spc-pr-682-pulse.ahvm.sh |
+| **Shell**  | https://api.ahvm.sh/_shell/sbx_a1b2c3d4#token=a7f3...9e2d |
 ```
 
 ### Developer clicks the shell link
@@ -298,7 +298,7 @@ SHELL_URL=$(echo "$SHARE_OUT" | jq -r '.url')
 ### Destroying the preview
 
 ```bash
-bhatti destroy "$SANDBOX" --yes
+ahvm destroy "$SANDBOX" --yes
 ```
 
 Token is stored on the sandbox row. Sandbox destroyed → token hash
@@ -337,16 +337,16 @@ timestamp. The token lives exactly as long as the sandbox.
 Why no expiry: sandboxes are typically ephemeral. They're destroyed when
 no longer needed. Adding expiry means the shell link stops working while
 the sandbox is still live — confusing. If you need to revoke, destroy
-and recreate, or use `bhatti share --revoke`.
+and recreate, or use `ahvm share --revoke`.
 
 ### Every call generates a fresh token
 
-`bhatti share` (and `POST /sandboxes/:id/shell-token`) always generates
+`ahvm share` (and `POST /sandboxes/:id/shell-token`) always generates
 a new token and invalidates the previous one. No create-vs-rotate
 distinction.
 
 This avoids the "token shown once, can't retrieve" problem from the
-original design. Automation scripts call `bhatti share` on every run,
+original design. Automation scripts call `ahvm share` on every run,
 get a fresh URL, and distribute it however they like (PR comment, Slack
 message, internal dashboard). Old tokens die immediately — the caller
 already has the new URL.
@@ -355,16 +355,16 @@ already has the new URL.
 
 | Event | What happens |
 |-------|-------------|
-| `bhatti share dev` | Generate new token. Store hash. Return token + URL. Previous token (if any) immediately invalidated. |
-| `bhatti share dev` (again) | Same: new token, old one dies, new URL returned. |
-| `bhatti share dev --revoke` | Set `shell_token_hash = ''`. Shell access disabled. Active WebSocket sessions are forcibly disconnected. No new connections accepted. |
-| `bhatti destroy dev` | Sandbox row deleted → token hash gone → shell URL returns error. |
+| `ahvm share dev` | Generate new token. Store hash. Return token + URL. Previous token (if any) immediately invalidated. |
+| `ahvm share dev` (again) | Same: new token, old one dies, new URL returned. |
+| `ahvm share dev --revoke` | Set `shell_token_hash = ''`. Shell access disabled. Active WebSocket sessions are forcibly disconnected. No new connections accepted. |
+| `ahvm destroy dev` | Sandbox row deleted → token hash gone → shell URL returns error. |
 
 ---
 
 ## API
 
-### Authenticated endpoints (on `api.bhatti.sh`, behind auth middleware)
+### Authenticated endpoints (on `api.ahvm.sh`, behind auth middleware)
 
 ```
 POST   /sandboxes/:id/shell-token    → generate fresh token (always rotates)
@@ -376,7 +376,7 @@ DELETE /sandboxes/:id/shell-token    → revoke shell access
 ```json
 {
   "token": "a7f3c8e1...9e2d",
-  "url": "https://api.bhatti.sh/_shell/sbx_a1b2c3d4#token=a7f3c8e1...9e2d"
+  "url": "https://api.ahvm.sh/_shell/sbx_a1b2c3d4#token=a7f3c8e1...9e2d"
 }
 ```
 
@@ -397,7 +397,7 @@ Same routing pattern as `stop`, `start`, `exec`, `sessions`.
 
 ### Publish convenience
 
-The `bhatti publish --shell` flag remains as convenience. When set, the
+The `ahvm publish --shell` flag remains as convenience. When set, the
 publish handler also calls the shell token generation logic and includes
 the URL in the response:
 
@@ -406,16 +406,16 @@ the URL in the response:
   "id": "pub_abc",
   "port": 8000,
   "alias": "preview",
-  "url": "https://preview.bhatti.sh",
+  "url": "https://preview.ahvm.sh",
   "shell_token": "a7f3c8e1...9e2d",
-  "shell_url": "https://api.bhatti.sh/_shell/sbx_a1b2c3d4#token=a7f3c8e1...9e2d"
+  "shell_url": "https://api.ahvm.sh/_shell/sbx_a1b2c3d4#token=a7f3c8e1...9e2d"
 }
 ```
 
 This is sugar — it calls the same `POST /shell-token` logic internally.
 The shell URL points to the API host, not the published alias.
 
-### Unauthenticated endpoints (on `api.bhatti.sh`, before auth middleware)
+### Unauthenticated endpoints (on `api.ahvm.sh`, before auth middleware)
 
 ```
 GET  /_shell/:id        → static xterm.js HTML page (no auth)
@@ -848,7 +848,7 @@ is a thin alternative entry point into machinery that already works.
 ### How the two shell paths relate
 
 ```
-bhatti shell dev (CLI)                 bhatti share dev (web)
+ahvm shell dev (CLI)                 ahvm share dev (web)
 ──────────────────────                 ──────────────────────
 Bearer token in WS header              Shell token in first WS message
 /sandboxes/:id/ws                      /_shell/:id/ws
@@ -886,18 +886,18 @@ scrollback on page refresh.
 
 ## CLI
 
-### `bhatti share`
+### `ahvm share`
 
-New command. Visible in `bhatti --help` alongside `shell`.
+New command. Visible in `ahvm --help` alongside `shell`.
 
 ```
-$ bhatti share dev
-Shell: https://api.bhatti.sh/_shell/sbx_a1b2c3d4#token=a7f3...9e2d
+$ ahvm share dev
+Shell: https://api.ahvm.sh/_shell/sbx_a1b2c3d4#token=a7f3...9e2d
 
-$ bhatti share dev --json
-{"token":"a7f3...9e2d","url":"https://api.bhatti.sh/_shell/sbx_a1b2c3d4#token=a7f3...9e2d"}
+$ ahvm share dev --json
+{"token":"a7f3...9e2d","url":"https://api.ahvm.sh/_shell/sbx_a1b2c3d4#token=a7f3...9e2d"}
 
-$ bhatti share dev --revoke
+$ ahvm share dev --revoke
 Shell access revoked.
 ```
 
@@ -908,19 +908,19 @@ fresh URL, distribute it however they need.
 Implementation: resolves sandbox name → ID, calls
 `POST /sandboxes/:id/shell-token`, prints the URL.
 
-### `bhatti publish --shell`
+### `ahvm publish --shell`
 
 Convenience flag. When set, publish also generates a shell token and
 includes the URL in output:
 
 ```
-$ bhatti publish dev --port 8000 --alias preview --shell
-Published: https://preview.bhatti.sh
-Shell:     https://api.bhatti.sh/_shell/sbx_a1b2c3d4#token=a7f3...9e2d
+$ ahvm publish dev --port 8000 --alias preview --shell
+Published: https://preview.ahvm.sh
+Shell:     https://api.ahvm.sh/_shell/sbx_a1b2c3d4#token=a7f3...9e2d
 ```
 
 Calls `POST /sandboxes/:id/shell-token` internally after creating the
-publish rule. Same token generation as `bhatti share`.
+publish rule. Same token generation as `ahvm share`.
 
 ---
 
@@ -1008,7 +1008,7 @@ and stripped from Referer headers per spec.
 | CDN / proxy logs | **Not applicable** — fragment never sent to server | — |
 | Server access logs | **Not applicable** — fragment never sent to server | — |
 | Referrer header | **Not applicable** — fragments stripped per RFC 7231 | — |
-| Shoulder surfing | URL visible in browser bar | Use `bhatti share` to rotate if compromised. |
+| Shoulder surfing | URL visible in browser bar | Use `ahvm share` to rotate if compromised. |
 
 ### Threat: sandbox ID enumeration
 
@@ -1103,7 +1103,7 @@ A leaked shell token grants:
 A leaked shell token does NOT grant:
 - Host machine access
 - Access to other sandboxes
-- Access to the bhatti API (no API key in the sandbox)
+- Access to the ahvm API (no API key in the sandbox)
 - Persistent access (sandbox is ephemeral)
 
 The authorization strength (bearer token) is appropriate when the blast
@@ -1165,8 +1165,8 @@ func (s *Store) ClearShellToken(sandboxID string) error {
 | `pkg/server/shell.html` | New file: embedded xterm.js page (~150 lines) |
 | `pkg/server/exec_handlers.go` | Factor `wsRelay` out of `handleSandboxWS` (move ~40 lines into shared function) |
 | `pkg/server/sandbox_handlers.go` | Add `"shell-token"` case in `handleSandbox` switch |
-| `cmd/bhatti/share_cmd.go` | New file: `bhatti share` command (~40 lines) |
-| `cmd/bhatti/cli.go` | Register `share` command (2 lines) |
+| `cmd/ahvm/share_cmd.go` | New file: `ahvm share` command (~40 lines) |
+| `cmd/ahvm/cli.go` | Register `share` command (2 lines) |
 | `web/index.html` | Delete |
 
 ### Does NOT change
@@ -1180,8 +1180,8 @@ func (s *Store) ClearShellToken(sandboxID string) error {
 | `pkg/agent/*` | Agent protocol unchanged |
 | Thermal manager | `ensureHot` called the same way |
 | Publish rules table | No schema change |
-| Existing `bhatti shell` | Unchanged — authenticated CLI shell |
-| Existing `bhatti publish` | Unchanged without `--shell` flag |
+| Existing `ahvm shell` | Unchanged — authenticated CLI shell |
+| Existing `ahvm publish` | Unchanged without `--shell` flag |
 
 ---
 
@@ -1202,8 +1202,8 @@ Phase 2 — Web shell
   2.5  shell.html (xterm.js page with fragment auth)     (shell.html)
 
 Phase 3 — CLI
-  3.1  bhatti share command                              (share_cmd)
-  3.2  --shell flag on bhatti publish                    (publish_cmd)
+  3.1  ahvm share command                              (share_cmd)
+  3.2  --shell flag on ahvm publish                    (publish_cmd)
 
 Phase 4 — Cleanup
   4.1  Delete web/index.html
@@ -1220,7 +1220,7 @@ Phase 3 depends on Phase 1. Phase 4 is after the feature works.
 - Unit: `/_shell/` routing (valid ID, missing ID, trailing path)
 - Unit: `wsRelay` — mock TerminalConn, verify relay behavior
 - Unit: `shellSessionTracker` — Add/Remove/Done/DisconnectAll
-- Integration: `bhatti share` → connect WebSocket → send auth →
+- Integration: `ahvm share` → connect WebSocket → send auth →
   verify shell works
 - Integration: invalid token → `{"type":"error","error":"unauthorized"}` →
   connection closed

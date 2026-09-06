@@ -1,4 +1,4 @@
-# Bhatti v0.6 — CLI Polish, Local Image Import, Thermal Fixes
+# AHVM v0.6 — CLI Polish, Local Image Import, Thermal Fixes
 
 v0.1 shipped multi-tenant security. v0.2 shipped CLI improvements (cobra,
 --timing, --json). v0.3 shipped images, persistent volumes, named snapshots,
@@ -20,7 +20,7 @@ The CLI has 18+ top-level commands in a flat list. No examples, no long
 descriptions, no command grouping. The `--help` output is a wall of text
 that tells you command names but not how to use them.
 
-Private registry auth is broken. `bhatti image pull ghcr.io/org/img --auth
+Private registry auth is broken. `ahvm image pull ghcr.io/org/img --auth
 user:token` sends creds from CLI to server, but `authn.DefaultKeychain`
 reads the server's `~/.docker/config.json`, not the client's. There's
 no persistent credential store. Rather than rebuilding Docker's credential
@@ -28,13 +28,13 @@ ecosystem, we sidestep the problem entirely: let Docker handle registry
 auth, import the result as a tarball.
 
 The API has routes for stop, start, and inspect that have no CLI commands.
-`bhatti user update` (quota changes) requires raw SQLite.
+`ahvm user update` (quota changes) requires raw SQLite.
 
 The thermal manager has a bug: warm sandboxes never transition to cold.
 The thermal cycle tries to query the guest agent on warm (paused) VMs to
 check idle time. The agent can't respond because vCPUs are frozen. This
 either times out (skipping the warm→cold check forever) or the TCP
-connection attempt wakes the VM back to hot. `bhatti list` also doesn't
+connection attempt wakes the VM back to hot. `ahvm list` also doesn't
 show thermal state or published URLs.
 
 ---
@@ -43,7 +43,7 @@ show thermal state or published URLs.
 
 **Don't reimplement what Docker already does well.** Docker has credential
 helpers, keychain integration, ECR plugins, GHCR token management. All of
-this works. bhatti should consume Docker's output, not compete with it.
+this works. ahvm should consume Docker's output, not compete with it.
 
 **Learn from mass-used CLIs.** Docker groups commands into Management and
 Commands. kubectl groups by workflow. gh groups by domain. All of them use
@@ -69,12 +69,12 @@ means reimplementing what Docker already handles (helpers, keychain,
 platform-specific binaries).
 
 Separately, locally-built images (`docker build -t my-env .`) that were
-never pushed to any registry have no path into bhatti at all.
+never pushed to any registry have no path into ahvm at all.
 
 ### 1.2 Solution: CLI Runs `docker save`, Streams to Server
 
 The user has Docker on their machine (laptop, CI runner, etc.). The
-bhatti server is remote. The image exists locally in Docker — the server
+ahvm server is remote. The image exists locally in Docker — the server
 has never seen it.
 
 The CLI runs `docker save` **locally** on the user's machine, then streams
@@ -88,29 +88,29 @@ consumes.
 
 New code path: CLI `docker save <ref>` (local) → HTTP stream to server →
 server `tarball.ImageFromPath()` → `extractLayer()` (existing) →
-`injectLohar()` (existing) → `createExt4FromDir()` (existing).
+`injectForge()` (existing) → `createExt4FromDir()` (existing).
 
 The flow:
 
 ```bash
 # Private registry image (Docker on user's machine handles auth)
 docker pull ghcr.io/org/private:latest
-bhatti image import ghcr.io/org/private:latest
+ahvm image import ghcr.io/org/private:latest
 # → imported "private-latest" (420MB)
 
 # Locally built image (never pushed to any registry)
 docker build -t my-env .
-bhatti image import my-env
+ahvm image import my-env
 # → imported "my-env" (280MB)
 
 # Custom name
-bhatti image import python:3.12 --name py312
+ahvm image import python:3.12 --name py312
 
 # From a tarball (--name required since there's no ref to derive from)
-bhatti image import --tar /tmp/image.tar --name from-tar
+ahvm image import --tar /tmp/image.tar --name from-tar
 
 # Then use it
-bhatti create --name dev --image private-latest
+ahvm create --name dev --image private-latest
 ```
 
 The name is derived from the ref automatically (same logic as `image pull`):
@@ -125,9 +125,9 @@ This covers:
 - Locally built images — Docker already has them on the user's machine
 - Images from other tools (podman, nerdctl) — they all produce compatible tarballs
 - Air-gapped environments — copy tarball via scp, import with `--tar`
-- CI pipelines — `docker build` + `bhatti image import` in the same job
+- CI pipelines — `docker build` + `ahvm image import` in the same job
 
-### 1.3 `bhatti image import` Command (CLI)
+### 1.3 `ahvm image import` Command (CLI)
 
 The CLI runs `docker save` **locally** on the user's machine, then streams
 the tarball to the server. The `--tar` flag skips the Docker step and
@@ -136,36 +136,36 @@ streams a file directly.
 ```go
 var imageImportCmd = &cobra.Command{
     Use:   "import <docker-ref>",
-    Short: "Import a local Docker image as a bhatti rootfs",
+    Short: "Import a local Docker image as a ahvm rootfs",
     Long: `Import an image that exists in your local Docker daemon. The CLI runs
-'docker save' on your machine and streams the result to the bhatti server,
-which converts it to an ext4 rootfs for use with 'bhatti create --image'.
+'docker save' on your machine and streams the result to the ahvm server,
+which converts it to an ext4 rootfs for use with 'ahvm create --image'.
 
 The image name is derived from the ref automatically (same as 'image pull').
 Use --name to override. Docker must be installed locally.
 
 For private registries, pull with Docker first (which handles auth):
   docker pull ghcr.io/org/private:latest
-  bhatti image import ghcr.io/org/private:latest
+  ahvm image import ghcr.io/org/private:latest
 
 For raw tarballs (no Docker needed), use --tar:
-  bhatti image import --tar /path/to/image.tar --name my-image`,
+  ahvm image import --tar /path/to/image.tar --name my-image`,
     Example: `  # Import from local Docker (name derived from ref)
-  bhatti image import python:3.12
+  ahvm image import python:3.12
 
   # Private image (pull with Docker first, it handles auth)
   docker pull ghcr.io/org/private:latest
-  bhatti image import ghcr.io/org/private:latest
+  ahvm image import ghcr.io/org/private:latest
 
   # Locally built image
   docker build -t my-env .
-  bhatti image import my-env
+  ahvm image import my-env
 
   # Custom name
-  bhatti image import python:3.12 --name py312
+  ahvm image import python:3.12 --name py312
 
   # From a raw tarball (--name required)
-  bhatti image import --tar /tmp/image.tar --name from-tar`,
+  ahvm image import --tar /tmp/image.tar --name from-tar`,
     Args: cobra.MaximumNArgs(1),
     RunE: func(cmd *cobra.Command, args []string) error {
         setupTiming(cmd)
@@ -322,7 +322,7 @@ func (s *Server) handleImageImport(w http.ResponseWriter, r *http.Request, user 
     }
 
     // Write streamed tarball to temp file (don't hold multi-GB in memory)
-    tmpFile, err := os.CreateTemp("", "bhatti-import-*.tar")
+    tmpFile, err := os.CreateTemp("", "ahvm-import-*.tar")
     if err != nil {
         errRespInternal(w, r, "create temp file", err)
         return
@@ -338,13 +338,13 @@ func (s *Server) handleImageImport(w http.ResponseWriter, r *http.Request, user 
     tmpFile.Close()
 
     // Convert tarball \u2192 ext4
-    loharPath := filepath.Join(s.dataDir, "lohar")
+    forgePath := filepath.Join(s.dataDir, "forge")
     outputDir := filepath.Join(s.dataDir, "images", user.ID)
     os.MkdirAll(outputDir, 0700)
     outputPath := filepath.Join(outputDir, name+".ext4")
 
     config, err := oci.ImportFromTarball(
-        r.Context(), tmpFile.Name(), outputPath, loharPath)
+        r.Context(), tmpFile.Name(), outputPath, forgePath)
     if err != nil {
         os.Remove(outputPath)
         errResp(w, 400, "import failed: "+err.Error())
@@ -394,12 +394,12 @@ user has Docker installed.
 
 New function in `pkg/oci/oci.go`. Reads a `docker save` tarball using
 `go-containerregistry/pkg/v1/tarball`, then runs the same pipeline as
-`PullAndConvert` (extract layers → inject lohar → create ext4).
+`PullAndConvert` (extract layers → inject forge → create ext4).
 
 ```go
 // ImportFromTarball converts a Docker save tarball to an ext4 rootfs.
 // The tarball can be produced by 'docker save <ref> -o <file>'.
-func ImportFromTarball(ctx context.Context, tarballPath, outputPath, loharPath string) (*Config, error) {
+func ImportFromTarball(ctx context.Context, tarballPath, outputPath, forgePath string) (*Config, error) {
     // Open the tarball as an OCI image.
     // docker save produces a tarball with a manifest.json; the tarball
     // package handles both single-image and multi-image tarballs.
@@ -416,7 +416,7 @@ func ImportFromTarball(ctx context.Context, tarballPath, outputPath, loharPath s
     config := extractConfig(cfgFile)
 
     // Flatten layers to temp directory
-    tmpDir, err := os.MkdirTemp("", "bhatti-import-*")
+    tmpDir, err := os.MkdirTemp("", "ahvm-import-*")
     if err != nil {
         return nil, err
     }
@@ -436,9 +436,9 @@ func ImportFromTarball(ctx context.Context, tarballPath, outputPath, loharPath s
         }
     }
 
-    // Inject lohar agent
-    if err := injectLohar(tmpDir, loharPath); err != nil {
-        return nil, fmt.Errorf("inject lohar: %w", err)
+    // Inject forge agent
+    if err := injectForge(tmpDir, forgePath); err != nil {
+        return nil, fmt.Errorf("inject forge: %w", err)
     }
 
     // Validate
@@ -476,15 +476,15 @@ process. The shell-out approach:
 
 ### 1.7 What This Replaces
 
-The entire `bhatti login` / `bhatti logout` / credential store design from
-the original plan is removed. No `~/.bhatti/credentials.yaml`, no
+The entire `ahvm login` / `ahvm logout` / credential store design from
+the original plan is removed. No `~/.ahvm/credentials.yaml`, no
 `extractRegistry()`, no credential resolution chain, no per-registry
 management.
 
-The existing `bhatti image pull` continues to work for **public** registry
+The existing `ahvm image pull` continues to work for **public** registry
 images (Docker Hub public, etc.). For private images, the path is:
 `docker pull` on the user's machine (Docker handles auth) →
-`bhatti image import <ref>` (CLI runs `docker save` locally, streams to
+`ahvm image import <ref>` (CLI runs `docker save` locally, streams to
 server).
 
 ### 1.8 `image pull` Auth Errors Guide to `import`
@@ -503,13 +503,13 @@ if strings.Contains(task.Error, "unauthorized") ||
     fmt.Fprintf(os.Stderr, "This image may require authentication.\n")
     fmt.Fprintf(os.Stderr, "Pull it with Docker locally, then import:\n")
     fmt.Fprintf(os.Stderr, "  docker pull %s\n", ref)
-    fmt.Fprintf(os.Stderr, "  bhatti image import %s\n", ref)
+    fmt.Fprintf(os.Stderr, "  ahvm image import %s\n", ref)
     return fmt.Errorf("pull failed: authentication required")
 }
 return fmt.Errorf("pull failed: %s", task.Error)
 ```
 
-This means a user who tries `bhatti image pull ghcr.io/org/private:latest`
+This means a user who tries `ahvm image pull ghcr.io/org/private:latest`
 gets a clear next step instead of an opaque "unauthorized" error.
 
 ### 1.9 Image Sharing
@@ -574,13 +574,13 @@ func (s *Store) ListImages(userID string) ([]ImageRecord, error) {
 **CLI command** (admin, operates on local DB like `user` commands):
 
 ```bash
-sudo bhatti image share spc-golden --user kowshik --user sumo
+sudo ahvm image share spc-golden --user kowshik --user sumo
 # Shared "spc-golden" with: kowshik, sumo
 
-sudo bhatti image unshare spc-golden --user sumo
+sudo ahvm image unshare spc-golden --user sumo
 # Unshared "spc-golden" from: sumo
 
-sudo bhatti image share spc-golden --list
+sudo ahvm image share spc-golden --list
 # spc-golden shared with: kowshik, sumo
 ```
 
@@ -588,8 +588,8 @@ sudo bhatti image share spc-golden --list
 var imageShareCmd = &cobra.Command{
     Use:   "share <image-name>",
     Short: "Share an image with other users",
-    Example: `  sudo bhatti image share spc-golden --user kowshik --user sumo
-  sudo bhatti image share spc-golden --list`,
+    Example: `  sudo ahvm image share spc-golden --user kowshik --user sumo
+  sudo ahvm image share spc-golden --list`,
     Args: cobra.ExactArgs(1),
     RunE: func(cmd *cobra.Command, args []string) error {
         st := openLocalStore()
@@ -648,7 +648,7 @@ func (s *Store) GetUserByName(name string) (*User, error)
 
 - `TestImportFromTarball` — create a tarball with known layers (reuse
   the test helpers in `oci_test.go` that build tar layers), import,
-  verify ext4 output exists and contains expected files + lohar binary
+  verify ext4 output exists and contains expected files + forge binary
 - `TestImportPreservesConfig` — verify OCI config (env, workdir, cmd)
   is extracted from tarball correctly
 - `TestImportMultiLayerWhiteouts` — tarball with whiteout entries,
@@ -657,7 +657,7 @@ func (s *Store) GetUserByName(name string) (*User, error)
   verify image appears in store
 - `TestImportDuplicateName` — import with existing name → 409
 - `TestPullAuthErrorSuggestsImport` — verify error message includes
-  `docker pull` + `bhatti image import` guidance
+  `docker pull` + `ahvm image import` guidance
 - `TestImageShareVisibility` — share image with user B, verify
   user B can GetImage and ListImages sees it
 - `TestImageShareIsolation` — share with user B, verify user C
@@ -693,8 +693,8 @@ Resources:
 Setup & Admin:
   setup       Configure CLI endpoint and API key
   user        Manage users (requires DB access)
-  serve       Start the bhatti daemon
-  update      Update bhatti CLI to the latest version
+  serve       Start the ahvm daemon
+  update      Update ahvm CLI to the latest version
 
 Additional Commands:
   inspect     Show sandbox details
@@ -762,22 +762,22 @@ var createCmd = &cobra.Command{
     Long: `Create a new sandbox VM. Each sandbox is an isolated Linux environment
 with its own kernel, filesystem, and network.`,
     Example: `  # Basic sandbox
-  bhatti create --name dev
+  ahvm create --name dev
 
   # Custom resources
-  bhatti create --name ml --cpus 4 --memory 4096
+  ahvm create --name ml --cpus 4 --memory 4096
 
   # With environment variables and init script
-  bhatti create --name api --env API_KEY=sk-abc --init "npm install"
+  ahvm create --name api --env API_KEY=sk-abc --init "npm install"
 
   # From a custom image
-  bhatti create --name py --image python-3.12
+  ahvm create --name py --image python-3.12
 
   # From a template
-  bhatti create --name exp --template ml-env
+  ahvm create --name exp --template ml-env
 
   # With a persistent volume
-  bhatti create --name work --volume workspace:/workspace`,
+  ahvm create --name work --volume workspace:/workspace`,
 }
 
 var execCmd = &cobra.Command{
@@ -785,19 +785,19 @@ var execCmd = &cobra.Command{
     Short: "Run a command in a sandbox",
     Long: `Execute a command inside a sandbox. The exit code is forwarded.
 Sleeping sandboxes wake automatically.`,
-    Example: `  bhatti exec dev -- echo hello
-  bhatti exec dev echo hello           # -- is optional
-  bhatti exec dev -- sudo apt-get install -y ripgrep
-  bhatti exec dev --timeout 60 -- long-running-script.sh`,
+    Example: `  ahvm exec dev -- echo hello
+  ahvm exec dev echo hello           # -- is optional
+  ahvm exec dev -- sudo apt-get install -y ripgrep
+  ahvm exec dev --timeout 60 -- long-running-script.sh`,
 }
 
 var shellCmd = &cobra.Command{
     Use:   "shell <sandbox>",
     Short: "Open an interactive shell",
     Long: `Open an interactive terminal inside the sandbox. Ctrl+\ to detach —
-the shell keeps running. Reconnect with 'bhatti shell' again.`,
-    Example: `  bhatti shell dev
-  bhatti sh dev        # alias`,
+the shell keeps running. Reconnect with 'ahvm shell' again.`,
+    Example: `  ahvm shell dev
+  ahvm sh dev        # alias`,
 }
 
 var destroyCmd = &cobra.Command{
@@ -805,16 +805,16 @@ var destroyCmd = &cobra.Command{
     Short: "Destroy a sandbox",
     Long:  `Permanently destroy a sandbox and all its data. This cannot be undone.
 Persistent volumes are detached but not deleted.`,
-    Example: `  bhatti destroy dev
-  bhatti rm dev        # alias`,
+    Example: `  ahvm destroy dev
+  ahvm rm dev        # alias`,
 }
 
 var listCmd = &cobra.Command{
     Use:   "list",
     Short: "List sandboxes",
-    Example: `  bhatti list
-  bhatti ls            # alias
-  bhatti ls --json`,
+    Example: `  ahvm list
+  ahvm ls            # alias
+  ahvm ls --json`,
 }
 
 var imageCmd = &cobra.Command{
@@ -824,35 +824,35 @@ var imageCmd = &cobra.Command{
 Pull public images from registries, or import private/local images
 from your local Docker daemon.`,
     Example: `  # Pull a public image (server pulls from registry)
-  bhatti image pull python:3.12
+  ahvm image pull python:3.12
 
   # Import from your local Docker (private or locally built)
   docker pull ghcr.io/org/private:latest
-  bhatti image import ghcr.io/org/private:latest
+  ahvm image import ghcr.io/org/private:latest
 
   # Import a local build
   docker build -t my-env .
-  bhatti image import my-env
+  ahvm image import my-env
 
   # Save a running sandbox as an image
-  bhatti image save dev --name my-custom-env
+  ahvm image save dev --name my-custom-env
 
   # List images
-  bhatti image list`,
+  ahvm image list`,
 }
 
 var imagePullCmd = &cobra.Command{
     Use:   "pull <ref>",
     Short: "Pull an OCI/Docker image from a public registry",
     Long: `Pull a public image from any OCI-compatible registry. The server pulls
-the image and converts it to an ext4 rootfs for 'bhatti create --image'.
+the image and converts it to an ext4 rootfs for 'ahvm create --image'.
 
-For private registries, use 'bhatti image import' instead:
+For private registries, use 'ahvm image import' instead:
   docker pull ghcr.io/org/private:latest
-  bhatti image import ghcr.io/org/private:latest`,
-    Example: `  bhatti image pull python:3.12
-  bhatti image pull ubuntu:24.04 --name ubuntu
-  bhatti image pull node:22-slim --name node-22`,
+  ahvm image import ghcr.io/org/private:latest`,
+    Example: `  ahvm image pull python:3.12
+  ahvm image pull ubuntu:24.04 --name ubuntu
+  ahvm image pull node:22-slim --name node-22`,
 }
 
 var volumeCmd = &cobra.Command{
@@ -860,17 +860,17 @@ var volumeCmd = &cobra.Command{
     Short: "Manage persistent volumes",
     Long: `Persistent volumes are ext4 filesystems that survive sandbox destruction.
 Attach them with '--volume name:/mount' on create.`,
-    Example: `  bhatti volume create --name workspace --size 5120
-  bhatti create --name dev --volume workspace:/workspace
-  bhatti volume resize workspace --size 10240
-  bhatti volume list`,
+    Example: `  ahvm volume create --name workspace --size 5120
+  ahvm create --name dev --volume workspace:/workspace
+  ahvm volume resize workspace --size 10240
+  ahvm volume list`,
 }
 
 var volumeCreateCmd = &cobra.Command{
     Use:   "create",
     Short: "Create a persistent volume",
-    Example: `  bhatti volume create --name workspace --size 5120
-  bhatti volume create --name data --size 20480`,
+    Example: `  ahvm volume create --name workspace --size 5120
+  ahvm volume create --name data --size 20480`,
 }
 
 var snapshotCmd = &cobra.Command{
@@ -878,47 +878,47 @@ var snapshotCmd = &cobra.Command{
     Short: "Manage named VM snapshots",
     Long: `Snapshots capture the entire VM state: memory, CPU, disk. Resume
 produces an exact continuation — processes running, files open.`,
-    Example: `  bhatti snapshot create dev --name dev-ready
-  bhatti snapshot resume dev-ready --name dev-2
-  bhatti snapshot list`,
+    Example: `  ahvm snapshot create dev --name dev-ready
+  ahvm snapshot resume dev-ready --name dev-2
+  ahvm snapshot list`,
 }
 
 var publishCmd = &cobra.Command{
     Use:   "publish <sandbox> -p <port>",
     Short: "Publish a sandbox port with a public URL",
-    Example: `  bhatti publish dev -p 3000
-  bhatti publish dev -p 3000 -a my-app`,
+    Example: `  ahvm publish dev -p 3000
+  ahvm publish dev -p 3000 -a my-app`,
 }
 
 var secretCmd = &cobra.Command{
     Use:   "secret <set|list|delete>",
     Short: "Manage encrypted secrets",
-    Example: `  bhatti secret set API_KEY sk-abc123
-  bhatti secret list
-  bhatti secret delete API_KEY`,
+    Example: `  ahvm secret set API_KEY sk-abc123
+  ahvm secret list
+  ahvm secret delete API_KEY`,
 }
 
 var fileCmd = &cobra.Command{
     Use:   "file <read|write|ls>",
     Short: "Read, write, and list files in a sandbox",
-    Example: `  bhatti file read dev /workspace/app.js
-  echo 'hello' | bhatti file write dev /workspace/greeting.txt
-  bhatti file ls dev /workspace/`,
+    Example: `  ahvm file read dev /workspace/app.js
+  echo 'hello' | ahvm file write dev /workspace/greeting.txt
+  ahvm file ls dev /workspace/`,
 }
 
 var inspectCmd = &cobra.Command{
     Use:   "inspect <sandbox>",
     Short: "Show sandbox details",
-    Example: `  bhatti inspect dev
-  bhatti inspect dev --json`,
+    Example: `  ahvm inspect dev
+  ahvm inspect dev --json`,
 }
 
 var setupCmd = &cobra.Command{
     Use:   "setup",
     Short: "Configure CLI endpoint and API key",
     Long: `Interactive setup for remote CLI users. Prompts for the API endpoint
-and API key, saves to ~/.bhatti/config.yaml, and tests the connection.`,
-    Example: `  bhatti setup`,
+and API key, saves to ~/.ahvm/config.yaml, and tests the connection.`,
+    Example: `  ahvm setup`,
 }
 
 var userCmd = &cobra.Command{
@@ -926,10 +926,10 @@ var userCmd = &cobra.Command{
     Short: "Manage users (requires DB access)",
     Long: `User management operates directly on the local SQLite database.
 Run on the server, not remotely.`,
-    Example: `  sudo bhatti user create --name alice --max-sandboxes 10
-  sudo bhatti user list
-  sudo bhatti user rotate-key alice
-  sudo bhatti user update alice --max-sandboxes 20`,
+    Example: `  sudo ahvm user create --name alice --max-sandboxes 10
+  sudo ahvm user list
+  sudo ahvm user rotate-key alice
+  sudo ahvm user update alice --max-sandboxes 20`,
 }
 ```
 
@@ -937,17 +937,17 @@ Run on the server, not remotely.`,
 
 ```go
 var rootCmd = &cobra.Command{
-    Use:   "bhatti",
+    Use:   "ahvm",
     Short: "Firecracker microVM orchestrator",
-    Long: `bhatti creates isolated Linux VMs in seconds. Each sandbox has its own
+    Long: `ahvm creates isolated Linux VMs in seconds. Each sandbox has its own
 kernel, filesystem, and network. Paused sandboxes resume in under 3ms.
 
 Quick start:
-  bhatti setup                         # configure endpoint + API key
-  bhatti create --name dev             # create a sandbox
-  bhatti exec dev -- echo hello        # run a command
-  bhatti shell dev                     # interactive shell (Ctrl+\ to detach)
-  bhatti destroy dev                   # clean up`,
+  ahvm setup                         # configure endpoint + API key
+  ahvm create --name dev             # create a sandbox
+  ahvm exec dev -- echo hello        # run a command
+  ahvm shell dev                     # interactive shell (Ctrl+\ to detach)
+  ahvm destroy dev                   # clean up`,
     SilenceUsage: true,
 }
 ```
@@ -960,13 +960,13 @@ shell := os.Getenv("SHELL")
 switch {
 case strings.HasSuffix(shell, "/zsh"):
     fmt.Println("\nEnable completions:")
-    fmt.Println("  echo 'source <(bhatti completion zsh)' >> ~/.zshrc")
+    fmt.Println("  echo 'source <(ahvm completion zsh)' >> ~/.zshrc")
 case strings.HasSuffix(shell, "/bash"):
     fmt.Println("\nEnable completions:")
-    fmt.Println("  echo 'source <(bhatti completion bash)' >> ~/.bashrc")
+    fmt.Println("  echo 'source <(ahvm completion bash)' >> ~/.bashrc")
 case strings.HasSuffix(shell, "/fish"):
     fmt.Println("\nEnable completions:")
-    fmt.Println("  bhatti completion fish > ~/.config/fish/completions/bhatti.fish")
+    fmt.Println("  ahvm completion fish > ~/.config/fish/completions/ahvm.fish")
 }
 ```
 
@@ -974,7 +974,7 @@ case strings.HasSuffix(shell, "/fish"):
 
 ## Part 3 — Thermal Manager Fix + List Enrichment (Issue #3)
 
-Three related bugs reported in [#3](https://github.com/sahil-shubham/bhatti/issues/3).
+Three related bugs reported in [#3](https://github.com/mariobm/agent-house/issues/3).
 
 ### 3.1 Bug: Warm sandboxes never transition to cold
 
@@ -1100,7 +1100,7 @@ Key changes:
 - **`lastActivity.Store` on pause** — ensures the warm→cold timeout
   measures from pause time, not from the last user interaction.
 
-### 3.2 `bhatti list` shows thermal state
+### 3.2 `ahvm list` shows thermal state
 
 Enrich the `GET /sandboxes` response with thermal state from the engine.
 The `/metrics` endpoint already does this pattern.
@@ -1162,7 +1162,7 @@ for _, sb := range sandboxes {
 }
 ```
 
-### 3.3 `bhatti list` shows published URLs
+### 3.3 `ahvm list` shows published URLs
 
 Add a store method to batch-fetch publish rules for a user, then include
 them in the list response.
@@ -1260,16 +1260,16 @@ for _, sb := range sandboxes {
 Commands where the API route already exists but there's no CLI.
 Zero server changes.
 
-### 4.1 `bhatti stop`
+### 4.1 `ahvm stop`
 
 ```go
 var stopCmd = &cobra.Command{
     Use:   "stop <sandbox>",
     Short: "Snapshot and stop a sandbox",
     Long: `Pause the sandbox and save a snapshot to disk. Resume later with
-'bhatti start'. Stopped sandboxes use zero CPU and memory.`,
-    Example: `  bhatti stop dev
-  bhatti start dev     # resume later`,
+'ahvm start'. Stopped sandboxes use zero CPU and memory.`,
+    Example: `  ahvm stop dev
+  ahvm start dev     # resume later`,
     Args:              cobra.ExactArgs(1),
     ValidArgsFunction: completeSandboxNames,
     RunE: func(cmd *cobra.Command, args []string) error {
@@ -1291,14 +1291,14 @@ var stopCmd = &cobra.Command{
 }
 ```
 
-### 4.2 `bhatti start`
+### 4.2 `ahvm start`
 
 ```go
 var startCmd = &cobra.Command{
     Use:   "start <sandbox>",
     Short: "Resume a stopped sandbox",
     Long: `Resume a sandbox from its snapshot. Continues exactly where it left off.`,
-    Example: `  bhatti start dev`,
+    Example: `  ahvm start dev`,
     Args:              cobra.ExactArgs(1),
     ValidArgsFunction: completeSandboxNames,
     RunE: func(cmd *cobra.Command, args []string) error {
@@ -1320,15 +1320,15 @@ var startCmd = &cobra.Command{
 }
 ```
 
-### 4.3 `bhatti inspect`
+### 4.3 `ahvm inspect`
 
 ```go
 var inspectCmd = &cobra.Command{
     Use:     "inspect <sandbox>",
     Short:   "Show sandbox details",
     Aliases: []string{"info"},
-    Example: `  bhatti inspect dev
-  bhatti inspect dev --json`,
+    Example: `  ahvm inspect dev
+  ahvm inspect dev --json`,
     Args:              cobra.ExactArgs(1),
     ValidArgsFunction: completeSandboxNames,
     RunE: func(cmd *cobra.Command, args []string) error {
@@ -1395,7 +1395,7 @@ user quotas is the most common admin task (someone needs more sandboxes,
 more memory, etc.) and currently requires:
 
 ```bash
-sqlite3 /var/lib/bhatti/state.db "UPDATE users SET max_sandboxes = 20 WHERE name = 'alice'"
+sqlite3 /var/lib/ahvm/state.db "UPDATE users SET max_sandboxes = 20 WHERE name = 'alice'"
 ```
 
 ### 5.1 Store Method
@@ -1449,8 +1449,8 @@ var userUpdateCmd = &cobra.Command{
     Use:   "update <name>",
     Short: "Update user quotas",
     Long:  `Update resource limits for a user. Only specified flags are changed.`,
-    Example: `  sudo bhatti user update alice --max-sandboxes 20
-  sudo bhatti user update alice --max-cpus 8 --max-memory 8192`,
+    Example: `  sudo ahvm user update alice --max-sandboxes 20
+  sudo ahvm user update alice --max-cpus 8 --max-memory 8192`,
     Args: cobra.ExactArgs(1),
     RunE: func(cmd *cobra.Command, args []string) error {
         st := openLocalStore()
@@ -1643,20 +1643,20 @@ and examples from the start.
 
 ## What's Explicitly Not in This Plan
 
-**Registry auth (`bhatti login` / credential store).** Replaced by
-`bhatti image import`. The user's local Docker handles registry auth;
+**Registry auth (`ahvm login` / credential store).** Replaced by
+`ahvm image import`. The user's local Docker handles registry auth;
 the CLI runs `docker save` locally and streams the tarball to the server.
 
-**`bhatti health` / `bhatti metrics` CLI commands.** Reachable via
+**`ahvm health` / `ahvm metrics` CLI commands.** Reachable via
 `curl localhost:8080/health` and `curl localhost:8080/metrics`. Not
 worth CLI surface area for how rarely they're used.
 
-**`bhatti template` CLI commands.** Templates are available via the API.
+**`ahvm template` CLI commands.** Templates are available via the API.
 The primary use case (shared golden images) is solved by `image share`.
 Full template CRUD via CLI is low-priority — defer until there's a
 workflow that image sharing + `--image` on create doesn't cover.
 
-**`bhatti admin status` / `bhatti admin gc`.** GC runs at daemon startup.
+**`ahvm admin status` / `ahvm admin gc`.** GC runs at daemon startup.
 Status is covered by metrics. Not worth the code for the audience size.
 
 **Color output.** Adds a dependency and a `NO_COLOR` / `TERM` detection
@@ -1664,7 +1664,7 @@ matrix. Defer to v0.7.
 
 **`--format` / `-o` output modes.** `--json` covers the programmatic case.
 
-**`bhatti logs`.** Requires new storage (exec results aren't persisted).
+**`ahvm logs`.** Requires new storage (exec results aren't persisted).
 
 **Auto-generated docs via cobra/doc.** Nice-to-have, not blocking. The
 examples in `--help` are the primary documentation.

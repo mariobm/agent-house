@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build libkrucible (our libkrun fork) and assemble a local install prefix that
 # `make vmm` links against via PKG_CONFIG_PATH. Built with --no-default-features
-# (no bundled init — lohar is /init.krun), which skips the init cross-compile so
+# (no bundled init — forge is /init.krun), which skips the init cross-compile so
 # no lld/Debian-sysroot is needed. libkrunfw is taken from Homebrew at runtime.
 #
 # Usage: scripts/krucible-build-lib.sh [LIBKRUCIBLE_SRC] [PREFIX]
@@ -11,11 +11,11 @@ PREFIX="${2:-$SRC/_install}"
 OS="$(uname -s)"
 
 echo "==> building libkrucible at $SRC (release, no-default-features)"
-# --no-default-features drops the bundled init (lohar is /init.krun) so we don't
+# --no-default-features drops the bundled init (forge is /init.krun) so we don't
 # need the init cross-compile toolchain. --features blk,net enables the virtio-block
 # device (block-root/cold tier) AND virtio-net over a unixstream socket
-# (krun_add_net_unixstream), which the bhatti-netd gateway backend requires. net
-# is additive (adds the symbol; blk-only bhatti-vmm is unaffected). Original: blk
+# (krun_add_net_unixstream), which the ahvm-netd gateway backend requires. net
+# is additive (adds the symbol; blk-only ahvm-vmm is unaffected). Original: blk
 # device + krun_set_root_disk/add_disk2 — the block/qcow2 root the cold tier
 # snapshots (see docs/PLAN-krucible-cold-tier.md §1).
 ( cd "$SRC" && CC_LINUX=cc cargo build --release -p libkrun --no-default-features --features blk,net )

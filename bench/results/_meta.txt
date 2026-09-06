@@ -2,8 +2,8 @@ Bench run metadata
 ==================
 Timestamp:  2026-05-02T13:27:06Z
 Host:       agni-01 (Hetzner AX102, AMD Ryzen 9, x86_64, btrfs, NVMe)
-Server:     bhatti v1.11.0
-CLI:        bhatti v1.11.0 (same host as daemon, loopback)
+Server:     ahvm v1.11.0
+CLI:        ahvm v1.11.0 (same host as daemon, loopback)
 Iterations: 20 (lifecycle/warm/publish-wake: 3-5; concurrent: 10 reps)
 
 Methodology

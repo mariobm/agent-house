@@ -6,8 +6,8 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/sahil-shubham/bhatti/pkg/forward"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/forward"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // handleSandboxForward manages host↔guest TCP forwards (POST start, GET list,

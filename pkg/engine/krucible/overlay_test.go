@@ -11,7 +11,7 @@ import (
 )
 
 // TestKrucibleCreateOverlay validates the qcow2 overlay create primitive — the
-// storage layer's foundation. It exercises `bhatti-vmm create-overlay`, which
+// storage layer's foundation. It exercises `ahvm-vmm create-overlay`, which
 // calls krun_create_disk_overlay → imago (the same library that opens these
 // images at boot): a raw base + an overlay over it must yield a small, valid
 // qcow2 v3 that records the backing — instant + host-FS-independent, no qemu-img.
@@ -21,9 +21,9 @@ func TestKrucibleCreateOverlay(t *testing.T) {
 	if !hasLibkrun() {
 		t.Skip("libkrun not installed (pkg-config libkrun); skipping")
 	}
-	vmm := filepath.Join(repo, "bhatti-vmm")
+	vmm := filepath.Join(repo, "ahvm-vmm")
 	if _, err := os.Stat(vmm); err != nil {
-		t.Skip("bhatti-vmm not built — run `make vmm`; skipping")
+		t.Skip("ahvm-vmm not built — run `make vmm`; skipping")
 	}
 
 	dir := t.TempDir()

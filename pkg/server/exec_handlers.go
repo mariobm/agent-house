@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
-	"github.com/sahil-shubham/bhatti/pkg/engine"
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/agent/proto"
+	"github.com/mariobm/agent-house/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 type execReq struct {
@@ -62,7 +62,7 @@ func (s *Server) handleSandboxExec(w http.ResponseWriter, r *http.Request, id st
 		}
 		outputFile := req.OutputFile
 		if outputFile == "" {
-			outputFile = fmt.Sprintf("/tmp/bhatti-exec-%s.log", genID()[:8])
+			outputFile = fmt.Sprintf("/tmp/ahvm-exec-%s.log", genID()[:8])
 		}
 		// Use a short timeout — launch should be near-instant
 		detachCtx, detachCancel := context.WithTimeout(r.Context(), 30*time.Second)

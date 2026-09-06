@@ -1,16 +1,13 @@
-# Bhatti — Architecture
+# AHVM — Architecture
 
 ## Naming
 
-**Bhatti** (भट्टी) means furnace — the system that manages fire, provides
-the environment where work happens.
-
-**Lohar** (लोहार) means blacksmith — the one who works inside the bhatti.
-The guest agent that runs as PID 1 inside every microVM.
+**AHVM** means **Agent House Virtual Machine**. This fork retains `forge` as
+the internal name of the guest agent that runs as PID 1 inside every microVM.
 
 ```
-bhatti    — the daemon + CLI. Orchestrates sandboxes, exposes the API.
-lohar     — the guest agent. Runs inside each sandbox as PID 1.
+ahvm    — the daemon + CLI. Orchestrates sandboxes, exposes the API.
+forge     — the guest agent. Runs inside each sandbox as PID 1.
 sandbox   — a Firecracker microVM (or Docker container on macOS).
 ```
 
@@ -23,7 +20,7 @@ sandbox   — a Firecracker microVM (or Docker container on macOS).
 │  Host  (Pi 5 / arm64 or x86_64 Linux / any KVM-capable host)     │
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────────┐  │
-│  │  bhatti daemon  (bhatti serve)                              │  │
+│  │  ahvm daemon  (ahvm serve)                              │  │
 │  │                                                             │  │
 │  │  ┌──────────┐  ┌───────────────┐  ┌──────────────────────┐  │  │
 │  │  │ REST/WS  │  │ Engine        │  │ Store (SQLite)       │  │  │
@@ -51,16 +48,16 @@ sandbox   — a Firecracker microVM (or Docker container on macOS).
 │  │  │  vol-*.ext4 (volumes)        │  │                        │  │
 │  │  │                              │  │                        │  │
 │  │  │  ┌────────────────────────┐  │  │                        │  │
-│  │  │  │  lohar (PID 1)         │◄─┤──┘                        │  │
+│  │  │  │  forge (PID 1)         │◄─┤──┘                        │  │
 │  │  │  │  TCP :1024 (control)   │  │                           │  │
 │  │  │  │  TCP :1025 (forward)   │  │                           │  │
 │  │  │  │  session registry      │  │                           │  │
 │  │  │  │  file handlers         │  │                           │  │
 │  │  │  │  scrollback buffers    │  │                           │  │
 │  │  │  └────────────────────────┘  │                           │  │
-│  │  │  user: lohar  /workspace     │                           │  │
+│  │  │  user: forge  /workspace     │                           │  │
 │  │  └──────────────────────────────┘                           │  │
-│  │  tapXXXXXXXX ─── brbhatti0 (bridge) ─── iptables NAT        │  │
+│  │  tapXXXXXXXX ─── brahvm0 (bridge) ─── iptables NAT        │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -72,7 +69,7 @@ sandbox   — a Firecracker microVM (or Docker container on macOS).
 ### Consumer's view
 
 Consumers see two operations: create and destroy. Everything between is
-bhatti's job. A sandbox is always `"running"` from the API's perspective.
+ahvm's job. A sandbox is always `"running"` from the API's perspective.
 
 ```
 Create ──► sandbox exists (always "running") ──► Destroy
@@ -83,7 +80,7 @@ Create ──► sandbox exists (always "running") ──► Destroy
 
 ### Thermal states (internal)
 
-Bhatti manages three thermal states invisibly:
+AHVM manages three thermal states invisibly:
 
 ```
 Hot ◄──~400µs──► Warm ◄──~50ms──► Cold
@@ -184,7 +181,7 @@ engine-level `sync.RWMutex` protects only the VM map — not individual state.
 
 ## Wire Protocol
 
-Binary framing over TCP (or vsock). All host↔lohar communication.
+Binary framing over TCP (or vsock). All host↔forge communication.
 
 ```
 ┌────────────────┬───────────┬──────────────────────┐
@@ -229,7 +226,7 @@ Supports server-side truncation via `offset` (1-indexed line), `limit` (max line
 and `max_bytes` (byte budget) — whichever limit hits first stops the read.
 Without these parameters, streams the full file (backward compatible).
 Rejects directories and non-regular files. Cancellable via context (closes
-connection, lohar gets broken pipe).
+connection, forge gets broken pipe).
 
 **Write**: `FILE_WRITE_REQ` (path, mode, size) → `STDIN` frames → `FILE_WRITE_RESP`.
 Atomic: writes to temp file, then renames. Readers never see partial content.
@@ -341,42 +338,42 @@ emitting as NDJSON events.
 
 ## CLI
 
-Same binary as daemon. `bhatti serve` starts daemon, everything else is CLI.
+Same binary as daemon. `ahvm serve` starts daemon, everything else is CLI.
 
 ```
-bhatti serve                        start daemon
+ahvm serve                        start daemon
 
-bhatti create [--name N] [--cpus C] [--memory M] [--env K=V,K=V] [--init CMD]
-bhatti list | ls                    list sandboxes
-bhatti destroy | rm <id|name>       destroy sandbox
+ahvm create [--name N] [--cpus C] [--memory M] [--env K=V,K=V] [--init CMD]
+ahvm list | ls                    list sandboxes
+ahvm destroy | rm <id|name>       destroy sandbox
 
-bhatti exec <id|name> -- CMD...     run command (streaming output)
-bhatti shell | sh <id|name>         interactive shell (Ctrl+\ to detach)
-bhatti ps <id|name>                 list sessions
+ahvm exec <id|name> -- CMD...     run command (streaming output)
+ahvm shell | sh <id|name>         interactive shell (Ctrl+\ to detach)
+ahvm ps <id|name>                 list sessions
 
-bhatti file read <id|name> PATH     read file to stdout
-bhatti file write <id|name> PATH    write file from stdin
-bhatti file ls <id|name> PATH       list directory
+ahvm file read <id|name> PATH     read file to stdout
+ahvm file write <id|name> PATH    write file from stdin
+ahvm file ls <id|name> PATH       list directory
 
-bhatti secret set NAME VALUE
-bhatti secret list
-bhatti secret delete NAME
+ahvm secret set NAME VALUE
+ahvm secret list
+ahvm secret delete NAME
 ```
 
 Name-to-ID resolution: all commands accept sandbox name or ID.
-Config: `BHATTI_URL`, `BHATTI_TOKEN` env vars, or `~/.bhatti/config.yaml`.
+Config: `AHVM_URL`, `AHVM_TOKEN` env vars, or `~/.ahvm/config.yaml`.
 
 ---
 
 ## Disk Layout
 
 ```
-/var/lib/bhatti/
+/var/lib/ahvm/
 ├── config.yaml                   daemon config
 ├── state.db                      SQLite (sandboxes, templates, secrets, FC state)
 ├── age.key                       secret encryption key
 ├── id_ed25519 / .pub             SSH keypair
-├── lohar                         guest agent binary
+├── forge                         guest agent binary
 ├── images/
 │   ├── vmlinux-arm64             kernel (or vmlinux-amd64)
 │   └── rootfs-base-arm64.ext4   base rootfs (Ubuntu 24.04 + Node + rg + fd)
@@ -396,14 +393,14 @@ Config: `BHATTI_URL`, `BHATTI_TOKEN` env vars, or `~/.bhatti/config.yaml`.
 ## Key Design Decisions
 
 **TCP over TAP for post-snapshot.** Vsock is broken after Firecracker
-snapshot/restore. TCP over virtio-net works. Lohar listens on both;
+snapshot/restore. TCP over virtio-net works. Forge listens on both;
 after resume, the TCP client is used.
 
 **No FC Go SDK.** Direct HTTP to FC's Unix socket API. ~20 lines of
 helpers replace thousands of SDK lines. `DisableKeepAlives: true` prevents
 connection pile-up on the Unix socket under rapid pause/resume cycles.
 
-**No systemd in guest.** Lohar IS init. Mounts, networking, PTYs,
+**No systemd in guest.** Forge IS init. Mounts, networking, PTYs,
 processes — all deterministic. Boot to ready in ~3.5s.
 
 **Guest IP via kernel `ip=`.** Network up before init runs. No DHCP.
@@ -453,7 +450,7 @@ for production. Zero external dependencies.
 **Secrets via age + config drive.** Encrypted at rest, decrypted at
 sandbox creation, injected as files or env vars.
 
-**Single binary.** `bhatti serve` = daemon, `bhatti create` = CLI.
+**Single binary.** `ahvm serve` = daemon, `ahvm create` = CLI.
 No separate CLI tool to install or version.
 
 **Graceful shutdown.** `http.Server.Shutdown()` drains connections on

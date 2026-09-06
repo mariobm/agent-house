@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/mariobm/agent-house/pkg/engine"
 )
 
 // TestKrucibleConcurrentWakeNoDoubleLaunch is the regression test for the
 // concurrent wake-on-request race: the public proxy and every exec/file handler
 // call ensureHot UNCOALESCED, so a burst of requests landing on a non-hot
 // sandbox used to each spawn a helper — racing on the shared vsock UDS paths and
-// orphaning processes (observed under benchmarking: 10+ bhatti-vmm for one
+// orphaning processes (observed under benchmarking: 10+ ahvm-vmm for one
 // sandbox, then a hang). The per-VM launchMu must collapse the burst into a
 // single launch. Cross-arch (pure-Go engine) — guards macOS + both Linux arches.
 func TestKrucibleConcurrentWakeNoDoubleLaunch(t *testing.T) {
@@ -83,7 +83,7 @@ func TestKrucibleConcurrentWakeNoDoubleLaunch(t *testing.T) {
 	}
 }
 
-// countHelpers counts running bhatti-vmm processes whose argv references this
+// countHelpers counts running ahvm-vmm processes whose argv references this
 // sandbox id (the spec path is <dataDir>/sandboxes/<id>/vmspec.json). Portable
 // across macOS (BSD ps) and Linux (GNU ps).
 func countHelpers(t *testing.T, sandboxID string) int {
@@ -96,7 +96,7 @@ func countHelpers(t *testing.T, sandboxID string) int {
 	}
 	n := 0
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "bhatti-vmm") && strings.Contains(line, "/sandboxes/"+sandboxID+"/") {
+		if strings.Contains(line, "ahvm-vmm") && strings.Contains(line, "/sandboxes/"+sandboxID+"/") {
 			n++
 		}
 	}

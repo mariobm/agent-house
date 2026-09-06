@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/store"
+	"github.com/mariobm/agent-house/pkg/store"
 )
 
 // ==========================================================================
@@ -93,8 +93,8 @@ func TestPublishDuplicatePort(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200 (idempotent), got %d", resp.StatusCode)
 	}
-	if resp.Header.Get("X-Bhatti-Existing") != "true" {
-		t.Error("missing X-Bhatti-Existing header")
+	if resp.Header.Get("X-AHVM-Existing") != "true" {
+		t.Error("missing X-AHVM-Existing header")
 	}
 	var rule2 map[string]interface{}
 	decodeJSON(t, resp, &rule2)
@@ -163,8 +163,8 @@ func TestAliasValidation(t *testing.T) {
 		{"UPPERCASE", 400},
 		{"-leading-dash", 400},
 		{"has spaces", 400},
-		{"api", 400},     // reserved
-		{"www", 400},     // reserved
+		{"api", 400}, // reserved
+		{"www", 400}, // reserved
 		{"valid-alias", 201},
 	}
 

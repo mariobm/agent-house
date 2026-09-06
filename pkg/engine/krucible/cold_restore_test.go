@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahil-shubham/bhatti/pkg/agent"
+	"github.com/mariobm/agent-house/pkg/agent"
 )
 
 func ctlCmd(t *testing.T, uds, cmd string) string {
@@ -27,7 +27,7 @@ func ctlCmd(t *testing.T, uds, cmd string) string {
 
 func launch(t *testing.T, spec string) (*exec.Cmd, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, repoRoot(t)+"/bhatti-vmm", spec)
+	cmd := exec.CommandContext(ctx, repoRoot(t)+"/ahvm-vmm", spec)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	cmd.Env = append(os.Environ(), "DYLD_FALLBACK_LIBRARY_PATH="+libDir(), "LD_LIBRARY_PATH="+libDir())
@@ -39,7 +39,7 @@ func launch(t *testing.T, spec string) (*exec.Cmd, context.CancelFunc) {
 
 // TestColdLoopbackRestore is the cold-wake integration gate: boot -> agent
 // ready -> PAUSE+SNAPSHOT -> kill the helper (free RAM) -> restore into a fresh
-// helper -> the guest must resume and lohar must answer. Proves the VMM
+// helper -> the guest must resume and forge must answer. Proves the VMM
 // cold-wake machinery (memory + vCPU + GIC + vsock/console/rng) round-trips and
 // survives the helper process exiting. (exec-after-restore needs a block root.)
 func TestColdLoopbackRestore(t *testing.T) {
@@ -53,10 +53,10 @@ func TestColdLoopbackRestore(t *testing.T) {
 	if _, err := os.Stat("/tmp/kr-rootfs"); err != nil {
 		t.Skip("no /tmp/kr-rootfs fixture; use TestKrucibleSnapshotSuite for cold-tier coverage")
 	}
-	dir := "/tmp/bhatti-kr-cold"
+	dir := "/tmp/ahvm-kr-cold"
 	os.RemoveAll(dir)
 	os.MkdirAll(dir, 0700)
-	snap := "/tmp/bhatti-kr-cold/bundle"
+	snap := "/tmp/ahvm-kr-cold/bundle"
 	c := dir + "/c.sock"
 	f := dir + "/f.sock"
 	k := dir + "/k.sock"
