@@ -94,11 +94,24 @@ impl Guest {
         }
         let spec = cfg.work.join("spec.json");
         write_spec(&spec, image, &sock, snapshot_dir);
+        // Hermetic spawn: the worker inherits NOTHING from this process.
+        // A full cargo-test environment hangs guest boot for undetermined
+        // reasons (see issue: KVM_RUN entered, guest never executes; minimal
+        // env boots in seconds — bisected to the combination, no single var).
+        // Only libkrunfw discovery needs the environment. The production
+        // daemon must do the same (never leak daemon env into workers).
+        let ld_path =
+            std::env::var("LD_LIBRARY_PATH").expect("LD_LIBRARY_PATH for libkrunfw");
         // Worker stderr goes to a log file (NOT null): a dead-on-arrival
         // worker must leave evidence instead of failing silently.
         let log = std::fs::File::create(cfg.work.join("vmm.log")).unwrap();
         let child = Command::new(&cfg.vmm)
             .arg(&spec)
+            .env_clear()
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("HOME", "/root")
+            .env("LANG", "C.UTF-8")
+            .env("LD_LIBRARY_PATH", ld_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)
