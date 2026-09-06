@@ -59,8 +59,7 @@ fn base_image_bytes(image: &Path) -> u64 {
 }
 
 fn write_spec(path: &Path, image: &Path, sock: &Path, snapshot_dir: Option<&Path>) {
-    let snap = snapshot_dir.map(|p| p.to_string_lossy().into_owned());
-    let spec = serde_json::json!({
+    let mut spec = serde_json::json!({
         "vcpus": 1,
         "mem_mib": 512,
         "log_level": 2,
@@ -71,9 +70,12 @@ fn write_spec(path: &Path, image: &Path, sock: &Path, snapshot_dir: Option<&Path
         "vsock_control_uds": sock.join("c.sock").to_string_lossy(),
         "vsock_forward_uds": sock.join("f.sock").to_string_lossy(),
         "control_socket_uds": sock.join("k.sock").to_string_lossy(),
-        "snapshot_dir": snap,
         "env": [],
     });
+    // Omit (never null): an explicit null is a parse error for String fields.
+    if let Some(dir) = snapshot_dir {
+        spec["snapshot_dir"] = serde_json::Value::String(dir.to_string_lossy().into_owned());
+    }
     std::fs::write(path, serde_json::to_vec_pretty(&spec).unwrap()).unwrap();
 }
 
@@ -90,11 +92,14 @@ impl Guest {
         }
         let spec = cfg.work.join("spec.json");
         write_spec(&spec, image, &sock, snapshot_dir);
+        // Worker stderr goes to a log file (NOT null): a dead-on-arrival
+        // worker must leave evidence instead of failing silently.
+        let log = std::fs::File::create(cfg.work.join("vmm.log")).unwrap();
         let child = Command::new(&cfg.vmm)
             .arg(&spec)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(log)
             .spawn()
             .expect("spawn ahvm-vmm");
         Self { child, sock }
