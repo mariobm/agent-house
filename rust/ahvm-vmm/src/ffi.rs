@@ -49,11 +49,12 @@ pub const NET_FEATURE_HOST_UFO: u32 = 1 << 5;
 // that outlives the call; the driver guarantees this (see Arena).
 
 pub fn init_log(target_fd: i32, level: u32) {
-    unsafe { krun_init_log(target_fd, level, 0, 0) };
+    // Safe extern in the fork (self-validating): no unsafe block needed.
+    krun_init_log(target_fd, level, 0, 0);
 }
 
 pub fn create_ctx() -> i32 {
-    unsafe { krun_create_ctx() }
+    krun_create_ctx()
 }
 
 pub fn check(r: i32, what: &'static str) {
@@ -64,7 +65,7 @@ pub fn check(r: i32, what: &'static str) {
 }
 
 pub fn set_vm_config(cid: u32, vcpus: u8, mem_mib: u32) {
-    check(unsafe { krun_set_vm_config(cid, vcpus, mem_mib) }, "krun_set_vm_config");
+    check(krun_set_vm_config(cid, vcpus, mem_mib), "krun_set_vm_config");
 }
 
 pub fn set_kernel(cid: u32, path: *const c_char, format: u32, cmdline: *const c_char) {
@@ -75,7 +76,7 @@ pub fn set_kernel(cid: u32, path: *const c_char, format: u32, cmdline: *const c_
 }
 
 pub fn disable_implicit_init(cid: u32) {
-    check(unsafe { krun_disable_implicit_init(cid) }, "krun_disable_implicit_init");
+    check(krun_disable_implicit_init(cid), "krun_disable_implicit_init");
 }
 
 pub fn set_root_disk(cid: u32, path: *const c_char, qcow2: bool) {
@@ -123,7 +124,7 @@ pub fn add_console(cid: u32) {
 
 pub fn add_vsock(cid: u32, hijack_inet: bool) {
     check(
-        unsafe { krun_add_vsock(cid, if hijack_inet { TSI_HIJACK_INET } else { 0 }) },
+        krun_add_vsock(cid, if hijack_inet { TSI_HIJACK_INET } else { 0 }),
         "krun_add_vsock",
     );
 }
@@ -174,5 +175,5 @@ pub fn set_exec(cid: u32, path: *const c_char, env: &[*const c_char]) {
 
 /// Becomes the VM. Returns ONLY on boot error (returns the libkrun code).
 pub fn start_enter(cid: u32) -> i32 {
-    unsafe { krun_start_enter(cid) }
+    krun_start_enter(cid)
 }
