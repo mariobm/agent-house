@@ -4,10 +4,11 @@
 //! sequence numbers (byte offsets from session start). The ring keeps the
 //! last [`RING_CAP`] bytes; attachers pass `from_seq` to resume where they
 //! left off and learn `truncated=true` when the head they asked for is gone.
-//! PTY mode is rejected explicitly until the PTY chunk lands.
+//! PTY sessions use a pty master (ptmx) so interactive programs see a TTY.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex, OnceLock,
@@ -39,15 +40,40 @@ pub struct Session {
     ring: Mutex<Ring>,
     exit: Mutex<Option<i32>>,
     stdin: Mutex<Option<std::process::ChildStdin>>,
+    master: Mutex<Option<std::fs::File>>,
+    is_pty: bool,
 }
 
 #[derive(Debug, Default)]
 struct Ring {
-    /// Absolute seq of `buf[0]` (total bytes ever appended minus len).
     base: u64,
-    /// Total bytes ever appended.
     total: u64,
     buf: VecDeque<u8>,
+}
+
+#[allow(unsafe_code)]
+fn open_ptmx() -> Result<(std::fs::File, String), String> {
+    let fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+    if fd < 0 {
+        return Err(format!("posix_openpt: {}", std::io::Error::last_os_error()));
+    }
+    if unsafe { libc::grantpt(fd) } != 0 {
+        unsafe { libc::close(fd); }
+        return Err(format!("grantpt: {}", std::io::Error::last_os_error()));
+    }
+    if unsafe { libc::unlockpt(fd) } != 0 {
+        unsafe { libc::close(fd); }
+        return Err(format!("unlockpt: {}", std::io::Error::last_os_error()));
+    }
+    let cstr_ptr = unsafe { libc::ptsname(fd) };
+    if cstr_ptr.is_null() {
+        unsafe { libc::close(fd); }
+        return Err(format!("ptsname: {}", std::io::Error::last_os_error()));
+    }
+    let cstr = unsafe { std::ffi::CStr::from_ptr(cstr_ptr) };
+    let path = cstr.to_string_lossy().into_owned();
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    Ok((file, path))
 }
 
 impl SessionManager {
@@ -58,9 +84,6 @@ impl SessionManager {
         cwd: Option<String>,
         pty: bool,
     ) -> Result<String, String> {
-        if pty {
-            return Err("pty sessions not yet supported".into());
-        }
         if argv.is_empty() {
             return Err("empty argv".into());
         }
@@ -69,6 +92,11 @@ impl SessionManager {
             std::process::id(),
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         );
+
+        if pty {
+            return self.create_pty(id, argv, env, cwd);
+        }
+
         let mut cmd = std::process::Command::new(&argv[0]);
         cmd.args(&argv[1..])
             .stdin(std::process::Stdio::piped())
@@ -97,8 +125,9 @@ impl SessionManager {
             ring: Mutex::new(Ring::default()),
             exit: Mutex::new(None),
             stdin: Mutex::new(child.stdin.take()),
+            master: Mutex::new(None),
+            is_pty: false,
         });
-        // Pumps: both streams into the one ring, arrival-ordered.
         let pump = |pipe: Option<Box<dyn Read + Send>>, session: Arc<Session>| {
             std::thread::spawn(move || {
                 if let Some(mut pipe) = pipe {
@@ -114,21 +143,130 @@ impl SessionManager {
             })
         };
         pump(
-            child
-                .stdout
-                .take()
-                .map(|p| Box::new(p) as Box<dyn Read + Send>),
+            child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
             session.clone(),
         );
         pump(
-            child
-                .stderr
-                .take()
-                .map(|p| Box::new(p) as Box<dyn Read + Send>),
+            child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
             session.clone(),
         );
-        // Reaper: record exit, then kill the group so strays can't linger
-        // past the session (same discipline as one-shot exec).
+        std::thread::spawn({
+            let session = session.clone();
+            move || {
+                let code = child.wait().ok().and_then(|s| s.code());
+                *session.exit.lock().unwrap() = Some(code.unwrap_or(124));
+                if let Some(pgid) = *session.pgid.lock().unwrap() {
+                    kill_group(pgid);
+                }
+            }
+        });
+        self.sessions.lock().unwrap().insert(id.clone(), session);
+        Ok(id)
+    }
+
+    #[allow(unsafe_code)]
+    fn create_pty(
+        &self,
+        id: String,
+        argv: Vec<String>,
+        env: HashMap<String, String>,
+        cwd: Option<String>,
+    ) -> Result<String, String> {
+        let (master_file, slave_path) = open_ptmx()?;
+        // Need raw fd for child to close
+        let master_fd = master_file.as_raw_fd();
+        // Set initial size 24x80
+        {
+            let ws = libc::winsize {
+                ws_row: 24,
+                ws_col: 80,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            unsafe {
+                libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws);
+            }
+        }
+        let mut cmd = std::process::Command::new(&argv[0]);
+        cmd.args(&argv[1..]);
+        if let Some(dir) = cwd.clone() {
+            cmd.current_dir(dir);
+        }
+        for (k, v) in &env {
+            cmd.env(k, v);
+        }
+        let slave_path_clone = slave_path.clone();
+        use std::os::unix::process::CommandExt;
+        #[allow(unsafe_code)]
+        unsafe {
+            cmd.pre_exec(move || {
+                // Create new session, become leader
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Open slave
+                let slave_fd = libc::open(
+                    slave_path_clone.as_ptr() as *const i8,
+                    libc::O_RDWR,
+                );
+                if slave_fd < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Make it controlling terminal
+                if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) < 0 {
+                    libc::close(slave_fd);
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Dup to stdio
+                if libc::dup2(slave_fd, 0) < 0
+                    || libc::dup2(slave_fd, 1) < 0
+                    || libc::dup2(slave_fd, 2) < 0
+                {
+                    libc::close(slave_fd);
+                    return Err(std::io::Error::last_os_error());
+                }
+                if slave_fd > 2 {
+                    libc::close(slave_fd);
+                }
+                // Close master in child
+                libc::close(master_fd);
+                Ok(())
+            });
+        }
+        // Child's stdio will be slave, so don't pipe
+        let mut child = cmd.spawn().map_err(|e| format!("spawn pty: {e}"))?;
+        // Keep master for reading/writing
+        let session = Arc::new(Session {
+            id: id.clone(),
+            argv,
+            started_at: unix_now(),
+            pgid: Mutex::new(Some(child.id() as i32)),
+            ring: Mutex::new(Ring::default()),
+            exit: Mutex::new(None),
+            stdin: Mutex::new(None),
+            master: Mutex::new(Some(master_file)),
+            is_pty: true,
+        });
+        // Pump from master
+        {
+            let master_clone = {
+                let guard = session.master.lock().unwrap();
+                guard.as_ref().unwrap().try_clone().unwrap()
+            };
+            let session_clone = session.clone();
+            std::thread::spawn(move || {
+                let mut file = master_clone;
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match file.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => session_clone.append(&chunk[..n]),
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
         std::thread::spawn({
             let session = session.clone();
             move || {
@@ -159,6 +297,27 @@ impl SessionManager {
             }
             None => Err(format!("session {id} already reaped")),
         }
+    }
+
+    #[allow(unsafe_code)]
+    pub fn resize(&self, id: &str, rows: u16, cols: u16) -> Result<(), String> {
+        let s = self.get(id).ok_or_else(|| format!("no such session: {id}"))?;
+        if !s.is_pty {
+            return Err("not a pty session".into());
+        }
+        let guard = s.master.lock().unwrap();
+        let file = guard.as_ref().ok_or("master closed")?;
+        let ws = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let ret = unsafe { libc::ioctl(file.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
+        if ret != 0 {
+            return Err(format!("ioctl TIOCSWINSZ: {}", std::io::Error::last_os_error()));
+        }
+        Ok(())
     }
 
     pub fn list(&self) -> Vec<SessionInfo> {
@@ -197,12 +356,9 @@ impl Session {
         }
     }
 
-    /// Snapshot of new bytes since `sent` (absolute seq), plus exit state.
-    /// Returns (chunk, next_seq, exited_with_code, truncated).
     pub fn read_from(&self, sent: u64) -> (Vec<u8>, u64, Option<i32>, bool) {
         let ring = self.ring.lock().unwrap();
         let start = (sent.max(ring.base) - ring.base).min(ring.buf.len() as u64) as usize;
-        // Clipped head: the caller asked below what we retain.
         let truncated = sent < ring.base;
         let end = (start + CHUNK).min(ring.buf.len());
         let chunk = ring.buf.range(start..end).copied().collect();
@@ -217,18 +373,24 @@ impl Session {
 
     pub fn write_stdin(&self, data: &[u8]) -> Result<(), String> {
         use std::io::Write as _;
-        let mut guard = self.stdin.lock().unwrap();
-        match guard.as_mut() {
-            Some(stdin) => stdin.write_all(data).map_err(|e| format!("stdin: {e}")),
-            None => Err("stdin closed".into()),
+        if self.is_pty {
+            let mut guard = self.master.lock().unwrap();
+            match guard.as_mut() {
+                Some(f) => f.write_all(data).map_err(|e| format!("pty write: {e}")),
+                None => Err("pty closed".into()),
+            }
+        } else {
+            let mut guard = self.stdin.lock().unwrap();
+            match guard.as_mut() {
+                Some(stdin) => stdin.write_all(data).map_err(|e| format!("stdin: {e}")),
+                None => Err("stdin closed".into()),
+            }
         }
     }
 }
 
 #[allow(unsafe_code)]
 fn kill_group(pgid: i32) {
-    // SAFETY: pgid is the spawned leader's pid (setpgid in pre_exec makes
-    // group id == leader pid). Worst case the group is gone.
     unsafe {
         libc::kill(-pgid, libc::SIGKILL);
     }

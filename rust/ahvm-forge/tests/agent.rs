@@ -45,7 +45,10 @@ fn wait_listen_addr(log: &std::path::Path, child: &mut Child) -> String {
             }
         }
         if child.try_wait().unwrap().is_some() {
-            panic!("forge exited early: {}", std::fs::read_to_string(log).unwrap_or_default());
+            panic!(
+                "forge exited early: {}",
+                std::fs::read_to_string(log).unwrap_or_default()
+            );
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -503,7 +506,14 @@ fn failed_write_leaves_no_tmp() {
 
 fn session_req(c: &mut AgentConn, body: serde_json::Value) -> serde_json::Value {
     let body = body.to_string().into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::SessionReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let f = read_frame(&mut c.r).unwrap();
     assert_eq!(f.msg_type, FrameType::SessionResp);
     serde_json::from_slice(&f.payload).unwrap()
@@ -514,7 +524,14 @@ fn attach_collect(c: &mut AgentConn, id: &str, from_seq: u64) -> (Vec<u8>, bool,
     let body = serde_json::json!({ "op": "attach", "session_id": id, "from_seq": from_seq })
         .to_string()
         .into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::SessionReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let mut out = Vec::new();
     let mut truncated = false;
     loop {
@@ -557,7 +574,14 @@ fn session_reattach_resumes_from_seq() {
     let body = serde_json::json!({ "op": "attach", "session_id": id, "from_seq": 0 })
         .to_string()
         .into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::SessionReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let f = read_frame(&mut c.r).unwrap();
     let first: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
     let first_bytes = B64.decode(first["data_b64"].as_str().unwrap()).unwrap();
@@ -618,7 +642,10 @@ fn session_kill_and_list() {
     let v = session_req(&mut c, serde_json::json!({ "op": "list" }));
     let items = v["sessions"].as_array().unwrap();
     assert!(items.iter().any(|s| s["id"] == id && s["running"] == true));
-    let v = session_req(&mut c, serde_json::json!({ "op": "kill", "session_id": id }));
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "kill", "session_id": id }),
+    );
     assert_eq!(v["session_id"], id);
     let (out, _, exit) = attach_collect(&mut c, &id, 0);
     assert!(out.is_empty());
@@ -641,7 +668,14 @@ fn session_unknown_id_errors_without_dropping() {
     let body = serde_json::json!({ "op": "attach", "session_id": "s-nope", "from_seq": 0 })
         .to_string()
         .into_bytes();
-    write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::SessionReq,
+            payload: body,
+        },
+    )
+    .unwrap();
     let msg = expect_error(&mut c);
     assert!(msg.contains("no such session"), "{msg}");
     // Connection still usable.
@@ -650,16 +684,53 @@ fn session_unknown_id_errors_without_dropping() {
 }
 
 #[test]
-fn session_pty_rejected_explicitly() {
+fn session_pty_is_tty() {
     let agent = Agent::spawn("");
     let mut c = agent.connect();
-    let body = serde_json::json!({ "op": "create", "argv": ["sh"], "pty": true })
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "create", "argv": ["sh", "-c", "tty; echo done"], "pty": true }),
+    );
+    let id = v["session_id"].as_str().unwrap().to_owned();
+    let (out, _, exit) = attach_collect(&mut c, &id, 0);
+    let s = String::from_utf8_lossy(&out);
+    assert!(s.contains("/dev/pts") || s.contains("/dev/ttys"), "tty output: {s:?}");
+    assert!(s.contains("done"), "done missing: {s:?}");
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn session_pty_resize() {
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    // One-shot PTY that waits for resize before querying size
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "create", "argv": ["sh", "-c", "sleep 0.3; stty size; echo done"], "pty": true }),
+    );
+    let id = v["session_id"].as_str().unwrap().to_owned();
+    // Resize within the sleep window
+    let v = session_req(
+        &mut c,
+        serde_json::json!({ "op": "resize", "session_id": id, "rows": 30, "cols": 100 }),
+    );
+    assert_eq!(v["session_id"], id);
+    let (out, _, exit) = attach_collect(&mut c, &id, 0);
+    let s = String::from_utf8_lossy(&out);
+    assert!(s.contains("30 100"), "stty size mismatch: {s:?}");
+    assert!(s.contains("done"), "done missing: {s:?}");
+    assert_eq!(exit, Some(0));
+    // Resize on non-pty should fail
+    let v2 = session_req(
+        &mut c,
+        serde_json::json!({ "op": "create", "argv": ["sleep", "60"] }),
+    );
+    let id2 = v2["session_id"].as_str().unwrap().to_owned();
+    let body = serde_json::json!({ "op": "resize", "session_id": id2, "rows": 10, "cols": 10 })
         .to_string()
         .into_bytes();
     write_frame(&mut c.w, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
     let msg = expect_error(&mut c);
-    assert!(msg.contains("pty"), "{msg}");
+    assert!(msg.contains("not a pty"), "{msg}");
+    let _ = session_req(&mut c, serde_json::json!({ "op": "kill", "session_id": id2 }));
 }
-
-
-

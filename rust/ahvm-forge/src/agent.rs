@@ -87,6 +87,11 @@ pub enum SessionReq {
     Kill {
         session_id: String,
     },
+    Resize {
+        session_id: String,
+        rows: u16,
+        cols: u16,
+    },
     List,
 }
 
@@ -100,6 +105,9 @@ pub enum SessionResp {
         bytes: u64,
     },
     Killed {
+        session_id: String,
+    },
+    Resized {
         session_id: String,
     },
     Listed {
@@ -268,11 +276,7 @@ fn serve_session(_r: &mut BufReader<TcpStream>, w: &mut TcpStream, req: SessionR
             cwd,
             pty,
         } => {
-            if pty {
-                send_frame(w, err_frame("pty sessions not yet supported".into()));
-                return false;
-            }
-            match mgr.create(argv, env, cwd, false) {
+            match mgr.create(argv, env, cwd, pty) {
                 Ok(id) => {
                     let body = serde_json::to_vec(&SessionResp::Started { session_id: id })
                         .expect("serialize");
@@ -307,8 +311,20 @@ fn serve_session(_r: &mut BufReader<TcpStream>, w: &mut TcpStream, req: SessionR
         }
         SessionReq::Kill { session_id } => {
             match mgr.kill(&session_id) {
-                Ok(()) => {                    let body =
+                Ok(()) => {
+                    let body =
                         serde_json::to_vec(&SessionResp::Killed { session_id }).expect("serialize");
+                    send_frame(w, reply(FrameType::SessionResp, body));
+                }
+                Err(message) => send_frame(w, err_frame(message)),
+            }
+            false
+        }
+        SessionReq::Resize { session_id, rows, cols } => {
+            match mgr.resize(&session_id, rows, cols) {
+                Ok(()) => {
+                    let body =
+                        serde_json::to_vec(&SessionResp::Resized { session_id }).expect("serialize");
                     send_frame(w, reply(FrameType::SessionResp, body));
                 }
                 Err(message) => send_frame(w, err_frame(message)),
