@@ -62,7 +62,9 @@ fn write_spec(path: &Path, image: &Path, sock: &Path, snapshot_dir: Option<&Path
     let mut spec = serde_json::json!({
         "vcpus": 1,
         "mem_mib": 512,
-        "log_level": 2,
+        // 5 = trace: KVM-gated runs must show exactly how far device/vcpu
+        // setup gets; a silent hang with no libkrun logs is undebuggable.
+        "log_level": 5,
         "root_disk": image.to_string_lossy(),
         "root_disk_format": "qcow2",
         "pid1": true,
