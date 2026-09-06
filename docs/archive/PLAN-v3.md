@@ -1072,7 +1072,7 @@ fi
 echo "==> Downloading ahvm and lohar..."
 if [[ "$AHVM_VERSION" == "latest" ]]; then
     AHVM_VERSION=$(curl -fsSL \
-        https://api.github.com/repos/sahil-shubham/ahvm/releases/latest \
+        https://api.github.com/repos/mariobm/agent-house/releases/latest \
         | grep tag_name | cut -d'"' -f4)
 fi
 RELEASE_URL="https://github.com/mariobm/agent-house/releases/download/${AHVM_VERSION}"

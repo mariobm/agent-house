@@ -458,7 +458,7 @@ the README:
 
 ```bash
 # If ahvm.sh is unreachable:
-curl -fsSL https://raw.githubusercontent.com/sahil-shubham/ahvm/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mariobm/agent-house/main/scripts/install.sh | bash
 ```
 
 ### Fix 8: Staged downloads with rollback

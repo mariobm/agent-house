@@ -93,7 +93,7 @@ Use --tiers to install additional rootfs tiers during the update.`,
 
 // --- version ---
 
-const githubRepo = "sahil-shubham/ahvm"
+const githubRepo = "mariobm/agent-house"
 
 // checkLatestRelease queries GitHub for the latest release tag.
 // Returns empty string on any failure (timeout, network, parse error).

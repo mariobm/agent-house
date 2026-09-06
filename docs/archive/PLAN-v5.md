@@ -1415,7 +1415,7 @@ Host at `https://ahvm.sh/install.sh` (Cloudflare Pages or R2):
 #!/bin/bash
 set -euo pipefail
 VERSION="${AHVM_VERSION:-latest}"
-REPO="sahil-shubham/ahvm"
+REPO="mariobm/agent-house"
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$ARCH" in

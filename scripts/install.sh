@@ -44,7 +44,7 @@ if [ "${AHVM_TEST:-}" != "1" ]; then
     set -euo pipefail
 fi
 
-GITHUB_REPO="sahil-shubham/ahvm"
+GITHUB_REPO="mariobm/agent-house"
 DATA_DIR="/var/lib/ahvm"
 # Order matters: drives the order in user-facing hints ("outdated on disk:
 # computer, browser" follows ALL_KNOWN_TIERS order, not insertion order).
