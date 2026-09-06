@@ -5,8 +5,58 @@ use crate::config::Config;
 use ahvm_proto::{read_frame, write_frame, Frame, FrameType};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{Deserialize, Serialize};
-use std::io::BufReader;
+use std::io::{self, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::os::unix::net::UnixStream;
+
+/// Accepted connection: TCP in tests/dev, AF_VSOCK in the guest. Both are
+/// byte-stream sockets, so one enum with Read/Write/try_clone keeps the
+/// protocol logic transport-agnostic.
+#[derive(Debug)]
+pub enum Conn {
+    Tcp(TcpStream),
+    Vsock(UnixStream),
+}
+
+impl From<TcpStream> for Conn {
+    fn from(s: TcpStream) -> Self {
+        Self::Tcp(s)
+    }
+}
+
+impl Conn {
+    pub fn try_clone(&self) -> io::Result<Self> {
+        match self {
+            Self::Tcp(s) => s.try_clone().map(Self::Tcp),
+            Self::Vsock(s) => s.try_clone().map(Self::Vsock),
+        }
+    }
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(s) => s.read(buf),
+            Self::Vsock(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(s) => s.write(buf),
+            Self::Vsock(s) => s.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Tcp(s) => s.flush(),
+            Self::Vsock(s) => s.flush(),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct AuthBody {
@@ -152,7 +202,7 @@ fn parse<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, Frame> {
     serde_json::from_slice(payload).map_err(|e| err_frame(format!("bad request: {e}")))
 }
 
-pub fn handle(stream: TcpStream, cfg: &Config) {
+pub fn handle(stream: Conn, cfg: &Config) {
     let mut r = BufReader::new(stream.try_clone().expect("clone stream"));
     let mut w = stream;
 
@@ -263,13 +313,13 @@ pub fn handle(stream: TcpStream, cfg: &Config) {
     }
 }
 
-fn send_frame(w: &mut TcpStream, frame: Frame) {
+fn send_frame(w: &mut Conn, frame: Frame) {
     let _ = write_frame(w, &frame);
 }
 
 /// Serve one session request. Returns true when the connection should close
 /// (client went away); false to keep serving requests on it.
-fn serve_session(_r: &mut BufReader<TcpStream>, w: &mut TcpStream, req: SessionReq) -> bool {
+fn serve_session(_r: &mut BufReader<Conn>, w: &mut Conn, req: SessionReq) -> bool {
     let mgr = crate::sessions::manager();
     let reply = |msg_type: FrameType, body: Vec<u8>| Frame {
         msg_type,

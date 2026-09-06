@@ -10,11 +10,19 @@ mod config;
 mod exec;
 mod files;
 mod sessions;
+mod transport;
 
 use std::net::TcpListener;
 
 fn main() {
     let cfg = config::Config::from_env();
+    // Vsock rides alongside TCP (guest VMM path); a runtime failure there
+    // must never take TCP down — serve_vsock logs and returns instead, so
+    // tests/dev on hosts without vsock keep working unchanged.
+    if cfg.vsock_port > 0 {
+        let vsock_cfg = cfg.clone();
+        std::thread::spawn(move || transport::serve_vsock(vsock_cfg.vsock_port, &vsock_cfg));
+    }
     let listener = TcpListener::bind(&cfg.listen_addr).unwrap_or_else(|e| {
         eprintln!("forge: listen {}: {e}", cfg.listen_addr);
         std::process::exit(1);
@@ -30,7 +38,7 @@ fn main() {
         match conn {
             Ok(stream) => {
                 let cfg = cfg.clone();
-                std::thread::spawn(move || agent::handle(stream, &cfg));
+                std::thread::spawn(move || agent::handle(stream.into(), &cfg));
             }
             Err(e) => eprintln!("forge: accept: {e}"),
         }
