@@ -287,7 +287,7 @@ mod tests {
         let snap = be.create_snapshot(&info.id, "snap-1").unwrap();
         assert_eq!(snap.snapshot_id, "snap-1");
         assert_eq!(snap.manifest_ver, MANIFEST_VER);
-        assert!(snap_dir.join("snap-1").join("manifest.json").exists());
+        assert!(snap_dir.join("snap-1").join(crate::SIDECAR_NAME).exists());
 
         // `snapshot` alias resolves to the same operation.
         let snap2 = be.snapshot(&info.id, "snap-2").unwrap();

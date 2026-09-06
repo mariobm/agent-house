@@ -12,6 +12,25 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Filename of the ENGINE sidecar inside a snapshot bundle dir.
+/// MUST differ from libkrun's own `manifest.json` (VMM-private: memory
+/// layout, device state), which lives in the same dir.
+///
+/// Coexistence contract:
+///
+/// - `<bundle>/manifest.json` — written/read ONLY by libkrun (`SNAPSHOT`
+///   and `krun_set_snapshot`). The engine never opens it; it only passes
+///   the bundle dir through to the worker spec.
+///
+/// - `<bundle>/ahvm-manifest.json` — written by the engine after `SNAPSHOT`
+///   succeeds, `check_compat`-gated by the engine BEFORE spawning a restore
+///   worker. The worker stays dumb (no manifest logic, no VMM coupling).
+///
+/// A bundle missing the sidecar is treated as foreign/unmanaged and
+/// refused; a bundle missing libkrun's manifest fails inside libkrun
+/// at restore.
+pub const SIDECAR_NAME: &str = "ahvm-manifest.json";
+
 /// Manifest schema version written by this crate.
 pub const MANIFEST_VER: u32 = 2;
 /// Current virtual device-layout version. Bump when the VMM's device set
@@ -138,20 +157,23 @@ impl SnapshotManifest {
         Ok(())
     }
 
-    /// Persist as `<dir>/manifest.json`, atomically (tmp + rename).
+    /// Persist as `<dir>/ahvm-manifest.json` (see [`SIDECAR_NAME`] for why
+    /// NOT `manifest.json`), atomically (tmp + rename).
     pub fn write_to(&self, dir: &Path) -> crate::Result<PathBuf> {
         std::fs::create_dir_all(dir)?;
-        let path = dir.join("manifest.json");
-        let tmp = dir.join("manifest.json.tmp");
+        let path = dir.join(SIDECAR_NAME);
+        let tmp = dir.join("ahvm-manifest.json.tmp");
         let raw = serde_json::to_vec_pretty(self)?;
         std::fs::write(&tmp, raw)?;
         std::fs::rename(&tmp, &path)?;
         Ok(path)
     }
 
-    /// Read back a manifest written by [`SnapshotManifest::write_to`].
+    /// Read back a sidecar written by [`SnapshotManifest::write_to`].
+    /// A missing sidecar means a foreign/unmanaged bundle: refused as
+    /// incompatible (never silently restored).
     pub fn read_from(dir: &Path) -> crate::Result<Self> {
-        let raw = std::fs::read(dir.join("manifest.json"))?;
+        let raw = std::fs::read(dir.join(SIDECAR_NAME))?;
         Ok(serde_json::from_slice(&raw)?)
     }
 }
@@ -248,7 +270,37 @@ mod tests {
         let (m, _) = fixture();
         let path = m.write_to(&dir).unwrap();
         assert!(path.exists());
+        assert_eq!(path.file_name().unwrap(), SIDECAR_NAME);
         assert_eq!(SnapshotManifest::read_from(&dir).unwrap(), m);
+    }
+
+    #[test]
+    fn sidecar_coexists_with_vmm_manifest() {
+        // The exact collision this exists to prevent: libkrun's own
+        // `manifest.json` (opaque bytes here) and our sidecar share a
+        // bundle dir. Writing/reading either must leave the other intact.
+        let dir = crate::test_scratch("manifest-coexist").join("snap-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), b"\x00vmm-private").unwrap();
+        let (m, host) = fixture();
+        m.write_to(&dir).unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("manifest.json")).unwrap(),
+            b"\x00vmm-private"
+        );
+        let back = SnapshotManifest::read_from(&dir).unwrap();
+        assert_eq!(back, m);
+        back.check_compat(&host).unwrap();
+    }
+
+    #[test]
+    fn missing_sidecar_is_refused() {
+        // Foreign bundle (libkrun manifest only, no sidecar): read_from
+        // errors, so restore can never silently proceed.
+        let dir = crate::test_scratch("manifest-missing").join("snap-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), b"\x00vmm-private").unwrap();
+        assert!(SnapshotManifest::read_from(&dir).is_err());
     }
 
     #[test]

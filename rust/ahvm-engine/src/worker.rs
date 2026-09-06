@@ -70,25 +70,29 @@ impl Worker {
 }
 
 /// Spawn the VMM worker binary with the spec path as its argv, record the
-/// child in `state.json`, and return the record.
+/// child in `state.json`, and return a supervised handle.
 ///
-/// The child is intentionally detached-ish: stdio is nulled and the handle
-/// is dropped without waiting, so the worker survives the spawner. That
-/// also means the spawner never reaps it — use [`is_alive`] (zombie-aware)
-/// to poll and [`terminate`] to stop it.
+/// The supervisor OWNS the [`std::process::Child`] handle: dropping a
+/// `LiveWorker` without terminating leaks a zombie (nobody else can reap
+/// our child). Use [`LiveWorker::terminate`] (kill + reap) or
+/// [`LiveWorker::try_reap`] (reap-if-exited). If persisting the record fails,
+/// the freshly spawned child is killed AND reaped before returning Err —
+/// never orphaned.
+///
+/// [`is_alive`] remains for adopted pids (recovery after a supervisor
+/// restart, where the OS reparented the worker and `wait` would ECHILD).
 pub fn spawn_worker(
     vmm_binary: impl AsRef<OsStr>,
     spec_arg: impl AsRef<Path>,
     state_path: impl AsRef<Path>,
-) -> std::io::Result<Worker> {
+) -> std::io::Result<LiveWorker> {
     let state_path = state_path.as_ref().to_path_buf();
-    let child = Command::new(vmm_binary)
+    let mut child = Command::new(vmm_binary)
         .arg(spec_arg.as_ref())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    // Dropped without wait: the worker keeps running under the spawner.
     let pid = child.id();
     let sock_dir = state_path
         .parent()
@@ -104,8 +108,72 @@ pub fn spawn_worker(
         sock_dir,
         state_path,
     };
-    worker.persist()?;
-    Ok(worker)
+    if let Err(e) = worker.persist() {
+        // Record unwritten: no future owner can find this child. Kill and
+        // reap it here so neither an orphan nor a zombie escapes.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e);
+    }
+    Ok(LiveWorker {
+        record: worker,
+        child: Some(child),
+    })
+}
+
+/// A [`Worker`] record plus ownership of the child handle. The ONLY type
+/// allowed to reap the worker.
+#[derive(Debug)]
+pub struct LiveWorker {
+    pub record: Worker,
+    child: Option<std::process::Child>,
+}
+
+impl LiveWorker {
+    pub fn id(&self) -> &str {
+        &self.record.id
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.record.pid
+    }
+
+    /// Send one control command to this worker's socket.
+    pub fn send(&self, cmd: &str) -> crate::Result<String> {
+        send_ctl(self.record.control_socket(), cmd)
+    }
+
+    /// Non-blocking reap: `Some(status)` if the child already exited (no
+    /// zombie left behind), `None` if still running.
+    pub fn try_reap(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self.child.as_mut() {
+            Some(child) => child.try_wait(),
+            None => Ok(None),
+        }
+    }
+
+    /// Stop the worker and reap it: SIGKILL, then blocking wait (bounded).
+    /// After this returns Ok, no zombie remains regardless of prior state.
+    /// Idempotent: a second call on an already-reaped worker is Ok.
+    pub fn terminate(&mut self) -> std::io::Result<()> {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill(); // already-dead is fine
+            let _ = child.wait(); // reap: never a zombie afterwards
+        }
+        Ok(())
+    }
+}
+
+impl Drop for LiveWorker {
+    /// Last-resort hygiene: a supervisor that forgets terminate() still
+    /// reaps an exited child instead of leaking a zombie. A RUNNING child is
+    /// deliberately left alive (supervisor crash must not kill VMs — the
+    /// recovery path re-adopts by pid), but an exited one is reaped here.
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.try_wait();
+        }
+    }
 }
 
 fn write_state_file(path: &Path, worker: &Worker) -> std::io::Result<()> {
@@ -155,9 +223,10 @@ fn is_zombie(pid_str: &str) -> bool {
         })
 }
 
-/// SIGTERM `pid`. The death itself is asynchronous — poll [`is_alive`]
-/// until it goes false.
-pub fn terminate(pid: u32) -> crate::Result<()> {
+/// SIGTERM an adopted pid (recovery path — no owned handle to wait on).
+/// Prefer [`LiveWorker::terminate`] for supervised workers: this cannot reap,
+/// so callers must poll [`is_alive`] until it goes false. Refuses pid 0.
+pub fn terminate_adopted(pid: u32) -> crate::Result<()> {
     if pid == 0 {
         return Err(crate::Error::Control(
             "refusing to signal pid 0".to_string(),
@@ -230,7 +299,6 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
     use std::thread;
-    use std::time::Instant;
 
     #[test]
     fn spawn_sleep_kill_reap_cycle() {
@@ -238,20 +306,42 @@ mod tests {
         let state = dir.join("sb-1").join("state.json");
         // "60" travels as the child's argv (sleep's duration), exercising
         // the spec-path-as-argv convention without a real VMM binary.
-        let worker = spawn_worker("/bin/sleep", "60", &state).unwrap();
-        assert_eq!(worker.id, "sb-1");
+        let mut worker = spawn_worker("/bin/sleep", "60", &state).unwrap();
+        assert_eq!(worker.id(), "sb-1");
         assert!(state.exists());
-        assert!(is_alive(worker.pid));
+        assert!(is_alive(worker.pid()));
+        assert!(worker.try_reap().unwrap().is_none());
 
         // state.json roundtrips through the spawned record.
-        assert_eq!(Worker::load(&state).unwrap(), worker);
+        assert_eq!(Worker::load(&state).unwrap(), worker.record);
 
-        terminate(worker.pid).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while is_alive(worker.pid) && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(20));
+        worker.terminate().unwrap();
+        assert!(!is_alive(worker.pid()), "sleep should be dead after terminate");
+        // Idempotent: second terminate is Ok, try_reap finds nothing.
+        worker.terminate().unwrap();
+        assert!(worker.try_reap().unwrap().is_none());
+    }
+
+    #[test]
+    fn repeated_cycles_leave_no_zombies() {
+        // Guards the old leak (dropped Child handle, never waited): spawn
+        // and terminate repeatedly, then assert no zombie of ours remains.
+        // A hang here would flag a reaped-handle regression instead.
+        for i in 0..10 {
+            let dir = crate::test_scratch(&format!("worker-cycle-{i}"));
+            let state = dir.join("sb").join("state.json");
+            let mut worker = spawn_worker("/bin/sleep", "60", &state).unwrap();
+            worker.terminate().unwrap();
         }
-        assert!(!is_alive(worker.pid), "sleep should be dead after SIGTERM");
+        let out = std::process::Command::new("/bin/ps")
+            .args(["-o", "stat=,command="])
+            .output()
+            .unwrap();
+        let zombies = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.trim_start().starts_with('Z') && l.contains("sleep 60"))
+            .count();
+        assert_eq!(zombies, 0, "leaked sleep zombies");
     }
 
     #[test]
@@ -262,8 +352,8 @@ mod tests {
     }
 
     #[test]
-    fn terminate_refuses_pid_zero() {
-        assert!(terminate(0).is_err());
+    fn terminate_adopted_refuses_pid_zero() {
+        assert!(terminate_adopted(0).is_err());
     }
 
     #[test]
