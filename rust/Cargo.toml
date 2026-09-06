@@ -1,0 +1,23 @@
+[workspace]
+members = [
+    "ahvm-proto",
+    "ahvm-store",
+    "ahvm-forge",
+    "ahvm-engine",
+    "ahvm-netd",
+    "ahvm-daemon",
+    "ahvm-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
