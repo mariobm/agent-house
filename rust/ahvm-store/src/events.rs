@@ -35,12 +35,7 @@ impl Store {
         now: i64,
     ) -> Result<i64> {
         self.with_conn(|c| {
-            c.execute(
-                "INSERT INTO events (type, user_id, sandbox_id, payload, created_at)
-                 VALUES (?1,?2,?3,?4,?5)",
-                params![r#type, user_id, sandbox_id, payload.to_string(), now],
-            )?;
-            Ok(c.last_insert_rowid())
+            super::record_event_inner(c, r#type, user_id, sandbox_id, payload, now)
         })
     }
 

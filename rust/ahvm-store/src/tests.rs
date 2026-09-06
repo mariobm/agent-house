@@ -112,6 +112,7 @@ fn volume_attach_cycle() {
     let s = Store::open_in_memory().unwrap();
     s.upsert_user(&user("u1", 1)).unwrap();
     s.create_sandbox(&sandbox("s1", "u1", 10)).unwrap();
+    s.create_sandbox(&sandbox("s2", "u1", 11)).unwrap();
     let vol = Volume {
         id: "v1".into(),
         owner_user_id: "u1".into(),
@@ -121,11 +122,60 @@ fn volume_attach_cycle() {
         created_at: 15,
     };
     s.create_volume(&vol).unwrap();
-    s.attach_volume("v1", Some("s1")).unwrap();
+    // Attach, idempotent re-attach to the same sandbox, detach.
+    s.attach_volume("v1", "s1").unwrap();
     assert_eq!(s.get_volume("v1").unwrap().attached_to.as_deref(), Some("s1"));
-    s.attach_volume("v1", None).unwrap();
+    s.attach_volume("v1", "s1").unwrap();
+    s.detach_volume("v1", "s1").unwrap();
     assert_eq!(s.get_volume("v1").unwrap().attached_to, None);
+    // Detaching when free, or from the wrong sandbox, is a Conflict —
+    // never a silent no-op that drops someone else's claim.
+    assert!(matches!(s.detach_volume("v1", "s1"), Err(Error::Conflict(_))));
+    s.attach_volume("v1", "s1").unwrap();
+    assert!(matches!(s.detach_volume("v1", "s2"), Err(Error::Conflict(_))));
+    assert_eq!(s.get_volume("v1").unwrap().attached_to.as_deref(), Some("s1"));
+    // Stealing an attached volume fails instead of forgetting s1.
+    assert!(matches!(s.attach_volume("v1", "s2"), Err(Error::Conflict(_))));
+    assert_eq!(s.get_volume("v1").unwrap().attached_to.as_deref(), Some("s1"));
+    // Unknown volume is NotFound, not Conflict.
+    assert!(matches!(s.attach_volume("nope", "s1"), Err(Error::NotFound(_))));
     s.delete_volume("v1").unwrap();
+}
+
+#[test]
+fn transaction_commits_state_plus_event_atomically() {
+    let s = Store::open_in_memory().unwrap();
+    s.upsert_user(&user("u1", 1)).unwrap();
+    s.create_sandbox(&sandbox("s1", "u1", 10)).unwrap();
+    let seq = s
+        .transaction(|tx| {
+            tx.set_sandbox_state("s1", "stopped", "cold", 40)?;
+            tx.record_event("sandbox.stopped", "u1", "s1", &json!({}), 40)
+        })
+        .unwrap();
+    assert_eq!(s.get_sandbox("s1").unwrap().state, "stopped");
+    let evts = s
+        .query_events(&EventFilter { after_seq: seq - 1, ..Default::default() })
+        .unwrap();
+    assert_eq!(evts.len(), 1);
+    assert_eq!(evts[0].r#type, "sandbox.stopped");
+}
+
+#[test]
+fn transaction_rolls_back_event_when_mutation_fails() {
+    // The dashboard must never see an event for a change that didn't commit.
+    let s = Store::open_in_memory().unwrap();
+    s.upsert_user(&user("u1", 1)).unwrap();
+    let before = s.query_events(&EventFilter::default()).unwrap().len();
+    let err = s
+        .transaction(|tx| {
+            tx.record_event("sandbox.stopped", "u1", "ghost", &json!({}), 40)?;
+            tx.set_sandbox_state("ghost", "stopped", "cold", 40)
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::NotFound(_)));
+    let after = s.query_events(&EventFilter::default()).unwrap().len();
+    assert_eq!(before, after, "rolled-back event leaked");
 }
 
 #[test]

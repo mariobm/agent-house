@@ -64,6 +64,19 @@ impl Store {
         f(&conn)
     }
 
+    /// Run `f` inside one SQLite transaction (IMMEDIATE: a writer waiting on
+    /// another writer fails fast via busy_timeout instead of deadlocking the
+    /// daemon). Commit on `Ok`, rollback on `Err` or panic. This is how
+    /// state changes and their dashboard events commit atomically.
+    pub fn transaction<T>(&self, f: impl FnOnce(&Tx) -> Result<T>) -> Result<T> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let holder = Tx { tx };
+        let out = f(&holder)?;
+        holder.tx.commit()?;
+        Ok(out)
+    }
+
     /// Insert-or-replace a user by id. Name conflicts with a *different* id
     /// are an error, not a silent rename.
     pub fn upsert_user(&self, u: &User) -> Result<()> {
@@ -170,16 +183,7 @@ impl Store {
     }
 
     pub fn set_sandbox_state(&self, id: &str, state: &str, thermal: &str, now: i64) -> Result<()> {
-        self.with_conn(|c| {
-            let n = c.execute(
-                "UPDATE sandboxes SET state=?1, thermal=?2, updated_at=?3 WHERE id=?4",
-                params![state, thermal, now, id],
-            )?;
-            if n == 0 {
-                return Err(Error::NotFound(format!("sandbox {id}")));
-            }
-            Ok(())
-        })
+        self.with_conn(|c| set_sandbox_state_inner(c, id, state, thermal, now))
     }
 
     pub fn delete_sandbox(&self, id: &str) -> Result<()> {
@@ -256,16 +260,7 @@ impl Store {
         remote_state: &str,
         manifest_key: Option<&str>,
     ) -> Result<()> {
-        self.with_conn(|c| {
-            let n = c.execute(
-                "UPDATE snapshots SET remote_state=?1, remote_manifest_key=?2 WHERE id=?3",
-                params![remote_state, manifest_key, id],
-            )?;
-            if n == 0 {
-                return Err(Error::NotFound(format!("snapshot {id}")));
-            }
-            Ok(())
-        })
+        self.with_conn(|c| set_snapshot_remote_inner(c, id, remote_state, manifest_key))
     }
 
     pub fn delete_snapshot(&self, id: &str) -> Result<()> {
@@ -304,18 +299,14 @@ impl Store {
         })
     }
 
-    pub fn attach_volume(&self, id: &str, sandbox_id: Option<&str>) -> Result<()> {
-        self.with_conn(|c| {
-            let n = c.execute(
-                "UPDATE volumes SET attached_to=?1 WHERE id=?2",
-                params![sandbox_id, id],
-            )?;
-            if n == 0 {
-                return Err(Error::NotFound(format!("volume {id}")));
-            }
-            Ok(())
-        })
+    pub fn attach_volume(&self, id: &str, sandbox_id: &str) -> Result<()> {
+        self.with_conn(|c| attach_volume_inner(c, id, sandbox_id))
     }
+
+    pub fn detach_volume(&self, id: &str, expected_sandbox: &str) -> Result<()> {
+        self.with_conn(|c| detach_volume_inner(c, id, expected_sandbox))
+    }
+
 
     pub fn delete_volume(&self, id: &str) -> Result<()> {
         self.with_conn(|c| {
@@ -360,16 +351,7 @@ impl Store {
     }
 
     pub fn set_task(&self, id: &str, state: &str, progress: f64, now: i64) -> Result<()> {
-        self.with_conn(|c| {
-            let n = c.execute(
-                "UPDATE tasks SET state=?1, progress=?2, updated_at=?3 WHERE id=?4",
-                params![state, progress, now, id],
-            )?;
-            if n == 0 {
-                return Err(Error::NotFound(format!("task {id}")));
-            }
-            Ok(())
-        })
+        self.with_conn(|c| set_task_inner(c, id, state, progress, now))
     }
 
     pub fn get_task(&self, id: &str) -> Result<Task> {
@@ -385,5 +367,172 @@ impl Store {
                 e => Error::Sqlite(e),
             })
         })
+    }
+}
+
+/// Attach is an atomic conditional update: it wins only when the volume is
+/// free (or already on the same sandbox, making it idempotent). A daemon
+/// check-then-set cannot close the race between concurrent attachers; the
+/// single UPDATE is the linearization point. Loser gets Conflict, never a
+/// silent steal.
+fn attach_volume_inner(conn: &Connection, id: &str, sandbox_id: &str) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE volumes SET attached_to=?1
+         WHERE id=?2 AND (attached_to IS NULL OR attached_to=?1)",
+        params![sandbox_id, id],
+    )?;
+    if n == 1 {
+        return Ok(());
+    }
+    match conn.query_row(
+        "SELECT attached_to FROM volumes WHERE id=?1",
+        params![id],
+        |r| r.get::<_, Option<String>>(0),
+    ) {
+        Ok(Some(current)) => Err(Error::Conflict(format!(
+            "volume {id} already attached to {current}"
+        ))),
+        Ok(None) => Err(Error::Conflict(format!("volume {id} already attached"))),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(Error::NotFound(format!("volume {id}"))),
+        Err(e) => Err(Error::Sqlite(e)),
+    }
+}
+
+/// Detach verifies the expected attachment for the same reason: blindly
+/// nulling it would drop a concurrent attacher's claim.
+fn detach_volume_inner(conn: &Connection, id: &str, expected_sandbox: &str) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE volumes SET attached_to=NULL WHERE id=?1 AND attached_to=?2",
+        params![id, expected_sandbox],
+    )?;
+    if n == 1 {
+        return Ok(());
+    }
+    match conn.query_row(
+        "SELECT attached_to FROM volumes WHERE id=?1",
+        params![id],
+        |r| r.get::<_, Option<String>>(0),
+    ) {
+        Ok(Some(current)) => Err(Error::Conflict(format!(
+            "volume {id} attached to {current}, not {expected_sandbox}"
+        ))),
+        Ok(None) => Err(Error::Conflict(format!("volume {id} is not attached"))),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(Error::NotFound(format!("volume {id}"))),
+        Err(e) => Err(Error::Sqlite(e)),
+    }
+}
+
+/// Connection-level bodies shared by the autocommit methods above and the
+/// [`Store::transaction`] handle below (`rusqlite::Transaction` derefs to
+/// `Connection`, so one implementation serves both).
+fn set_sandbox_state_inner(
+    conn: &Connection,
+    id: &str,
+    state: &str,
+    thermal: &str,
+    now: i64,
+) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE sandboxes SET state=?1, thermal=?2, updated_at=?3 WHERE id=?4",
+        params![state, thermal, now, id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("sandbox {id}")));
+    }
+    Ok(())
+}
+
+fn set_snapshot_remote_inner(
+    conn: &Connection,
+    id: &str,
+    remote_state: &str,
+    manifest_key: Option<&str>,
+) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE snapshots SET remote_state=?1, remote_manifest_key=?2 WHERE id=?3",
+        params![remote_state, manifest_key, id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("snapshot {id}")));
+    }
+    Ok(())
+}
+
+fn set_task_inner(conn: &Connection, id: &str, state: &str, progress: f64, now: i64) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE tasks SET state=?1, progress=?2, updated_at=?3 WHERE id=?4",
+        params![state, progress, now, id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("task {id}")));
+    }
+    Ok(())
+}
+
+fn record_event_inner(
+    conn: &Connection,
+    r#type: &str,
+    user_id: &str,
+    sandbox_id: &str,
+    payload: &serde_json::Value,
+    now: i64,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO events (type, user_id, sandbox_id, payload, created_at)
+         VALUES (?1,?2,?3,?4,?5)",
+        params![r#type, user_id, sandbox_id, payload.to_string(), now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// A single SQLite transaction. Mutation-plus-event pairs commit atomically:
+/// a crash can neither leave durable state without its event nor record an
+/// event for a change that never committed. Rolls back on drop; use
+/// [`Store::transaction`].
+pub struct Tx<'a> {
+    tx: rusqlite::Transaction<'a>,
+}
+
+impl<'a> std::fmt::Debug for Tx<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tx").finish_non_exhaustive()
+    }
+}
+
+impl<'a> Tx<'a> {
+    pub fn set_sandbox_state(&self, id: &str, state: &str, thermal: &str, now: i64) -> Result<()> {
+        set_sandbox_state_inner(&self.tx, id, state, thermal, now)
+    }
+
+    pub fn set_snapshot_remote(
+        &self,
+        id: &str,
+        remote_state: &str,
+        manifest_key: Option<&str>,
+    ) -> Result<()> {
+        set_snapshot_remote_inner(&self.tx, id, remote_state, manifest_key)
+    }
+
+    pub fn set_task(&self, id: &str, state: &str, progress: f64, now: i64) -> Result<()> {
+        set_task_inner(&self.tx, id, state, progress, now)
+    }
+
+    pub fn attach_volume(&self, id: &str, sandbox_id: &str) -> Result<()> {
+        attach_volume_inner(&self.tx, id, sandbox_id)
+    }
+
+    pub fn detach_volume(&self, id: &str, expected_sandbox: &str) -> Result<()> {
+        detach_volume_inner(&self.tx, id, expected_sandbox)
+    }
+
+    pub fn record_event(
+        &self,
+        r#type: &str,
+        user_id: &str,
+        sandbox_id: &str,
+        payload: &serde_json::Value,
+        now: i64,
+    ) -> Result<i64> {
+        record_event_inner(&self.tx, r#type, user_id, sandbox_id, payload, now)
     }
 }
