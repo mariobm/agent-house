@@ -603,58 +603,48 @@ fn code_of(status: libc::c_int) -> Option<i32> {
     }
 }
 
-/// Block until `pid` has exited, WITHOUT reaping it: `WNOWAIT` leaves the
-/// child as a reserved zombie, so its PID cannot be recycled underneath us.
-/// Callers must still reap afterwards; every return path below requires the
-/// caller to wait, never leaks a zombie.
-#[cfg(target_os = "linux")]
+/// Block until `pid` has exited, WITHOUT reaping it, and return the
+/// observed exit code.
+///
+/// This MUST be `waitid`, not `waitpid`: `WNOWAIT` belongs to `waitid` —
+/// `waitpid(..., WNOWAIT)` is EINVAL on both Linux and macOS (verified by C
+/// probe on both, 2026-09-06). `waitid(P_PID, pid, WEXITED | WNOWAIT)` blocks
+/// until exit and leaves the child as a reserved zombie, so its PID cannot
+/// be recycled underneath us. Callers must still reap afterwards; every
+/// return path below requires the caller to wait, never leaks a zombie.
 fn wait_zombie(pid: i32) -> Option<i32> {
     loop {
+        // SAFETY: zeroed siginfo_t written by waitid on success.
+        let mut si: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let r = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut si,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if r == 0 {
+            // WEXITED without WSTOPPED/WCONTINUED only reports real exits.
+            // NOTE: si_pid/si_status are accessor METHODS on Linux (union
+            // fields); plain `.si_pid` field access only builds on macOS.
+            return match si.si_code {
+                libc::CLD_EXITED => Some(unsafe { si.si_status() }),
+                libc::CLD_KILLED | libc::CLD_DUMPED => Some(124),
+                _ => continue,
+            };
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if err.raw_os_error() == Some(libc::ECHILD) {
+            return None; // already reaped elsewhere; nothing reserved
+        }
+        // Unexpected: blocking reap (old behavior). Unreachable in practice.
         let mut status = 0;
-        let r = unsafe { libc::waitpid(pid, &mut status as *mut _, libc::WNOHANG | libc::WNOWAIT) };
-        if r == pid {
-            // Without WUNTRACED only exited children report; a stopped
-            // child (nobody sends SIGSTOP here) just keeps polling.
-            if let Some(code) = code_of(status) {
-                return Some(code);
-            }
-        } else if r < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            if err.raw_os_error() == Some(libc::ECHILD) {
-                return None; // already reaped elsewhere; nothing reserved
-            }
-            // Unexpected (WNOWAIT is universal on Linux kernels): blocking
-            // reap. The reuse race returns on this path; it is unreachable
-            // in practice.
-            let mut status = 0;
-            let r2 = unsafe { libc::waitpid(pid, &mut status as *mut _, 0) };
-            return if r2 == pid { code_of(status) } else { None };
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
-
-/// No usable `WNOWAIT` off Linux (Darwin rejects even blocking WNOWAIT with
-/// EINVAL — verified): reap here. The reuse race remains on these builds,
-/// which are dev-only; the guest agent runs on Linux.
-#[cfg(not(target_os = "linux"))]
-fn wait_zombie(pid: i32) -> Option<i32> {
-    let mut status = 0;
-    loop {
-        let r = unsafe { libc::waitpid(pid, &mut status as *mut _, 0) };
-        if r == pid {
-            return code_of(status);
-        }
-        if r < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return None;
-        }
+        let r2 = unsafe { libc::waitpid(pid, &mut status as *mut _, 0) };
+        return if r2 == pid { code_of(status) } else { None };
     }
 }
 
@@ -748,6 +738,29 @@ mod tests {
             active_pumps: pumps.clone(),
         });
         (s, pumps)
+    }
+
+    /// Deterministic guard for the reap protocol: after wait_zombie, the
+    /// PID must still be reserved (signalable) with exactly one reap left.
+    /// A waitpid-based implementation takes the EINVAL/fallback path here
+    /// and fails loudly — which is the point.
+    #[test]
+    fn wait_zombie_keeps_pid_reserved() {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 42")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        assert_eq!(wait_zombie(pid), Some(42));
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "pid must still be reserved after wait_zombie"
+        );
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status as *mut _, 0) }, pid);
+        let _ = child.wait(); // ECHILD now; must not panic or hang
     }
 
     /// Deterministic guard for the PTY tail-loss: WouldBlock mid-stream must
