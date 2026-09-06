@@ -92,54 +92,67 @@ fn vsock_stream(cfd: libc::c_int) -> UnixStream {
     unsafe { UnixStream::from_raw_fd(cfd) }
 }
 
-/// Bind CID_ANY:`port` and serve the agent protocol on every accepted
-/// connection. Never panics out: any setup failure is logged and TCP keeps
-/// serving (this is what lets tests/dev run unchanged on hosts without
-/// vsock, e.g. macOS).
-pub fn serve_vsock(port: u32, cfg: &Config) {
-    let fd = vsock_socket();
-    if fd < 0 {
-        eprintln!("forge: vsock socket: {}", io::Error::last_os_error());
-        return;
+/// A bound vsock listener. Split from the serve loop so callers can decide
+/// between transports: bind failure is a value, not a process exit — in a
+/// guest without TCP the vsock listener is the ONLY way in, and a TCP bind
+/// failure there must never kill PID 1 (that halts the whole VM).
+pub struct VsockListener {
+    fd: libc::c_int,
+}
+
+impl Drop for VsockListener {
+    fn drop(&mut self) {
+        vsock_close(self.fd);
     }
-    let (addr, len) = build_sockaddr(port);
-    if !vsock_bind(fd, &addr, len) {
-        eprintln!(
-            "forge: vsock bind port {port}: {}",
-            io::Error::last_os_error()
-        );
-        vsock_close(fd);
-        return;
-    }
-    if !vsock_listen(fd) {
-        eprintln!(
-            "forge: vsock listen port {port}: {}",
-            io::Error::last_os_error()
-        );
-        vsock_close(fd);
-        return;
-    }
-    // NOTE: this line deliberately does NOT share the "forge: listening on "
-    // prefix — integration tests parse that line as a TCP dial address.
-    eprintln!(
-        "forge: vsock listening on cid {} port {port}",
-        libc::VMADDR_CID_ANY
-    );
-    // The listener fd lives for the process lifetime; this loop never returns.
-    loop {
-        let cfd = vsock_accept(fd);
-        if cfd < 0 {
+}
+
+impl VsockListener {
+    pub fn bind(port: u32) -> io::Result<Self> {
+        let fd = vsock_socket();
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let (addr, len) = build_sockaddr(port);
+        if !vsock_bind(fd, &addr, len) {
             let e = io::Error::last_os_error();
-            if e.kind() == io::ErrorKind::Interrupted {
+            vsock_close(fd);
+            return Err(e);
+        }
+        if !vsock_listen(fd) {
+            let e = io::Error::last_os_error();
+            vsock_close(fd);
+            return Err(e);
+        }
+        // NOTE: this line deliberately does NOT share the "forge: listening
+        // on " prefix — integration tests parse that line as a TCP dial
+        // address.
+        eprintln!(
+            "forge: vsock listening on cid {} port {port}",
+            libc::VMADDR_CID_ANY
+        );
+        Ok(Self { fd })
+    }
+
+    /// Accept loop. Never returns (like the TCP serve loop in main).
+    pub fn serve(self, cfg: &Config) -> ! {
+        // Forgets the Drop close: the fd lives for the process lifetime.
+        let fd = self.fd;
+        std::mem::forget(self);
+        loop {
+            let cfd = vsock_accept(fd);
+            if cfd < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                eprintln!("forge: vsock accept: {e}");
+                // Avoid a hot spin if the listener fd went bad.
+                std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
             }
-            eprintln!("forge: vsock accept: {e}");
-            // Avoid a hot spin if the listener fd went bad.
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            continue;
+            let cfg = cfg.clone();
+            std::thread::spawn(move || crate::agent::handle(Conn::Vsock(vsock_stream(cfd)), &cfg));
         }
-        let cfg = cfg.clone();
-        std::thread::spawn(move || crate::agent::handle(Conn::Vsock(vsock_stream(cfd)), &cfg));
     }
 }
 
