@@ -58,7 +58,12 @@ fn wait_listen_addr(err: &mut BufReader<std::process::ChildStderr>, child: &mut 
 
 impl Agent {
     fn spawn(token: &str) -> Self {
-        let bin = env!("CARGO_BIN_EXE_ahvm-forge");
+        Self::spawn_with_timeout(token, 2)
+    }
+
+    /// Short timeouts keep the suite fast; the bulk-output test opts into
+    /// a longer one explicitly.
+    fn spawn_with_timeout(token: &str, exec_timeout_secs: u64) -> Self {        let bin = env!("CARGO_BIN_EXE_ahvm-forge");
         // No port probing: bind :0, spawn, and read the bound address back
         // from the child's stderr. Probing (bind-then-release-then-rebind)
         // lets a parallel test steal the port between release and rebind.
@@ -73,7 +78,7 @@ impl Agent {
             .env("AHVM_FORGE_LISTEN", "127.0.0.1:0")
             .env("AHVM_FORGE_TOKEN", token)
             .env("AHVM_FORGE_ROOT", &dir)
-            .env("AHVM_FORGE_EXEC_TIMEOUT", "20")
+            .env("AHVM_FORGE_EXEC_TIMEOUT", exec_timeout_secs.to_string())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -220,7 +225,8 @@ fn file_traversal_rejected() {
 
 #[test]
 fn output_is_capped() {
-    let agent = Agent::spawn("");
+    // Bulk drain needs headroom; every other test runs on the short timeout.
+    let agent = Agent::spawn_with_timeout("", 15);
     let mut c = agent.connect();
     // 30 MiB of output against the 256 KiB single-response cap.
     let out = exec(&mut c, &["sh", "-c", "head -c 30000000 /dev/zero | tr '\\0' x"]);
@@ -264,17 +270,16 @@ fn write_beats_planted_symlink_tmp() {
 
 #[test]
 fn exec_timeout_kills_descendants() {
-    // `sh -c 'sleep 30 & wait'`: killing only the direct child leaves the
+    // `sleep 45 & wait`: killing only the direct child leaves the
     // grandchild holding the pipes, which used to wedge the response forever.
-    // Forge runs with a 20s exec timeout in tests; the grandchild would exit
-    // on its own at 30s, so anything under ~28s proves the group kill.
+    // Unique sleep duration doubles as a leak marker (see assert_no_stray).
     let agent = Agent::spawn("");
     let mut c = agent.connect();
     c.w
-        .set_read_timeout(Some(Duration::from_secs(28)))
+        .set_read_timeout(Some(Duration::from_secs(15)))
         .unwrap();
     let start = std::time::Instant::now();
-    let body = serde_json::json!({ "argv": ["sh", "-c", "sleep 30 & wait"] })
+    let body = serde_json::json!({ "argv": ["sh", "-c", "sleep 45 & wait"] })
         .to_string()
         .into_bytes();
     write_frame(&mut c.w, &Frame { msg_type: FrameType::ExecReq, payload: body }).unwrap();
@@ -282,7 +287,27 @@ fn exec_timeout_kills_descendants() {
     assert_eq!(f.msg_type, FrameType::ExecResp);
     let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
     assert_eq!(v["exit_code"], 124);
-    assert!(start.elapsed() < Duration::from_secs(28), "took {:?}", start.elapsed());
+    assert_eq!(v["truncated"], true);
+    assert!(start.elapsed() < Duration::from_secs(12), "took {:?}", start.elapsed());
+    assert_no_stray("sleep 45");
+}
+
+/// Fail if a process matching `pattern` (full command line) is observable.
+/// The group kill must reap descendants; anything left is a leak that would
+/// accumulate across requests.
+fn assert_no_stray(pattern: &str) {
+    for _ in 0..30 {
+        let out = std::process::Command::new("pgrep")
+            .arg("-f")
+            .arg(pattern)
+            .output()
+            .expect("pgrep missing");
+        if out.stdout.is_empty() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("leaked process matching {pattern:?}");
 }
 
 #[test]
@@ -294,14 +319,10 @@ fn exec_exited_parent_with_live_descendant_still_responds() {
     c.w
         .set_read_timeout(Some(Duration::from_secs(25)))
         .unwrap();
-    let body = serde_json::json!({ "argv": ["sh", "-c", "echo out; sleep 30 &"] })
+    let body = serde_json::json!({ "argv": ["sh", "-c", "echo out; sleep 46 &"] })
         .to_string()
         .into_bytes();
     write_frame(&mut c.w, &Frame { msg_type: FrameType::ExecReq, payload: body }).unwrap();
-    // Drain threads see EOF only after the grandchild dies (30s) — bounded
-    // by the 20s test exec timeout + 5s drain grace, all under our 25s cap.
-    // Either a clean short response or a 124 timeout response is acceptable;
-    // hanging is not.
     let start = std::time::Instant::now();
     let f = read_frame(&mut c.r).unwrap();
     assert_eq!(f.msg_type, FrameType::ExecResp);
@@ -315,6 +336,7 @@ fn exec_exited_parent_with_live_descendant_still_responds() {
         "took {:?}",
         start.elapsed()
     );
+    assert_no_stray("sleep 46");
 }
 
 #[test]
