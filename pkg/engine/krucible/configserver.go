@@ -1,6 +1,7 @@
 package krucible
 
 import (
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -56,7 +57,8 @@ func (s *configServer) serve() {
 // on an unexpected frame).
 func (s *configServer) handle(conn net.Conn) {
 	defer conn.Close()
-	msgType, _, err := proto.ReadFrame(conn)
+	msgType, payload, err := proto.ReadFrame(conn)
+	slog.Debug("configserver.handle", "type", msgType, "payload_len", len(payload), "err", err)
 	if err != nil || msgType != proto.CONFIG_REQ {
 		return
 	}
