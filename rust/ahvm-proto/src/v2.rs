@@ -140,7 +140,14 @@ pub fn read_frame<R: Read>(r: &mut R) -> Result<Frame, Error> {
         return Err(Error::TooLarge(body_len));
     }
     let mut body = vec![0u8; body_len as usize];
-    read_exact_eof(r, &mut body)?;
+    // A clean EOF here is NOT clean: the 4-byte header already arrived, so
+    // a frame has started and vanishing now means truncation. Map it to
+    // UnexpectedEof; only a zero-byte first read is CleanEof. (Callers used
+    // to treat a mid-frame disconnect as an ordinary hangup.)
+    read_exact_eof(r, &mut body).map_err(|e| match e {
+        Error::CleanEof => Error::UnexpectedEof,
+        other => other,
+    })?;
     let ver = body[0] >> 4;
     if ver != PROTOCOL_VERSION {
         return Err(Error::UnknownVersion(ver));
@@ -213,8 +220,18 @@ mod tests {
     #[test]
     fn clean_eof_errors() {
         let mut empty: &[u8] = &[];
-        assert!(read_frame(&mut empty).is_err());
+        assert!(matches!(read_frame(&mut empty), Err(Error::CleanEof)));
+        // Header arrived ([len=1]) then disconnect: truncated frame, NOT
+        // a clean EOF.
+        let mut cut: &[u8] = &[0, 0, 0, 1];
+        assert!(matches!(
+            read_frame(&mut cut),
+            Err(Error::UnexpectedEof)
+        ));
         let mut partial: &[u8] = &[0, 0];
-        assert!(read_frame(&mut partial).is_err());
+        assert!(matches!(
+            read_frame(&mut partial),
+            Err(Error::UnexpectedEof)
+        ));
     }
 }
