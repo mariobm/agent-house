@@ -2,12 +2,12 @@
 
 ## Naming
 
-**AHVM** means **Agent House Virtual Machine**. This fork retains `lohar` as
+**AHVM** means **Agent House Virtual Machine**. This fork retains `forge` as
 the internal name of the guest agent that runs as PID 1 inside every microVM.
 
 ```
 ahvm    — the daemon + CLI. Orchestrates sandboxes, exposes the API.
-lohar     — the guest agent. Runs inside each sandbox as PID 1.
+forge     — the guest agent. Runs inside each sandbox as PID 1.
 sandbox   — a Firecracker microVM (or Docker container on macOS).
 ```
 
@@ -48,14 +48,14 @@ sandbox   — a Firecracker microVM (or Docker container on macOS).
 │  │  │  vol-*.ext4 (volumes)        │  │                        │  │
 │  │  │                              │  │                        │  │
 │  │  │  ┌────────────────────────┐  │  │                        │  │
-│  │  │  │  lohar (PID 1)         │◄─┤──┘                        │  │
+│  │  │  │  forge (PID 1)         │◄─┤──┘                        │  │
 │  │  │  │  TCP :1024 (control)   │  │                           │  │
 │  │  │  │  TCP :1025 (forward)   │  │                           │  │
 │  │  │  │  session registry      │  │                           │  │
 │  │  │  │  file handlers         │  │                           │  │
 │  │  │  │  scrollback buffers    │  │                           │  │
 │  │  │  └────────────────────────┘  │                           │  │
-│  │  │  user: lohar  /workspace     │                           │  │
+│  │  │  user: forge  /workspace     │                           │  │
 │  │  └──────────────────────────────┘                           │  │
 │  │  tapXXXXXXXX ─── brahvm0 (bridge) ─── iptables NAT        │  │
 │  └─────────────────────────────────────────────────────────────┘  │
@@ -181,7 +181,7 @@ engine-level `sync.RWMutex` protects only the VM map — not individual state.
 
 ## Wire Protocol
 
-Binary framing over TCP (or vsock). All host↔lohar communication.
+Binary framing over TCP (or vsock). All host↔forge communication.
 
 ```
 ┌────────────────┬───────────┬──────────────────────┐
@@ -226,7 +226,7 @@ Supports server-side truncation via `offset` (1-indexed line), `limit` (max line
 and `max_bytes` (byte budget) — whichever limit hits first stops the read.
 Without these parameters, streams the full file (backward compatible).
 Rejects directories and non-regular files. Cancellable via context (closes
-connection, lohar gets broken pipe).
+connection, forge gets broken pipe).
 
 **Write**: `FILE_WRITE_REQ` (path, mode, size) → `STDIN` frames → `FILE_WRITE_RESP`.
 Atomic: writes to temp file, then renames. Readers never see partial content.
@@ -373,7 +373,7 @@ Config: `AHVM_URL`, `AHVM_TOKEN` env vars, or `~/.ahvm/config.yaml`.
 ├── state.db                      SQLite (sandboxes, templates, secrets, FC state)
 ├── age.key                       secret encryption key
 ├── id_ed25519 / .pub             SSH keypair
-├── lohar                         guest agent binary
+├── forge                         guest agent binary
 ├── images/
 │   ├── vmlinux-arm64             kernel (or vmlinux-amd64)
 │   └── rootfs-base-arm64.ext4   base rootfs (Ubuntu 24.04 + Node + rg + fd)
@@ -393,14 +393,14 @@ Config: `AHVM_URL`, `AHVM_TOKEN` env vars, or `~/.ahvm/config.yaml`.
 ## Key Design Decisions
 
 **TCP over TAP for post-snapshot.** Vsock is broken after Firecracker
-snapshot/restore. TCP over virtio-net works. Lohar listens on both;
+snapshot/restore. TCP over virtio-net works. Forge listens on both;
 after resume, the TCP client is used.
 
 **No FC Go SDK.** Direct HTTP to FC's Unix socket API. ~20 lines of
 helpers replace thousands of SDK lines. `DisableKeepAlives: true` prevents
 connection pile-up on the Unix socket under rapid pause/resume cycles.
 
-**No systemd in guest.** Lohar IS init. Mounts, networking, PTYs,
+**No systemd in guest.** Forge IS init. Mounts, networking, PTYs,
 processes — all deterministic. Boot to ready in ~3.5s.
 
 **Guest IP via kernel `ip=`.** Network up before init runs. No DHCP.

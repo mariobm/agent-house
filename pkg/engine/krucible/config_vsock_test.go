@@ -18,12 +18,12 @@ import (
 //
 //  1. create SUCCEEDS with mke2fs unavailable — the exact macOS 500 ("mke2fs:
 //     executable file not found") the config drive caused, and its fix;
-//  2. env from the config reaches the guest over the config vsock (lohar
+//  2. env from the config reaches the guest over the config vsock (forge
 //     materialises it at /run/ahvm/config-env);
 //  3. an injected file is written in the guest;
 //  4. the per-sandbox token is delivered and enforced — a wrong-token agent
 //     client is rejected, a correct-token one works. (A failed fetch would leave
-//     lohar in no-auth mode and accept the wrong token, so this also proves the
+//     forge in no-auth mode and accept the wrong token, so this also proves the
 //     config — hence the token — actually arrived.)
 //
 // Assertions read guest state over the AGENT (FileRead / auth), not via guest
@@ -78,7 +78,7 @@ func TestKrucibleConfigOverVsock(t *testing.T) {
 		return buf.String()
 	}
 
-	// (2) env delivered over vsock (lohar writes configEnv to config-env).
+	// (2) env delivered over vsock (forge writes configEnv to config-env).
 	if env := readGuest("/run/ahvm/config-env"); !strings.Contains(env, "FOO=bar") || !strings.Contains(env, "SECRET_KEY=sk-live-xyz") {
 		t.Errorf("config-env = %q, want it to contain FOO=bar and SECRET_KEY=sk-live-xyz", env)
 	}
@@ -93,7 +93,7 @@ func TestKrucibleConfigOverVsock(t *testing.T) {
 	}
 	bad := agent.NewKrucibleClient(vm.ControlUDS, vm.ForwardUDS, "wrong-"+vm.Token)
 	if _, err := bad.Exec(ctx, []string{"true"}, nil, ""); err == nil {
-		t.Error("exec with a WRONG token succeeded — the vsock-delivered token is not enforced (fetch likely failed → lohar in no-auth mode)")
+		t.Error("exec with a WRONG token succeeded — the vsock-delivered token is not enforced (fetch likely failed → forge in no-auth mode)")
 	}
 	good := agent.NewKrucibleClient(vm.ControlUDS, vm.ForwardUDS, vm.Token)
 	if _, err := good.Exec(ctx, []string{"true"}, nil, ""); err != nil {

@@ -401,7 +401,7 @@ rebuild with their new config + our flag additions.
 
 The ahvm release includes the kernel: ahvm v0.4.0 ships with kernel
 6.1.155. The kernel is not independently versioned — it's an artifact of
-the ahvm build, like the lohar binary.
+the ahvm build, like the forge binary.
 
 ## Verification
 

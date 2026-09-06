@@ -75,7 +75,7 @@ func handleControlConnection(conn net.Conn) {
 
 	msgType, payload, err := proto.ReadFrame(conn)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: control read: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: control read: %v\n", err)
 		return
 	}
 

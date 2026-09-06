@@ -18,14 +18,14 @@ import (
 	"github.com/mariobm/agent-house/pkg/agent/proto"
 )
 
-// systemctlSocketPath is the in-guest UDS where PID-1 lohar listens for
+// systemctlSocketPath is the in-guest UDS where PID-1 forge listens for
 // privileged systemctl operations. Created at boot, mode 0666 so any user
 // can connect; the actual authorisation check uses SO_PEERCRED on the
 // accepted connection (kernel-vouched caller uid, not a client-claimed one).
 const systemctlSocketPath = "/run/ahvm/systemctl.sock"
 
 // privilegedOps lists systemctl subcommands that require root and therefore
-// route through PID-1 lohar over the IPC. Read-only ops (status, show,
+// route through PID-1 forge over the IPC. Read-only ops (status, show,
 // is-active, list-units, etc.) stay in-process \u2014 they don't need privilege
 // and the IPC round-trip would be wasteful.
 //
@@ -62,7 +62,7 @@ func requiresPrivilege(op string) bool {
 
 // --- Client side ---
 
-// tryDispatchViaIPC attempts to forward a privileged op to PID-1 lohar.
+// tryDispatchViaIPC attempts to forward a privileged op to PID-1 forge.
 // Returns (response, true) on successful round-trip; (nil, false) if no
 // daemon is reachable (caller should fall back to in-process). Errors that
 // indicate the daemon IS there but rejected the request are surfaced as
@@ -116,13 +116,13 @@ func startSystemctlListener() {
 	os.Remove(systemctlSocketPath) // stale from previous run
 	ln, err := net.Listen("unix", systemctlSocketPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: systemctl listener: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: systemctl listener: %v\n", err)
 		return
 	}
 	// World-accessible so unprivileged clients can connect; SO_PEERCRED
 	// is what actually decides who's allowed to do what.
 	if err := os.Chmod(systemctlSocketPath, 0666); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: chmod systemctl.sock: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: chmod systemctl.sock: %v\n", err)
 	}
 	go acceptLoop(ln, handleSystemctlConnection)
 }

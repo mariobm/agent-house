@@ -67,7 +67,7 @@ func TestKrucibleTierRootfsBoots(t *testing.T) {
 	}
 	t.Cleanup(func() { eng.Destroy(context.Background(), info.ID) })
 
-	// The guest booted (lohar as PID 1) iff the agent answers an exec.
+	// The guest booted (forge as PID 1) iff the agent answers an exec.
 	r, err := eng.Exec(ctx, info.ID, []string{"sh", "-c", "echo booted-ok"})
 	if err != nil || r.ExitCode != 0 || !strings.Contains(r.Stdout, "booted-ok") {
 		t.Fatalf("tier rootfs did not boot cleanly: err=%v exit=%d out=%q", err, r.ExitCode, strings.TrimSpace(r.Stdout))

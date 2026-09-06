@@ -81,7 +81,7 @@ func TestCLIImageSaveAndBoot(t *testing.T) {
 		t.Fatalf("create src exit %d: %s", code, stderr)
 	}
 	srcID := strings.Fields(stdout)[0]
-	c.run("exec", srcName, "--", "sh", "-c", "echo cli-saved-marker > /home/lohar/marker.txt")
+	c.run("exec", srcName, "--", "sh", "-c", "echo cli-saved-marker > /home/forge/marker.txt")
 
 	// Save image
 	stdout, stderr, code = c.run("image", "save", srcName, "--name", imgName)
@@ -102,7 +102,7 @@ func TestCLIImageSaveAndBoot(t *testing.T) {
 	t.Cleanup(func() { c.run("destroy", dstID) })
 
 	// Verify marker
-	stdout, _, code = c.run("exec", dstName, "--", "cat", "/home/lohar/marker.txt")
+	stdout, _, code = c.run("exec", dstName, "--", "cat", "/home/forge/marker.txt")
 	if code != 0 || !strings.Contains(stdout, "cli-saved-marker") {
 		t.Fatalf("marker not found: %s", stdout)
 	}

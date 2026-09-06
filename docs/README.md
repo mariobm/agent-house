@@ -35,7 +35,7 @@ the canonical, maintained version is on the website:
 | `archive/v1/index.md`             | <https://ahvm.sh/docs/> |
 | `archive/v1/quickstart.md`        | <https://ahvm.sh/docs/quickstart/> |
 | `archive/v1/architecture.md`      | <https://ahvm.sh/docs/under-the-hood/architecture/> |
-| `archive/v1/guest-agent.md`       | <https://ahvm.sh/docs/under-the-hood/lohar-the-blacksmith/> |
+| `archive/v1/guest-agent.md`       | <https://ahvm.sh/docs/under-the-hood/forge-the-blacksmith/> |
 | `archive/v1/networking.md`        | <https://ahvm.sh/docs/under-the-hood/networking/> |
 | `archive/v1/wire-protocol.md`     | <https://ahvm.sh/docs/under-the-hood/wire-protocol/> |
 | `archive/v1/thermal-management.md`| <https://ahvm.sh/docs/under-the-hood/thermal-states/> |

@@ -104,7 +104,7 @@ func (e *Engine) ThermalState(id string) string {
 	return vm.Thermal
 }
 
-// Activity delegates to the lohar agent (last-activity timestamp + session
+// Activity delegates to the forge agent (last-activity timestamp + session
 // counts — used by the thermal manager to decide when to pause an idle VM).
 func (e *Engine) Activity(ctx context.Context, id string) (*proto.ActivityInfo, error) {
 	ag, err := e.agentFor(id)

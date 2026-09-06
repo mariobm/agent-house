@@ -11,7 +11,7 @@ import (
 	"syscall"
 )
 
-// runSpawn is the `lohar spawn` helper. It does exactly two things and
+// runSpawn is the `forge spawn` helper. It does exactly two things and
 // then disappears:
 //
 //  1. Write its own PID into <cgroup>/cgroup.procs.
@@ -66,7 +66,7 @@ func runSpawn(args []string) {
 	cgroupPath, argv, err := parseSpawnArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		fmt.Fprintln(os.Stderr, "usage: lohar spawn --cgroup <path> -- <argv...>")
+		fmt.Fprintln(os.Stderr, "usage: forge spawn --cgroup <path> -- <argv...>")
 		os.Exit(2)
 	}
 
@@ -77,14 +77,14 @@ func runSpawn(args []string) {
 
 	// --- start of race-sensitive span ---
 	if err := os.WriteFile(procs, []byte(pid), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar spawn: write %s: %v\n", procs, err)
+		fmt.Fprintf(os.Stderr, "forge spawn: write %s: %v\n", procs, err)
 		os.Exit(1)
 	}
 	if err := syscall.Exec(argv[0], argv, os.Environ()); err != nil {
 		// syscall.Exec only returns on failure (e.g. argv[0] missing or
 		// not executable). On success the process image is replaced and
 		// this code is unreachable.
-		fmt.Fprintf(os.Stderr, "lohar spawn: exec %s: %v\n", argv[0], err)
+		fmt.Fprintf(os.Stderr, "forge spawn: exec %s: %v\n", argv[0], err)
 		os.Exit(1)
 	}
 	// --- end of race-sensitive span ---
@@ -114,16 +114,16 @@ func parseSpawnArgs(args []string) (cgroupPath string, argv []string, err error)
 		switch {
 		case a == "--":
 			if !sawCgroup {
-				return "", nil, errors.New("lohar spawn: --cgroup is required")
+				return "", nil, errors.New("forge spawn: --cgroup is required")
 			}
 			argv = args[i+1:]
 			if len(argv) == 0 {
-				return "", nil, errors.New("lohar spawn: empty argv after --")
+				return "", nil, errors.New("forge spawn: empty argv after --")
 			}
 			return cgroupPath, argv, nil
 		case a == "--cgroup":
 			if i+1 >= len(args) {
-				return "", nil, errors.New("lohar spawn: --cgroup requires a value")
+				return "", nil, errors.New("forge spawn: --cgroup requires a value")
 			}
 			cgroupPath = args[i+1]
 			sawCgroup = true
@@ -131,13 +131,13 @@ func parseSpawnArgs(args []string) (cgroupPath string, argv []string, err error)
 		case strings.HasPrefix(a, cgEq):
 			cgroupPath = a[len(cgEq):]
 			if cgroupPath == "" {
-				return "", nil, errors.New("lohar spawn: --cgroup requires a value")
+				return "", nil, errors.New("forge spawn: --cgroup requires a value")
 			}
 			sawCgroup = true
 			i++
 		default:
-			return "", nil, fmt.Errorf("lohar spawn: unexpected argument %q (use '--' before daemon argv)", a)
+			return "", nil, fmt.Errorf("forge spawn: unexpected argument %q (use '--' before daemon argv)", a)
 		}
 	}
-	return "", nil, errors.New("lohar spawn: missing '--' separator before daemon argv")
+	return "", nil, errors.New("forge spawn: missing '--' separator before daemon argv")
 }

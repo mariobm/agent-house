@@ -31,7 +31,7 @@ func handleForwardConnection(conn net.Conn) {
 
 	msgType, payload, err := proto.ReadFrame(conn)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: forward read: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: forward read: %v\n", err)
 		return
 	}
 	if msgType != proto.FWD_REQ {

@@ -8,7 +8,7 @@
 FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG USERNAME=lohar
+ARG USERNAME=forge
 ARG NODE_VERSION=22.16.0
 
 # --- System packages (runtime only) ---
@@ -78,7 +78,7 @@ RUN if [ -f ~/.claude-inject/.claude.json ]; then mv ~/.claude-inject/.claude.js
   && rm -rf ~/.claude-inject
 
 # /workspace is the volume mount point for persistent project files.
-# User home (/home/lohar) holds dotfiles/config baked into the image.
+# User home (/home/forge) holds dotfiles/config baked into the image.
 RUN sudo mkdir -p /workspace && sudo chown ${USERNAME}:${USERNAME} /workspace
 WORKDIR /workspace
 

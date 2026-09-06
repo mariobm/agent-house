@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   cli:
-    name: CLI + lohar (cross-compile)
+    name: CLI + forge (cross-compile)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -42,10 +42,10 @@ jobs:
       - name: Build ahvm CLI (all platforms, pure Go)
         run: make release
 
-      - name: Build lohar (guest agent, linux amd64 + arm64)
+      - name: Build forge (guest agent, linux amd64 + arm64)
         run: |
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/lohar-linux-amd64 ./cmd/lohar/
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/lohar-linux-arm64 ./cmd/lohar/
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/forge-linux-amd64 ./cmd/forge/
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/forge-linux-arm64 ./cmd/forge/
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -238,11 +238,11 @@ jobs:
 
       - name: Build rootfs
         run: |
-          mv lohar-linux-${{ matrix.arch }} lohar
-          chmod +x lohar
+          mv forge-linux-${{ matrix.arch }} forge
+          chmod +x forge
           sudo apt-get update -qq
           sudo apt-get install -y -qq debootstrap
-          sudo ./scripts/build-tier.sh ${{ matrix.tier }} ${{ matrix.arch }} ./lohar
+          sudo ./scripts/build-tier.sh ${{ matrix.tier }} ${{ matrix.arch }} ./forge
 
       - name: Compress
         run: |

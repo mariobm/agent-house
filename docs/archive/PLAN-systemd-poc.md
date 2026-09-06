@@ -1,7 +1,7 @@
 # POC: systemd as PID 1
 
 Get systemd mode booting on raspi-5a, measure everything, compare
-against lohar-as-PID-1. No cleanup, no polish — just prove it works
+against forge-as-PID-1. No cleanup, no polish — just prove it works
 and get numbers.
 
 **Target machine:** `ssh user@100.119.145.44` (raspi-5a, aarch64, Pi 5)
@@ -17,7 +17,7 @@ rootfs:             rootfs-minimal-arm64.ext4 (512MB, 161MB used, 291MB free)
 firecracker:        jailer mode (uid 10000)
 images:             minimal, browser, docker, computer (all arm64)
 systemd in rootfs:  NOT INSTALLED (minbase debootstrap)
-lohar init time:    9ms (mounts → TCP listen)
+forge init time:    9ms (mounts → TCP listen)
 ```
 
 The minimal rootfs was built with `debootstrap --variant=minbase`
@@ -28,7 +28,7 @@ which strips systemd entirely. We need to install it for the POC.
 ## Approach
 
 Build a new rootfs image (`rootfs-systemd-arm64.ext4`) alongside the
-existing one. Modify lohar to detect PID 1 vs agent mode. Switch
+existing one. Modify forge to detect PID 1 vs agent mode. Switch
 `init=` in boot args based on image name. Run the bench suite on both.
 
 **Nothing is deleted or replaced.** Existing images, existing code
@@ -36,14 +36,14 @@ paths, existing tests — all untouched.
 
 ---
 
-## Part 1 — Lohar dual-mode (`cmd/lohar/main.go`)
+## Part 1 — Forge dual-mode (`cmd/forge/main.go`)
 
 Add a `runAsAgent()` function. The existing PID 1 path stays exactly
 as-is — the new code only runs when `os.Getpid() != 1`.
 
 ```go
 func main() {
-    if os.Getenv("LOHAR_TEST") == "1" {
+    if os.Getenv("FORGE_TEST") == "1" {
         runTestMode()
         return
     }
@@ -78,8 +78,8 @@ Cross-compile and deploy:
 ```bash
 # On mac (this repo)
 cd /Users/sahil/Projects/ahvm
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o lohar-arm64 ./cmd/lohar/
-scp lohar-arm64 user@100.119.145.44:/tmp/
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o forge-arm64 ./cmd/forge/
+scp forge-arm64 user@100.119.145.44:/tmp/
 ```
 
 ---
@@ -116,8 +116,8 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends systemd systemd-sysv dbus
 
-# Create lohar.service
-cat > /etc/systemd/system/lohar.service << UNIT
+# Create forge.service
+cat > /etc/systemd/system/forge.service << UNIT
 [Unit]
 Description=AHVM Guest Agent
 After=sysinit.target
@@ -125,7 +125,7 @@ DefaultDependencies=no
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/lohar
+ExecStart=/usr/local/bin/forge
 Restart=always
 RestartSec=1
 RefuseManualStop=yes
@@ -135,7 +135,7 @@ WatchdogSec=0
 WantedBy=multi-user.target
 UNIT
 
-systemctl enable lohar.service
+systemctl enable forge.service
 
 # Mask everything unnecessary
 systemctl mask systemd-resolved.service
@@ -183,9 +183,9 @@ apt-get clean
 rm -rf /var/lib/apt/lists/*
 '
 
-# 5. Inject the new dual-mode lohar
-sudo cp /tmp/lohar-arm64 /mnt/systemd-rootfs/usr/local/bin/lohar
-sudo chmod 755 /mnt/systemd-rootfs/usr/local/bin/lohar
+# 5. Inject the new dual-mode forge
+sudo cp /tmp/forge-arm64 /mnt/systemd-rootfs/usr/local/bin/forge
+sudo chmod 755 /mnt/systemd-rootfs/usr/local/bin/forge
 
 # 6. Unmount
 sudo umount /mnt/systemd-rootfs/dev/pts
@@ -194,9 +194,9 @@ sudo umount /mnt/systemd-rootfs/sys
 sudo umount /mnt/systemd-rootfs/proc
 sudo umount /mnt/systemd-rootfs
 
-# 7. Write lohar hash stamp so the engine doesn't try to re-inject
-sha256sum /tmp/lohar-arm64 | awk '{print $1}' | \
-    sudo tee /var/lib/ahvm/images/rootfs-systemd-arm64.ext4.lohar-sha256
+# 7. Write forge hash stamp so the engine doesn't try to re-inject
+sha256sum /tmp/forge-arm64 | awk '{print $1}' | \
+    sudo tee /var/lib/ahvm/images/rootfs-systemd-arm64.ext4.forge-sha256
 ```
 
 ---
@@ -206,7 +206,7 @@ sha256sum /tmp/lohar-arm64 | awk '{print $1}' | \
 Minimal change — detect "systemd" in the image path and switch init:
 
 ```go
-initBin := "/usr/local/bin/lohar"
+initBin := "/usr/local/bin/forge"
 if strings.Contains(rootfsPath, "systemd") {
     initBin = "/sbin/init"
 }
@@ -239,7 +239,7 @@ ssh user@100.119.145.44
 # A. Does systemd mode boot?
 ahvm create --name smoke-systemd --image systemd --cpus 1 --memory 2048
 
-# B. Is lohar responsive?
+# B. Is forge responsive?
 ahvm exec smoke-systemd -- echo "hello from systemd mode"
 
 # C. What does boot timing look like?
@@ -247,7 +247,7 @@ ahvm file read smoke-systemd /tmp/boot-timing.txt
 
 # D. Is systemd running?
 ahvm exec smoke-systemd -- systemctl is-system-running
-ahvm exec smoke-systemd -- systemctl status lohar.service
+ahvm exec smoke-systemd -- systemctl status forge.service
 ahvm exec smoke-systemd -- systemd-analyze
 
 # E. What's masked?
@@ -257,14 +257,14 @@ ahvm exec smoke-systemd -- systemctl list-units --state=running
 ahvm exec smoke-systemd -- cat /etc/resolv.conf
 ahvm exec smoke-systemd -- curl -s ifconfig.me
 
-# G. Compare with lohar PID 1
-ahvm create --name smoke-lohar --cpus 1 --memory 2048
-ahvm file read smoke-lohar /tmp/boot-timing.txt
-ahvm exec smoke-lohar -- echo "hello from lohar PID 1"
+# G. Compare with forge PID 1
+ahvm create --name smoke-forge --cpus 1 --memory 2048
+ahvm file read smoke-forge /tmp/boot-timing.txt
+ahvm exec smoke-forge -- echo "hello from forge PID 1"
 
 # Clean up
 ahvm destroy smoke-systemd -y
-ahvm destroy smoke-lohar -y
+ahvm destroy smoke-forge -y
 ```
 
 If smoke test passes, proceed to measurements.
@@ -276,14 +276,14 @@ If smoke test passes, proceed to measurements.
 ### 5a. Boot timing (20 creates each, sequential, destroy between)
 
 ```bash
-echo "=== LOHAR PID 1 ===" | tee boot-lohar.txt
+echo "=== FORGE PID 1 ===" | tee boot-forge.txt
 for i in $(seq 1 20); do
     START=$(date +%s%N)
     ahvm create --name "bl-$i" --cpus 1 --memory 2048
     END=$(date +%s%N)
     MS=$(( (END - START) / 1000000 ))
     GUEST=$(ahvm file read "bl-$i" /tmp/boot-timing.txt 2>/dev/null)
-    echo "create $i: ${MS}ms | guest: $GUEST" | tee -a boot-lohar.txt
+    echo "create $i: ${MS}ms | guest: $GUEST" | tee -a boot-forge.txt
     ahvm destroy "bl-$i" -y
     sleep 1
 done
@@ -306,7 +306,7 @@ done
 
 ```bash
 for mode in "" "--image systemd"; do
-    tag=$([ -z "$mode" ] && echo "lohar" || echo "systemd")
+    tag=$([ -z "$mode" ] && echo "forge" || echo "systemd")
     echo "=== $tag snapshot test ===" | tee snap-$tag.txt
 
     ahvm create --name "snap-$tag" --cpus 1 --memory 2048 $mode
@@ -336,7 +336,7 @@ done
 
 ```bash
 for mode in "" "--image systemd"; do
-    tag=$([ -z "$mode" ] && echo "lohar" || echo "systemd")
+    tag=$([ -z "$mode" ] && echo "forge" || echo "systemd")
     echo "=== $tag warm test ===" | tee warm-$tag.txt
 
     ahvm create --name "warm-$tag" --cpus 1 --memory 2048 $mode
@@ -360,7 +360,7 @@ done
 
 ```bash
 for mode in "" "--image systemd"; do
-    tag=$([ -z "$mode" ] && echo "lohar" || echo "systemd")
+    tag=$([ -z "$mode" ] && echo "forge" || echo "systemd")
     echo "=== $tag memory ===" | tee mem-$tag.txt
 
     ahvm create --name "mem-$tag" --cpus 1 --memory 2048 $mode
@@ -375,7 +375,7 @@ done
 
 ```bash
 for mode in "" "--image systemd"; do
-    tag=$([ -z "$mode" ] && echo "lohar" || echo "systemd")
+    tag=$([ -z "$mode" ] && echo "forge" || echo "systemd")
     echo "=== $tag packages ===" | tee pkg-$tag.txt
 
     ahvm create --name "pkg-$tag" --cpus 1 --memory 2048 --disk-size 4096 $mode
@@ -405,7 +405,7 @@ done
 # Image A
 ahvm create --name perf-bench --cpus 2 --memory 2048
 bash bench/run.sh 20
-cp -r bench/results bench/results-lohar
+cp -r bench/results bench/results-forge
 ahvm destroy perf-bench -y
 
 # Image B
@@ -420,8 +420,8 @@ ahvm destroy perf-bench -y
 ## Implementation Order
 
 ```
-1. Edit cmd/lohar/main.go — add runAsAgent()         [mac, 15 min]
-2. Cross-compile lohar, scp to Pi                     [mac, 2 min]
+1. Edit cmd/forge/main.go — add runAsAgent()         [mac, 15 min]
+2. Cross-compile forge, scp to Pi                     [mac, 2 min]
 3. Edit create.go — init= switch                      [mac, 5 min]
 4. Cross-compile ahvm, scp to Pi                    [mac, 2 min]
 5. Build systemd rootfs on Pi (chroot + apt)          [Pi, 15 min]
@@ -437,4 +437,4 @@ ahvm destroy perf-bench -y
 ```
 
 Total: ~2.5 hours. All reversible — the systemd rootfs is a new file,
-lohar's PID 1 path is untouched, the init= switch is 3 lines.
+forge's PID 1 path is untouched, the init= switch is 3 lines.

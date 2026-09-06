@@ -39,9 +39,8 @@ AHVM's voice is **direct, technical, and confident without being loud.**
 - No superlatives ("blazing fast", "revolutionary"). The benchmarks
   speak louder than adjectives.
 - Okay to be opinionated ("We chose X because Y" > "X is supported").
-- Hindi/Urdu names are a feature, not something to explain away. The
-  name section exists for those who are curious; the homepage doesn't
-  need to apologize for non-English naming.
+- Product and component names are plain English. No etymology section needed;
+  the homepage doesn't need to explain naming.
 
 **Examples of voice:**
 
@@ -152,7 +151,7 @@ $ ahvm exec dev -- node --version
 v22.16.0
 
 $ ahvm shell dev
-lohar@dev:/workspace$
+forge@dev:/workspace$
 ```
 
 Keep it real — actual commands, actual output. No mocked-up fantasy
@@ -224,7 +223,7 @@ but a cleaner version that shows the flow:
   ┌──────────────────────┐
   │  Linux kernel 6.1    │
   │  Ubuntu 24.04 rootfs │
-  │  lohar (PID 1)       │
+  │  forge (PID 1)       │
   │  Your code runs here │
   └──────────────────────┘
 ```

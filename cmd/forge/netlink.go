@@ -13,7 +13,7 @@ import (
 // This file configures eth0 via rtnetlink directly — no `ip` binary and no
 // kernel IP autoconfig (CONFIG_IP_PNP is off in our kernels), so it works in the
 // minimal box rootfs and in imported OCI images alike. Used by the virtio-net /
-// gateway path (DESIGN-ahvm-v2-networking §0c); lohar reads the addressing
+// gateway path (DESIGN-ahvm-v2-networking §0c); forge reads the addressing
 // from the config drive.
 
 // configureEth0 brings up the interface and configures it point-to-point to the

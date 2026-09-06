@@ -35,7 +35,7 @@ behind the latest GitHub release.
 ### 1. `ahvm update` silently does the wrong thing on servers
 
 A server admin running `ahvm update` gets only a CLI binary update.
-Firecracker, lohar, kernel, and rootfs are silently skipped because the
+Firecracker, forge, kernel, and rootfs are silently skipped because the
 command hardcodes `AHVM_MODE=cli`. The admin thinks they're up to date.
 This is the biggest footgun.
 
@@ -116,9 +116,9 @@ or pass through any flags.
 ### 9. No rollback or partial update recovery
 
 `do_server_update` replaces components sequentially: Firecracker → ahvm
-→ lohar → kernel → rootfs. If the script dies at step 4 (OOM, network
+→ forge → kernel → rootfs. If the script dies at step 4 (OOM, network
 drop, disk full, `kill -9`), you have a new Firecracker + new ahvm
-binary + new lohar but an old kernel and old rootfs. On restart, there's
+binary + new forge but an old kernel and old rootfs. On restart, there's
 no guarantee these versions are compatible.
 
 There is no:
@@ -195,7 +195,7 @@ var updateCmd = &cobra.Command{
     Use:   "update",
     Short: "Update ahvm to the latest version",
     Long: `Update ahvm to the latest release. On a server, updates all
-components (ahvm, Firecracker, lohar, kernel, rootfs). On a CLI-only
+components (ahvm, Firecracker, forge, kernel, rootfs). On a CLI-only
 machine, updates just the binary.
 
 Use --cli-only to update only the binary on a server.
@@ -258,7 +258,7 @@ Updating ahvm server (browser tier)
   v1.6.4 → v1.6.5
   ✓ Firecracker 1.14.0 + jailer (up to date)
   ✓ ahvm v1.6.5
-  ✓ lohar (4.1M)
+  ✓ forge (4.1M)
   ✓ kernel (8.2M)
   ✓ rootfs browser (600M)
 
@@ -512,7 +512,7 @@ Extend the existing `_cleanup` trap to remove staged files:
 _cleanup() {
     rm -f /tmp/ahvm.tmp
     rm -f /usr/local/bin/ahvm.tmp.$$
-    rm -f "$DATA_DIR/lohar.tmp.$$" 2>/dev/null || true
+    rm -f "$DATA_DIR/forge.tmp.$$" 2>/dev/null || true
 }
 ```
 
@@ -770,7 +770,7 @@ check_disk_space() {
 
 Call before `install_rootfs`. Tier sizes are already known from the
 prompt text (`~200MB`, `~600MB`, etc.) — use those plus a 20% margin.
-Also check before `install_kernel` and `install_lohar`.
+Also check before `install_kernel` and `install_forge`.
 
 ### 5.7 Elapsed time per step and total
 
@@ -781,7 +781,7 @@ rustup, Homebrew, and Tailscale all do this.
 ==> Installing ahvm v1.6.5 (server, browser tier) on myhost (aarch64)
   ✓ Firecracker 1.14.0 + jailer (up to date)
   ✓ ahvm v1.6.5 (2.1s)
-  ✓ lohar (4.1M, 0.8s)
+  ✓ forge (4.1M, 0.8s)
   ✓ kernel (8.2M, 1.2s)
   ✓ rootfs browser (612M, 48.3s)
   ✓ systemd service installed

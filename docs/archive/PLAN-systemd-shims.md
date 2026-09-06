@@ -5,7 +5,7 @@ Previous: `v1.10.1` (CLI/UX fixes, shipped)
 Triggered by: GitHub issue #12 follow-up — `systemctl status sshd` reports
 "inactive" while `systemctl status ssh` reports "active" on the same daemon.
 
-lohar today reimplements roughly nine pieces of systemd's userspace at varying
+forge today reimplements roughly nine pieces of systemd's userspace at varying
 fidelity: PID 1 init, systemctl, journalctl, /dev/log syslog, /etc/resolv.conf
 management, hostname, /run tmpfile creation, target-wants service activation,
 and (via shell) policy-rc.d + runlevel. The systemctl bug Fastidious found is
@@ -42,7 +42,7 @@ showed:
    (`<unit>.service.d/*.conf`) are silently ignored — that's where most of the
    distro-shipped behaviour customisation lives.
 5. `svcEnableUnit` ignores `[Install] Alias=` directives. Real systemd creates
-   an alias symlink during enable; lohar doesn't, which is why `sshd.service`
+   an alias symlink during enable; forge doesn't, which is why `sshd.service`
    doesn't exist as a filesystem entity at all in our test VM, breaking any
    tool that scans `/etc/systemd/system/`.
 
@@ -53,7 +53,7 @@ every alias) at lookup time to the same pointer. State lives on the Unit, never
 keyed by name. The data model makes the "two names disagree" bug class
 unrepresentable.
 
-A second realisation came from surveying the rest of lohar: most of the other
+A second realisation came from surveying the rest of forge: most of the other
 systemd-shaped surfaces have the same architectural shape problem. They each
 make sense in isolation; they're inconsistent as a set; they share enough
 state that bugs in one bleed into another. This plan addresses them together.
@@ -68,7 +68,7 @@ it should be, and the gaps in the smaller shims are closed.
 ## What we read
 
 To make sure this plan isn't a tactical patch, I read the implementations of
-the things lohar is shimming:
+the things forge is shimming:
 
 - **systemd itself** (`github.com/systemd/systemd`,
   `src/core/{unit,manager,load-fragment}.{c,h}` and `src/basic/unit-name.{c,h}`).
@@ -138,20 +138,20 @@ A fourth rule comes from systemd's process model:
 
 4. **Privileged operations run in PID 1; the CLI is a thin client.** systemd's
    `systemctl` IPCs into PID 1 over D-Bus; polkit checks the caller's identity
-   at the bus boundary. We will use lohar's existing UDS instead of D-Bus, but
+   at the bus boundary. We will use forge's existing UDS instead of D-Bus, but
    the topology is the same: the systemctl shim becomes a client that asks
-   PID-1 lohar to do the privileged thing, with caller-uid propagated for
+   PID-1 forge to do the privileged thing, with caller-uid propagated for
    authorisation.
 
 ```
    ┌─────────────────────────────────────────────────────────┐
    │ /usr/bin/systemctl  (thin client, runs as caller)        │
    │ — argument parsing, output formatting                    │
-   │ — IPCs the requested op to PID-1 lohar via UDS           │
+   │ — IPCs the requested op to PID-1 forge via UDS           │
    └────────────────────┬────────────────────────────────────┘
                         │  privileged boundary (uid check + audit)
    ┌────────────────────▼────────────────────────────────────┐
-   │ lohar agent (PID 1, runs as root)                        │
+   │ forge agent (PID 1, runs as root)                        │
    │                                                          │
    │  ┌────────────────────────────────────────────────────┐ │
    │  │ Unit registry (n:1 hashmap)                        │ │
@@ -208,7 +208,7 @@ the same root cause.
 
 ## C1 — Unit identity + registry (the architectural core)
 
-New file: `cmd/lohar/unit.go`
+New file: `cmd/forge/unit.go`
 
 This is the change that everything else builds on. The systemctl shim today is
 a kitchen of `func(name string)` that each call `findServiceFile`, `pidFile`,
@@ -335,18 +335,18 @@ for _, raw := range units {
 ### What stays the same
 
 - Pidfile path: `/run/ahvm/services/<canonical>.pid`. The on-disk format is
-  unchanged; in practice the only files lohar wrote on the test VM were
+  unchanged; in practice the only files forge wrote on the test VM were
   already keyed by canonical name.
 - Logfile path: `/var/log/ahvm/<canonical>.log`. Same reasoning.
 - Output format of `status`, `show`, `cat`, `list-units`, `list-unit-files`.
 
 ### Changes
 
-- `cmd/lohar/unit.go`: new file, ~250 lines. `Unit` type, `Registry`,
+- `cmd/forge/unit.go`: new file, ~250 lines. `Unit` type, `Registry`,
   `Resolve`, `Unit` methods.
-- `cmd/lohar/systemctl.go`: rewrite operation functions to take `*Unit`. The
+- `cmd/forge/systemctl.go`: rewrite operation functions to take `*Unit`. The
   file shrinks because dedup goes away (~1100 → ~800 LOC).
-- `cmd/lohar/systemctl_test.go`: update test signatures; add the regression
+- `cmd/forge/systemctl_test.go`: update test signatures; add the regression
   tests in C7.
 
 ---
@@ -396,8 +396,8 @@ list-reset semantics).
 
 ### Changes
 
-- `cmd/lohar/unit.go`: drop-in walk inside `Resolve`, ~40 lines.
-- `cmd/lohar/systemctl.go`: `serviceFile.merge`, ~25 lines.
+- `cmd/forge/unit.go`: drop-in walk inside `Resolve`, ~40 lines.
+- `cmd/forge/systemctl.go`: `serviceFile.merge`, ~25 lines.
 - Test: drop-in overrides `ExecStart`; multiple drop-ins merge in alphabetical
   order; `ExecStart=` (empty) resets prior values.
 
@@ -410,12 +410,12 @@ created from the `[Install]` section:
 
 - `WantedBy=multi-user.target` → `multi-user.target.wants/ssh.service`
 - `RequiredBy=foo.service`     → `foo.service.requires/ssh.service`
-- **`Alias=sshd.service`       → `/etc/systemd/system/sshd.service`** ← lohar misses this
+- **`Alias=sshd.service`       → `/etc/systemd/system/sshd.service`** ← forge misses this
 
 The third one matters because it makes the alias visible to anything globbing
 `/etc/systemd/system/`, including:
 
-- lohar's own `svcIsEnabled` (which globs `*.wants/<name>.service`)
+- forge's own `svcIsEnabled` (which globs `*.wants/<name>.service`)
 - Other unit files that say `After=sshd.service` instead of `After=ssh.service`
 - Distro tooling that probes for unit files by alias name
 - Cold-restart loader: with the symlink in place, the inode-merge in C1's
@@ -443,7 +443,7 @@ which matches systemd's behaviour).
 
 ### Changes
 
-- `cmd/lohar/systemctl.go`: alias-symlink creation in `svcEnableUnit`, removal
+- `cmd/forge/systemctl.go`: alias-symlink creation in `svcEnableUnit`, removal
   in `svcDisableUnit`, ~30 lines.
 - Test: enable creates the alias symlink; disable removes it; cold-load via
   `Registry.Resolve` finds the alias through the symlink-by-inode path.
@@ -454,17 +454,17 @@ which matches systemd's behaviour).
 
 This closes the second-most-dangerous bug found in the issue #12 debug:
 `ahvm exec <vm> -- systemctl stop ssh` (default unprivileged user) silently
-exits 0 because `svcStop`'s `kill()` returns `EPERM` and lohar drops the error.
+exits 0 because `svcStop`'s `kill()` returns `EPERM` and forge drops the error.
 The same pattern hides in `svcStart`/`svcReload`/`svcKill`/`svcRestart`.
 
 The fix is to invert the privilege model so it matches systemd: the
-`/usr/bin/systemctl` binary becomes a thin client that asks PID-1 lohar to
+`/usr/bin/systemctl` binary becomes a thin client that asks PID-1 forge to
 perform the operation. PID 1 runs as root and has the privilege; the client
 just formats output and returns the exit code.
 
 ### Wire format
 
-A new vsock/UDS endpoint on PID 1 lohar, alongside the existing exec/forward
+A new vsock/UDS endpoint on PID 1 forge, alongside the existing exec/forward
 listeners. The protocol is JSON over the existing control connection — same
 auth, same observability, same connection multiplexing.
 
@@ -540,7 +540,7 @@ if requiresPrivilege(command) {
 // otherwise, in-process as today
 ```
 
-PID 1 lohar handles the request by running the same `svc*` operation
+PID 1 forge handles the request by running the same `svc*` operation
 functions in-process, against the same Registry. No process fork, no extra
 goroutine pool — these ops are fast.
 
@@ -577,11 +577,11 @@ func svcStop(u *Unit) error {
 
 ### Changes
 
-- `cmd/lohar/systemctl_ipc.go`: new file, ~200 lines. Request/response types,
+- `cmd/forge/systemctl_ipc.go`: new file, ~200 lines. Request/response types,
   client dispatch, server handler that calls into the same `svc*` functions.
-- `cmd/lohar/handler.go`: new control-connection verb `systemctl` routed to
+- `cmd/forge/handler.go`: new control-connection verb `systemctl` routed to
   the handler.
-- `cmd/lohar/systemctl.go`: error propagation in `svcStop`/`svcKill`/
+- `cmd/forge/systemctl.go`: error propagation in `svcStop`/`svcKill`/
   `svcReload` (~30 lines of `if err != nil { return err }` discipline).
 - Test: non-root caller gets access-denied; root caller succeeds; ESRCH on a
   dead pidfile returns 0 (already-stopped is success); `kill -EPERM` is no
@@ -616,7 +616,7 @@ inventory) are also reconciled — see C5.
 
 ### Changes
 
-- `cmd/lohar/systemctl.go` (the `runJournalctl` function): use registry,
+- `cmd/forge/systemctl.go` (the `runJournalctl` function): use registry,
   ~10 LOC change.
 - Test: `journalctl -u sshd` and `journalctl -u ssh` both return the same
   output after a service started under either name.
@@ -627,7 +627,7 @@ inventory) are also reconciled — see C5.
 
 Today, `startSyslogReceiver` writes to `/var/log/ahvm/<tag>.log` where
 `<tag>` is whatever syslog message tag the daemon used (typically the binary
-name — `sshd`, not `ssh`). lohar's `svcStart` writes to
+name — `sshd`, not `ssh`). forge's `svcStart` writes to
 `/var/log/ahvm/<service-name>.log`. So a single daemon ends up with logs
 split across two files: one captured from stdout/stderr (named after the
 service), one received over /dev/log (named after the binary).
@@ -635,7 +635,7 @@ service), one received over /dev/log (named after the binary).
 Fix: in the syslog receiver, look up the tag in the Unit registry. If the
 tag matches a Unit's canonical name OR any alias, write to the canonical
 log path. If it doesn't match any known unit (kernel, login, custom daemons
-not managed by lohar), fall back to `/var/log/ahvm/<tag>.log` as today.
+not managed by forge), fall back to `/var/log/ahvm/<tag>.log` as today.
 
 ```go
 logPath := filepath.Join("/var/log/ahvm", tag+".log")  // fallback
@@ -646,7 +646,7 @@ if u, err := reg.Resolve(tag); err == nil {
 
 ### Changes
 
-- `cmd/lohar/main.go`: registry lookup in `startSyslogReceiver`,
+- `cmd/forge/main.go`: registry lookup in `startSyslogReceiver`,
   ~5 LOC change. Registry must be a process-wide singleton initialised in
   `runAgent` for this to work — small refactor in C1.
 - Test: write a syslog message tagged `sshd`; assert it lands in
@@ -747,8 +747,8 @@ and zeroes `RestartCount`.
 
 ### Changes
 
-- `cmd/lohar/unit.go`: ActiveState + watcher goroutine, ~80 LOC.
-- `cmd/lohar/systemctl.go`: `Restart=` parsing, `is-failed` op, `reset-failed`
+- `cmd/forge/unit.go`: ActiveState + watcher goroutine, ~80 LOC.
+- `cmd/forge/systemctl.go`: `Restart=` parsing, `is-failed` op, `reset-failed`
   op, ~50 LOC.
 - Test: `Restart=on-failure` actually restarts a crashing service;
   `is-failed` returns "failed" after a crash; `reset-failed` clears it;
@@ -758,11 +758,11 @@ and zeroes `RestartCount`.
 
 ## C7 — Tests
 
-New file: `cmd/lohar/unit_test.go` (registry + resolution).
-Extends: `cmd/lohar/systemctl_test.go` (operation tests with new signatures).
+New file: `cmd/forge/unit_test.go` (registry + resolution).
+Extends: `cmd/forge/systemctl_test.go` (operation tests with new signatures).
 Extends: `pkg/engine/firecracker/systemctl_test.go` (integration on Pi).
 
-### Unit tests (in lohar package)
+### Unit tests (in forge package)
 
 ```go
 func TestRegistryAliasResolution(t *testing.T)
@@ -897,7 +897,7 @@ architecture.
 ### `docs/architecture.md` — new section "Userspace shims"
 
 The shim inventory table from this plan, with each row pointing at the
-relevant code path. So a future contributor reading "what is lohar's
+relevant code path. So a future contributor reading "what is forge's
 relationship to systemd" gets one place that answers it.
 
 ### Changes
@@ -978,7 +978,7 @@ control files. `KillMode=control-group` (the default) makes stop equivalent to
 `echo 1 > cgroup.kill`, which the kernel atomically applies to every process
 in the group.
 
-**What lohar does today.** Every service runs as a bare process with `Setsid`,
+**What forge does today.** Every service runs as a bare process with `Setsid`,
 sharing the VM's memory pool and CPU. We `kill(-pid, SIGTERM)` to the PGID,
 which catches the daemon and its direct children but not anything that
 `setsid()`s itself out, double-forks, or escapes via dbus-activated helpers.
@@ -1002,7 +1002,7 @@ service launcher that happens to read .service files — not a process
 supervisor. We already mount cgroup v2 in `runAgent` for Docker; the substrate
 is there, we just don't use it.
 
-**Effort.** ~250 LOC in lohar plus ~50 LOC of cgroup plumbing. Approach: on
+**Effort.** ~250 LOC in forge plus ~50 LOC of cgroup plumbing. Approach: on
 `svcStart`, mkdir the slice and write the PID into `cgroup.procs` after fork;
 parse `MemoryMax=`/`CPUQuota=`/`TasksMax=` into the corresponding cgroup
 files; on `svcStop`, write `1` to `cgroup.kill` (kernel ≥5.14, fine on Pi 5).
@@ -1016,7 +1016,7 @@ finished initialising. PID 1 transitions ActiveState from `activating` to
 shown by `systemctl status`. `WATCHDOG=1` pings keep an `WatchdogSec=` timer
 alive.
 
-**What lohar does today.** `Type=notify` is treated identically to
+**What forge does today.** `Type=notify` is treated identically to
 `Type=simple`. We report `active` the moment fork+exec succeeds.
 
 **Failure modes you'll spend hours on.**
@@ -1031,7 +1031,7 @@ alive.
   Postgres 14+, NetworkManager, podman, systemd-resolved, almost any Go web
   server with a startup procedure.
 
-**Effort.** ~120 LOC inside the registry built in C1. PID 1 lohar listens on
+**Effort.** ~120 LOC inside the registry built in C1. PID 1 forge listens on
 unix dgram at `/run/systemd/notify`, attributes incoming messages to Units
 (via cgroup membership lookup if F1 has landed, or via PID-to-Unit map
 otherwise), parses `READY=1`/`STATUS=`/`MAINPID=`/`WATCHDOG=1`, transitions
@@ -1044,7 +1044,7 @@ enabled units, runs a topological sort, starts units in waves with barrier
 synchronisation. `After=postgresql.service` actually waits for postgres to
 reach `active` before pgbouncer starts.
 
-**What lohar does today.** Parses these directives into `Unit.Sections` and
+**What forge does today.** Parses these directives into `Unit.Sections` and
 ignores them. `startEnabledServices` iterates `multi-user.target.wants/` in
 directory-listing order, starts everything in parallel.
 
@@ -1071,7 +1071,7 @@ barrier between waves depends on F2 to know when a unit is genuinely active
 fails, the unit is skipped without an error — the conventional admin escape
 hatch.
 
-**What lohar does today.** Ignored entirely. Touching the file an admin
+**What forge does today.** Ignored entirely. Touching the file an admin
 thinks will disable a service has no effect.
 
 **Failure modes you'll spend hours on.**
@@ -1093,7 +1093,7 @@ enough to defer until someone asks.
 **What systemd does.** Auto-creates these directories at start time with the
 unit's `User=`/`Group=` ownership. `systemctl clean` removes them.
 
-**What lohar does today.** Ignored. The unit assumes the directory exists.
+**What forge does today.** Ignored. The unit assumes the directory exists.
 
 **Failure modes you'll spend hours on.**
 - A unit declares `StateDirectory=foo` without an explicit `mkdir` in
@@ -1113,7 +1113,7 @@ directives, mkdir each as `/var/lib/<dir>`, `/var/cache/<dir>`,
 `/usr/lib/tmpfiles.d/*.conf` + `/etc/tmpfiles.d/*.conf` to create runtime
 directories declared by packages.
 
-**What lohar does today.** Hardcodes `/run/ahvm/services` and
+**What forge does today.** Hardcodes `/run/ahvm/services` and
 `/run/systemd/system` and that's it. Packages that depend on `/run/sshd`
 happen to work because their postinst does its own `mkdir`; packages that
 rely on tmpfiles.d alone (some NixOS-derived units, some custom daemons)
@@ -1164,7 +1164,7 @@ benefit for our use case:
 
 - **Real systemd as PID 1.** The reasoning from PLAN-systemd-rc.md still
   applies — under Firecracker snapshot/restore on ARM64, child processes of
-  systemd lose their network poller state. lohar stays as PID 1.
+  systemd lose their network poller state. forge stays as PID 1.
 - **D-Bus / sd-bus.** The C4 IPC uses our own UDS protocol, not D-Bus. We
   don't run dbus-daemon and don't intend to. `libpam-systemd` is pinned out
   of the rootfs.
@@ -1186,7 +1186,7 @@ benefit for our use case:
 - **udev rules processing.** devtmpfs handles basic device nodes; rule-based
   naming isn't needed for a microVM with known fixed devices.
 - **Socket activation runtime.** Our `resolveSocketToService` already maps
-  `.socket` to `.service` and starts eagerly. True socket activation (lohar
+  `.socket` to `.service` and starts eagerly. True socket activation (forge
   listens, hands the fd to the service on first connection) is a lot of
   code for marginal benefit — services start fast in our VMs anyway.
 - **`OnFailure=`** (start unit X when unit Y fails). Niche, easy to add
@@ -1242,14 +1242,14 @@ Each row: gap → fix → release item → test that proves it.
 Four reasons.
 
 First, the alias bug Fastidious found is one report; the architectural shape
-that produced it produces the same class of bug everywhere lohar shims
+that produced it produces the same class of bug everywhere forge shims
 something. Fixing the shape once eliminates a class instead of an instance.
 
 Second, the cost is modest — ~600 LOC of new code spread across the Cn
 patches, ~400 LOC of net change in existing files, ~12 new tests. The on-disk
 format doesn't change. The CLI doesn't change. There's no rootfs rebuild
-required (the shim is the lohar
-binary; rebuilding lohar is `make build` + the existing release flow).
+required (the shim is the forge
+binary; rebuilding forge is `make build` + the existing release flow).
 
 Third, the systemctl shim is increasingly the surface ahvm users touch
 when they "really use" their VM (apt install something, expect it to work).

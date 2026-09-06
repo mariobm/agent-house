@@ -30,9 +30,9 @@ func startTestAgent(t *testing.T) (controlSock, forwardSock string, cleanup func
 
 	cmd := exec.Command(os.Args[0], "-test.run=TestHelperAgent")
 	cmd.Env = append(os.Environ(),
-		"LOHAR_TEST=1",
-		"LOHAR_SOCK="+controlSock,
-		"LOHAR_FWD_SOCK="+forwardSock,
+		"FORGE_TEST=1",
+		"FORGE_SOCK="+controlSock,
+		"FORGE_FWD_SOCK="+forwardSock,
 		"GO_WANT_HELPER_PROCESS=1",
 	)
 	cmd.Stderr = os.Stderr

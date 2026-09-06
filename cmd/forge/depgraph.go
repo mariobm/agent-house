@@ -115,7 +115,7 @@ func buildStartGraph(units []*Unit) [][]*Unit {
 				stuck = append(stuck, name)
 			}
 			fmt.Fprintf(os.Stderr,
-				"lohar: dependency cycle among %v; starting remainder in arbitrary order\n",
+				"forge: dependency cycle among %v; starting remainder in arbitrary order\n",
 				stuck)
 			var lastGroup []*Unit
 			for name := range remaining {

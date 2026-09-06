@@ -75,7 +75,7 @@ func applyTmpfiles(dirs []string) {
 func applyTmpfilesFile(path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: tmpfiles read %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "forge: tmpfiles read %s: %v\n", path, err)
 		return
 	}
 	for lineno, line := range strings.Split(string(data), "\n") {
@@ -84,7 +84,7 @@ func applyTmpfilesFile(path string) {
 			continue
 		}
 		if err := applyTmpfilesLine(raw); err != nil {
-			fmt.Fprintf(os.Stderr, "lohar: tmpfiles %s:%d: %v\n", path, lineno+1, err)
+			fmt.Fprintf(os.Stderr, "forge: tmpfiles %s:%d: %v\n", path, lineno+1, err)
 		}
 	}
 }

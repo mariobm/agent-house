@@ -1,6 +1,6 @@
 # AHVM v4 — Hardening, SDK Readiness, Performance, Test Coverage
 
-Parts 1–20 are done: wire protocol, lohar agent, FC engine, sessions,
+Parts 1–20 are done: wire protocol, forge agent, FC engine, sessions,
 thermals, filesystem, CLI, deployment, install. 229 tests on real
 Firecracker VMs. ~16k lines of Go.
 
@@ -278,7 +278,7 @@ if err := json.Unmarshal([]byte(secretsJSON), &t.Secrets); err != nil {
 }
 ```
 
-**`cmd/lohar/handler.go`** — 1 site in EXEC_KILL handler (line 100):
+**`cmd/forge/handler.go`** — 1 site in EXEC_KILL handler (line 100):
 
 ```go
 // Before:
@@ -693,9 +693,9 @@ slog.Info("snapshot created", "id", id, "type", snapshotType, "duration", dur)
 slog.Debug("agent dial", "id", id, "transport", "tcp", "addr", guestIP)
 ```
 
-**Lohar (guest agent):**
+**Forge (guest agent):**
 
-Lohar already logs to stderr which Firecracker captures. Replace
+Forge already logs to stderr which Firecracker captures. Replace
 `fmt.Fprintf(os.Stderr, ...)` and `logf()` with slog. Guest logs are
 debug-level — only visible when ahvm daemon is run with `--log-level=debug`.
 
@@ -713,9 +713,9 @@ slog.Info("init session started", "pid", cmd.Process.Pid)
 |------|---------------------|-------------------------------|
 | `pkg/server/server.go` | 3 | 0 |
 | `pkg/server/routes.go` | 2 | 0 |
-| `cmd/lohar/handler.go` | 1 | 1 |
-| `cmd/lohar/tty.go` | 0 | 2 |
-| `cmd/lohar/main.go` | 0 | ~5 |
+| `cmd/forge/handler.go` | 1 | 1 |
+| `cmd/forge/tty.go` | 0 | 2 |
+| `cmd/forge/main.go` | 0 | ~5 |
 | `cmd/ahvm/main.go` | ~3 | 0 |
 
 ### 42.5 Verification
@@ -1117,12 +1117,12 @@ Add optional `offset`, `limit`, and `max_bytes` fields to `FILE_READ_REQ`:
 
 Pi truncates at 2000 lines OR 50KB — whichever hits first. Supporting
 both `limit` (line count) and `max_bytes` (byte budget) lets the SDK
-pass both constraints and have lohar enforce them guest-side.
+pass both constraints and have forge enforce them guest-side.
 
-### 36.3 Lohar Handler Change
+### 36.3 Forge Handler Change
 
 ```go
-// cmd/lohar/files.go — handleFileRead
+// cmd/forge/files.go — handleFileRead
 
 func handleFileRead(conn net.Conn, payload []byte) {
     var req struct {
@@ -1236,7 +1236,7 @@ type FileEngine interface {
 ### 36.6 Backward Compatibility
 
 `offset=0`, `limit=0`, `max_bytes=0` (the defaults) trigger the existing
-full-file streaming path in lohar. No behavior change for callers that
+full-file streaming path in forge. No behavior change for callers that
 don't pass these parameters.
 
 ### 36.7 Tests
@@ -1302,7 +1302,7 @@ runs to completion even if the client disconnects.
 
 ### 38.2 Solution
 
-Lohar already closes the connection on host disconnect. The
+Forge already closes the connection on host disconnect. The
 `proto.WriteFrame(conn, proto.STDOUT, ...)` call returns an error
 (broken pipe) when the host has closed its end. The for loop breaks on
 write error. This already works on the guest side.
@@ -1320,7 +1320,7 @@ func (c *AgentClient) FileRead(ctx context.Context, path string, w io.Writer,
     if err != nil { return 0, "", err }
     defer conn.Close()
 
-    // Close connection on context cancellation — this makes the lohar
+    // Close connection on context cancellation — this makes the forge
     // write fail with broken pipe, stopping the transfer.
     go func() {
         <-ctx.Done()
@@ -1355,7 +1355,7 @@ Add `Setpgid: true` so the child process gets its own process group,
 then kill the entire group on KILL:
 
 ```go
-// cmd/lohar/exec.go — handlePipedExec
+// cmd/forge/exec.go — handlePipedExec
 
 cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
 cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -1380,7 +1380,7 @@ For TTY sessions, the process group is already set up by `Setsid: true`
 `readHostInput` to use process group kill:
 
 ```go
-// cmd/lohar/tty.go — readHostInput
+// cmd/forge/tty.go — readHostInput
 
 case proto.KILL:
     sess.mu.Lock()
@@ -1730,7 +1730,7 @@ Extract recovery logic into engine package. Tests (no root needed):
 - `BenchmarkReadFrame1KB`
 - `BenchmarkFrameRoundTrip100K`
 
-**`cmd/lohar/session_bench_test.go`:**
+**`cmd/forge/session_bench_test.go`:**
 - `BenchmarkRingBufferWrite4KB` / `BenchmarkRingBufferWrite32KB`
 - `BenchmarkRingBufferBytes`
 

@@ -36,16 +36,16 @@ func main() {
 	}
 
 	// Verb dispatch: argv[1] subcommand. This is a different axis than
-	// the busybox-style argv[0] dispatch above — `lohar spawn` is a
+	// the busybox-style argv[0] dispatch above — `forge spawn` is a
 	// private supervisor primitive (called by startDaemon to fix the
 	// cgroup-placement race for forking daemons), not a user-facing
-	// verb. Deliberately not symlinked into PATH. See cmd/lohar/spawn.go.
+	// verb. Deliberately not symlinked into PATH. See cmd/forge/spawn.go.
 	if len(os.Args) > 1 && os.Args[1] == "spawn" {
 		runSpawn(os.Args[2:])
 		return
 	}
 
-	if os.Getenv("LOHAR_TEST") == "1" {
+	if os.Getenv("FORGE_TEST") == "1" {
 		runTestMode()
 		return
 	}
@@ -53,22 +53,22 @@ func main() {
 	runAgent()
 }
 
-// runAgent is the main init + agent loop. lohar runs as PID 1:
+// runAgent is the main init + agent loop. forge runs as PID 1:
 // mounts filesystems, configures the system, starts listeners,
 // starts enabled services, then handles exec/shell/file requests.
 func runAgent() {
-	// SAFETY GUARD: lohar's runAgent does PID-1 things (mounts /proc,
+	// SAFETY GUARD: forge's runAgent does PID-1 things (mounts /proc,
 	// installs a SIGTERM handler that calls reboot(POWER_OFF), brings
 	// up loopback, starts every enabled service). All of that is only
-	// safe inside a Firecracker microVM where lohar IS PID 1. Running
+	// safe inside a Firecracker microVM where forge IS PID 1. Running
 	// it on a real host as root has powered off two Pi5 machines
 	// in this project's history. Refuse to proceed unless we really
 	// are PID 1.
 	if os.Getpid() != 1 {
-		fmt.Fprintf(os.Stderr, "lohar: refusing to runAgent: not PID 1 (PID=%d). "+
+		fmt.Fprintf(os.Stderr, "forge: refusing to runAgent: not PID 1 (PID=%d). "+
 			"This binary's agent path is for use inside a Firecracker VM as init. "+
 			"For systemctl/journalctl invocations, the busybox dispatch routes "+
-			"based on argv[0]; symlink /usr/bin/systemctl -> lohar to use those.\n",
+			"based on argv[0]; symlink /usr/bin/systemctl -> forge to use those.\n",
 			os.Getpid())
 		os.Exit(2)
 	}
@@ -77,7 +77,7 @@ func runAgent() {
 	var bootLog strings.Builder
 	bp := func(name string) {
 		line := fmt.Sprintf("+%dms %s\n", time.Since(bootStart).Milliseconds(), name)
-		fmt.Fprint(os.Stderr, "lohar: boot "+line)
+		fmt.Fprint(os.Stderr, "forge: boot "+line)
 		bootLog.WriteString(line)
 	}
 	bp("start")
@@ -102,7 +102,7 @@ func runAgent() {
 	// cgroups v2 — required by Docker for resource isolation.
 	os.MkdirAll("/sys/fs/cgroup", 0755)
 	if err := syscall.Mount("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, ""); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: mount cgroup2: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: mount cgroup2: %v\n", err)
 	}
 	os.WriteFile("/sys/fs/cgroup/cgroup.subtree_control",
 		[]byte("+cpu +memory +io +pids"), 0644)
@@ -111,10 +111,10 @@ func runAgent() {
 	// ELFs to a userspace interpreter (qemu-user). Needed for `docker buildx`
 	// cross-arch builds inside the sandbox: `tonistiigi/binfmt --install all`
 	// writes its handler registrations through /proc/sys/fs/binfmt_misc/register.
-	// Normally systemd-binfmt mounts this; with the shim, lohar does it.
+	// Normally systemd-binfmt mounts this; with the shim, forge does it.
 	// Best-effort: only fails if the kernel was built without CONFIG_BINFMT_MISC.
 	if err := syscall.Mount("binfmt_misc", "/proc/sys/fs/binfmt_misc", "binfmt_misc", 0, ""); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: mount binfmt_misc (non-fatal): %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: mount binfmt_misc (non-fatal): %v\n", err)
 	}
 
 	bringUpInterface("lo")
@@ -141,9 +141,9 @@ func runAgent() {
 		// no `ip` binary / IP autoconfig). Before DNS so egress is ready.
 		if cfg.Net != nil && cfg.Net.IP != "" {
 			if err := configureEth0("eth0", cfg.Net.IP, cfg.Net.Gateway); err != nil {
-				fmt.Fprintf(os.Stderr, "lohar: configure eth0: %v\n", err)
+				fmt.Fprintf(os.Stderr, "forge: configure eth0: %v\n", err)
 			} else {
-				fmt.Fprintf(os.Stderr, "lohar: eth0 %s gw %s (netlink)\n", cfg.Net.IP, cfg.Net.Gateway)
+				fmt.Fprintf(os.Stderr, "forge: eth0 %s gw %s (netlink)\n", cfg.Net.IP, cfg.Net.Gateway)
 			}
 		}
 		if cfg.DNSInternal != "" || len(cfg.DNS) > 0 {
@@ -191,40 +191,40 @@ func runAgent() {
 	go startNotifyReceiver(globalRegistry)
 
 	// Privileged systemctl operations from in-guest non-root callers go
-	// through this Unix socket. PID 1 lohar runs the op as root and sends
-	// the formatted output back. See cmd/lohar/systemctl_ipc.go.
+	// through this Unix socket. PID 1 forge runs the op as root and sends
+	// the formatted output back. See cmd/forge/systemctl_ipc.go.
 	startSystemctlListener()
 
 	// --- Listeners ---
 
 	lnControl, err := listenVsock(proto.VsockPortControl)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: vsock control: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: vsock control: %v\n", err)
 	} else {
 		go acceptLoop(lnControl, handleControlConnection)
 	}
 	lnForward, err := listenVsock(proto.VsockPortForward)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: vsock forward: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: vsock forward: %v\n", err)
 	} else {
 		go acceptLoop(lnForward, handleForwardConnection)
 	}
 
 	tcpControl, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", proto.VsockPortControl))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: tcp control: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: tcp control: %v\n", err)
 	} else {
 		go acceptLoop(tcpControl, handleControlConnection)
 	}
 	tcpForward, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", proto.VsockPortForward))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: tcp forward: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: tcp forward: %v\n", err)
 	} else {
 		go acceptLoop(tcpForward, handleForwardConnection)
 	}
 	bp("tcp_listen")
 
-	fmt.Fprintln(os.Stderr, "lohar: ready")
+	fmt.Fprintln(os.Stderr, "forge: ready")
 
 	// --- Bridge user --env into unit-file environment ---
 	// configEnv comes from the config drive (populated by `ahvm create
@@ -245,7 +245,7 @@ func runAgent() {
 			fmt.Fprintf(&b, "%s=%s\n", k, v)
 		}
 		if err := os.WriteFile("/run/ahvm/config-env", []byte(b.String()), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "lohar: write config-env: %v\n", err)
+			fmt.Fprintf(os.Stderr, "forge: write config-env: %v\n", err)
 		}
 	}
 
@@ -287,9 +287,9 @@ func runAgent() {
 		cmd.Env = buildEnv(map[string]string{"HOME": "/root"})
 		if err := cmd.Run(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
-				fmt.Fprintf(os.Stderr, "lohar: boot profile timed out after 30s\n")
+				fmt.Fprintf(os.Stderr, "forge: boot profile timed out after 30s\n")
 			} else {
-				fmt.Fprintf(os.Stderr, "lohar: boot profile failed: %v\n", err)
+				fmt.Fprintf(os.Stderr, "forge: boot profile failed: %v\n", err)
 			}
 		}
 		cancel()
@@ -321,7 +321,7 @@ func runAgent() {
 func mustMount(source, target, fstype string, flags uintptr, data string) {
 	os.MkdirAll(target, 0755)
 	if err := syscall.Mount(source, target, fstype, flags, data); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: mount %s on %s: %v\n", source, target, err)
+		fmt.Fprintf(os.Stderr, "forge: mount %s on %s: %v\n", source, target, err)
 	}
 }
 
@@ -329,7 +329,7 @@ func ensureResolvConf() {
 	const path = "/etc/resolv.conf"
 	os.Remove(path)
 	if err := os.WriteFile(path, []byte("nameserver 1.1.1.1\nnameserver 8.8.8.8\n"), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: write resolv.conf: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: write resolv.conf: %v\n", err)
 	}
 }
 
@@ -353,7 +353,7 @@ func installSignalHandlers() {
 	}()
 }
 
-// reapZombies reaps orphaned child processes. As PID 1, lohar is
+// reapZombies reaps orphaned child processes. As PID 1, forge is
 // responsible for waiting on all orphans to prevent zombie accumulation.
 // Go's runtime handles SIGCHLD for processes started via exec.Command,
 // but grandchild processes (e.g. services started by the systemctl shim,
@@ -390,7 +390,7 @@ func startSyslogReceiver(reg *Registry) {
 	os.Remove(sockPath)
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: sockPath, Net: "unixgram"})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: syslog receiver: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: syslog receiver: %v\n", err)
 		return
 	}
 	os.Chmod(sockPath, 0666)
@@ -500,26 +500,26 @@ type NetConfig struct {
 func fetchConfig() *SandboxConfig {
 	conn, err := dialVsock(proto.VsockPortConfig)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: config vsock dial: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: config vsock dial: %v\n", err)
 		return nil
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := proto.WriteFrame(conn, proto.CONFIG_REQ, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: config req: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: config req: %v\n", err)
 		return nil
 	}
 	typ, payload, err := proto.ReadFrame(conn)
 	if err != nil || typ != proto.CONFIG_RESP {
-		fmt.Fprintf(os.Stderr, "lohar: config resp: type=0x%02x err=%v\n", typ, err)
+		fmt.Fprintf(os.Stderr, "forge: config resp: type=0x%02x err=%v\n", typ, err)
 		return nil
 	}
 	var cfg SandboxConfig
 	if err := json.Unmarshal(payload, &cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: parse config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: parse config: %v\n", err)
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "lohar: fetched config for %s\n", cfg.SandboxID)
+	fmt.Fprintf(os.Stderr, "forge: fetched config for %s\n", cfg.SandboxID)
 	return &cfg
 }
 
@@ -594,7 +594,7 @@ func writeConfigFiles(files map[string]struct {
 	for path, cf := range files {
 		content, err := base64.StdEncoding.DecodeString(cf.Content)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "lohar: decode file %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "forge: decode file %s: %v\n", path, err)
 			continue
 		}
 		os.MkdirAll(filepath.Dir(path), 0755)
@@ -603,7 +603,7 @@ func writeConfigFiles(files map[string]struct {
 			mode = 0644
 		}
 		if err := os.WriteFile(path, content, os.FileMode(mode)); err != nil {
-			fmt.Fprintf(os.Stderr, "lohar: write file %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "forge: write file %s: %v\n", path, err)
 			continue
 		}
 		os.Chown(path, 1000, 1000)
@@ -625,13 +625,13 @@ func mountFsMounts(mounts []FsMountConfig) {
 			flags |= syscall.MS_RDONLY
 		}
 		if err := syscall.Mount(m.Tag, m.Mount, "virtiofs", flags, ""); err != nil {
-			fmt.Fprintf(os.Stderr, "lohar: mount virtiofs %s → %s: %v\n", m.Tag, m.Mount, err)
+			fmt.Fprintf(os.Stderr, "forge: mount virtiofs %s → %s: %v\n", m.Tag, m.Mount, err)
 			continue
 		}
 		if !m.ReadOnly {
 			os.Chown(m.Mount, 1000, 1000)
 		}
-		fmt.Fprintf(os.Stderr, "lohar: mounted virtiofs %s → %s (ro=%v)\n", m.Tag, m.Mount, m.ReadOnly)
+		fmt.Fprintf(os.Stderr, "forge: mounted virtiofs %s → %s (ro=%v)\n", m.Tag, m.Mount, m.ReadOnly)
 	}
 }
 
@@ -643,12 +643,12 @@ func mountVolumes(volumes []VolumeMountConfig) {
 			flags |= syscall.MS_RDONLY
 		}
 		if err := syscall.Mount(v.Device, v.Mount, v.FS, flags, ""); err != nil {
-			fmt.Fprintf(os.Stderr, "lohar: mount %s → %s: %v\n", v.Device, v.Mount, err)
+			fmt.Fprintf(os.Stderr, "forge: mount %s → %s: %v\n", v.Device, v.Mount, err)
 			continue
 		}
 		if !v.ReadOnly {
 			os.Chown(v.Mount, 1000, 1000)
 		}
-		fmt.Fprintf(os.Stderr, "lohar: mounted %s → %s (ro=%v)\n", v.Device, v.Mount, v.ReadOnly)
+		fmt.Fprintf(os.Stderr, "forge: mounted %s → %s (ro=%v)\n", v.Device, v.Mount, v.ReadOnly)
 	}
 }

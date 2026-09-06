@@ -12,7 +12,7 @@ func TestImageImportEndpoint(t *testing.T) {
 	_, ts := setup(t)
 
 	// Create a minimal but valid tarball — the server will fail at
-	// oci.ImportFromTarball because we don't have mke2fs / lohar on
+	// oci.ImportFromTarball because we don't have mke2fs / forge on
 	// the CI runner. But we can test the endpoint routing, name
 	// validation, and duplicate detection.
 

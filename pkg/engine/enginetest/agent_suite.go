@@ -33,7 +33,7 @@ type fileEngine interface {
 
 // RunAgentSuite boots one sandbox and asserts the VMM-agnostic core: status,
 // list, exec (exit codes + stdout), and the file API. Commands used (true,
-// false, echo) and lohar-internal file ops exist on any reasonable rootfs, so
+// false, echo) and forge-internal file ops exist on any reasonable rootfs, so
 // the suite is portable across engines.
 func RunAgentSuite(t *testing.T, newEngine NewEngine) {
 	eng := newEngine(t) // may t.Skip

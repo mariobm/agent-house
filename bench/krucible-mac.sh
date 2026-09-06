@@ -6,7 +6,7 @@
 # percentiles use perl (Time::HiRes), present on stock macOS.
 #
 # Prereqs (build once): make krucible && make vmm && make build
-#   plus a base image: ./krucible-mkimage alpine dist/krucible-base-alpine.img <lohar>
+#   plus a base image: ./krucible-mkimage alpine dist/krucible-base-alpine.img <forge>
 #
 # Usage:
 #   bench/krucible-mac.sh                 # default sample sizes

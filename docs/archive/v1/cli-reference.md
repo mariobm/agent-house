@@ -153,7 +153,7 @@ Everything after `--` is the command. Exit code is forwarded. Stdout goes to std
 ahvm exec dev -- cat /workspace/data.json | jq .name
 ```
 
-Commands run as user `lohar` (uid 1000), not root. Use `sudo` inside the sandbox for root access.
+Commands run as user `forge` (uid 1000), not root. Use `sudo` inside the sandbox for root access.
 
 ### shell / sh
 

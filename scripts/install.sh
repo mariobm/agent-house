@@ -1255,9 +1255,9 @@ do_server_update() {
     # short-circuit `ahvm update --tiers <X>` for that tier — the gate
     # would skip install_rootfs() before its own skip-check ran.
     # v2 runtime closure (from `install_bundle 1`): the CLI, the per-VM vmm helper,
-    # the per-owner net gateway, libkrun, and the lean kernel. lohar is baked into
+    # the per-owner net gateway, libkrun, and the lean kernel. forge is baked into
     # the rootfs (/init.krun), not a standalone file. (The old FC checks —
-    # firecracker/lohar/vmlinux — never matched on v2, so update never short-circuited.)
+    # firecracker/forge/vmlinux — never matched on v2, so update never short-circuited.)
     local rt="$DATA_DIR/runtime"
     local all_present=true
     [ -f "/usr/local/bin/ahvm" ]              || all_present=false

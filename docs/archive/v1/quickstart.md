@@ -35,7 +35,7 @@ You need:
 curl -fsSL ahvm.sh/install | sudo bash
 ```
 
-The script downloads `ahvm`, `lohar`, Firecracker, the jailer, the
+The script downloads `ahvm`, `forge`, Firecracker, the jailer, the
 kernel, and an Ubuntu 24.04 rootfs. It then:
 
 - Installs a systemd unit (`ahvm.service`) and starts the daemon.
@@ -138,7 +138,7 @@ When you ran `ahvm create --name dev`:
    ext4 config drive with hostname / DNS / auth token, allocated a
    TAP device on your user's bridge, started a Firecracker process,
    configured it via Firecracker's Unix-socket HTTP API, booted the
-   kernel, and waited for `lohar` (the guest agent) to respond on
+   kernel, and waited for `forge` (the guest agent) to respond on
    TCP :1024.
 3. The sandbox is now running — its own kernel, its own filesystem,
    its own L2 segment, isolated from other users by per-user bridges

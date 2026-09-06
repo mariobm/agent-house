@@ -89,7 +89,7 @@ type SandboxSpec struct {
 // directory is exposed to the guest at GuestPath — shared, bidirectional, and
 // N-writer (the host FS arbitrates). Distinct from a volume (an owned, versioned,
 // portable block disk). FC ignores this; krucible wires it via krun_add_virtiofs3
-// (host side) + a guest virtio-fs mount (lohar, from the config drive).
+// (host side) + a guest virtio-fs mount (forge, from the config drive).
 type FsMount struct {
 	HostPath  string `json:"host_path"`
 	GuestPath string `json:"guest_path"`

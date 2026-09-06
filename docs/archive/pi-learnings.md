@@ -93,7 +93,7 @@ Tool calls are **prepared sequentially** (validation, beforeToolCall hooks)
 then **executed concurrently**. Results are collected in source order.
 
 **Implication:** ahvm's connection-per-operation model handles this
-naturally — each parallel tool call opens its own TCP connection to lohar.
+naturally — each parallel tool call opens its own TCP connection to forge.
 But the p99 latency under 5–10 concurrent connections matters, since the
 user sees the slowest one. A common real pattern: 5 parallel file reads.
 
@@ -126,7 +126,7 @@ bash is saved to a temp file and its path included in the response.
 from guest to host. For a 100MB log file, that's 100MB through the wire
 protocol even though pi will truncate to 50KB. The truncation should happen
 inside the guest. Add `offset` (1-indexed line number) and `limit` (max
-lines) parameters to `FILE_READ_REQ` so lohar does server-side truncation.
+lines) parameters to `FILE_READ_REQ` so forge does server-side truncation.
 
 ---
 
@@ -240,7 +240,7 @@ Path resolution handles:
 
 **Implication:** AHVM file operations use absolute paths. Pi's SDK
 integration would resolve paths on the host side before calling the API.
-This works, but supporting relative-to-workspace resolution inside lohar
+This works, but supporting relative-to-workspace resolution inside forge
 would simplify the integration.
 
 ---

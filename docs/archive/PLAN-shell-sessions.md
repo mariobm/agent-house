@@ -995,7 +995,7 @@ Instead, when the PTY reader detects a `WriteFrame` error, it **closes
 the connection**. This causes `ReadFrame` in `readHostInput` to return
 an error, which triggers the canonical detach cleanup in one place.
 
-**File:** `cmd/lohar/tty.go` — background goroutine in `handleTTYSession`
+**File:** `cmd/forge/tty.go` — background goroutine in `handleTTYSession`
 
 ```go
 go func() {
@@ -1074,17 +1074,17 @@ entry.
 ### Part 12 — Guest Disconnect Logging
 
 Fixes Bug 11. Add minimal logging to `readHostInput` so guest-side
-disconnects are observable in lohar's stderr (visible with daemon
+disconnects are observable in forge's stderr (visible with daemon
 debug logging).
 
-**File:** `cmd/lohar/tty.go` — `readHostInput`
+**File:** `cmd/forge/tty.go` — `readHostInput`
 
 ```go
 func readHostInput(conn net.Conn, sess *Session) {
     for {
         msgType, payload, err := proto.ReadFrame(conn)
         if err != nil {
-            fmt.Fprintf(os.Stderr, "lohar: session %s: host disconnected: %v\n",
+            fmt.Fprintf(os.Stderr, "forge: session %s: host disconnected: %v\n",
                 sess.ID, err)
             sess.mu.Lock()
             sess.Attached = nil
@@ -1127,7 +1127,7 @@ This is the simplest correct approach. The scrollback is always
 accessed in a context where `sess.mu` is nearby, so extending the
 critical section is low-friction.
 
-**File:** `cmd/lohar/tty.go` — PTY reader goroutine (both
+**File:** `cmd/forge/tty.go` — PTY reader goroutine (both
 `handleTTYSession` and `runInitSession`)
 
 Move `Scrollback.Write` inside the existing `sess.mu.Lock()` block
@@ -1157,7 +1157,7 @@ if n > 0 {
 }
 ```
 
-**File:** `cmd/lohar/tty.go` — `handleSessionAttach`
+**File:** `cmd/forge/tty.go` — `handleSessionAttach`
 
 Move `Scrollback.Bytes()` inside `sess.mu`:
 
@@ -1210,8 +1210,8 @@ After all phases ship, the user's experience:
 
 ```bash
 $ ahvm shell rory
-lohar@rory:/$ cd /opt/hermes
-lohar@rory:/opt/hermes$ hermes gateway
+forge@rory:/$ cd /opt/hermes
+forge@rory:/opt/hermes$ hermes gateway
 ┌──────────────────────────────────────┐
 │  ✦ Hermes Gateway Starting...        │
 │                                      │
@@ -1231,7 +1231,7 @@ $ ahvm shell rory
 # ← auto-reattaches to session s3
 # ← 64KB of scrollback replayed (hermes logs since disconnect)
 # ← hermes gateway is still running, user picks up where they left off
-lohar@rory:/opt/hermes$
+forge@rory:/opt/hermes$
 ```
 
 ---

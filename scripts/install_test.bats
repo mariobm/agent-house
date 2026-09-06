@@ -292,7 +292,7 @@ EOF
 }
 
 # ── is_up_to_date ─────────────────────────────────────────────────
-# Used by install_lohar and install_kernel for the skip-if-fresh path.
+# Used by install_forge and install_kernel for the skip-if-fresh path.
 # A regression here flips the script between "always re-downloads"
 # (slow but correct) and "never re-downloads despite version change"
 # (silent stale binaries — much worse).

@@ -189,8 +189,8 @@ func libDir() string {
 	return strings.Join(dirs, ":")
 }
 
-// buildBaseRootfs cross-compiles lohar to <root>/init.krun and a tiny multi-call
-// util (true/echo) to <root>/bin, plus the mountpoints lohar mounts over.
+// buildBaseRootfs cross-compiles forge to <root>/init.krun and a tiny multi-call
+// util (true/echo) to <root>/bin, plus the mountpoints forge mounts over.
 func buildBaseRootfs(t *testing.T, repo string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -203,12 +203,12 @@ func buildBaseRootfs(t *testing.T, repo string) string {
 	}
 	guestArch := runtime.GOARCH // HVF/KVM: guest arch == host arch
 
-	// lohar -> /init.krun
-	loharBuild := exec.Command("go", "build", "-o", filepath.Join(root, "init.krun"), "./cmd/lohar")
-	loharBuild.Dir = repo
-	loharBuild.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+guestArch, "CGO_ENABLED=0")
-	if out, err := loharBuild.CombinedOutput(); err != nil {
-		t.Fatalf("build lohar: %v\n%s", err, out)
+	// forge -> /init.krun
+	forgeBuild := exec.Command("go", "build", "-o", filepath.Join(root, "init.krun"), "./cmd/forge")
+	forgeBuild.Dir = repo
+	forgeBuild.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+guestArch, "CGO_ENABLED=0")
+	if out, err := forgeBuild.CombinedOutput(); err != nil {
+		t.Fatalf("build forge: %v\n%s", err, out)
 	}
 
 	// tiny multi-call util (true/echo) -> /bin/{true,echo}

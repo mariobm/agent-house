@@ -101,7 +101,7 @@ attachment to multiple sandboxes simultaneously is safe and supported.
 Read-only mounts require changes at three layers:
 1. **Firecracker**: `/drives/{id}` with `is_read_only: true`
 2. **Config drive**: `VolumeMountConfig` gains a `ReadOnly bool` field
-3. **Guest agent**: lohar's `mountVolumes` uses `syscall.MS_RDONLY`
+3. **Guest agent**: forge's `mountVolumes` uses `syscall.MS_RDONLY`
 
 Without all three, the volume is mounted read-write inside the VM
 regardless of what the API says, allowing corruption of shared data.
@@ -116,7 +116,7 @@ type VolumeMountConfig struct {
 }
 ```
 
-**MUST: update `cmd/lohar/main.go`**: the existing `SandboxConfig.Volumes`
+**MUST: update `cmd/forge/main.go`**: the existing `SandboxConfig.Volumes`
 uses an anonymous struct `[]struct{Device, Mount, FS string}` that does
 NOT have a `ReadOnly` field. It must be changed to use `VolumeMountConfig`
 (the named type above). Without this, Go's JSON unmarshaler silently
@@ -125,7 +125,7 @@ read-write — a data corruption path, not a cosmetic bug. The type name
 `VolumeMountConfig` is used on both engine and guest sides; the JSON
 serialization on the config drive is the contract between them.
 
-And the updated lohar mount code:
+And the updated forge mount code:
 ```go
 func mountVolumes(volumes []VolumeMountConfig) {
     for _, v := range volumes {
@@ -135,13 +135,13 @@ func mountVolumes(volumes []VolumeMountConfig) {
             flags |= syscall.MS_RDONLY
         }
         if err := syscall.Mount(v.Device, v.Mount, v.FS, flags, ""); err != nil {
-            fmt.Fprintf(os.Stderr, "lohar: mount %s → %s: %v\n", v.Device, v.Mount, err)
+            fmt.Fprintf(os.Stderr, "forge: mount %s → %s: %v\n", v.Device, v.Mount, err)
             continue
         }
         if !v.ReadOnly {
             os.Chown(v.Mount, 1000, 1000)
         }
-        fmt.Fprintf(os.Stderr, "lohar: mounted %s → %s (ro=%v)\n", v.Device, v.Mount, v.ReadOnly)
+        fmt.Fprintf(os.Stderr, "forge: mounted %s → %s (ro=%v)\n", v.Device, v.Mount, v.ReadOnly)
     }
 }
 ```
@@ -239,7 +239,7 @@ Firecracker uses raw block devices, not overlay filesystems.
 |--------|-------------|
 | Shares host kernel | Own guest kernel |
 | overlayfs layers | Single ext4 block device |
-| Container entrypoint is PID 1 | lohar is always PID 1 |
+| Container entrypoint is PID 1 | forge is always PID 1 |
 | Namespaces for isolation | Full VM for isolation |
 | /dev, /proc from host | Guest mounts its own |
 | Layers shared across containers | Each VM has independent rootfs |
@@ -310,7 +310,7 @@ on disk.
   during extraction (same inode, not a copy).
 - **Special files**: device nodes in layers. Most registries strip these, but
   some images include them. They should be skipped during extraction since
-  lohar creates /dev at boot.
+  forge creates /dev at boot.
 
 **3. Create ext4 image.**
 Create an empty ext4 file of the right size, mount it, copy the flattened
@@ -340,40 +340,40 @@ umount /mnt
   this is slower and doesn't handle symlinks/permissions as cleanly.
 
 **4. Inject ahvm components.**
-The image needs lohar and a few directory stubs for the boot process:
+The image needs forge and a few directory stubs for the boot process:
 
 ```go
-// Copy lohar binary
-copyFile(loharPath, mountpoint+"/usr/local/bin/lohar")
-chmod(mountpoint+"/usr/local/bin/lohar", 0755)
+// Copy forge binary
+copyFile(forgePath, mountpoint+"/usr/local/bin/forge")
+chmod(mountpoint+"/usr/local/bin/forge", 0755)
 
-// Ensure boot directories exist (lohar mounts these)
+// Ensure boot directories exist (forge mounts these)
 for _, dir := range []string{"/proc", "/sys", "/dev", "/dev/pts",
                               "/tmp", "/run", "/workspace"} {
     os.MkdirAll(mountpoint+dir, 0755)
 }
 
-// Ensure DNS is writable (lohar overwrites this)
+// Ensure DNS is writable (forge overwrites this)
 os.Remove(mountpoint + "/etc/resolv.conf")  // may be a symlink
 os.WriteFile(mountpoint+"/etc/resolv.conf", []byte(""), 0644)
 
-// Ensure lohar user exists (for exec as uid 1000)
+// Ensure forge user exists (for exec as uid 1000)
 // If the image doesn't have a uid-1000 user, create one
-ensureUser(mountpoint, "lohar", 1000)
+ensureUser(mountpoint, "forge", 1000)
 ```
 
 **Things that can go wrong here:**
 
-- **Conflicting lohar path**: if the image has its own `/usr/local/bin/lohar`,
-  we overwrite it. This is correct (our lohar must be PID 1) but should log
+- **Conflicting forge path**: if the image has its own `/usr/local/bin/forge`,
+  we overwrite it. This is correct (our forge must be PID 1) but should log
   a warning.
 
-- **Missing shell**: lohar spawns exec commands via the shell. If the image
+- **Missing shell**: forge spawns exec commands via the shell. If the image
   doesn't have `/bin/sh` or `/bin/bash` (some minimal images like `scratch`
   or `distroless` don't), exec won't work. We should detect this during
   conversion and warn.
 
-- **Missing libc**: lohar is statically compiled (CGO_ENABLED=0), so it
+- **Missing libc**: forge is statically compiled (CGO_ENABLED=0), so it
   doesn't need libc. But user commands (python, node, etc.) do. If the
   image is based on musl (Alpine) vs glibc (Debian/Ubuntu), commands in
   the image work fine because they were compiled against the image's libc.
@@ -383,23 +383,23 @@ ensureUser(mountpoint, "lohar", 1000)
 - **resolv.conf symlink**: many images have `/etc/resolv.conf` as a symlink
   to `/run/systemd/resolve/stub-resolv.conf` (Ubuntu's systemd-resolved).
   Since there's no systemd in the VM, the symlink is broken. We must remove
-  it and create a regular file. Lohar already handles this at boot, but
+  it and create a regular file. Forge already handles this at boot, but
   having a broken symlink during conversion can cause issues with any
   post-extraction validation.
 
-- **The lohar user**: Docker images often have their own users (uid 1000 might
+- **The forge user**: Docker images often have their own users (uid 1000 might
   already be taken by `node` in Node images, or `appuser` in Python images).
-  We need uid 1000 to exist for exec-as-lohar. Options:
+  We need uid 1000 to exist for exec-as-forge. Options:
   a) Reuse whatever user has uid 1000 (may have different name, different
      home dir, different shell)
-  b) Always create the `lohar` user, overwriting any existing uid 1000
+  b) Always create the `forge` user, overwriting any existing uid 1000
   c) Use whatever uid the image specifies in its `User` config field
 
   For v0.3: option (a) — reuse the existing uid 1000 user. If no uid 1000
-  exists, create `lohar`. This handles Node images (uid 1000 = `node`) and
+  exists, create `forge`. This handles Node images (uid 1000 = `node`) and
   Python images (uid 1000 = `appuser`) without conflict.
 
-  **Why this works**: lohar's exec uses `Credential{Uid: 1000}` which is
+  **Why this works**: forge's exec uses `Credential{Uid: 1000}` which is
   a kernel-level operation — it doesn't consult /etc/passwd. The passwd
   entry only affects `whoami`, `~` expansion, and programs that call
   `getpwuid(1000)`. By reusing the image's existing uid 1000 user, we
@@ -461,7 +461,7 @@ single-node.
 If layer sharing becomes critical later (hundreds of images, frequent
 updates), the path is: mount an overlayfs inside the guest VM with
 layers as separate read-only block devices. But this adds complexity to
-lohar and limits layers per image. Not worth it for v0.3.
+forge and limits layers per image. Not worth it for v0.3.
 
 **Incremental updates.** Pulling `python:3.12.4` after having `3.12.3`
 in Docker only downloads the changed layers. In ahvm, it re-downloads
@@ -519,7 +519,7 @@ networking, and PTYs. But some images won't work:
 - Images that use iptables internally — **won't work** (no netfilter
   in guest kernel)
 - Images that use inotify extensively — **works** (supported in kernel)
-- Images that use systemd — **won't work** (lohar is PID 1, not systemd)
+- Images that use systemd — **won't work** (forge is PID 1, not systemd)
 
 We should detect known-incompatible patterns during conversion (presence
 of `/usr/bin/dockerd`, NVIDIA libraries, systemd units) and warn the
@@ -605,7 +605,7 @@ func (s *Server) handleImagePull(w http.ResponseWriter, r *http.Request) {
         defer cancel()
 
         outputPath := filepath.Join(dataDir, "images", userID, req.Name+".ext4")
-        config, err := oci.PullAndConvert(ctx, req.Ref, outputPath, loharPath,
+        config, err := oci.PullAndConvert(ctx, req.Ref, outputPath, forgePath,
             oci.WithProgress(func(msg string) {
                 store.UpdateTaskProgress(taskID, msg)
             }),
@@ -673,7 +673,7 @@ journal is clean. This is the same mechanism used for snapshots.
 
 **What's NOT saved**: memory state, running processes, open connections.
 Only the filesystem. When a new sandbox boots from this image, it starts
-fresh (lohar init, config drive, etc.) but with all the files in place.
+fresh (forge init, config drive, etc.) but with all the files in place.
 This is distinct from a snapshot, which captures the entire VM state.
 
 ---
@@ -713,7 +713,7 @@ POST /sandboxes {"name": "dev", "volumes": [{"name": "workspace", "mount": "/wor
     - RO: must have no RW attachments; if second+ RO, check journal is clean
 → insert into volume_attachments (sandbox_id, volume_id, mount, read_only)
 → pass volume file path to Firecracker as additional drive
-→ config drive tells lohar to mount /dev/vdc at /workspace
+→ config drive tells forge to mount /dev/vdc at /workspace
 ```
 
 **Detach (during sandbox destroy):**
@@ -1221,44 +1221,44 @@ uses the template but with more CPUs.
 These are blockers that must ship before Phase 1. Without them, Phase 1's
 read-only volumes silently corrupt data, and existing bugs are amplified.
 
-#### 0.1 Rebuild lohar and base rootfs
+#### 0.1 Rebuild forge and base rootfs
 
-The guest agent (`lohar`) is baked into the rootfs ext4 image. When we add
-`ReadOnly bool` to `VolumeMountConfig`, the NEW lohar must be in the rootfs
+The guest agent (`forge`) is baked into the rootfs ext4 image. When we add
+`ReadOnly bool` to `VolumeMountConfig`, the NEW forge must be in the rootfs
 before any sandbox boots. Otherwise every "read-only" volume is mounted
 read-write — silent data corruption on multi-attach.
 
-Note: `scripts/install.sh` already re-injects lohar into the base rootfs
+Note: `scripts/install.sh` already re-injects forge into the base rootfs
 on every install (lines 145-150). So the BASE rootfs is updated on
 daemon upgrade. The gap is narrower than it appears: only cached OCI
-images and user-saved images retain the old lohar. Phase 2 should add
-a startup version-check warning for stale images (compare lohar hash).
+images and user-saved images retain the old forge. Phase 2 should add
+a startup version-check warning for stale images (compare forge hash).
 
 **Steps:**
 1. Update `VolumeMountConfig` in `pkg/engine/firecracker/configdrive.go`
-2. Update `SandboxConfig.Volumes` in `cmd/lohar/main.go` — replace
+2. Update `SandboxConfig.Volumes` in `cmd/forge/main.go` — replace
    anonymous struct with named type that includes `ReadOnly bool`
 3. Update `mountVolumes` to use `syscall.MS_RDONLY`
-4. Build new lohar: `GOOS=linux GOARCH=amd64 go build -o lohar ./cmd/lohar/`
-5. Inject into base rootfs: `mount rootfs, cp lohar, umount`
-6. Run `scripts/install.sh` on agni-01 (rebuilds rootfs if lohar changed)
+4. Build new forge: `GOOS=linux GOARCH=amd64 go build -o forge ./cmd/forge/`
+5. Inject into base rootfs: `mount rootfs, cp forge, umount`
+6. Run `scripts/install.sh` on agni-01 (rebuilds rootfs if forge changed)
 
-**Re-inject lohar on every sandbox boot**: in `engine.Create()`, after
-`copyRootfs()`, mount the rootfs and overwrite `/usr/local/bin/lohar`
+**Re-inject forge on every sandbox boot**: in `engine.Create()`, after
+`copyRootfs()`, mount the rootfs and overwrite `/usr/local/bin/forge`
 with the current binary. This ensures saved images and OCI images always
 get the latest agent, preventing protocol drift after daemon upgrades.
 
 ```go
 // In Create(), after copyRootfs:
-if err = injectLoharIntoRootfs(rootfsPath, e.cfg.DataDir); err != nil {
-    slog.Warn("lohar injection failed", "error", err)
-    // Non-fatal — image's lohar may work, but warn loudly
+if err = injectForgeIntoRootfs(rootfsPath, e.cfg.DataDir); err != nil {
+    slog.Warn("forge injection failed", "error", err)
+    // Non-fatal — image's forge may work, but warn loudly
 }
 
-func injectLoharIntoRootfs(rootfsPath, dataDir string) error {
-    loharSrc := filepath.Join(dataDir, "lohar")
-    if _, err := os.Stat(loharSrc); err != nil {
-        return nil // no lohar binary to inject
+func injectForgeIntoRootfs(rootfsPath, dataDir string) error {
+    forgeSrc := filepath.Join(dataDir, "forge")
+    if _, err := os.Stat(forgeSrc); err != nil {
+        return nil // no forge binary to inject
     }
     // Use debugfs to write without mounting (no loop device needed)
     // Or mount briefly:
@@ -1268,7 +1268,7 @@ func injectLoharIntoRootfs(rootfsPath, dataDir string) error {
         return err
     }
     defer exec.Command("umount", mnt).Run()
-    return exec.Command("cp", loharSrc, filepath.Join(mnt, "usr/local/bin/lohar")).Run()
+    return exec.Command("cp", forgeSrc, filepath.Join(mnt, "usr/local/bin/forge")).Run()
 }
 ```
 
@@ -1277,8 +1277,8 @@ Phase 2 lands with `mke2fs -d`, we can avoid the mount by patching the
 ext4 image directly, but for Phase 0/1 the mount approach works.
 
 **Test:**
-- `TestLoharVersionInRootfs` — boot sandbox, exec `lohar --version` or
-  check lohar binary hash, verify it matches the host's lohar binary
+- `TestForgeVersionInRootfs` — boot sandbox, exec `forge --version` or
+  check forge binary hash, verify it matches the host's forge binary
 
 #### 0.2 Fix RestoreVM unauthenticated agent client
 
@@ -1364,7 +1364,7 @@ operators can add `&_pragma=synchronous(FULL)` to the connection string.
 
 The current 1MB config drive has ~500KB usable after ext4 overhead.
 Phase 1 adds ReadOnly fields and potentially 24 volume mount entries.
-This can exceed the limit, causing silent boot failures (lohar gets
+This can exceed the limit, causing silent boot failures (forge gets
 no config).
 
 In `createConfigDrive()`:
@@ -1403,7 +1403,7 @@ leaked loop device bug on daemon crash.
 **Tests:**
 - `TestConfigDriveLargePayload` — create config with 24 volumes, 50
   env vars, long init script → config drive created successfully,
-  lohar can read it
+  forge can read it
 - `TestConfigDriveNoLoopDevice` — after createConfigDrive, verify no
   new loop devices in `losetup -l`
 
@@ -1428,7 +1428,7 @@ Phase 3 integration tests already cover resume networking. Add:
 
 #### Phase 0 Tests Summary
 
-- `TestLoharVersionInRootfs`
+- `TestForgeVersionInRootfs`
 - `TestRestoredVMUsesAuthAgent`
 - `TestDiffSnapshotSurvivesRestart` (has_base_snapshot persistence)
 - `TestConfigDriveLargePayload`
@@ -2006,9 +2006,9 @@ The `--volume` flag format: `name:mount[:ro]`
 
 **Guest-side edge cases (integration, agni-01):**
 - `TestMountCorruptVolume` — attach a volume with invalid ext4 (zeroed
-  file), verify lohar logs error and continues (doesn't crash)
+  file), verify forge logs error and continues (doesn't crash)
 - `TestMountMissingDevice` — config drive references /dev/vde but only
-  3 drives attached, verify lohar logs error and continues
+  3 drives attached, verify forge logs error and continues
 - `TestMountPointConflict` — volume mount at /workspace which already
   has files in rootfs, verify mount overlays correctly (existing files
   hidden, volume content visible)
@@ -2077,13 +2077,13 @@ admin image with their own version.
 package oci
 
 // PullAndConvert pulls an OCI image from a registry, flattens it to
-// an ext4 rootfs image, injects the lohar agent, and returns the
+// an ext4 rootfs image, injects the forge agent, and returns the
 // path to the created ext4 file.
 //
-// The loharPath is the path to the lohar binary on the host.
+// The forgePath is the path to the forge binary on the host.
 // The outputPath is where the ext4 file will be written.
 // Returns the extracted OCI config for storage.
-func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts ...Option) (*Config, error)
+func PullAndConvert(ctx context.Context, ref, outputPath, forgePath string, opts ...Option) (*Config, error)
 
 type Config struct {
     Env          map[string]string
@@ -2112,7 +2112,7 @@ via API, the server knows its own `runtime.GOARCH`. For CLI-initiated
 pulls, the pull should happen server-side, not client-side.
 
 ```go
-func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts ...Option) (*Config, error) {
+func PullAndConvert(ctx context.Context, ref, outputPath, forgePath string, opts ...Option) (*Config, error) {
     // 1. Pull image — use remote.Image for streaming, NOT crane.Pull.
     // crane.Pull loads all layers into memory. Large images (CUDA: 5-10GB)
     // will OOM the daemon. remote.Image + layer.Compressed() streams
@@ -2137,8 +2137,8 @@ func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts
     }
 
     // 5. Inject ahvm components
-    if err := injectLohar(tmpDir, loharPath); err != nil {
-        return nil, fmt.Errorf("inject lohar: %w", err)
+    if err := injectForge(tmpDir, forgePath); err != nil {
+        return nil, fmt.Errorf("inject forge: %w", err)
     }
 
     // 6. Validate compatibility
@@ -2283,12 +2283,12 @@ func extractLayer(layer v1.Layer, targetDir string) error {
 **File:** `pkg/oci/inject.go`
 
 ```go
-// injectLohar copies the lohar binary and ensures boot directories exist.
-func injectLohar(rootDir, loharPath string) error {
-    // Copy lohar
-    dst := filepath.Join(rootDir, "usr/local/bin/lohar")
+// injectForge copies the forge binary and ensures boot directories exist.
+func injectForge(rootDir, forgePath string) error {
+    // Copy forge
+    dst := filepath.Join(rootDir, "usr/local/bin/forge")
     os.MkdirAll(filepath.Dir(dst), 0755)
-    copyFile(loharPath, dst)
+    copyFile(forgePath, dst)
     os.Chmod(dst, 0755)
 
     // Ensure boot directories
@@ -2312,7 +2312,7 @@ func injectLohar(rootDir, loharPath string) error {
 }
 
 // ensureUser1000 checks if uid 1000 exists in /etc/passwd.
-// If not, creates a 'lohar' user with uid 1000.
+// If not, creates a 'forge' user with uid 1000.
 // If uid 1000 exists (e.g., 'node' in node images), leaves it as-is.
 func ensureUser1000(rootDir string) error {
     passwdPath := filepath.Join(rootDir, "etc/passwd")
@@ -2326,7 +2326,7 @@ func ensureUser1000(rootDir string) error {
         fields := strings.Split(line, ":")
         if len(fields) >= 4 && fields[2] == "1000" {
             // uid 1000 exists — ensure home directory exists
-            homeDir := "/home/lohar"
+            homeDir := "/home/forge"
             if len(fields) >= 6 && fields[5] != "" {
                 homeDir = fields[5] // use the image's home dir
             }
@@ -2345,7 +2345,7 @@ func ensureUser1000(rootDir string) error {
     useraddPath := filepath.Join(rootDir, "usr/sbin/useradd")
     if _, err := os.Stat(useraddPath); err == nil {
         cmd := exec.Command("chroot", rootDir,
-            "useradd", "-m", "-u", "1000", "-s", "/bin/sh", "lohar")
+            "useradd", "-m", "-u", "1000", "-s", "/bin/sh", "forge")
         if err := cmd.Run(); err != nil {
             // May fail for cross-arch images (arm64 image on amd64 host
             // gives "exec format error") or if chroot is unavailable.
@@ -2363,7 +2363,7 @@ func ensureUser1000(rootDir string) error {
     // Fallback: manual passwd editing (for minimal images without useradd)
     // Also create shadow entry so sudo doesn't fail
     f, _ := os.OpenFile(passwdPath, os.O_APPEND|os.O_WRONLY, 0644)
-    f.WriteString("lohar:x:1000:1000::/home/lohar:/bin/sh\n")
+    f.WriteString("forge:x:1000:1000::/home/forge:/bin/sh\n")
     f.Close()
 
     groupPath := filepath.Join(rootDir, "etc/group")
@@ -2379,7 +2379,7 @@ func ensureUser1000(rootDir string) error {
     }
     if !gid1000Exists {
         g, _ := os.OpenFile(groupPath, os.O_APPEND|os.O_WRONLY, 0644)
-        g.WriteString("lohar:x:1000:\n")
+        g.WriteString("forge:x:1000:\n")
         g.Close()
     }
 
@@ -2387,12 +2387,12 @@ func ensureUser1000(rootDir string) error {
     shadowPath := filepath.Join(rootDir, "etc/shadow")
     if _, err := os.Stat(shadowPath); err == nil {
         s, _ := os.OpenFile(shadowPath, os.O_APPEND|os.O_WRONLY, 0640)
-        s.WriteString("lohar:!:19000:0:99999:7:::\n")
+        s.WriteString("forge:!:19000:0:99999:7:::\n")
         s.Close()
     }
 
-    os.MkdirAll(filepath.Join(rootDir, "home/lohar"), 0755)
-    os.Chown(filepath.Join(rootDir, "home/lohar"), 1000, 1000)
+    os.MkdirAll(filepath.Join(rootDir, "home/forge"), 0755)
+    os.Chown(filepath.Join(rootDir, "home/forge"), 1000, 1000)
     return nil
 }
 ```
@@ -2404,9 +2404,9 @@ func ensureUser1000(rootDir string) error {
 func validateImage(rootDir string) []string {
     var warnings []string
 
-    // Check for systemd (won't work — lohar is PID 1)
+    // Check for systemd (won't work — forge is PID 1)
     if exists(rootDir, "lib/systemd/systemd") || exists(rootDir, "usr/lib/systemd/systemd") {
-        warnings = append(warnings, "image contains systemd — it will NOT run as PID 1, lohar replaces it")
+        warnings = append(warnings, "image contains systemd — it will NOT run as PID 1, forge replaces it")
     }
 
     // Check for Docker-in-Docker
@@ -2524,7 +2524,7 @@ with a 1MB floor.
 - **Extended attributes (xattr)**: NOT copied by `mke2fs -d`. Some
   Docker images use `security.capability` xattrs on binaries like
   `ping` (to grant `CAP_NET_RAW` without setuid). In ahvm VMs, ping
-  uses the guest kernel's network stack and lohar runs exec as uid 1000
+  uses the guest kernel's network stack and forge runs exec as uid 1000
   — ping won't work regardless (needs CAP_NET_RAW). This is acceptable.
   Document: "images using file capabilities (xattr) for privilege
   escalation will lose those capabilities during conversion."
@@ -2575,17 +2575,17 @@ if err = copyRootfs(baseImage, rootfsPath); err != nil {
 //       return exec.Command("cp", "--sparse=always", src, dst).Run()
 //   }
 
-// Lohar re-injection: done during image creation (OCI pull, save-as-image,
+// Forge re-injection: done during image creation (OCI pull, save-as-image,
 // import), NOT on every boot. Phase 0.1 adds per-boot injection as a
 // stopgap; Phase 2 REMOVES it from Create() (~50ms overhead eliminated)
-// once all image creation paths inject lohar at build time. Instead:
-//   - OCI pull: injectLohar() during conversion (already in pipeline)
+// once all image creation paths inject forge at build time. Instead:
+//   - OCI pull: injectForge() during conversion (already in pipeline)
 //   - save-as-image: SaveImage() copies the rootfs which already has the
-//     current lohar (it's a running sandbox from this ahvm version)
-//   - import: injectLohar() during import
-//   - upgrade path: `ahvm image rebuild` re-injects lohar into all
+//     current forge (it's a running sandbox from this ahvm version)
+//   - import: injectForge() during import
+//   - upgrade path: `ahvm image rebuild` re-injects forge into all
 //     cached images. Run after upgrading ahvm.
-// The tradeoff: saved images pin lohar to the version at save time.
+// The tradeoff: saved images pin forge to the version at save time.
 // This is acceptable — `ahvm image rebuild` is the explicit upgrade
 // path. Doing it implicitly on every boot is too expensive.
 
@@ -2697,10 +2697,10 @@ func (e *Engine) SaveImage(ctx context.Context, sandboxID, destPath string) erro
 - `TestExtractLayerHardLinks` — hard links preserved (same inode)
 - `TestExtractLayerPermissions` — file modes preserved
 - `TestExtractLayerDeviceNodesSkipped` — block/char devices ignored
-- `TestInjectLohar` — lohar binary present, boot dirs exist
-- `TestInjectLoharResolvConf` — broken symlink replaced with file
+- `TestInjectForge` — forge binary present, boot dirs exist
+- `TestInjectForgeResolvConf` — broken symlink replaced with file
 - `TestEnsureUser1000Exists` — uid 1000 already in passwd → no change
-- `TestEnsureUser1000Missing` — uid 1000 not in passwd → lohar user added
+- `TestEnsureUser1000Missing` — uid 1000 not in passwd → forge user added
 - `TestEnsureUser1000NoPasswd` — no /etc/passwd file → skip gracefully
 - `TestValidateImageClean` — normal image, no warnings
 - `TestValidateImageSystemd` — detects systemd
@@ -2742,7 +2742,7 @@ Docker images. They run on any Linux system without network access.
 
 **OCI integration tests (pkg/oci/, needs network + root):**
 - `TestPullAndConvertAlpine` — pull alpine:latest (5MB), convert, verify
-  ext4 mountable, /bin/sh exists, lohar exists
+  ext4 mountable, /bin/sh exists, forge exists
 - `TestPullAndConvertPython` — pull python:3.12-slim (~150MB), convert,
   verify python3 binary exists
 - `TestPullAndConvertNode` — pull node:22-slim, convert, verify node
@@ -2791,7 +2791,7 @@ Docker images. They run on any Linux system without network access.
 - `TestUserImageShadowsAdmin` — admin image "base" exists, user saves
   their own "base", user's sandbox uses user's version
 - `TestOCIImageExecAsUid1000` — pull node:22-slim, boot, exec `whoami`
-  → returns `node` (the image's uid 1000 user, not `lohar`)
+  → returns `node` (the image's uid 1000 user, not `forge`)
 - `TestOCIImageSudoWorks` — boot from image with sudo, exec
   `sudo whoami` → `root`
 
@@ -2910,7 +2910,7 @@ pre-load drive configuration.
 - `TestResumeAfterBridgeDestroyed` — checkpoint, destroy all sandboxes
   (bridge gets cleaned up), resume → bridge recreated, VM works
 - `TestConfigDriveBackwardCompat` — v0.1 config drive (no ReadOnly field)
-  loaded by v0.3 lohar → mounts work (Go JSON defaults missing bool to false)
+  loaded by v0.3 forge → mounts work (Go JSON defaults missing bool to false)
 - `TestVolumeAttachedToCrashedSandbox` — FC process killed (not daemon),
   sandbox status still "running" in DB, volume still "attached" → verify
   startup recovery updates sandbox status AND detaches volumes

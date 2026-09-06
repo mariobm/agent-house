@@ -8,7 +8,7 @@
 # path: Node.js (already needed for npx) + npx playwright install.
 #
 # Init model (per PLAN-tiers-systemd.md): headless_shell is managed by
-# lohar's systemctl shim via headless-chrome.service. Pre-v1.11.9 this
+# forge's systemctl shim via headless-chrome.service. Pre-v1.11.9 this
 # tier started Chromium by hand out of /etc/ahvm/init.sh; the shim's
 # Restart=on-failure now resurrects a crashed Chromium without action.
 set -euo pipefail

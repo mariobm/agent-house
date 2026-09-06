@@ -34,7 +34,7 @@ func handleDetachedExec(conn net.Conn, req proto.ExecRequest) {
 	if req.Cwd != nil {
 		cmd.Dir = *req.Cwd
 	}
-	// New session — fully detached from lohar's process group.
+	// New session — fully detached from forge's process group.
 	// Child survives even if the vsock connection closes.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:     true,
@@ -82,8 +82,8 @@ func handlePipedExec(conn net.Conn, req proto.ExecRequest) {
 	if req.Cwd != nil {
 		cmd.Dir = *req.Cwd
 	}
-	// Run as lohar (uid 1000), in own process group for reliable KILL.
-	// Users can sudo if they need root — sudoers has NOPASSWD for lohar.
+	// Run as forge (uid 1000), in own process group for reliable KILL.
+	// Users can sudo if they need root — sudoers has NOPASSWD for forge.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid:    true,
 		Credential: &syscall.Credential{Uid: 1000, Gid: 1000},
@@ -209,7 +209,7 @@ func buildEnv(env map[string]string) []string {
 	defaults := map[string]string{
 		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"TERM": "xterm-256color",
-		"HOME": "/home/lohar",
+		"HOME": "/home/forge",
 		"LANG": "en_US.UTF-8",
 	}
 	// Merge config drive env vars (secrets, etc.)
@@ -228,10 +228,10 @@ func buildEnv(env map[string]string) []string {
 }
 
 // logf logs to stderr with a prefix.
-// Lohar runs as PID 1 inside the guest VM — its stderr goes to Firecracker's
+// Forge runs as PID 1 inside the guest VM — its stderr goes to Firecracker's
 // stderr on the host. We use simple fmt-based logging here rather than
-// log/slog because lohar's output is only visible in debug mode and the
-// "lohar: " prefix pattern is already consistent.
+// log/slog because forge's output is only visible in debug mode and the
+// "forge: " prefix pattern is already consistent.
 func logf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "lohar: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "forge: "+format+"\n", args...)
 }

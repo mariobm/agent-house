@@ -32,7 +32,7 @@ import (
 //
 // An admin who touches that file expects sshd to skip-not-run on next
 // activation. Without F4 the directive was silently ignored and sshd
-// started anyway -- a subtle "this is just lohar lying" footgun.
+// started anyway -- a subtle "this is just forge lying" footgun.
 //
 // Assert*= directives (which FAIL the unit on violation, vs Condition
 // which silently skips) are deferred. They're rare in package-shipped

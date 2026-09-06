@@ -71,7 +71,7 @@ func TestKrucibleLeanKernel(t *testing.T) {
 	}
 
 	// bootOnce builds a fresh engine (kernel="" → bundled libkrunfw) and times a
-	// Create (boot → lohar agent ready), then verifies the guest is usable.
+	// Create (boot → forge agent ready), then verifies the guest is usable.
 	bootOnce := func(t *testing.T, kernel string) (time.Duration, string) {
 		eng, err := New(Config{
 			DataDir: t.TempDir(), BaseImage: img, BlockRoot: true,

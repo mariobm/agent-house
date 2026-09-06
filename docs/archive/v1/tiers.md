@@ -135,7 +135,7 @@ Add `scripts/tiers/<name>.sh`. This runs inside a chroot during
 
 - `$MOUNT` — chroot mount point
 - `$ARCH` / `$DEB_ARCH` — target architecture
-- `$AGENT` — path to lohar binary
+- `$AGENT` — path to forge binary
 - `$SCRIPT_DIR` — path to `scripts/`
 
 Most tiers source minimal first:

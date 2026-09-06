@@ -219,7 +219,7 @@ func handleFileWrite(conn net.Conn, payload []byte) {
 		return
 	}
 
-	// chown to lohar user (uid 1000)
+	// chown to forge user (uid 1000)
 	os.Chown(req.Path, 1000, 1000)
 
 	proto.SendJSON(conn, proto.FILE_WRITE_RESP, map[string]string{"status": "ok"})

@@ -23,7 +23,7 @@ func TestCLISnapshotCheckpointAndResume(t *testing.T) {
 		t.Fatalf("create exit %d: %s", code, stderr)
 	}
 	sbID := strings.Fields(stdout)[0]
-	c.run("exec", sbName, "--", "sh", "-c", "echo snap-marker > /home/lohar/data.txt")
+	c.run("exec", sbName, "--", "sh", "-c", "echo snap-marker > /home/forge/data.txt")
 
 	// Checkpoint
 	stdout, stderr, code = c.run("snapshot", "create", sbName, "--name", snapName)
@@ -64,7 +64,7 @@ func TestCLISnapshotCheckpointAndResume(t *testing.T) {
 	t.Log("✓ snapshot resumed")
 
 	// Verify data restored
-	stdout, _, code = c.run("exec", resumeName, "--", "cat", "/home/lohar/data.txt")
+	stdout, _, code = c.run("exec", resumeName, "--", "cat", "/home/forge/data.txt")
 	if code != 0 || !strings.Contains(stdout, "snap-marker") {
 		t.Fatalf("data not restored: exit=%d out=%q", code, stdout)
 	}

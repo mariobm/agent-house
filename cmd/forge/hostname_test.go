@@ -10,7 +10,7 @@ import (
 )
 
 // TestWriteHostnameFiles verifies all hostname-shaped surfaces are written
-// with the expected contents. Regression for #16: pre-fix lohar wrote
+// with the expected contents. Regression for #16: pre-fix forge wrote
 // /etc/hosts but not /etc/hostname or /etc/mailname, so the latter two
 // retained whatever debootstrap baked in at image build time.
 func TestWriteHostnameFiles(t *testing.T) {

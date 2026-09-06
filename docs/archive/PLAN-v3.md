@@ -61,10 +61,10 @@ type FileInfo struct {
 }
 ```
 
-### 13.3 Lohar Handlers
+### 13.3 Forge Handlers
 
 ```go
-// cmd/lohar/files.go
+// cmd/forge/files.go
 
 func handleFileRead(conn net.Conn, payload []byte) {
     var req struct{ Path string `json:"path"` }
@@ -124,7 +124,7 @@ func handleFileWrite(conn net.Conn, payload []byte) {
         }
     }
 
-    // chown to lohar user
+    // chown to forge user
     os.Chown(req.Path, 1000, 1000)
 
     proto.SendJSON(conn, proto.FILE_WRITE_RESP, map[string]string{"status": "ok"})
@@ -176,7 +176,7 @@ func handleFileList(conn net.Conn, payload []byte) {
 ### 13.4 Handler Dispatch Addition
 
 ```go
-// cmd/lohar/handler.go — add to the switch in handleControlConnection:
+// cmd/forge/handler.go — add to the switch in handleControlConnection:
 
     case proto.FILE_READ_REQ:
         updateActivity()
@@ -1067,9 +1067,9 @@ if [[ ! -f /usr/local/bin/firecracker ]]; then
     rm -rf "release-v${FC_VERSION}-${FC_ARCH}"
 fi
 
-# --- AHVM + Lohar binaries ---
+# --- AHVM + Forge binaries ---
 
-echo "==> Downloading ahvm and lohar..."
+echo "==> Downloading ahvm and forge..."
 if [[ "$AHVM_VERSION" == "latest" ]]; then
     AHVM_VERSION=$(curl -fsSL \
         https://api.github.com/repos/mariobm/agent-house/releases/latest \
@@ -1077,8 +1077,8 @@ if [[ "$AHVM_VERSION" == "latest" ]]; then
 fi
 RELEASE_URL="https://github.com/mariobm/agent-house/releases/download/${AHVM_VERSION}"
 curl -fsSL "${RELEASE_URL}/ahvm-linux-${GO_ARCH}" -o /usr/local/bin/ahvm
-curl -fsSL "${RELEASE_URL}/lohar-linux-${GO_ARCH}" -o "$DATA_DIR/lohar"
-chmod +x /usr/local/bin/ahvm "$DATA_DIR/lohar"
+curl -fsSL "${RELEASE_URL}/forge-linux-${GO_ARCH}" -o "$DATA_DIR/forge"
+chmod +x /usr/local/bin/ahvm "$DATA_DIR/forge"
 
 # --- Kernel ---
 
@@ -1098,7 +1098,7 @@ if [[ ! -f "$ROOTFS_PATH" ]]; then
     apt-get update -qq && apt-get install -y -qq debootstrap
     curl -fsSL "${RELEASE_URL}/build-rootfs.sh" -o /tmp/build-rootfs.sh
     chmod +x /tmp/build-rootfs.sh
-    /tmp/build-rootfs.sh "$DATA_DIR/lohar"
+    /tmp/build-rootfs.sh "$DATA_DIR/forge"
     rm -f /tmp/build-rootfs.sh
 fi
 

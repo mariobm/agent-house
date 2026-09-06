@@ -231,27 +231,27 @@ func TestExtractLayerEmpty(t *testing.T) {
 
 // --- Inject tests ---
 
-func TestInjectLohar(t *testing.T) {
+func TestInjectForge(t *testing.T) {
 	root := t.TempDir()
 
-	// Create a fake lohar binary
-	loharPath := filepath.Join(t.TempDir(), "lohar")
-	os.WriteFile(loharPath, []byte("#!/bin/sh\necho lohar"), 0755)
+	// Create a fake forge binary
+	forgePath := filepath.Join(t.TempDir(), "forge")
+	os.WriteFile(forgePath, []byte("#!/bin/sh\necho forge"), 0755)
 
-	if err := injectLohar(root, loharPath); err != nil {
+	if err := injectForge(root, forgePath); err != nil {
 		t.Fatal(err)
 	}
 
-	// Check lohar exists
-	if _, err := os.Stat(filepath.Join(root, "usr/local/bin/lohar")); err != nil {
-		t.Fatal("lohar should exist")
+	// Check forge exists
+	if _, err := os.Stat(filepath.Join(root, "usr/local/bin/forge")); err != nil {
+		t.Fatal("forge should exist")
 	}
 
-	// Check /init.krun -> /usr/local/bin/lohar (krucible block-root boot path)
+	// Check /init.krun -> /usr/local/bin/forge (krucible block-root boot path)
 	if target, err := os.Readlink(filepath.Join(root, "init.krun")); err != nil {
 		t.Fatalf("/init.krun symlink should exist: %v", err)
-	} else if target != "/usr/local/bin/lohar" {
-		t.Fatalf("/init.krun -> %q, want /usr/local/bin/lohar", target)
+	} else if target != "/usr/local/bin/forge" {
+		t.Fatalf("/init.krun -> %q, want /usr/local/bin/forge", target)
 	}
 
 	// Check boot directories
@@ -292,11 +292,11 @@ func TestEnsureUser1000Missing(t *testing.T) {
 	ensureUser1000(root)
 
 	data, _ := os.ReadFile(filepath.Join(root, "etc/passwd"))
-	if !strings.Contains(string(data), "lohar:x:1000:1000:") {
-		t.Fatal("should have added lohar user")
+	if !strings.Contains(string(data), "forge:x:1000:1000:") {
+		t.Fatal("should have added forge user")
 	}
-	if _, err := os.Stat(filepath.Join(root, "home/lohar")); err != nil {
-		t.Fatal("should have created /home/lohar")
+	if _, err := os.Stat(filepath.Join(root, "home/forge")); err != nil {
+		t.Fatal("should have created /home/forge")
 	}
 }
 
@@ -448,15 +448,15 @@ func TestImportFromTarball(t *testing.T) {
 
 	tarPath := makeTarball(t, []v1.Layer{layer})
 
-	// Create a fake lohar binary for injection
-	loharDir := t.TempDir()
-	loharPath := filepath.Join(loharDir, "lohar")
-	os.WriteFile(loharPath, []byte("#!/bin/sh\necho lohar"), 0755)
+	// Create a fake forge binary for injection
+	forgeDir := t.TempDir()
+	forgePath := filepath.Join(forgeDir, "forge")
+	os.WriteFile(forgePath, []byte("#!/bin/sh\necho forge"), 0755)
 
 	outputPath := filepath.Join(t.TempDir(), "output.ext4")
 
 	ctx := t.Context()
-	config, err := ImportFromTarball(ctx, tarPath, outputPath, loharPath)
+	config, err := ImportFromTarball(ctx, tarPath, outputPath, forgePath)
 	if err != nil {
 		// mke2fs may not be available on macOS/CI — that's ok,
 		// the extraction + injection still ran
@@ -496,13 +496,13 @@ func TestImportPreservesConfig(t *testing.T) {
 	tag, _ := name.NewTag("test:latest")
 	tarball.WriteToFile(path, tag, img)
 
-	loharDir := t.TempDir()
-	loharPath := filepath.Join(loharDir, "lohar")
-	os.WriteFile(loharPath, []byte("fake"), 0755)
+	forgeDir := t.TempDir()
+	forgePath := filepath.Join(forgeDir, "forge")
+	os.WriteFile(forgePath, []byte("fake"), 0755)
 
 	outputPath := filepath.Join(t.TempDir(), "output.ext4")
 
-	config, err := ImportFromTarball(t.Context(), path, outputPath, loharPath)
+	config, err := ImportFromTarball(t.Context(), path, outputPath, forgePath)
 	if err != nil {
 		if strings.Contains(err.Error(), "mke2fs") {
 			t.Skipf("mke2fs not available: %v", err)

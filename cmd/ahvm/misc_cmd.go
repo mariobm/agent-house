@@ -20,7 +20,7 @@ var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update ahvm to the latest version",
 	Long: `Update ahvm to the latest release. On a server, updates all
-components (ahvm, Firecracker, lohar, kernel, rootfs). On a CLI-only
+components (ahvm, Firecracker, forge, kernel, rootfs). On a CLI-only
 machine, updates just the binary.
 
 Use --cli-only to update only the binary on a server.

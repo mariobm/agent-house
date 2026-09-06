@@ -359,7 +359,7 @@ Restart=no
 
 // TestStartDaemonPlacesProcessInUnitCgroup is the test that would have
 // caught the v1.11.9 bug a year ago. It exercises the full svcStart
-// path — startDaemon spawning through `lohar spawn` into the daemon —
+// path — startDaemon spawning through `forge spawn` into the daemon —
 // and asserts that /proc/<pid>/cgroup shows the unit's cgroup, not the
 // root cgroup (0::/).
 //
@@ -373,7 +373,7 @@ Restart=no
 //   - Reverting the spawn-helper wiring back to the post-cmd.Start()
 //     PlaceInCgroup write (which races against forking daemons).
 //   - Future tier additions whose ExecStart wrapping accidentally
-//     bypasses lohar spawn.
+//     bypasses forge spawn.
 func TestStartDaemonPlacesProcessInUnitCgroup(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("requires root for real cgroup operations")
@@ -391,7 +391,7 @@ func TestStartDaemonPlacesProcessInUnitCgroup(t *testing.T) {
 	dir := t.TempDir()
 	// Real kernel cgroup root, tempdirs for shim state. svcStart will
 	// CreateCgroup under /sys/fs/cgroup/system.slice/<unit>.service and
-	// then spawn the daemon through lohar spawn, which writes its PID
+	// then spawn the daemon through forge spawn, which writes its PID
 	// into that cgroup before exec'ing into the daemon.
 	reg := NewRegistry(Config{
 		ServiceDirs: []string{dir},
@@ -403,7 +403,7 @@ func TestStartDaemonPlacesProcessInUnitCgroup(t *testing.T) {
 
 	// /bin/sleep doesn't fork — but the test isn't about forks; it's
 	// about "did the supervisor's first cgroup-placement happen at all?"
-	// If lohar spawn is invoked correctly, the daemon (sleep) ends up
+	// If forge spawn is invoked correctly, the daemon (sleep) ends up
 	// in the unit's cgroup; if the supervisor regressed to the old
 	// post-cmd.Start() path with no helper, sleep would still end up
 	// there too — BUT only if PlaceInCgroup ran. The way this test

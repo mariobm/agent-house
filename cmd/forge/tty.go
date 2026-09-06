@@ -70,7 +70,7 @@ func handleTTYSession(conn net.Conn, req proto.ExecRequest) {
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
-	// Run as lohar (uid 1000). Users can sudo for root.
+	// Run as forge (uid 1000). Users can sudo for root.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:     true,
 		Setctty:    true,
@@ -243,7 +243,7 @@ func readHostInput(conn net.Conn, sess *Session) {
 		msgType, payload, err := proto.ReadFrame(conn)
 		if err != nil {
 			// Host disconnected — detach, don't kill
-			fmt.Fprintf(os.Stderr, "lohar: session %s: host disconnected: %v\n", sess.ID, err)
+			fmt.Fprintf(os.Stderr, "forge: session %s: host disconnected: %v\n", sess.ID, err)
 			sess.mu.Lock()
 			sess.Attached = nil
 			sess.mu.Unlock()

@@ -39,7 +39,7 @@ func launch(t *testing.T, spec string) (*exec.Cmd, context.CancelFunc) {
 
 // TestColdLoopbackRestore is the cold-wake integration gate: boot -> agent
 // ready -> PAUSE+SNAPSHOT -> kill the helper (free RAM) -> restore into a fresh
-// helper -> the guest must resume and lohar must answer. Proves the VMM
+// helper -> the guest must resume and forge must answer. Proves the VMM
 // cold-wake machinery (memory + vCPU + GIC + vsock/console/rng) round-trips and
 // survives the helper process exiting. (exec-after-restore needs a block root.)
 func TestColdLoopbackRestore(t *testing.T) {

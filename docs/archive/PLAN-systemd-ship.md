@@ -9,20 +9,20 @@ this can go to production.
 
 | Test | Pi 5 (ARM64) | agni (x86_64) |
 |------|-------------|---------------|
-| systemd boots, lohar runs as service | ✅ | ✅ |
+| systemd boots, forge runs as service | ✅ | ✅ |
 | exec works | ✅ | ✅ |
 | hostname from config drive | ✅ | ✅ |
 | /etc/hosts written correctly | ✅ | ✅ |
 | DNS (static resolv.conf) | ✅ | ✅ |
 | systemctl is-system-running | ✅ running | ✅ running |
 | Only 4 units running | ✅ | ✅ |
-| lohar PID 1 path unbroken | ✅ 6ms boot | ✅ same |
+| forge PID 1 path unbroken | ✅ 6ms boot | ✅ same |
 
 ### Boot timing (measured, honest)
 
 | | Pi 5 (ARM64) | agni (x86_64) |
 |---|---|---|
-| lohar PID 1 | **367ms** | **345ms** |
+| forge PID 1 | **367ms** | **345ms** |
 | systemd | **708ms** | **568ms** |
 | Delta | +341ms | +223ms |
 | systemd-analyze userspace | 320ms | 253ms |
@@ -79,7 +79,7 @@ to verify no exec/file latency regression.
 
 During the POC, `ahvm file read` on the boot timing file returned
 an error. The file doesn't exist in /tmp after boot. Likely cause:
-lohar writes it before systemd's tmpfiles-setup runs, then tmpfiles
+forge writes it before systemd's tmpfiles-setup runs, then tmpfiles
 cleans /tmp. Or the write happens to the rootfs /tmp but systemd
 later mounts tmpfs over it.
 
@@ -132,7 +132,7 @@ only checks the image path, not the rootfs itself.
 
 **Fix for production:** Add an explicit field to the create API or
 store the init mode in the image metadata. For a cleaner approach,
-check for `/sbin/init` existence inside the rootfs (the lohar
+check for `/sbin/init` existence inside the rootfs (the forge
 injection code already mounts the image). Or use a marker file
 like `/etc/ahvm/systemd-mode` in the rootfs.
 
@@ -186,7 +186,7 @@ We discovered services to mask through trial-and-error
 built across multiple iterations. Need a canonical list in the
 build script, with comments explaining why each is masked.
 
-### 14. lohar.service unit file is not in the repo
+### 14. forge.service unit file is not in the repo
 
 The systemd unit file was created inline during chroot. Needs to
 live in `scripts/` or `sandbox/` so it's version-controlled and
@@ -207,9 +207,9 @@ rebuilds without it, openssh installs will break DNS again.
 
 Options:
 - **a)** New tier: `rootfs-systemd-minimal`. Users choose with
-  `--image systemd-minimal`. All other tiers stay on lohar PID 1.
+  `--image systemd-minimal`. All other tiers stay on forge PID 1.
 - **b)** Replace minimal: the default `rootfs-minimal` gets systemd.
-  All tiers inherit it. `--fast` flag or env var for lohar PID 1.
+  All tiers inherit it. `--fast` flag or env var for forge PID 1.
 - **c)** Build flag: `scripts/build-tier.sh` takes `--systemd` flag.
   Each tier can be built with or without.
 
@@ -220,7 +220,7 @@ tier, get user feedback, graduate to default if stable.
 
 If systemd-minimal becomes the base, docker/browser/computer tiers
 inherit systemd. Their boot profiles (`/etc/ahvm/init.sh`) still
-work — lohar runs them in both modes. But the long-term win is
+work — forge runs them in both modes. But the long-term win is
 converting them to proper systemd units:
 - `dockerd.service` (ships with docker-ce, just enable it)
 - `headless-chrome.service` (custom unit)
@@ -246,7 +246,7 @@ args. Clean.
 
 - `/var/lib/ahvm/images/rootfs-systemd-arm64.ext4` — 1GB test rootfs
 - `/usr/local/bin/ahvm` — POC binary (has systemd create.go change)
-- `/var/lib/ahvm/lohar` — POC lohar (has runAsAgent)
+- `/var/lib/ahvm/forge` — POC forge (has runAsAgent)
 
 The Pi is running the POC binaries, not the released v1.8.7. Need to
 update to v1.8.7 (which only has the TAP fix, not the systemd changes).
@@ -283,7 +283,7 @@ should be updated to the tagged v1.8.7 from CI.
 [ ] Add cfg==nil fallback in agent mode (hostname, resolv.conf) (#9, #10)
 [ ] Write to /run/ahvm/boot-timing.txt instead of /tmp/ (#6)
 [ ] Replace strings.Contains("systemd") with a robust detection (#8)
-[ ] Add lohar.service to repo (scripts/ or sandbox/) (#14)
+[ ] Add forge.service to repo (scripts/ or sandbox/) (#14)
 [ ] Create scripts/tiers/systemd-minimal.sh with canonical mask list (#11, #13)
 [ ] Add systemd-resolved apt pin to build script (#15)
 ```

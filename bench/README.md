@@ -23,7 +23,7 @@ line, raw, no header. The script also prints a percentile summary
 
 ```
 lifecycle/
-  create.txt              `ahvm create` returning. Includes VM boot, lohar
+  create.txt              `ahvm create` returning. Includes VM boot, forge
                           becoming reachable. Excludes user init scripts.
   stop.txt                `ahvm stop` returning. FC writes the snapshot.
                           Synchronous — measures full memory-to-disk write.

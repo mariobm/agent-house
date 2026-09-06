@@ -38,9 +38,9 @@ source.
 AHVM VMs are not standard Linux boxes. They have a fundamental
 architectural constraint that users don't know about:
 
-> **Lohar is PID 1, not systemd.**
+> **Forge is PID 1, not systemd.**
 
-The kernel boots with `init=/usr/local/bin/lohar`. There is no systemd,
+The kernel boots with `init=/usr/local/bin/forge`. There is no systemd,
 no init scripts, no service manager. This is a deliberate design decision
 documented in `decisions.md` (Decision #3) but **never communicated to
 users**. The implications are severe for anyone who treats the VM like a
@@ -65,10 +65,10 @@ triggers a cascade of failures:
 **Stage 2 — resolv.conf destruction.**
 `systemd-resolved`'s postinst script replaces `/etc/resolv.conf` with a
 symlink to `/run/systemd/resolve/stub-resolv.conf`. But `systemd-resolved`
-is not running (lohar is PID 1, not systemd), so that target file does not
+is not running (forge is PID 1, not systemd), so that target file does not
 exist. DNS resolution immediately breaks.
 
-This is fatal: lohar writes a static `/etc/resolv.conf` at boot
+This is fatal: forge writes a static `/etc/resolv.conf` at boot
 (`main.go:210-213`), and the `ensureResolvConf()` function even explicitly
 removes broken symlinks — but this only runs at boot time. A mid-session
 `apt-get install openssh-server` replaces the working file with a dead
@@ -91,7 +91,7 @@ is already done by Stage 2.
 user can't install anything else, can't `curl`, can't `wget`, can't do any
 network operation. The VM appears "completely broken."
 
-**Why this is not a bug but an architecture constraint:** lohar-as-PID-1 is
+**Why this is not a bug but an architecture constraint:** forge-as-PID-1 is
 the reason ahvm boots in 3.5 seconds instead of 6-8 seconds, has
 deterministic startup, and uses minimal memory. It's a fundamental design
 choice. But users need to know about it.
@@ -141,7 +141,7 @@ hint: `(1 vCPU, 2048 MB — use --cpus/--memory to change)`.
 The project needs a page that surfaces constraints early. Something
 users can find before they brick a VM. This would cover:
 
-1. **No systemd** — lohar is PID 1. Packages that depend on systemd
+1. **No systemd** — forge is PID 1. Packages that depend on systemd
    services (openssh-server, nginx via apt, postgresql, docker — the
    docker *tier* works because it starts dockerd in the boot profile,
    but `apt-get install docker.io` does not) will install but their
@@ -167,7 +167,7 @@ users can find before they brick a VM. This would cover:
 
 ### D. Warn at package-install time (aspirational, harder)
 
-The nuclear option: have lohar intercept or wrap `apt-get install` and
+The nuclear option: have forge intercept or wrap `apt-get install` and
 warn about known-dangerous packages before they install. This is complex
 and fragile, but even a simpler version could help:
 
@@ -184,7 +184,7 @@ to read docs. This is the realistic first step.
 
 ### E. Make resolv.conf resilient
 
-Lohar already handles broken resolv.conf at boot (`ensureResolvConf()`
+Forge already handles broken resolv.conf at boot (`ensureResolvConf()`
 removes symlinks and writes a static file). But this only runs once.
 
 **Improvement:** Use `chattr +i /etc/resolv.conf` (immutable attribute)
@@ -196,7 +196,7 @@ accidental destruction via package installation is prevented.
 This is a one-line addition to `ensureResolvConf()` or the boot sequence
 and would have prevented the openssh breakage entirely.
 
-Alternatively, a watchdog goroutine in lohar that periodically checks if
+Alternatively, a watchdog goroutine in forge that periodically checks if
 `/etc/resolv.conf` is still a regular file with valid nameservers, and
 repairs it if not. More complex, but handles edge cases where `chattr`
 isn't available or the immutable flag is cleared.
@@ -257,13 +257,13 @@ the `shell:` / `exec:` hints.
 The question isn't just "should we add systemd" — it's "what init
 model gives us the right balance of control, user experience, and
 maintainability." This section walks through concrete user scenarios
-under each model, examines what control lohar-as-PID-1 actually
+under each model, examines what control forge-as-PID-1 actually
 exercises, surveys alternatives, and asks whether an init system is
 even necessary.
 
-### What lohar actually does as PID 1 (all 28ms of it)
+### What forge actually does as PID 1 (all 28ms of it)
 
-Lohar's entire PID 1 init path is 9 functions, ~120 lines of Go:
+Forge's entire PID 1 init path is 9 functions, ~120 lines of Go:
 
 ```
 main():
@@ -290,7 +290,7 @@ Step 5 is config injection (ahvm-specific, ~60 lines).
 Step 6 is network setup that the kernel already handles via `ip=`.
 Steps 7-11 are agent duties, not init duties.
 
-**What lohar does NOT do as PID 1:**
+**What forge does NOT do as PID 1:**
 - Reap orphan zombies (explicitly documented as skipped — Go's runtime
   races with `Wait4(-1)`)
 - Manage services (no restart, no health check, no dependency ordering)
@@ -316,37 +316,37 @@ real init system — reaps zombies automatically.
 
 ### What "control" do we actually exercise?
 
-The argument for lohar-as-PID-1 is control. Let's audit what control
+The argument for forge-as-PID-1 is control. Let's audit what control
 we exercise and whether it matters:
 
-| Control | How lohar uses it | Would we lose it with systemd? |
+| Control | How forge uses it | Would we lose it with systemd? |
 |---------|-------------------|-------------------------------|
 | Mount ordering | Mount in hardcoded order | No — systemd does the same mounts, in a tested order |
 | Network config | Parse kernel ip= and configure if needed | No — kernel ip= works before ANY init |
-| Config drive | Read /dev/vdb, apply, unmount | No — ExecStartPre in lohar.service, identical code |
+| Config drive | Read /dev/vdb, apply, unmount | No — ExecStartPre in forge.service, identical code |
 | DNS | Write static /etc/resolv.conf | Partially — resolved would manage it (but more robustly) |
 | Agent token | Unmount config drive after reading | Same — ExecStartPre unmounts it |
-| Agent uptime | Can't be killed (IS PID 1) | `RefuseManualStop=yes` in unit file. But if lohar crashes, systemd RESTARTS it — actually more resilient |
+| Agent uptime | Can't be killed (IS PID 1) | `RefuseManualStop=yes` in unit file. But if forge crashes, systemd RESTARTS it — actually more resilient |
 | Boot profile | Run /etc/ahvm/init.sh as root | Same — `ExecStartPre` or a separate oneshot unit |
 | Shutdown | SIGTERM → sync → poweroff | `ExecStop=sync; poweroff` or let systemd handle it natively |
 
-**The DNS point is the only one where we have more control with lohar.**
+**The DNS point is the only one where we have more control with forge.**
 We write a static resolv.conf and nothing interferes. With systemd,
 resolved takes over DNS management. But resolved is actually better —
 it handles DNS fallback, caching, and DNSSEC. The issue from #12
 (openssh breaking DNS) exists precisely because we DON'T use resolved.
 
-**The agent resilience point actually favors systemd.** If lohar
-crashes as PID 1, the kernel panics — the VM is dead. If lohar crashes
+**The agent resilience point actually favors systemd.** If forge
+crashes as PID 1, the kernel panics — the VM is dead. If forge crashes
 as a systemd service with `Restart=always`, systemd restarts it in 1
-second and the VM keeps running. We've never had a lohar crash in
-production, but the failure mode is strictly worse with lohar-as-PID-1.
+second and the VM keeps running. We've never had a forge crash in
+production, but the failure mode is strictly worse with forge-as-PID-1.
 
 ### User experience comparison: concrete scenarios
 
 #### Scenario 1: Fresh sandbox, install packages, run code
 
-**With lohar-as-PID-1 (current):**
+**With forge-as-PID-1 (current):**
 ```bash
 ahvm exec dev -- sudo apt-get install -y python3 python3-pip
 # ✅ Works (no systemd deps)
@@ -389,7 +389,7 @@ package installs but the service doesn't run, leaving users confused.
 
 #### Scenario 2: Running a web server (the `--init` pattern)
 
-**With lohar-as-PID-1:**
+**With forge-as-PID-1:**
 ```bash
 ahvm create --name api --keep-hot --init 'cd /workspace && node server.js'
 # ✅ Works for the happy path
@@ -421,7 +421,7 @@ After=redis.service
 
 [Service]
 Type=simple
-User=lohar
+User=forge
 WorkingDirectory=/workspace
 ExecStart=/usr/local/bin/node server.js
 Restart=always
@@ -443,7 +443,7 @@ the ability to add services without recreating the sandbox.
 
 #### Scenario 3: Docker tier (our own use case)
 
-**Current (lohar-as-PID-1):**
+**Current (forge-as-PID-1):**
 ```bash
 # /etc/ahvm/init.sh in docker tier:
 dockerd > /var/log/dockerd.log 2>&1 &
@@ -499,7 +499,7 @@ disappears entirely.
 
 #### Scenario 5: Snapshot/restore with running services
 
-**With lohar-as-PID-1:**
+**With forge-as-PID-1:**
 ```
 VM running: node server.js on port 3000, redis on 6379
   → thermal manager snapshots to disk (cold)
@@ -510,7 +510,7 @@ VM running: node server.js on port 3000, redis on 6379
 ```
 
 This is ahvm's killer feature and it works beautifully with
-lohar-as-PID-1. Processes survive.
+forge-as-PID-1. Processes survive.
 
 **With systemd:**
 ```
@@ -530,7 +530,7 @@ The systemd case has a wrinkle: service watchdogs might trigger
 unnecessary restarts after a time jump. This is fixable
 (`RuntimeWatchdogSec=0` for our services) but needs testing.
 
-**However:** The current lohar-as-PID-1 snapshot/restore is also not
+**However:** The current forge-as-PID-1 snapshot/restore is also not
 perfect. If a process was mid-write when snapshotted, it continues
 mid-write on restore. If a TCP connection was open, the remote end
 may have closed it during the cold period — the restored process
@@ -546,7 +546,7 @@ databases, background workers. The current story has gaps.
 ### What Exists Today
 
 **Tier boot profiles** (`/etc/ahvm/init.sh`) — baked into the rootfs
-at image build time, run by lohar at boot. This is how our own tiers
+at image build time, run by forge at boot. This is how our own tiers
 solve it:
 
 ```sh
@@ -704,10 +704,10 @@ integrate with it.
 **Cons:** Adds a tool users need to learn. Binary size in rootfs.
 Minimal tier (512 MB) gets tighter.
 
-#### Option 4: Build supervision into lohar (1–2 weeks)
+#### Option 4: Build supervision into forge (1–2 weeks)
 
 Extend the agent protocol with a `SERVICE_START` / `SERVICE_STOP` /
-`SERVICE_STATUS` command. Lohar manages named services with restart
+`SERVICE_STATUS` command. Forge manages named services with restart
 policies, health checks, and log capture.
 
 ```bash
@@ -719,11 +719,11 @@ ahvm service list dev
 ahvm service logs dev postgres
 ```
 
-Lohar would maintain a service table in memory, restart crashed processes
+Forge would maintain a service table in memory, restart crashed processes
 with exponential backoff, and expose status via the control protocol.
 
 **Pros:** Fully integrated, first-class CLI experience, survives
-snapshot/restore (service state is lohar's responsibility). Users never
+snapshot/restore (service state is forge's responsibility). Users never
 think about supervision — it's part of the platform.
 **Cons:** Significant scope. Adds protocol complexity. Service state
 needs to survive snapshot/restore (serialize to disk before snapshot,
@@ -741,17 +741,17 @@ a clear story:
 > script that backgrounds each daemon — the same pattern our Docker and
 > computer tiers use internally."*
 
-**Later (if demand): Option 4.** The lohar-native service model is the
+**Later (if demand): Option 4.** The forge-native service model is the
 right long-term answer, but only if users are actually hitting the
 limitations of the `supervise` wrapper. Building it prematurely risks
 designing the wrong abstraction.
 
 **Skip: Option 3.** Shipping s6/runit adds a third-party tool that we
 have to maintain, document, and support. If we're going to invest in
-real supervision, it should be integrated into lohar (Option 4), not
+real supervision, it should be integrated into forge (Option 4), not
 bolted on as an external binary.
 
-### Alternatives survey: what exists between lohar and systemd
+### Alternatives survey: what exists between forge and systemd
 
 The init system landscape, ordered from lightest to heaviest:
 
@@ -759,7 +759,7 @@ The init system landscape, ordered from lightest to heaviest:
 Minimal PID 1 for containers. Reaps zombies, forwards signals. Nothing
 else. Used by Docker's `--init` flag.
 
-**What it solves for ahvm:** Zombie reaping (lohar's acknowledged gap).
+**What it solves for ahvm:** Zombie reaping (forge's acknowledged gap).
 **What it doesn't solve:** Service management, package compatibility,
 restart-on-crash, logging. Packages that call `systemctl` still fail.
 
@@ -771,7 +771,7 @@ No dependency ordering, no readiness notification, no logging.
 
 ```
 ::sysinit:/etc/init.d/rcS
-::respawn:/usr/local/bin/lohar
+::respawn:/usr/local/bin/forge
 ::respawn:/usr/bin/dockerd
 ::shutdown:/bin/sync
 ```
@@ -794,9 +794,9 @@ commands. Automatic restart on crash.
 #!/bin/sh
 exec dockerd 2>&1
 
-# /etc/sv/lohar/run
+# /etc/sv/forge/run
 #!/bin/sh
-exec /usr/local/bin/lohar --agent
+exec /usr/local/bin/forge --agent
 ```
 
 **What it solves:** Restart-on-crash, clean process supervision, zombie
@@ -816,16 +816,16 @@ services."
 
 ```
 /etc/s6-overlay/s6-rc.d/
-  lohar/
+  forge/
     type: longrun
-    run: exec /usr/local/bin/lohar --agent
+    run: exec /usr/local/bin/forge --agent
     dependencies.d/
       base
   dockerd/
     type: longrun
     run: exec dockerd
     dependencies.d/
-      lohar
+      forge
 ```
 
 **What it solves:** Everything runit does, plus dependency ordering,
@@ -899,15 +899,15 @@ compatibility) but nothing covers the full `systemctl` surface.
 **If we want packages to work, we need systemd. There is no shortcut.**
 
 If we DON'T care about packages working (only AI agent workloads that
-never `apt-get install`), then lohar-as-PID-1 is perfect. The question
+never `apt-get install`), then forge-as-PID-1 is perfect. The question
 is which user base matters more.
 
 ### Does one even need an init system?
 
-Let's ask the inverse question. What if we kept lohar as PID 1 but
+Let's ask the inverse question. What if we kept forge as PID 1 but
 made it a better PID 1?
 
-**Minimum viable improvements to lohar-as-PID-1:**
+**Minimum viable improvements to forge-as-PID-1:**
 1. Add zombie reaping (fixable — reap in a goroutine with careful
    Wait4 handling that doesn't race with exec.Command)
 2. Add the `supervise` wrapper for crash recovery
@@ -931,7 +931,7 @@ more users onboard, these failures will become support tickets.
 
 **Judgment call:** ahvm is marketed as "isolated Linux environments"
 that feel like real VMs. Real VMs have init systems. Real VMs let you
-install packages. The lohar-as-PID-1 model creates a constant stream
+install packages. The forge-as-PID-1 model creates a constant stream
 of "why doesn't X work" moments for any user who treats the sandbox
 like the Ubuntu VM it appears to be.
 
@@ -948,8 +948,8 @@ boot: **365ms** (p50, Pi 5). The 3.5s figure is 10x stale.
 
 This was never measured in a Firecracker VM. Firecracker's own CI
 shows **231ms systemd userspace** with a full Ubuntu rootfs. A stripped
-config (only lohar.service) would be **75-130ms**. The delta over
-lohar's 28ms init is **~50-100ms**, not 1-2 seconds.
+config (only forge.service) would be **75-130ms**. The delta over
+forge's 28ms init is **~50-100ms**, not 1-2 seconds.
 
 > "Zero services to manage or debug"
 
@@ -972,14 +972,14 @@ The decision made sense when boot was 3.5s and systemd would add
 
 ## Revisiting the Premise: Should We Just Add systemd?
 
-The supervision gap exists because we chose lohar-as-PID-1 over systemd
+The supervision gap exists because we chose forge-as-PID-1 over systemd
 (Decision #3 in `decisions.md`). The rationale was boot speed and
 determinism. But every solution to the supervision gap — `supervise`
-wrapper, s6, lohar-native services — is a worse reimplementation of
+wrapper, s6, forge-native services — is a worse reimplementation of
 what systemd already does. And systemd is *already on the rootfs*
 (debootstrap includes it). We pay the disk cost and get zero benefit.
 
-### What lohar does as PID 1 (the init duties)
+### What forge does as PID 1 (the init duties)
 
 ```
 1. Mount proc, sysfs, devtmpfs, devpts, tmpfs, /dev/shm, cgroup2
@@ -996,7 +996,7 @@ Steps 1, 2, and 8 are things systemd does natively. Step 4 is handled
 by the kernel's `ip=` parameter before init even runs. Steps 3, 6, 7
 are ahvm-specific — but they can be systemd services.
 
-The only thing that REQUIRES lohar to be PID 1 is... nothing. The agent
+The only thing that REQUIRES forge to be PID 1 is... nothing. The agent
 duties (step 5: listen, exec, sessions, files, port forwarding) are
 completely independent of being PID 1.
 
@@ -1025,29 +1025,29 @@ rootfs.
 ```
   Host-side (rootfs copy, FC start, API config):  ~130ms
   Kernel boot:                                    ~130ms (est)
-  Lohar init (mounts → TCP listen):               ~28ms
+  Forge init (mounts → TCP listen):               ~28ms
   WaitReady (ARP + TCP probing):                  ~75ms
   Total end-to-end create:                        ~365ms (p50)
 ```
 
-Lohar's PID 1 init contributes **28ms** of the 365ms. The rest is
+Forge's PID 1 init contributes **28ms** of the 365ms. The rest is
 host-side and kernel.
 
 **What systemd would replace those 28ms with:**
 
-If we strip systemd to only lohar.service (disable journald, resolved,
+If we strip systemd to only forge.service (disable journald, resolved,
 networkd, udevd, logind, timedatectl — none of these are needed in a
 Firecracker VM with kernel `ip=` networking):
 
 ```
   systemd PID 1 init + mount essential FS:        ~30-50ms
   Process generators (scan, none present):         ~5-10ms
-  Start basic.target → lohar.service:              ~20-40ms
-  Lohar agent mode (read config, TCP listen):      ~20-30ms
+  Start basic.target → forge.service:              ~20-40ms
+  Forge agent mode (read config, TCP listen):      ~20-30ms
   Total systemd userspace:                         ~75-130ms
 ```
 
-**Realistic delta: +50-100ms over lohar-as-PID-1's 28ms.**
+**Realistic delta: +50-100ms over forge-as-PID-1's 28ms.**
 End-to-end create would go from ~365ms to ~415-465ms.
 Not 1-3 seconds. Not even 500ms.
 
@@ -1056,7 +1056,7 @@ DNS management):
 
 ```
   systemd userspace with journald + resolved:     ~150-250ms
-  Delta over lohar-as-PID-1:                      ~120-220ms
+  Delta over forge-as-PID-1:                      ~120-220ms
   End-to-end create:                              ~485-585ms
 ```
 
@@ -1073,7 +1073,7 @@ a fuller service set than we'd need.
 | **the reference runtime** | Agent IS PID 1 | PID 1 (via libkrun init.c) | <200ms (published) | No |
 | **Sprites** (fly.io) | Custom init | Built-in service manager | Not published | Filesystem only (no memory) |
 | **AWS Lambda** | Custom init | Runtime Interface | ~100-200ms (kernel to handler) | Yes (SnapStart) |
-| **AHVM** | lohar | PID 1 | 365ms e2e (28ms init) | Yes (full memory) |
+| **AHVM** | forge | PID 1 | 365ms e2e (28ms init) | Yes (full memory) |
 
 **the reference runtime deep dive (from source review):**
 
@@ -1113,7 +1113,7 @@ lifecycle, not by an init system.
 **Kata Containers deep dive (from source review):**
 
 Kata's agent (Rust, ~10K lines) is the closest architectural analog to
-lohar. It runs in both modes:
+forge. It runs in both modes:
 
 ```rust
 // kata-containers/src/agent/src/main.rs
@@ -1171,7 +1171,7 @@ complexity.
 
 #### Memory: +30-80 MB resident
 
-With only lohar.service enabled (no journald, no resolved):
+With only forge.service enabled (no journald, no resolved):
 - systemd PID 1: ~8-12 MB
 - dbus-daemon (required by systemd): ~4-6 MB
 - Total: ~12-18 MB
@@ -1194,7 +1194,7 @@ systemd responds to time jumps:
 - **Timers fire.** logrotate, tmpfiles cleanup. Mostly harmless.
 - **Watchdogs trigger.** Services with `WatchdogSec=` get killed and
   restarted. Actually *good* — ensures daemons are healthy after wake.
-  But our lohar.service must NOT have WatchdogSec.
+  But our forge.service must NOT have WatchdogSec.
 - **resolved updates DNS.** Fine.
 - **journald writes catch-up entries.** Small I/O spike.
 
@@ -1238,13 +1238,13 @@ We don't have to choose one path for all use cases. The kernel cmdline
 controls which init runs:
 
 ```
-Fast mode:   init=/usr/local/bin/lohar   (current behavior, AI agent workloads)
+Fast mode:   init=/usr/local/bin/forge   (current behavior, AI agent workloads)
 Compat mode: init=/sbin/init             (systemd, dev sandboxes)
 ```
 
 **Implementation:**
 
-1. **Lohar gets a non-PID-1 mode.** If `os.Getpid() != 1`, skip all
+1. **Forge gets a non-PID-1 mode.** If `os.Getpid() != 1`, skip all
    init duties (mounts, networking, config drive). Just start the agent
    listeners and block. ~20 lines of change in `main.go`:
 
@@ -1258,7 +1258,7 @@ Compat mode: init=/sbin/init             (systemd, dev sandboxes)
    }
    ```
 
-2. **Ship a `lohar.service` systemd unit in the rootfs.** It reads the
+2. **Ship a `forge.service` systemd unit in the rootfs.** It reads the
    config drive, applies ahvm config, and starts the agent:
 
    ```ini
@@ -1269,8 +1269,8 @@ Compat mode: init=/sbin/init             (systemd, dev sandboxes)
 
    [Service]
    Type=simple
-   ExecStartPre=/usr/local/bin/lohar --apply-config
-   ExecStart=/usr/local/bin/lohar --agent
+   ExecStartPre=/usr/local/bin/forge --apply-config
+   ExecStart=/usr/local/bin/forge --agent
    Restart=always
    RestartSec=1
 
@@ -1281,7 +1281,7 @@ Compat mode: init=/sbin/init             (systemd, dev sandboxes)
 3. **Engine picks boot args based on a flag.** In `create.go`:
 
    ```go
-   initBin := "/usr/local/bin/lohar"
+   initBin := "/usr/local/bin/forge"
    if spec.SystemdMode {
        initBin = "/sbin/init"
    }
@@ -1294,11 +1294,11 @@ Compat mode: init=/sbin/init             (systemd, dev sandboxes)
    per-tier default: minimal stays fast, a new "standard" tier uses
    systemd.
 
-5. **Config drive handling in systemd mode.** A `lohar --apply-config`
+5. **Config drive handling in systemd mode.** A `forge --apply-config`
    step reads the config drive and writes:
    - `/etc/hostname`
    - `/etc/hosts`
-   - env vars to `/etc/ahvm/env` (sourced by lohar.service and init scripts)
+   - env vars to `/etc/ahvm/env` (sourced by forge.service and init scripts)
    - files from config drive
    - volume mounts via systemd mount units or direct mount calls
 
@@ -1343,16 +1343,16 @@ Before committing to systemd mode, run this matrix on Pi 5 and one
 x86_64 machine:
 
 ```
-Test 1: Boot → systemd-analyze → verify lohar.service is active
+Test 1: Boot → systemd-analyze → verify forge.service is active
 Test 2: Boot → start user services → pause 30s → resume → verify services
 Test 3: Boot → start user services → full snapshot → restore after 5m → verify
 Test 4: Boot → start user services → full snapshot → restore after 2h → verify
 Test 5: Boot → apt-get install openssh-server → systemctl start ssh → verify
 Test 6: Boot → apt-get install postgresql → pg_isready → snapshot → restore → pg_isready
-Test 7: Boot 20 VMs sequentially, measure p50/p95 create time vs lohar-as-PID-1
+Test 7: Boot 20 VMs sequentially, measure p50/p95 create time vs forge-as-PID-1
 ```
 
-"Verify services" means: lohar agent responds, user services are
+"Verify services" means: forge agent responds, user services are
 running (`systemctl is-active`), DNS works, network works.
 
 If tests 1-6 pass and test 7 shows <150ms delta, systemd mode is ready.
@@ -1367,14 +1367,14 @@ Phase 1 (now): Fix the immediate issue #12 problems — docs, resolv.conf
 immutability, create output. These help regardless of the systemd decision.
 
 Phase 2 (next, ~3-5 days): Build and test systemd mode.
-- Refactor lohar: `if os.Getpid() == 1 { runAsPID1() } else { runAsAgent() }`
-- Ship `lohar.service` in rootfs
+- Refactor forge: `if os.Getpid() == 1 { runAsPID1() } else { runAsAgent() }`
+- Ship `forge.service` in rootfs
 - Engine: choose boot args based on sandbox/tier flag
 - Run the test matrix above
 - Gate behind a `--compat` flag or make it per-tier
 
 Phase 3 (if test matrix passes): Make systemd the default for all
-non-minimal tiers. Keep the fast path (`init=/usr/local/bin/lohar`)
+non-minimal tiers. Keep the fast path (`init=/usr/local/bin/forge`)
 for the minimal tier and AI agent workloads where every millisecond
 of boot time matters.
 
@@ -1396,7 +1396,7 @@ sub-100ms cold starts, which is not our use case.
 | **P1** | Add `docs/limitations.md` (known don'ts) | 1 hr | Sets expectations before users hit walls |
 | **P1** | Show vCPU/memory/disk in `create` output | 30 min | Users know what they got without inspecting |
 | **P1** | Document the `--init` daemon pattern (interim until systemd mode) | 1 hr | Gives users a story while we build the real fix |
-| **P2** | Lohar dual-mode + `lohar.service` + snapshot/restore test matrix | 3–5 days | Systemd mode behind `--compat` flag |
+| **P2** | Forge dual-mode + `forge.service` + snapshot/restore test matrix | 3–5 days | Systemd mode behind `--compat` flag |
 | **P2** | Auto-resize rootfs to 2 GB when `--disk-size` not set | 30 min | Prevents ENOSPC on minimal tier |
 | **P3** | Make systemd the default for non-minimal tiers | 1 day | Full compatibility, issue #12 class of problems eliminated |
 
@@ -1417,7 +1417,7 @@ dependency graphs should use the Docker tier and `docker compose`. That's
 the right tool for that job — ahvm provides the VM, Docker provides the
 orchestration.
 
-**Removing the fast path.** `init=/usr/local/bin/lohar` stays forever.
+**Removing the fast path.** `init=/usr/local/bin/forge` stays forever.
 It's the right choice for AI agent workloads where boot time matters and
 no one is apt-installing packages. Dual-mode means we don't have to
 choose.

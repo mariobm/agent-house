@@ -47,7 +47,7 @@ Reference
   Configuration              ← incomplete — missing most server config fields
 Architecture
   Overview                   ← internals + reference hybrid
-  Guest Agent (Lohar)        ← deep internals, the best technical writing in the docs
+  Guest Agent (Forge)        ← deep internals, the best technical writing in the docs
   Firecracker Engine         ← internals, good
   Design Decisions           ← the best page in the entire site
 Contributing
@@ -145,7 +145,7 @@ Updating & Uninstalling              ← new, from our install work
 
 Under the Hood                       ← new section
   Architecture Overview
-  Lohar: PID 1 Inside Every VM
+  Forge: PID 1 Inside Every VM
   Thermal States & Snapshots
   Networking: Bridges, TAP, and ip=
   The Wire Protocol
@@ -182,7 +182,7 @@ Contributing
 | Templates | **Managing → Templates** | Add explicit note: "Templates don't have CLI commands yet — use the API directly." |
 | Images | **Managing → Images & Tiers** | Merge with tier documentation. Clarify who can share (admin only? any user?). Add tier table from README. |
 | Architecture Overview | **Under the Hood → Architecture Overview** | Keep ASCII diagrams and data flow. Move disk layout and concurrency model to a subsection or separate page. |
-| Guest Agent | **Under the Hood → Lohar: PID 1 Inside Every VM** | Rename for discoverability. Keep the deep content — it's good. |
+| Guest Agent | **Under the Hood → Forge: PID 1 Inside Every VM** | Rename for discoverability. Keep the deep content — it's good. |
 | Firecracker Engine | Merge into **Architecture Overview** and **Thermal States** | The engine page is a grab bag. The VM creation sequence fits in Architecture. The snapshot/restore fits in Thermal States. |
 | Design Decisions | **Under the Hood → Design Decisions** | Keep as-is. It's the best page. |
 | Wire Protocol | Split: narrative → **Under the Hood → The Wire Protocol**, byte spec → **Reference → Wire Protocol Frames** | The current page mixes "why binary framing" (interesting) with frame type tables (reference). |
@@ -258,11 +258,11 @@ Each page should answer:
 - The force-pause circuit breaker (10 consecutive failures)
 - Why vsock breaks after restore (from Design Decisions, expanded)
 
-**Lohar: PID 1 Inside Every VM** should be the current Guest Agent page
+**Forge: PID 1 Inside Every VM** should be the current Guest Agent page
 with a better title. The boot sequence, config drive, session model,
 PTY allocation — all strong content. Add:
-- Why lohar is injected into the rootfs on every create (protocol drift)
-- What happens when lohar crashes (PID 1 death = kernel panic = VM dies)
+- Why forge is injected into the rootfs on every create (protocol drift)
+- What happens when forge crashes (PID 1 death = kernel panic = VM dies)
 
 **Networking: Bridges, TAP, and ip=** — the current Networking page,
 but rewritten to reflect per-user bridges (the current page still
@@ -366,7 +366,7 @@ Templates, Images, Users & Auth.
 Write/rewrite the "Under the Hood" pages with narrative, context, and
 personality. This is where PLAN-learning.md's rewrite work feeds in.
 
-Pages: Architecture Overview, Lohar, Thermal States, Networking,
+Pages: Architecture Overview, Forge, Thermal States, Networking,
 Design Decisions (already good — expand with new entries).
 
 ### Phase 4: Tier 3 gaps (Reference)

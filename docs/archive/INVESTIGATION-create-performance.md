@@ -15,7 +15,7 @@ Phases instrumented:
 1. Engine Create path — `create.phase` messages at every step
 2. WaitReady — per-attempt timing split into TCP connect vs AUTH vs exec
 3. Jailed FC startup — jailer mkdir, hardlink, chown, socket ready
-4. Lohar boot timing — writes `/tmp/boot-timing.txt` inside guest
+4. Forge boot timing — writes `/tmp/boot-timing.txt` inside guest
 5. Server handler — request parse, spec build, volume resolve, engine call, DB store
 6. Mutex contention — timing around engine lock acquisition
 
@@ -33,14 +33,14 @@ Tested on ext4 (Pi's default) vs btrfs (20GB loopback image with
 Phase                ext4        btrfs       Savings
 ─────────────────    ─────       ─────       ───────
 rootfs_copy          320ms        14ms       306ms
-lohar_inject         604ms        95ms       509ms
+forge_inject         604ms        95ms       509ms
 config_drive            9ms        13ms         —
 ─────────────────    ─────       ─────       ───────
 Total create        2131ms      1240ms       891ms
 ```
 
 rootfs copy drops from 320ms to 14ms (btrfs reflink = instant CoW
-clone). lohar injection drops from 604ms to 95ms (loop mount + cp +
+clone). forge injection drops from 604ms to 95ms (loop mount + cp +
 umount is faster on btrfs).
 
 Setup:
@@ -74,13 +74,13 @@ Timeline (all times relative to host create start):
 ```
   0ms     Host: create() starts
  14ms     Host: rootfs copy done (btrfs reflink)
-106ms     Host: lohar inject done
+106ms     Host: forge inject done
 154ms     Host: config drive done
 175ms     Host: FC jailer started, socket ready
 206ms     Host: InstanceStart API returns
 206ms     Host: WaitReady starts → TCP SYN sent to guest IP
 243ms     Guest: kernel first instruction (measured via btime)
-324ms     Guest: lohar tcp_listen (kernel 81ms + lohar 4ms)
+324ms     Guest: forge tcp_listen (kernel 81ms + forge 4ms)
           ... SYN was already sent at 206ms, dropped (guest not listening) ...
           ... Linux default SYN retransmit timeout: 1 second ...
 ~1206ms   Host: kernel retransmits SYN
@@ -97,7 +97,7 @@ Timeline (all times relative to host create start):
    Delta: guest booted 243ms after host create started
    ```
 
-2. **Lohar boot timing** (`/tmp/boot-timing.txt` inside guest):
+2. **Forge boot timing** (`/tmp/boot-timing.txt` inside guest):
    ```
    +0ms start
    +0ms mounts_done
@@ -106,7 +106,7 @@ Timeline (all times relative to host create start):
    +3ms network_done
    +4ms tcp_listen
    ```
-   Lohar is ready in 4ms after starting. Kernel boots in 77ms
+   Forge is ready in 4ms after starting. Kernel boots in 77ms
    (from dmesg). Total: guest TCP-ready at ~81ms after kernel start.
 
 3. **Guest dmesg confirms fast kernel boot:**
@@ -115,7 +115,7 @@ Timeline (all times relative to host create start):
    0.037s  virtio_blk discovered
    0.074s  IP-Config: Complete (eth0 configured)
    0.076s  EXT4-fs (vda): mounted root
-   0.077s  Run /usr/local/bin/lohar as init process
+   0.077s  Run /usr/local/bin/forge as init process
    0.089s  Config drive mounted + unmounted
    ```
    No i8042 on ARM. Carrier wait is only 30ms (vs 520ms on x86).
@@ -171,7 +171,7 @@ and the TCP handshake.
 Phase                Time    What
 ─────────────────    ─────   ────
 rootfs_copy           14ms   btrfs reflink clone
-lohar_inject          93ms   loop mount + cp + umount
+forge_inject          93ms   loop mount + cp + umount
 network               34ms   IP alloc + TAP + ARP flush
 config_drive          14ms   mke2fs -d
 fc_start (jailer)     21ms   chroot + FC process + socket
@@ -197,7 +197,7 @@ guest is ready.
 
 ## What this means for optimization
 
-The bottleneck is not FC, not the kernel, not lohar, not the host-side
+The bottleneck is not FC, not the kernel, not forge, not the host-side
 prep. It's the timing mismatch: WaitReady sends its first TCP SYN
 ~118ms before the guest listener is up, and Linux's 1-second SYN
 retransmit timer penalizes this by a full second.

@@ -193,7 +193,7 @@ After snapshot/restore, it breaks. The guest kernel's vsock state is stale — c
 
 The fix: after restore, create a new `AgentClient` that uses TCP over the TAP network instead of vsock. Virtio-net (the virtual network card) survives snapshot/restore cleanly — the guest kernel's TCP stack re-establishes connections through the existing TAP device and bridge.
 
-Lohar listens on both vsock *and* TCP on the same ports (1024/1025). Cold boot uses whichever connects first (vsock is slightly faster). Post-restore always uses TCP.
+Forge listens on both vsock *and* TCP on the same ports (1024/1025). Cold boot uses whichever connects first (vsock is slightly faster). Post-restore always uses TCP.
 
 ## Port Scanning
 

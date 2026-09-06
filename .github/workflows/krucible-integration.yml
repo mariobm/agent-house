@@ -9,7 +9,7 @@ name: Krucible Integration
 #
 # These steps are the ones validated by hand on the cluster (raspi-5a arm64 +
 # asus-i5 x86): bring up libkrun + libkrunfw + ahvm-vmm via the bring-up
-# script, build lohar, then run the `-tags krucible` suite. The cold-tier
+# script, build forge, then run the `-tags krucible` suite. The cold-tier
 # suite self-runs on x86 and is n/a on arm64; the VM suites self-skip only if
 # there's no hypervisor (there is here), via hasHypervisor().
 #
@@ -24,7 +24,7 @@ on:
     paths:
       - 'pkg/engine/krucible/**'
       - 'cmd/vmm/**'
-      - 'cmd/lohar/**'
+      - 'cmd/forge/**'
       - 'scripts/krucible-*'
       - '.github/workflows/krucible-integration.yml'
 
@@ -51,10 +51,10 @@ jobs:
         # path. libkrunfw is a slow kernel build on first run (cache TODO).
         run: ./scripts/krucible-linux-bringup.sh
 
-      - name: Build lohar (the guest agent / init.krun)
+      - name: Build forge (the guest agent / init.krun)
         run: |
           export PATH=/usr/local/go/bin:$PATH
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o lohar ./cmd/lohar/
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o forge ./cmd/forge/
 
       - name: Build ahvm-netd (the per-owner network gateway)
         # Required for the TestKrucibleNet* suite to run instead of skipping. The
@@ -76,7 +76,7 @@ jobs:
         run: |
           sudo apt-get install -y -qq debootstrap
           arch=$(dpkg --print-architecture)   # amd64 | arm64
-          sudo ./scripts/build-tier.sh minimal "$arch" ./lohar
+          sudo ./scripts/build-tier.sh minimal "$arch" ./forge
           echo "KRUCIBLE_TIER_ROOTFS=$PWD/dist/rootfs-minimal-${arch}.ext4" >> "$GITHUB_ENV"
 
       - name: Run krucible suite (-tags krucible)

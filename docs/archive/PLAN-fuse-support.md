@@ -8,7 +8,7 @@ rclone mount, s3fs-fuse, gcsfuse, AppImage, fuse-overlayfs, and Mesa
 needed inside development sandboxes.
 
 Currently FUSE doesn't work. Three things are wrong, and fixing them
-requires touching three layers of the stack: kernel, rootfs, and lohar.
+requires touching three layers of the stack: kernel, rootfs, and forge.
 
 ---
 
@@ -54,8 +54,8 @@ Even if the kernel had FUSE support, there's no `fusermount3` binary, no
 `libfuse3`, and no `/etc/fuse.conf`.
 
 `fusermount3` is the setuid-root helper that non-root users call to mount
-FUSE filesystems. Without it, only root can mount FUSE. Since lohar runs
-exec as uid 1000 (the `lohar` user), FUSE mounts would fail even with a
+FUSE filesystems. Without it, only root can mount FUSE. Since forge runs
+exec as uid 1000 (the `forge` user), FUSE mounts would fail even with a
 working kernel.
 
 ### validate.go: actively warns against FUSE
@@ -75,7 +75,7 @@ this plan is implemented, the warning becomes wrong.
 ## The Fix
 
 Three changes, one per layer. No API changes, no wire protocol changes,
-no lohar code changes beyond what `/dev/fuse` needs. We add only
+no forge code changes beyond what `/dev/fuse` needs. We add only
 `CONFIG_FUSE_FS` — the other undocumented flags (TUN, WireGuard, TLS,
 AppArmor, Landlock) can be added in separate releases when driven by
 concrete use cases.
@@ -197,18 +197,18 @@ apt-get install -y --no-install-recommends \
 
 ### Part 3 — Permissions: /dev/fuse and fuse.conf
 
-Three things must be right for the `lohar` user (uid 1000) to mount FUSE
+Three things must be right for the `forge` user (uid 1000) to mount FUSE
 filesystems.
 
 #### 3.1 /dev/fuse device node
 
 When `CONFIG_FUSE_FS=y`, the kernel registers FUSE as a misc device at
 boot. The FUSE misc driver calls `misc_register()` with minor 229. When
-lohar mounts devtmpfs on `/dev` (`mustMount("devtmpfs", "/dev", ...)`
-in `cmd/lohar/main.go`), the kernel auto-populates `/dev/fuse` with the
+forge mounts devtmpfs on `/dev` (`mustMount("devtmpfs", "/dev", ...)`
+in `cmd/forge/main.go`), the kernel auto-populates `/dev/fuse` with the
 correct major/minor numbers.
 
-**No lohar changes needed.** The existing `mustMount("devtmpfs", "/dev",
+**No forge changes needed.** The existing `mustMount("devtmpfs", "/dev",
 "devtmpfs", 0, "")` already handles this. devtmpfs is kernel-managed —
 it automatically creates device nodes for all registered devices. Once
 the kernel has FUSE, `/dev/fuse` appears in devtmpfs automatically.
@@ -271,7 +271,7 @@ The mount is invisible to other UIDs, including root. This is a security
 feature — it prevents a malicious FUSE filesystem from trapping root into
 a fake directory tree.
 
-For ahvm, this default is usually fine. The `lohar` user (uid 1000)
+For ahvm, this default is usually fine. The `forge` user (uid 1000)
 mounts FUSE filesystems and accesses them as uid 1000. No other UID
 needs to see the mount.
 
@@ -324,16 +324,16 @@ for opening the device.
 
 However, some FUSE client tools check for group membership as an additional
 safety measure, and `fusermount3` may check it on some configurations. Add
-the lohar user to the fuse group as defense-in-depth — but guard the call,
+the forge user to the fuse group as defense-in-depth — but guard the call,
 because `fuse3` on Ubuntu 24.04 (noble) may not create the group (the
 fuse2-era group is unnecessary when `/dev/fuse` is 0666):
 
 ```bash
 # In the chroot, after useradd:
-getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
+getent group fuse >/dev/null 2>&1 && usermod -aG fuse forge || true
 ```
 
-If the group exists, lohar is added. If not, the command is a no-op.
+If the group exists, forge is added. If not, the command is a no-op.
 This prevents the rootfs build from failing on a missing group while
 still covering edge cases where a FUSE tool checks gid.
 
@@ -375,7 +375,7 @@ for flag in IP_NF_RAW IP6_NF_RAW BRIDGE VETH OVERLAY_FS NF_CONNTRACK \
 \`\`\`
 ```
 
-**Seccomp.** Verified: lohar (`cmd/lohar/main.go`) does not install
+**Seccomp.** Verified: forge (`cmd/forge/main.go`) does not install
 seccomp filters, and Firecracker's default seccomp policy does not block
 `mount(2)` or `/dev/fuse` ioctl calls — these are needed by the existing
 devtmpfs mount logic and fusermount3 respectively. No seccomp changes
@@ -441,11 +441,11 @@ updated.
  # Locale
  sed -i "/en_US.UTF-8/s/^# //g" /etc/locale.gen
 @@ -18,6 +18,10 @@
- useradd -m -s /bin/bash -G sudo lohar
- echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+ useradd -m -s /bin/bash -G sudo forge
+ echo "forge ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
  
-+# FUSE: add lohar to fuse group (if group exists), enable user_allow_other
-+getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
++# FUSE: add forge to fuse group (if group exists), enable user_allow_other
++getent group fuse >/dev/null 2>&1 && usermod -aG fuse forge || true
 +sed -i "s/^#[[:space:]]*user_allow_other$/user_allow_other/" /etc/fuse.conf
 +
  apt-get clean
@@ -467,9 +467,9 @@ updated.
  
  ...
  
- useradd -m -s /bin/zsh -G sudo lohar
- echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-+getent group fuse >/dev/null 2>&1 && usermod -aG fuse lohar || true
+ useradd -m -s /bin/zsh -G sudo forge
+ echo "forge ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
++getent group fuse >/dev/null 2>&1 && usermod -aG fuse forge || true
 +sed -i "s/^#[[:space:]]*user_allow_other$/user_allow_other/" /etc/fuse.conf
 ```
 
@@ -489,10 +489,10 @@ updated.
 
 ## What Doesn't Need to Change
 
-- **Lohar (guest agent).** devtmpfs already handles `/dev/fuse`. FUSE is a guest userspace concern.
+- **Forge (guest agent).** devtmpfs already handles `/dev/fuse`. FUSE is a guest userspace concern.
 - **AHVM daemon / API.** FUSE is entirely guest-side. No new endpoints, config, or feature flags.
 - **Firecracker configuration.** No VM boot parameter or drive changes. FUSE is a kernel filesystem.
-- **Firecracker seccomp.** Verified: Firecracker's default seccomp policy does not block `mount(2)` or the `/dev/fuse` ioctls. Lohar also installs no seccomp filters.
+- **Firecracker seccomp.** Verified: Firecracker's default seccomp policy does not block `mount(2)` or the `/dev/fuse` ioctls. Forge also installs no seccomp filters.
 - **Config drive.** No FUSE-related config is needed per-sandbox.
 - **Snapshots.** FUSE state is per-process. Warm pause/resume: mounts survive (daemon + kernel both frozen). Cold stop/start: daemon is killed, mount is gone, user remounts. Same as any userspace daemon (dockerd, sshd).
 
@@ -523,8 +523,8 @@ ahvm exec test -- which fusermount3
 ahvm exec test -- stat -c '%a %U' /usr/bin/fusermount3
 # 4755 root
 
-ahvm exec test -- id lohar
-# uid=1000(lohar) gid=1000(lohar) groups=1000(lohar),27(sudo),<fuse-gid>(fuse)
+ahvm exec test -- id forge
+# uid=1000(forge) gid=1000(forge) groups=1000(forge),27(sudo),<fuse-gid>(fuse)
 
 ahvm exec test -- cat /etc/fuse.conf
 # user_allow_other
@@ -576,12 +576,12 @@ EOF'
 
 # Compile, mount, verify, unmount
 ahvm exec test -- gcc -Wall /tmp/hellofs.c -o /tmp/hellofs $(pkg-config --cflags --libs fuse3)
-ahvm exec test -- mkdir -p /home/lohar/mnt
-ahvm exec test -- /tmp/hellofs /home/lohar/mnt -f &   # foreground, backgrounded
+ahvm exec test -- mkdir -p /home/forge/mnt
+ahvm exec test -- /tmp/hellofs /home/forge/mnt -f &   # foreground, backgrounded
 sleep 1
-ahvm exec test -- cat /home/lohar/mnt/hello
+ahvm exec test -- cat /home/forge/mnt/hello
 # fuse works!
-ahvm exec test -- fusermount3 -u /home/lohar/mnt
+ahvm exec test -- fusermount3 -u /home/forge/mnt
 ```
 
 For the Go integration test suite (see CI section below), this becomes a
@@ -618,8 +618,8 @@ ahvm exec mesa-test -- sudo apt-get update
 ahvm exec mesa-test -- sudo apt-get install -y ca-certificates libssl3 openssl
 
 # Write mesa config (API key from environment)
-ahvm exec mesa-test -- mkdir -p /home/lohar/.config/mesa
-ahvm exec mesa-test -- sh -c 'cat > /home/lohar/.config/mesa/config.toml << EOF
+ahvm exec mesa-test -- mkdir -p /home/forge/.config/mesa
+ahvm exec mesa-test -- sh -c 'cat > /home/forge/.config/mesa/config.toml << EOF
 api_key = "mesa_sk_..."
 EOF'
 
@@ -775,11 +775,11 @@ remount to the sandbox's init script:
 
 ```bash
 # /etc/ahvm/init.sh — re-establish mesa mount after cold restore
-if command -v mesa >/dev/null 2>&1 && [ -f /home/lohar/.config/mesa/config.toml ]; then
+if command -v mesa >/dev/null 2>&1 && [ -f /home/forge/.config/mesa/config.toml ]; then
     # Check if mount is healthy
     if ! ls ~/.local/share/mesa/mnt/ >/dev/null 2>&1; then
         fusermount3 -u ~/.local/share/mesa/mnt 2>/dev/null || true
-        su - lohar -c 'mesa mount --daemonize'
+        su - forge -c 'mesa mount --daemonize'
     fi
 fi
 ```
@@ -794,25 +794,25 @@ Verify the basic kernel-level FUSE behavior across thermal states:
 
 ```bash
 # Mount a FUSE filesystem (using hellofs from above)
-ahvm exec test -- cat /home/lohar/mnt/hello
+ahvm exec test -- cat /home/forge/mnt/hello
 # fuse works!
 
 # Warm (pause) — FUSE mount should survive
 # Wait for thermal manager to pause, then wake:
-ahvm exec test -- cat /home/lohar/mnt/hello
+ahvm exec test -- cat /home/forge/mnt/hello
 # fuse works!    ← mount survived pause/resume
 
 # Cold (stop + start) — FUSE mount should be gone
 ahvm stop test
 ahvm start test
-ahvm exec test -- cat /home/lohar/mnt/hello
-# cat: /home/lohar/mnt/hello: No such file or directory
+ahvm exec test -- cat /home/forge/mnt/hello
+# cat: /home/forge/mnt/hello: No such file or directory
 # OR: Transport endpoint is not connected
 ```
 
 The "Transport endpoint is not connected" error is the expected Linux
 behavior when a FUSE daemon dies but the mount point still exists. The
-user runs `fusermount3 -u /home/lohar/mnt` and remounts.
+user runs `fusermount3 -u /home/forge/mnt` and remounts.
 
 ### validate.go test update
 
@@ -934,15 +934,15 @@ kernel change we've ever shipped.
 **Preserving user data across recreate.** Volumes (`/workspace` and
 user-attached volumes) are stored as separate ext4 images on the host.
 They survive `ahvm destroy` + `ahvm create` — only the rootfs and
-kernel are replaced. User files in `/home/lohar` (dotfiles, SSH keys,
+kernel are replaced. User files in `/home/forge` (dotfiles, SSH keys,
 installed packages) are on the rootfs and are lost on recreate.
 
 For users who have significant environment customization, the
 recommended workflow is:
 
-1. Export dotfiles: `ahvm exec dev -- tar czf /workspace/.dotfiles.tar.gz -C /home/lohar .bashrc .ssh .gitconfig` (or whatever they care about)
+1. Export dotfiles: `ahvm exec dev -- tar czf /workspace/.dotfiles.tar.gz -C /home/forge .bashrc .ssh .gitconfig` (or whatever they care about)
 2. Destroy + recreate: `ahvm destroy dev && ahvm create --name dev --volume mydata:/workspace`
-3. Re-import: `ahvm exec dev -- tar xzf /workspace/.dotfiles.tar.gz -C /home/lohar`
+3. Re-import: `ahvm exec dev -- tar xzf /workspace/.dotfiles.tar.gz -C /home/forge`
 
 **Detection.** The `ahvm` CLI should detect sandboxes running with an
 old kernel and surface a one-line hint:
@@ -1043,7 +1043,7 @@ overlayfs works. fuse-overlayfs is unnecessary.
 
 **Automatic FUSE daemon recovery after cold restore.** If the Mesa
 experiment shows that cold→hot kills FUSE daemons (likely), we could
-add infrastructure to lohar that detects stale FUSE mounts on restore
+add infrastructure to forge that detects stale FUSE mounts on restore
 and cleans them up. But this is premature — the user can handle it
 via init scripts, and different FUSE daemons have different restart
 semantics. Wait for the experiment results.

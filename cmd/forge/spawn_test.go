@@ -117,8 +117,8 @@ func slicesEqual(a, b []string) bool {
 //
 // runSpawn is hard to test in-process because it calls os.Exit on
 // failure and syscall.Exec on success. Either branch tears down the
-// test process. The dispatch lives in TestMain (cmd/lohar/main_test.go)
-// which routes the subprocess to runSpawn whenever LOHAR_SPAWN_HELPER=1
+// test process. The dispatch lives in TestMain (cmd/forge/main_test.go)
+// which routes the subprocess to runSpawn whenever FORGE_SPAWN_HELPER=1
 // is set in the environment. We just need to invoke ourselves with that
 // env var and the helper-args sentinel.
 
@@ -131,7 +131,7 @@ func helperSpawn(t *testing.T, args ...string) (stdout, stderr string, exitCode 
 	allArgs := []string{"--helper-args"}
 	allArgs = append(allArgs, args...)
 	cmd := exec.Command(os.Args[0], allArgs...)
-	cmd.Env = append(os.Environ(), "LOHAR_SPAWN_HELPER=1")
+	cmd.Env = append(os.Environ(), "FORGE_SPAWN_HELPER=1")
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf

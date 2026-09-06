@@ -5,7 +5,7 @@ dist/
 .build-ctx/
 .DS_Store
 pi-session-*.html
-/lohar
+/forge
 .worktrees/
 docs/PLAN-learning.md
 docs/internal/

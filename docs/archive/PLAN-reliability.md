@@ -540,7 +540,7 @@ Add `8250.nr_uarts=0` to boot args, remove `console=ttyS0`:
 
 ```go
 bootArgs := fmt.Sprintf(
-    "reboot=k panic=1 pci=off 8250.nr_uarts=0 init=/usr/local/bin/lohar "+
+    "reboot=k panic=1 pci=off 8250.nr_uarts=0 init=/usr/local/bin/forge "+
     "quiet loglevel=0 ip=%s::%s:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:",
     guestIP, userNet.GatewayIP)
 ```

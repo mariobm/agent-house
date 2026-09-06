@@ -26,12 +26,12 @@ import (
 )
 
 // Config holds paths and defaults for the krucible engine. All pure Go — the
-// engine spawns the cgo `ahvm-vmm` helper and talks to lohar over sockets.
+// engine spawns the cgo `ahvm-vmm` helper and talks to forge over sockets.
 type Config struct {
 	DataDir    string // sandboxes live under DataDir/sandboxes/<id>
-	BaseRootfs string // host dir tree (virtiofs root): /init.krun=lohar + mountpoints
+	BaseRootfs string // host dir tree (virtiofs root): /init.krun=forge + mountpoints
 	// BaseImage is a prebuilt ext4 root image (e.g. from oci.PullAndConvert: a
-	// real userland with /init.krun -> lohar). When set with BlockRoot, sandboxes
+	// real userland with /init.krun -> forge). When set with BlockRoot, sandboxes
 	// CoW-clone it directly instead of building one from BaseRootfs via mke2fs.
 	// This is the production rootfs path.
 	BaseImage string
@@ -301,7 +301,7 @@ func (e *Engine) delSandboxPolicy(vm *VM) {
 }
 
 // VM is per-sandbox state. The helper process IS the VM; we hold its cmd to
-// stop it and the agent client to drive lohar.
+// stop it and the agent client to drive forge.
 type VM struct {
 	mu sync.Mutex
 	// launchMu serializes lifecycle transitions (Create's launch / Start / Stop /
@@ -441,7 +441,7 @@ type restoreVol struct {
 }
 
 // Create boots a new sandbox: prepare the rootfs (block image clone or
-// virtio-fs dir), spawn ahvm-vmm, wait for lohar's agent over the bridged vsock.
+// virtio-fs dir), spawn ahvm-vmm, wait for forge's agent over the bridged vsock.
 func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.SandboxInfo, error) {
 	return e.create(ctx, spec, createOpts{})
 }
@@ -516,7 +516,7 @@ func (e *Engine) create(ctx context.Context, spec engine.SandboxSpec, opts creat
 		LogLevel:         2,
 	}
 	// virtio-net gateway backend (opt-in): the guest gets eth0 wired to a
-	// per-sandbox ahvm-netd; lohar configures it from cdNet.
+	// per-sandbox ahvm-netd; forge configures it from cdNet.
 	var cdNet *configdrive.NetConfig
 	var netIP string
 	if netUDS != "" {
@@ -541,7 +541,7 @@ func (e *Engine) create(ctx context.Context, spec engine.SandboxSpec, opts creat
 	token := opts.forcedToken
 
 	// virtio-fs --mount binds: assign a per-mount tag; the VMM exposes each host
-	// dir (krun_add_virtiofs3) and lohar mounts the tag at its guest path (carried
+	// dir (krun_add_virtiofs3) and forge mounts the tag at its guest path (carried
 	// in the config drive). Live + shared, unlike an owned/versioned volume.
 	var cdMounts []configdrive.FsMountConfig
 	for i, m := range spec.Mounts {
@@ -552,7 +552,7 @@ func (e *Engine) create(ctx context.Context, spec engine.SandboxSpec, opts creat
 
 	// Data volumes (create --volume / persistent): attach each resolved volume as a
 	// block disk AFTER root (vda) — so /dev/vdb+ in order (the config drive is gone,
-	// §3.4) — and tell lohar where to mount it. The libkrun get_block_cfg fix lets
+	// §3.4) — and tell forge where to mount it. The libkrun get_block_cfg fix lets
 	// add_disk2 compose with the root setter.
 	var cdVolumes []configdrive.VolumeMountConfig
 	for i, v := range spec.ResolvedVolumes {
@@ -705,7 +705,7 @@ func (e *Engine) launch(ctx context.Context, vm *VM, snapshotDir string) error {
 	}
 
 	// Serve the boot config over the guest→host config vsock (§3.4). Must be
-	// listening before the helper starts, since lohar dials it early in boot; a
+	// listening before the helper starts, since forge dials it early in boot; a
 	// cold re-launch replaces any prior server.
 	vm.closeConfigSrv()
 	if spec.VsockConfigUDS != "" {
@@ -966,7 +966,7 @@ func genToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// buildSandboxConfig assembles the per-sandbox config lohar fetches over vsock at
+// buildSandboxConfig assembles the per-sandbox config forge fetches over vsock at
 // boot (§3.4). Secrets are pre-resolved into spec.Env by the server layer (same
 // contract as the FC engine).
 func buildSandboxConfig(id, name, token string, spec engine.SandboxSpec, mounts []configdrive.FsMountConfig, volumes []configdrive.VolumeMountConfig, net *configdrive.NetConfig) configdrive.SandboxConfig {
@@ -986,10 +986,10 @@ func buildSandboxConfig(id, name, token string, spec engine.SandboxSpec, mounts 
 		Mounts:    mounts,
 		Volumes:   volumes,
 		Net:       net,
-		// Init: the once-after-boot command (create --init); lohar runs it as a
+		// Init: the once-after-boot command (create --init); forge runs it as a
 		// TTY session named "init", as the sandbox user.
 		Init: spec.Init,
-		User: "lohar",
+		User: "forge",
 	}
 }
 

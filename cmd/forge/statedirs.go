@@ -51,7 +51,7 @@ var stateDirBases = map[string]string{
 // StateDirectoryMode=0700). Mode is applied on every call (idempotent).
 //
 // Ownership: User=/Group= from [Service] decide chown. Defaults skip
-// chown (leave the dir owned by lohar/root, which matters for daemons
+// chown (leave the dir owned by forge/root, which matters for daemons
 // that don't drop privileges).
 func (u *Unit) ApplyStateDirectories() error {
 	return u.ApplyStateDirectoriesIn(stateDirBases)

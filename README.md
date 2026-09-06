@@ -221,7 +221,7 @@ transparent wake feels free.
 ## Architecture
 
 ```
-ahvm (host daemon)                        lohar (guest agent, PID 1 in each VM)
+ahvm (host daemon)                        forge (guest agent, PID 1 in each VM)
   ├─ Control API (unix socket + :8080)       ├─ vsock: exec, files, sessions
   ├─ Per-user auth (API keys, SHA-256)        ├─ port forwarding
   ├─ krucible engine (libkrun fork)           ├─ PTY sessions + 64KB scrollback
@@ -273,7 +273,7 @@ Full docs live at **[ahvm.sh](https://ahvm.sh)** — that's the canonical refere
 | **[Concepts](https://ahvm.sh/docs/concepts/)** | Sandboxes, thermal states, the two binaries |
 | **[Architecture](https://ahvm.sh/docs/under-the-hood/architecture/)** | System design, data flow, concurrency model |
 | **[krucible engine](https://ahvm.sh/docs/under-the-hood/engine/)** | The libkrun fork, the ahvm-vmm helper, the control socket |
-| **[Lohar (the guest agent)](https://ahvm.sh/docs/under-the-hood/lohar-the-blacksmith/)** | PID 1 init, the systemctl shim, PTY, sessions, file ops |
+| **[Forge (the guest agent)](https://ahvm.sh/docs/under-the-hood/forge-the-blacksmith/)** | PID 1 init, the systemctl shim, PTY, sessions, file ops |
 | **[Thermal states](https://ahvm.sh/docs/under-the-hood/thermal-states/)** | Hot/warm/cold, snapshots, the balloon trick |
 | **[Networking](https://ahvm.sh/docs/under-the-hood/networking/)** | The per-owner gVisor gateway, policed egress, siblings |
 | **[Wire protocol](https://ahvm.sh/docs/under-the-hood/wire-protocol/)** | Binary framing, connection lifecycle, auth |

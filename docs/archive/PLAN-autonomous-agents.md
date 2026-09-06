@@ -307,7 +307,7 @@ Files to change:
 3. **`pkg/server/routes.go`** — Accept `keep_hot` in create request, pass through
 4. **`pkg/server/server.go`** — Check `KeepHot` in `runThermalCycle`
 5. **`cmd/ahvm/cli.go`** — Add `--keep-hot` flag to create command
-6. **`cmd/lohar/main.go`** — Pass `keep_hot` through config drive (informational)
+6. **`cmd/forge/main.go`** — Pass `keep_hot` through config drive (informational)
 
 Thermal cycle change:
 

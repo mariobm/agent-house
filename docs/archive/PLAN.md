@@ -1202,8 +1202,8 @@ chroot "$MOUNT" /bin/bash -c '
   curl -fsSL https://starship.rs/install.sh | sh -s -- -y
 
   # Create user
-  useradd -m -s /bin/zsh -G sudo lohar
-  echo "lohar ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+  useradd -m -s /bin/zsh -G sudo forge
+  echo "forge ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
   # Node.js
   ARCH=$(dpkg --print-architecture)
@@ -1219,12 +1219,12 @@ chroot "$MOUNT" /bin/bash -c '
 '
 
 # Copy zsh/tmux configs
-cp sandbox/zshrc "$MOUNT/home/lohar/.zshrc"
-cp sandbox/tmux.conf "$MOUNT/home/lohar/.tmux.conf"
-chown 1000:1000 "$MOUNT/home/lohar/.zshrc" "$MOUNT/home/lohar/.tmux.conf"
+cp sandbox/zshrc "$MOUNT/home/forge/.zshrc"
+cp sandbox/tmux.conf "$MOUNT/home/forge/.tmux.conf"
+chown 1000:1000 "$MOUNT/home/forge/.zshrc" "$MOUNT/home/forge/.tmux.conf"
 
 # Install tmux plugins (same as Dockerfile.sandbox)
-chroot "$MOUNT" su - lohar -c '
+chroot "$MOUNT" su - forge -c '
   mkdir -p ~/.tmux/plugins
   git clone --depth 1 https://github.com/tmux-plugins/tmux-sensible ~/.tmux/plugins/tmux-sensible
   git clone --depth 1 https://github.com/dracula/tmux ~/.tmux/plugins/tmux
@@ -1232,7 +1232,7 @@ chroot "$MOUNT" su - lohar -c '
 '
 
 # Install zsh plugins (same as Dockerfile.sandbox)
-chroot "$MOUNT" su - lohar -c '
+chroot "$MOUNT" su - forge -c '
   git clone --depth 1 https://github.com/zdharma-continuum/zinit.git ~/.local/share/zinit/zinit.git
   mkdir -p ~/.local/share/zinit/plugins
   git clone --depth 1 https://github.com/zsh-users/zsh-syntax-highlighting ~/.local/share/zinit/plugins/zsh-users---zsh-syntax-highlighting

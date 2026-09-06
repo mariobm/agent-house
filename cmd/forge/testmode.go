@@ -13,10 +13,10 @@ func runTestMode() {
 	if os.Getenv("PATH") == "" {
 		os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	}
-	controlSock := os.Getenv("LOHAR_SOCK")
-	forwardSock := os.Getenv("LOHAR_FWD_SOCK")
+	controlSock := os.Getenv("FORGE_SOCK")
+	forwardSock := os.Getenv("FORGE_FWD_SOCK")
 	if controlSock == "" || forwardSock == "" {
-		fmt.Fprintln(os.Stderr, "LOHAR_SOCK and LOHAR_FWD_SOCK required")
+		fmt.Fprintln(os.Stderr, "FORGE_SOCK and FORGE_FWD_SOCK required")
 		os.Exit(1)
 	}
 
@@ -34,7 +34,7 @@ func runTestMode() {
 		os.Exit(1)
 	}
 
-	fmt.Fprintln(os.Stderr, "lohar: test mode ready")
+	fmt.Fprintln(os.Stderr, "forge: test mode ready")
 	go acceptLoop(lnControl, handleControlConnection)
 	go acceptLoop(lnForward, handleForwardConnection)
 

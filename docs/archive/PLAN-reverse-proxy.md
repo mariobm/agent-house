@@ -5,7 +5,7 @@
 Today, every sandbox port is only accessible through the authenticated API:
 
 ```
-Browser → Cloudflare Tunnel → ahvm :8080 → /sandboxes/:id/proxy/:port/path → Engine.Tunnel() → lohar → localhost:port
+Browser → Cloudflare Tunnel → ahvm :8080 → /sandboxes/:id/proxy/:port/path → Engine.Tunnel() → forge → localhost:port
 ```
 
 This requires a valid API key. If a user runs a web app inside a sandbox
@@ -233,7 +233,7 @@ extra code needed.
 relay, which is correct and not handled by `ReverseProxy`.
 
 **Why a new tunnel per request?** Each `Engine.Tunnel()` opens a fresh
-TCP stream to `localhost:port` inside the sandbox via lohar. There's no
+TCP stream to `localhost:port` inside the sandbox via forge. There's no
 connection pool — the tunnel is point-to-point. This matches existing
 behavior.
 

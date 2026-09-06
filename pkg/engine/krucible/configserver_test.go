@@ -13,7 +13,7 @@ import (
 	"github.com/mariobm/agent-house/pkg/configdrive"
 )
 
-// fetchOverUDS mimics exactly what lohar does at boot: dial the config UDS,
+// fetchOverUDS mimics exactly what forge does at boot: dial the config UDS,
 // send CONFIG_REQ, read the CONFIG_RESP frame. Returns the raw payload.
 func fetchOverUDS(t *testing.T, uds string) (byte, []byte) {
 	t.Helper()
@@ -49,7 +49,7 @@ func serveConfig(t *testing.T, cfg configdrive.SandboxConfig) string {
 }
 
 // TestConfigServerRoundTrip: the server hands back exactly the config it was
-// given, framed as CONFIG_RESP, and lohar's parse recovers every field. This is
+// given, framed as CONFIG_RESP, and forge's parse recovers every field. This is
 // the boot-time delivery contract that replaces the config drive.
 func TestConfigServerRoundTrip(t *testing.T) {
 	want := configdrive.SandboxConfig{

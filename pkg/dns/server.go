@@ -62,7 +62,7 @@ type Server struct {
 	// truthful NXDOMAIN from the upstream) is passed straight back to
 	// the client. This is what makes a sandbox able to resolve both
 	// `sibling.sb` (our zone) AND `archive.ubuntu.com` (forwarded)
-	// from the single nameserver line lohar writes. Without it, glibc
+	// from the single nameserver line forge writes. Without it, glibc
 	// takes our authoritative NXDOMAIN as final and never reaches a
 	// public resolver — which silently broke apt/curl in every
 	// sandbox (G1.1 regression, caught in CI run 26806008509).

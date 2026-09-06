@@ -93,10 +93,10 @@ the guest-visible virtual counter (`KVM_REG_ARM_TIMER_CNT`, once on vCPU 0) —
 
 **New this cycle (2026-07-01) — storage Phase 3 (mounts):**
 - **Live `--mount host:guest[:ro]`** — a virtio-fs host-directory bind
-  (`krun_add_virtiofs3` host-side + a guest mount by lohar from the config
+  (`krun_add_virtiofs3` host-side + a guest mount by forge from the config
   drive). Shared, bidirectional, N-writer — edit on the host, run in the sandbox
   (and vice-versa) live. Wired end-to-end (engine.FsMount → CLI/server → vmm +
-  lohar); FC ignores it. `TestKrucibleMount` green on all three platforms.
+  forge); FC ignores it. `TestKrucibleMount` green on all three platforms.
 - **Codesign safety-net** — a plain `go build -o ahvm-vmm` strips the HVF
   hypervisor entitlement that `make vmm` applies, so `hv_vm_create` fails for
   every VM on darwin (this masqueraded as a bogus “--mount HVF limitation” for a
@@ -104,7 +104,7 @@ the guest-visible virtual counter (`KVM_REG_ARM_TIMER_CNT`, once on vCPU 0) —
   regardless of how the binary was built. **Always `make vmm` on macOS.**
 - **Block `volume` wiring** — krucible now honors `spec.ResolvedVolumes`: each
   attaches as a block disk after root (vda) + config (vdb) → `/dev/vdc+` via
-  `krun_add_disk2`, mounted by lohar from the config drive. `create --volume
+  `krun_add_disk2`, mounted by forge from the config drive. `create --volume
   name:mount[:ro]` works end-to-end (server volume resolution was already
   engine-agnostic). **Substrate fix (libkrun `175f28c`):** `get_block_cfg()`
   treated `set_root_disk*`/`set_data_disk` and `add_disk*` as mutually exclusive
@@ -282,7 +282,7 @@ validate · gotchas.**
   and a sandbox→host gateway address.
 
 ### 5.7 Agent-first capability tokens  (medium) — §6b / `internal/PLAN-krucible-v3.md` §12
-- Per-sandbox token is **done** (config drive, enforced by lohar). Next: scoped
+- Per-sandbox token is **done** (config drive, enforced by forge). Next: scoped
   caps `{exec, files:*, publish, net:egress, snapshot, fork}`, route middleware,
   audit to `events`, offline-mint, scoped share URLs. Track-J jail for hostile
   multi-tenant on Linux is separate (§11 of the v3 plan).
@@ -379,14 +379,14 @@ validate · gotchas.**
   reference libkrun fork) in commits, files, comments, or docs. Refer generically
   ("the reference fork"). The reference fork is Apache-2.0; porting *code* is fine,
   unnamed. Ask the operator for its local clone path.
-- **Hetzner stays on Firecracker, untouched.** krucible is a parallel engine; lohar
+- **Hetzner stays on Firecracker, untouched.** krucible is a parallel engine; forge
   is shared, so guest changes must not break FC (e.g. `setupNetworking` self-skips
   on krucible and is load-bearing on FC).
 - **Single-writer server is the spine** — we deliberately did NOT build a daemonless
   CLI mode (multi-writer hazard). See `PLAN-krucible-productionization.md` §2.
 - **Cold/fork rootfs = block device**, not virtio-fs (self-contained snapshot,
   faster, isolated). virtio-fs stays as the warm/dev profile.
-- **lohar is PID-1 by design** under the kernel-direct block-root boot (M1′); the
+- **forge is PID-1 by design** under the kernel-direct block-root boot (M1′); the
   envisioned "slim" is moot (see `PLAN-krucible-init-model.md` DECISION).
 - Commit per closed unit with descriptive, third-party-free messages; keep both repo
   trees clean.

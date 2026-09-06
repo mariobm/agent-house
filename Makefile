@@ -11,9 +11,9 @@ KRUCIBLE_PREFIX ?= $(abspath $(LIBKRUCIBLE)/_install)
 build:
 	go build -ldflags="-s -w -X main.version=$(VERSION)" -o ahvm ./cmd/ahvm/
 
-# Build lohar (guest agent) for Linux
-lohar:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o lohar ./cmd/lohar/
+# Build forge (guest agent) for Linux
+forge:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o forge ./cmd/forge/
 
 # Build the per-VM libkrun helper (krucible engine). cgo + libkrun via
 # pkg-config; on macOS it must be codesigned with the hypervisor entitlement
@@ -55,5 +55,5 @@ release:
 	@echo "Built $(VERSION) for 4 platforms in dist/"
 
 clean:
-	rm -f ahvm lohar ahvm-vmm ahvm-netd
+	rm -f ahvm forge ahvm-vmm ahvm-netd
 	rm -rf dist/

@@ -90,7 +90,7 @@ The guest IP is configured via the kernel `ip=` command-line parameter, passed t
 ip=192.168.137.2::192.168.137.1:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:
 ```
 
-This tells the kernel to configure `eth0` with the given IP, gateway, netmask, and DNS *before init runs*. By the time lohar starts as PID 1, the network is already up.
+This tells the kernel to configure `eth0` with the given IP, gateway, netmask, and DNS *before init runs*. By the time forge starts as PID 1, the network is already up.
 
 This is a standard Linux kernel feature (`Documentation/admin-guide/kernel-parameters.txt`). It solves the chicken-and-egg problem: if the agent configures networking, how does the host talk to the agent to tell it what IP to use?
 
@@ -154,12 +154,12 @@ Two proxy paths exist:
 
 **Authenticated proxy** (API users):
 ```
-Browser → ahvm :8080 → /sandboxes/:id/proxy/:port/path → Engine.Tunnel() → lohar → localhost:port
+Browser → ahvm :8080 → /sandboxes/:id/proxy/:port/path → Engine.Tunnel() → forge → localhost:port
 ```
 
 **Public proxy** (published ports, no auth):
 ```
-Browser → Cloudflare → ahvm :443 → Host: my-app.ahvm.sh → alias lookup → EnsureHot() → Tunnel() → lohar → localhost:port
+Browser → Cloudflare → ahvm :443 → Host: my-app.ahvm.sh → alias lookup → EnsureHot() → Tunnel() → forge → localhost:port
 ```
 
 Both use `httputil.ReverseProxy` with a custom `tunnelTransport` that wraps `Engine.Tunnel()` as an `http.RoundTripper`. This gives proper hop-by-hop header removal, chunked transfer encoding, and streaming support (`FlushInterval: -1` flushes every chunk for SSE). A `context.AfterFunc` guard ensures tunnel FDs are cleaned up on client disconnect.

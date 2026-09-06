@@ -1,5 +1,5 @@
 // Package oci handles pulling OCI/Docker images, flattening layers to a
-// directory tree, injecting the ahvm guest agent (lohar), and creating
+// directory tree, injecting the ahvm guest agent (forge), and creating
 // ext4 rootfs images suitable for Firecracker microVMs.
 package oci
 
@@ -58,12 +58,12 @@ func WithProgress(fn func(string)) Option {
 }
 
 // PullAndConvert pulls an OCI image from a registry, flattens it to an
-// ext4 rootfs image, injects the lohar agent, and returns the extracted
+// ext4 rootfs image, injects the forge agent, and returns the extracted
 // OCI config for storage.
 //
 // The pull uses streaming (remote.Image) to avoid loading all layers into
 // memory — critical for large images (CUDA: 5-10GB).
-func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts ...Option) (*Config, error) {
+func PullAndConvert(ctx context.Context, ref, outputPath, forgePath string, opts ...Option) (*Config, error) {
 	o := &pullOptions{
 		auth:     authn.Anonymous,
 		platform: v1.Platform{OS: "linux", Architecture: runtime.GOARCH},
@@ -141,9 +141,9 @@ func PullAndConvert(ctx context.Context, ref, outputPath, loharPath string, opts
 	}
 
 	// 5. Inject ahvm components
-	o.progress("injecting lohar")
-	if err := injectLohar(tmpDir, loharPath); err != nil {
-		return nil, fmt.Errorf("inject lohar: %w", err)
+	o.progress("injecting forge")
+	if err := injectForge(tmpDir, forgePath); err != nil {
+		return nil, fmt.Errorf("inject forge: %w", err)
 	}
 
 	// 6. Validate compatibility
@@ -199,8 +199,8 @@ func splitEnv(s string) (string, string, bool) {
 // ImportFromTarball converts a 'docker save' tarball to an ext4 rootfs.
 // The tarball is read using go-containerregistry's tarball package, then
 // processed through the same pipeline as PullAndConvert: extract layers,
-// inject lohar agent, create ext4 image.
-func ImportFromTarball(ctx context.Context, tarballPath, outputPath, loharPath string) (*Config, error) {
+// inject forge agent, create ext4 image.
+func ImportFromTarball(ctx context.Context, tarballPath, outputPath, forgePath string) (*Config, error) {
 	img, err := tarball.ImageFromPath(tarballPath, nil)
 	if err != nil {
 		return nil, fmt.Errorf("read tarball: %w", err)
@@ -232,8 +232,8 @@ func ImportFromTarball(ctx context.Context, tarballPath, outputPath, loharPath s
 		}
 	}
 
-	if err := injectLohar(tmpDir, loharPath); err != nil {
-		return nil, fmt.Errorf("inject lohar: %w", err)
+	if err := injectForge(tmpDir, forgePath); err != nil {
+		return nil, fmt.Errorf("inject forge: %w", err)
 	}
 
 	if warnings := validateImage(tmpDir); len(warnings) > 0 {

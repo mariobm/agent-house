@@ -150,7 +150,7 @@ func readPipedHostInput(conn net.Conn, sess *Session) {
 			// Host disconnected — detach, don't kill.
 			// The stdin pipe stays open (held by sess.Master).
 			// The child process continues running.
-			fmt.Fprintf(os.Stderr, "lohar: session %s: host disconnected: %v\n", sess.ID, err)
+			fmt.Fprintf(os.Stderr, "forge: session %s: host disconnected: %v\n", sess.ID, err)
 			sess.mu.Lock()
 			sess.Attached = nil
 			sess.mu.Unlock()

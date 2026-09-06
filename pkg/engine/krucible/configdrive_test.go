@@ -15,7 +15,7 @@ import (
 
 // TestKrucibleConfigDrive boots a REAL block-root sandbox with a config drive
 // (env + a file + an auth token) and verifies, end to end with no mocking:
-//   - env from the config drive reaches an exec'd process (drive → lohar
+//   - env from the config drive reaches an exec'd process (drive → forge
 //     configEnv → exec env merge);
 //   - a file from the config drive is materialized in the guest filesystem;
 //   - the per-sandbox token is enforced (a wrong-token client is rejected,
@@ -70,7 +70,7 @@ func TestKrucibleConfigDrive(t *testing.T) {
 		if vm == nil || vm.Token == "" {
 			t.Fatal("expected a non-empty per-sandbox token on the block-root path")
 		}
-		// A client presenting the WRONG token must be rejected by lohar.
+		// A client presenting the WRONG token must be rejected by forge.
 		bad := agent.NewKrucibleClient(vm.ControlUDS, vm.ForwardUDS, "deadbeef-wrong-token")
 		if _, err := bad.Activity(ctx); err == nil {
 			t.Fatal("wrong-token client was NOT rejected (token not enforced)")

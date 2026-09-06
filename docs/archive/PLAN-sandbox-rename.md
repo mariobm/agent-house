@@ -39,8 +39,8 @@ Half-day change end-to-end. ~130 LOC including tests.
 ### Things deliberately left alone
 
 **The guest hostname.** Set in `pkg/engine/firecracker/create.go:213`
-via the config drive, read by `lohar` at PID-1 boot
-(`cmd/lohar/main.go:115-121`). Changing it post-boot would mean a
+via the config drive, read by `forge` at PID-1 boot
+(`cmd/forge/main.go:115-121`). Changing it post-boot would mean a
 new wire-protocol op or shelling out to `hostname` + a `sed -i
 /etc/hosts`. The hostname is visible only inside the sandbox's own
 shell prompt; the user picked it when they created the sandbox.
@@ -347,7 +347,7 @@ One PR, four commits for review clarity:
 
 **Renaming the in-guest hostname.** Documented as a known limitation,
 matches `docker rename`. Adding it later means a new agent op
-(`pkg/agent/proto/constants.go`), a `lohar` handler that calls
+(`pkg/agent/proto/constants.go`), a `forge` handler that calls
 `syscall.Sethostname` and rewrites `/etc/hosts`, and a client
 wrapper. Half a day. No user has asked for it.
 

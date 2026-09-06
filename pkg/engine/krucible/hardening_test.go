@@ -15,7 +15,7 @@ import (
 )
 
 // Guest-hardening + init behaviors (migration plan P2). These assert at the
-// krucible VM level what lohar's unit tests can only assert in test-mode.
+// krucible VM level what forge's unit tests can only assert in test-mode.
 
 // pollFile reads a guest file until it has the wanted content or the deadline
 // passes (init runs asynchronously after the agent is ready).
@@ -91,7 +91,7 @@ func TestKrucibleExecRunsAsUid1000(t *testing.T) {
 }
 
 // TestKrucibleConfigDriveUnmountedAfterBoot is the FC `ConfigDriveUnmounted`
-// guest-hardening behavior: after lohar applies the config drive it unmounts +
+// guest-hardening behavior: after forge applies the config drive it unmounts +
 // removes /run/ahvm/config, so the in-guest auth token (and the rest of the
 // boot config) isn't left readable to sandbox processes.
 func TestKrucibleConfigDriveUnmountedAfterBoot(t *testing.T) {

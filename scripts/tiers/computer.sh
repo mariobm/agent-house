@@ -32,7 +32,7 @@
 # the full option set.
 #
 # Init model (per PLAN-tiers-systemd.md): the desktop stack is managed by
-# lohar's systemctl shim as four units, replacing the monolithic init.sh:
+# forge's systemctl shim as four units, replacing the monolithic init.sh:
 #   * kasmvnc-firstboot.service  — oneshot, generates per-sandbox password
 #                                  + computes default KASM_THREADS
 #   * kasmvnc.service            — the X server + RFB→WebSocket gateway
@@ -99,12 +99,12 @@ if [ -n "$CHROME_BIN" ]; then
     ln -sf "$CHROME_BIN" /usr/local/bin/chromium
 fi
 # Also make playwright cache accessible to uid 1000
-mkdir -p /home/lohar/.cache
-cp -r /root/.cache/ms-playwright /home/lohar/.cache/ms-playwright
-chown -R 1000:1000 /home/lohar/.cache
-LOHAR_CHROME=$(find /home/lohar/.cache/ms-playwright -path "*/chrome-linux/chrome" -type f 2>/dev/null | head -1)
-if [ -n "$LOHAR_CHROME" ]; then
-    ln -sf "$LOHAR_CHROME" /usr/local/bin/chromium
+mkdir -p /home/forge/.cache
+cp -r /root/.cache/ms-playwright /home/forge/.cache/ms-playwright
+chown -R 1000:1000 /home/forge/.cache
+FORGE_CHROME=$(find /home/forge/.cache/ms-playwright -path "*/chrome-linux/chrome" -type f 2>/dev/null | head -1)
+if [ -n "$FORGE_CHROME" ]; then
+    ln -sf "$FORGE_CHROME" /usr/local/bin/chromium
 fi
 
 # --- Fonts ---
@@ -164,7 +164,7 @@ chmod 755 "$MOUNT/usr/local/bin/screenshot"
 cat > "$MOUNT/usr/local/bin/chromium-browser" << 'BIN'
 #!/bin/sh
 export DISPLAY="${DISPLAY:-:99}"
-CHROME="$(find /home/lohar/.cache/ms-playwright /root/.cache/ms-playwright -path "*/chrome-linux/chrome" -type f 2>/dev/null | head -1)"
+CHROME="$(find /home/forge/.cache/ms-playwright /root/.cache/ms-playwright -path "*/chrome-linux/chrome" -type f 2>/dev/null | head -1)"
 if [ -z "$CHROME" ]; then
     echo "error: chromium not found" >&2
     exit 1
@@ -215,8 +215,8 @@ cat > "$MOUNT/etc/profile.d/ahvm-display.sh" << 'PROF'
 export DISPLAY=:99
 PROF
 chmod 644 "$MOUNT/etc/profile.d/ahvm-display.sh"
-echo 'export DISPLAY=:99' >> "$MOUNT/home/lohar/.bashrc"
-chown 1000:1000 "$MOUNT/home/lohar/.bashrc"
+echo 'export DISPLAY=:99' >> "$MOUNT/home/forge/.bashrc"
+chown 1000:1000 "$MOUNT/home/forge/.bashrc"
 
 # ==========================================================================
 # Chromium .desktop entry for XFCE app menu
@@ -348,8 +348,8 @@ UNIT
 
 # --- ahvm-display-env.service ---
 #
-# Writes DISPLAY=:99 to /run/ahvm/env so the lohar agent's env-merge
-# (cmd/lohar/main.go, post-startEnabledServices) picks it up and exposes
+# Writes DISPLAY=:99 to /run/ahvm/env so the forge agent's env-merge
+# (cmd/forge/main.go, post-startEnabledServices) picks it up and exposes
 # DISPLAY to every `ahvm exec` invocation. Oneshot with no After=
 # dependency — runs in the first activation wave, completes before any
 # wave is considered done.
@@ -379,7 +379,7 @@ rm -f "$MOUNT/etc/ahvm/init.sh"
 # ==========================================================================
 # vnc-creds helper: prints the per-sandbox username + password.
 #
-# Reads /root/.vnc/cleartext via sudo (lohar/uid 1000 has passwordless sudo).
+# Reads /root/.vnc/cleartext via sudo (forge/uid 1000 has passwordless sudo).
 # This is the documented first-time-user discovery path:
 #   ahvm exec <name> -- vnc-creds          # human-readable
 #   ahvm exec <name> -- vnc-creds --json   # machine-readable for agents
@@ -389,7 +389,7 @@ cat > "$MOUNT/usr/local/bin/vnc-creds" << 'BIN'
 set -eu
 FILE=/root/.vnc/cleartext
 if [ ! -r "$FILE" ]; then
-    # Fall back to sudo for non-root callers (typical: lohar runs exec as uid 1000).
+    # Fall back to sudo for non-root callers (typical: forge runs exec as uid 1000).
     if ! sudo -n test -r "$FILE" 2>/dev/null; then
         echo "vnc-creds: cannot read $FILE; KasmVNC may still be initializing" >&2
         exit 1

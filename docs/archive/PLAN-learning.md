@@ -73,14 +73,14 @@ months? What would a contributor need to know? What can be cut?
 
 ### What to learn
 
-Everything lohar does is about processes. Fork, exec, signals, process
+Everything forge does is about processes. Fork, exec, signals, process
 groups, PID 1 responsibilities — this is the foundation.
 
 **Read your code:**
-- `cmd/lohar/main.go` (310 lines) — the boot sequence, mounts, listeners
-- `cmd/lohar/exec.go` — piped exec with process group kill
-- `cmd/lohar/session.go` — session registry, ring buffer, idle timers
-- `cmd/lohar/handler.go` (147 lines) — protocol dispatch
+- `cmd/forge/main.go` (310 lines) — the boot sequence, mounts, listeners
+- `cmd/forge/exec.go` — piped exec with process group kill
+- `cmd/forge/session.go` — session registry, ring buffer, idle timers
+- `cmd/forge/handler.go` (147 lines) — protocol dispatch
 
 **Study:**
 - OSTEP Chapter 5: "Process API" — fork, exec, wait, signals
@@ -102,8 +102,8 @@ groups, PID 1 responsibilities — this is the foundation.
   can be caught), SIGHUP (terminal disconnected), SIGCHLD (child exited).
 
 **Questions to answer yourself:**
-1. Why does `cmd/lohar/exec.go` use `Kill(-pid)` instead of `Kill(pid)`?
-2. Why does `cmd/lohar/main.go` end with `select {}`?
+1. Why does `cmd/forge/exec.go` use `Kill(-pid)` instead of `Kill(pid)`?
+2. Why does `cmd/forge/main.go` end with `select {}`?
 3. What happens if a process inside your VM forks and the parent dies?
 4. Why does piped exec use SIGKILL but TTY sessions use SIGTERM?
 
@@ -111,7 +111,7 @@ groups, PID 1 responsibilities — this is the foundation.
 
 Current problems:
 - Boot args example still has `console=ttyS0` — serial is disabled now
-- Doesn't mention lohar injection on every create (`injectLoharIntoRootfs`)
+- Doesn't mention forge injection on every create (`injectForgeIntoRootfs`)
 - The PTY section is thorough but reads like a textbook, not docs. Focus
   on what a contributor needs to know, not explaining ioctls from scratch.
 - Missing: what happens when the agent's auth token doesn't match
@@ -119,8 +119,8 @@ Current problems:
 
 Rewrite goals:
 - Update boot args to match actual `engine.go:496-498`
-- Add a section on lohar injection and why it exists (protocol drift)
-- Trim the PTY internals to "lohar opens /dev/ptmx, unlocks it, starts
+- Add a section on forge injection and why it exists (protocol drift)
+- Trim the PTY internals to "forge opens /dev/ptmx, unlocks it, starts
   the shell on the slave side" — link to a resource for the deep dive
 - Add a "what changed" section at the top noting diff snapshots disabled,
   serial console disabled, always-TCP
@@ -236,7 +236,7 @@ and why you disabled diff snapshots.
    Create — each `fcPut` is one endpoint)
 2. Why does `Stop()` pause BEFORE creating a snapshot?
 3. Why does `Stop()` NOT destroy the TAP device?
-4. What does `injectLoharIntoRootfs` do and why is it necessary?
+4. What does `injectForgeIntoRootfs` do and why is it necessary?
 5. What does the `restoreFailed` circuit breaker protect against?
 6. In `Start()`, why create a new `AgentClient` with TCP instead of
    reusing the old one?
@@ -276,14 +276,14 @@ Rewrite goals for `thermal-management.md`:
 ### What to learn
 
 Your wire protocol is simple and clever. The PTY handling is the most
-"systems-y" part of lohar. Understanding both deeply makes you fluent
+"systems-y" part of forge. Understanding both deeply makes you fluent
 in the whole host↔guest communication path.
 
 **Read your code:**
 - `pkg/agent/proto/frame.go` (127 lines) — the ENTIRE framing layer
 - `pkg/agent/proto/constants.go` — frame type definitions
 - `pkg/agent/client.go` (740 lines) — host-side client
-- `cmd/lohar/tty.go` — PTY allocation and session handling
+- `cmd/forge/tty.go` — PTY allocation and session handling
 
 **Study:**
 - HTTP/2 framing (RFC 7540 section 4.1) — same concept as yours, more
@@ -298,10 +298,10 @@ in the whole host↔guest communication path.
 - Atomic writes: entire frame assembled into one buffer, one Write() call.
   Without this, concurrent goroutines (stdout + stderr) would interleave
   bytes on the wire, producing corrupt frames.
-- PTY = master + slave pair. Lohar holds the master. The child process
+- PTY = master + slave pair. Forge holds the master. The child process
   (shell/command) uses the slave. The kernel's PTY layer between them
   handles echo, line editing, Ctrl+C, etc.
-- Sessions survive disconnects because lohar keeps the master fd open.
+- Sessions survive disconnects because forge keeps the master fd open.
   The 64KB ring buffer captures output while no one is attached.
 
 **Questions to answer yourself:**
@@ -338,7 +338,7 @@ Rewrite goals:
 Atomic writes, WAL mode, ext4 images, age encryption — the data layer.
 
 **Read your code:**
-- `cmd/lohar/files.go` — atomic file writes inside the VM
+- `cmd/forge/files.go` — atomic file writes inside the VM
 - `pkg/store/store.go` (1545 lines) — SQLite store
 - `pkg/secrets/age.go` — encryption at rest
 - `pkg/engine/firecracker/configdrive.go` — config drive creation

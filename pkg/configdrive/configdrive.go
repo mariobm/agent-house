@@ -1,14 +1,14 @@
 // Package configdrive defines the ahvm sandbox config schema: the JSON
-// (hostname, auth token, env, files, volumes, DNS, init, net) lohar fetches over
+// (hostname, auth token, env, files, volumes, DNS, init, net) forge fetches over
 // the guest→host config vsock at boot (DESIGN-ahvm-v2-secrets-and-trust §3.4),
 // before the agent starts listening. It replaced the on-disk ext4 "config drive"
 // (retired along with mke2fs); the package name is kept for continuity. These
-// field names are the wire contract with lohar's reader (cmd/lohar/main.go:
+// field names are the wire contract with forge's reader (cmd/forge/main.go:
 // SandboxConfig) — keep them in sync.
 package configdrive
 
-// SandboxConfig is the JSON lohar fetches over the config vsock at boot. Field
-// names are the wire contract with cmd/lohar/main.go.
+// SandboxConfig is the JSON forge fetches over the config vsock at boot. Field
+// names are the wire contract with cmd/forge/main.go.
 type SandboxConfig struct {
 	SandboxID   string                `json:"sandbox_id"`
 	Hostname    string                `json:"hostname"`
@@ -21,7 +21,7 @@ type SandboxConfig struct {
 	DNS         []string              `json:"dns"`
 	DNSInternal string                `json:"dns_internal,omitempty"`
 	User        string                `json:"user"`
-	// Net, if set, tells lohar to configure eth0 (virtio-net gateway path) from
+	// Net, if set, tells forge to configure eth0 (virtio-net gateway path) from
 	// the config drive via netlink — no `ip` binary / kernel IP autoconfig needed.
 	Net *NetConfig `json:"net,omitempty"`
 }
@@ -39,7 +39,7 @@ type ConfigFile struct {
 }
 
 // VolumeMountConfig maps a guest block device to a mount point. Both host
-// (writer) and lohar (reader) must agree on the field names.
+// (writer) and forge (reader) must agree on the field names.
 type VolumeMountConfig struct {
 	Device   string `json:"device"`    // e.g. "/dev/vdc"
 	Mount    string `json:"mount"`     // e.g. "/workspace"
@@ -47,7 +47,7 @@ type VolumeMountConfig struct {
 	ReadOnly bool   `json:"read_only"` // mount MS_RDONLY in the guest
 }
 
-// FsMountConfig tells the guest (lohar) to mount a virtio-fs device (by Tag,
+// FsMountConfig tells the guest (forge) to mount a virtio-fs device (by Tag,
 // matching the VMM's krun_add_virtiofs3) at Mount. The host directory lives on
 // the VMM side; the guest only needs the tag + where to mount it.
 type FsMountConfig struct {

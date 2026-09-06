@@ -195,7 +195,7 @@ import issues.
 snapshot resume, agent reconnection, and status transitions. It calls
 into `snapshot.go` for `ResumeSnapshot`. This is the most complex
 function being moved — test it carefully after the move. It also
-references `injectLoharIntoRootfs` (line 1577), which should be in
+references `injectForgeIntoRootfs` (line 1577), which should be in
 `fc.go` or `helpers.go`.
 
 **Issue to watch:** `Destroy()` calls `killFC()`, `removeUserNetworkIfEmpty()`,
@@ -272,7 +272,7 @@ stateBool(m, key)                   line 1546   (package-level)
 
 generateID()                        line 1560   (package-level)
 generateMAC()                       line 1566   (package-level)
-injectLoharIntoRootfs(...)          line 1577   (package-level)
+injectForgeIntoRootfs(...)          line 1577   (package-level)
 verifySnapshotArtifacts(...)        line 1601   (package-level)
 ```
 
@@ -280,13 +280,13 @@ verifySnapshotArtifacts(...)        line 1601   (package-level)
 this file contains four distinct things: crash recovery
 (`VMState`/`RestoreVM`), state serialization (`stateStr`/`stateInt64`),
 ID generation (`generateID`/`generateMAC`), and rootfs preparation
-(`injectLoharIntoRootfs`/`verifySnapshotArtifacts`). None of these are
+(`injectForgeIntoRootfs`/`verifySnapshotArtifacts`). None of these are
 purely about "restore." `helpers.go` is honest about what this file is:
 the grab-bag of utilities that don't belong to a specific domain.
 
 **Alternative:** Split further into `state.go` (VMState, RestoreVM,
 Status, List, state* helpers) and `util.go` (generateID, generateMAC,
-injectLohar, verifySnapshot). But this creates two 100-line files
+injectForge, verifySnapshot). But this creates two 100-line files
 where one 200-line file is fine. Split if either grows past 400 lines.
 
 **Issue to watch:** `SaveImage` (line 635) is 55 lines and calls
@@ -319,15 +319,15 @@ an Engine *is* rather than what it *does*.
 
 **Issue to watch:** `Create` calls functions that will be in three
 different files after the split:
-- `fc.go`: `copyRootfs`, `injectLoharIntoRootfs` (wait —
-  `injectLoharIntoRootfs` is in `helpers.go`, not `fc.go`), `startFC`,
+- `fc.go`: `copyRootfs`, `injectForgeIntoRootfs` (wait —
+  `injectForgeIntoRootfs` is in `helpers.go`, not `fc.go`), `startFC`,
   `waitForSocket`, `fcPut` ×10, `fcAPIClient`, `generateID`, `generateMAC`
-- `helpers.go`: `generateID`, `generateMAC`, `injectLoharIntoRootfs`
+- `helpers.go`: `generateID`, `generateMAC`, `injectForgeIntoRootfs`
 - `engine.go`: `getOrCreateUserNetwork`
 - `configdrive.go`: `buildConfigDrive` (already separate)
 - `network.go`: `setupTapDevice` (already separate)
 
-All same-package calls. No import issues. But `injectLoharIntoRootfs`
+All same-package calls. No import issues. But `injectForgeIntoRootfs`
 and `generateID`/`generateMAC` are called from both `Create` (in
 `create.go`) and `RestoreVM`/`startVM` (in `lifecycle.go`/`helpers.go`).
 Keep them in `helpers.go` — the shared utility file.
@@ -362,7 +362,7 @@ lifecycle.go    ~400   Stop, Start, Pause, Resume, EnsureHot, Destroy, Balloon, 
 exec.go         ~170   Exec, ExecStream, Shell*, SessionList, ListeningPorts
 files.go        ~100   FileRead, FileWrite, FileStat, FileList, Tunnel
 fc.go           ~250   startFC*, killFC, copyBlock, copyRootfs, fcAPI*, waitForSocket, validateSocketPath, verifySnapshotArtifacts
-helpers.go      ~250   VMState, RestoreVM, Status, List, SaveImage, state* helpers, generateID/MAC, injectLohar
+helpers.go      ~250   VMState, RestoreVM, Status, List, SaveImage, state* helpers, generateID/MAC, injectForge
 snapshot.go     ~458   Checkpoint, ResumeSnapshot (already separate)
 network.go      ~346   (already separate)
 configdrive.go  ~100   (already separate)

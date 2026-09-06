@@ -214,7 +214,7 @@ func bringUpInterface(name string) {
 }
 
 // setupNetworking configures eth0 from the kernel ip= cmdline parameter.
-// This makes lohar work with ANY kernel — no CONFIG_IP_PNP required.
+// This makes forge work with ANY kernel — no CONFIG_IP_PNP required.
 //
 // Format: ip=<client-ip>::<gateway>:<netmask>::<device>:off:<dns1>:<dns2>:
 // Example: ip=192.168.137.2::192.168.137.1:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:

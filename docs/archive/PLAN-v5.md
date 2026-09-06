@@ -18,7 +18,7 @@ Part 2 (network)   — per-user bridge networks, iptables isolation
      ↓
 Part 3 (proxy)     — remove TCP auto-forward, harden HTTP reverse proxy
      ↓
-Part 4 (agent)     — guest hardening (exec as lohar, limits, unmount config drive)
+Part 4 (agent)     — guest hardening (exec as forge, limits, unmount config drive)
      ↓
 Part 5 (secrets)   — wire up age encryption, scope to users
      ↓
@@ -838,9 +838,9 @@ through the authenticated proxy URL.
 
 ## Part 4 — Guest Agent Hardening
 
-### 4.1 Exec as lohar (uid 1000), Not Root
+### 4.1 Exec as forge (uid 1000), Not Root
 
-**File:** `cmd/lohar/exec.go`
+**File:** `cmd/forge/exec.go`
 
 Add `Credential` to `SysProcAttr` in `handlePipedExec`:
 
@@ -854,7 +854,7 @@ cmd.SysProcAttr = &syscall.SysProcAttr{
 }
 ```
 
-**File:** `cmd/lohar/tty.go`
+**File:** `cmd/forge/tty.go`
 
 Same for `handleTTYSession`:
 
@@ -870,7 +870,7 @@ cmd.SysProcAttr = &syscall.SysProcAttr{
 }
 ```
 
-The user `lohar` already exists in the rootfs with uid 1000, has sudo
+The user `forge` already exists in the rootfs with uid 1000, has sudo
 with NOPASSWD, and owns `/workspace`. This is the correct default. If a
 user needs root, they use `sudo` — the sudoers entry already allows it.
 
@@ -879,7 +879,7 @@ change needed there.
 
 ### 4.2 Unmount Config Drive After Boot
 
-**File:** `cmd/lohar/main.go`
+**File:** `cmd/forge/main.go`
 
 After `loadConfigDrive()` returns, unmount and remove:
 
@@ -897,7 +897,7 @@ if cfg != nil {
 
 ### 4.3 Connection and Session Limits
 
-**File:** `cmd/lohar/handler.go`
+**File:** `cmd/forge/handler.go`
 
 Add limits at the top of `handleControlConnection`:
 
@@ -936,7 +936,7 @@ func newSession(argv []string, tty bool, maxIdle time.Duration) *Session {
 
 ### 4.4 File Write Size Limit
 
-**File:** `cmd/lohar/files.go`
+**File:** `cmd/forge/files.go`
 
 ```go
 const maxWriteSize = 100 << 20 // 100 MB
@@ -1018,7 +1018,7 @@ of the problem in production.
 
 ### 4.6 Constant-Time Token Comparison in Agent
 
-**File:** `cmd/lohar/handler.go`
+**File:** `cmd/forge/handler.go`
 
 ```go
 import "crypto/subtle"
@@ -1036,11 +1036,11 @@ if agentToken != "" {
 }
 ```
 
-Same change in `cmd/lohar/forward.go`.
+Same change in `cmd/forge/forward.go`.
 
 ### 4.7 Testing
 
-- `TestExecRunsAsLohar` — exec `whoami`, verify output is `lohar`, not `root`
+- `TestExecRunsAsForge` — exec `whoami`, verify output is `forge`, not `root`
 - `TestExecCanSudo` — exec `sudo whoami`, verify output is `root`
 - `TestConfigDriveUnmounted` — exec `cat /run/ahvm/config/config.json`,
   verify error (no such file or directory)
@@ -1460,7 +1460,7 @@ ahvm user create --name bob --max-sandboxes 5
 # 2. As alice: create sandbox, verify isolation
 AHVM_TOKEN=$ALICE_KEY ahvm create --name alice-dev
 AHVM_TOKEN=$ALICE_KEY ahvm exec alice-dev -- whoami
-# → lohar (not root)
+# → forge (not root)
 
 AHVM_TOKEN=$ALICE_KEY ahvm exec alice-dev -- cat /run/ahvm/config/config.json
 # → error: no such file (config drive unmounted)

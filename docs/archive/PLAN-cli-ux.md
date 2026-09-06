@@ -219,7 +219,7 @@ ahvm create --name api --secret API_KEY  # every create
 
 # File injection (new)
 ahvm create --name api --file .env:/app/.env
-ahvm create --name api --file id_rsa:/home/lohar/.ssh/id_rsa
+ahvm create --name api --file id_rsa:/home/forge/.ssh/id_rsa
 ```
 
 ### Server changes

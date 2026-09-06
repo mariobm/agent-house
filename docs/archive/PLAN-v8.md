@@ -88,7 +88,7 @@ consumes.
 
 New code path: CLI `docker save <ref>` (local) → HTTP stream to server →
 server `tarball.ImageFromPath()` → `extractLayer()` (existing) →
-`injectLohar()` (existing) → `createExt4FromDir()` (existing).
+`injectForge()` (existing) → `createExt4FromDir()` (existing).
 
 The flow:
 
@@ -338,13 +338,13 @@ func (s *Server) handleImageImport(w http.ResponseWriter, r *http.Request, user 
     tmpFile.Close()
 
     // Convert tarball \u2192 ext4
-    loharPath := filepath.Join(s.dataDir, "lohar")
+    forgePath := filepath.Join(s.dataDir, "forge")
     outputDir := filepath.Join(s.dataDir, "images", user.ID)
     os.MkdirAll(outputDir, 0700)
     outputPath := filepath.Join(outputDir, name+".ext4")
 
     config, err := oci.ImportFromTarball(
-        r.Context(), tmpFile.Name(), outputPath, loharPath)
+        r.Context(), tmpFile.Name(), outputPath, forgePath)
     if err != nil {
         os.Remove(outputPath)
         errResp(w, 400, "import failed: "+err.Error())
@@ -394,12 +394,12 @@ user has Docker installed.
 
 New function in `pkg/oci/oci.go`. Reads a `docker save` tarball using
 `go-containerregistry/pkg/v1/tarball`, then runs the same pipeline as
-`PullAndConvert` (extract layers → inject lohar → create ext4).
+`PullAndConvert` (extract layers → inject forge → create ext4).
 
 ```go
 // ImportFromTarball converts a Docker save tarball to an ext4 rootfs.
 // The tarball can be produced by 'docker save <ref> -o <file>'.
-func ImportFromTarball(ctx context.Context, tarballPath, outputPath, loharPath string) (*Config, error) {
+func ImportFromTarball(ctx context.Context, tarballPath, outputPath, forgePath string) (*Config, error) {
     // Open the tarball as an OCI image.
     // docker save produces a tarball with a manifest.json; the tarball
     // package handles both single-image and multi-image tarballs.
@@ -436,9 +436,9 @@ func ImportFromTarball(ctx context.Context, tarballPath, outputPath, loharPath s
         }
     }
 
-    // Inject lohar agent
-    if err := injectLohar(tmpDir, loharPath); err != nil {
-        return nil, fmt.Errorf("inject lohar: %w", err)
+    // Inject forge agent
+    if err := injectForge(tmpDir, forgePath); err != nil {
+        return nil, fmt.Errorf("inject forge: %w", err)
     }
 
     // Validate
@@ -648,7 +648,7 @@ func (s *Store) GetUserByName(name string) (*User, error)
 
 - `TestImportFromTarball` — create a tarball with known layers (reuse
   the test helpers in `oci_test.go` that build tar layers), import,
-  verify ext4 output exists and contains expected files + lohar binary
+  verify ext4 output exists and contains expected files + forge binary
 - `TestImportPreservesConfig` — verify OCI config (env, workdir, cmd)
   is extracted from tarball correctly
 - `TestImportMultiLayerWhiteouts` — tarball with whiteout entries,

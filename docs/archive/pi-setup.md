@@ -88,11 +88,11 @@ On your Mac (or any machine with Go):
 cd /path/to/forge
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
     -ldflags='-s -w' \
-    -o bin/lohar-linux-arm64 \
-    ./cmd/lohar
+    -o bin/forge-linux-arm64 \
+    ./cmd/forge
 
 # Copy to Pi
-scp bin/lohar-linux-arm64 user@<PI_IP>:/var/lib/ahvm/lohar
+scp bin/forge-linux-arm64 user@<PI_IP>:/var/lib/ahvm/forge
 ```
 
 ## 6. Build Base Rootfs
@@ -109,7 +109,7 @@ sudo apt-get update && sudo apt-get install -y debootstrap
 #   scp -r sandbox/ user@<PI_IP>:/var/lib/ahvm/sandbox/
 
 # Run the build
-sudo /var/lib/ahvm/build-rootfs.sh /var/lib/ahvm/lohar
+sudo /var/lib/ahvm/build-rootfs.sh /var/lib/ahvm/forge
 ```
 
 The script creates `/var/lib/ahvm/images/rootfs-base-arm64.ext4` containing:
@@ -119,9 +119,9 @@ The script creates `/var/lib/ahvm/images/rootfs-base-arm64.ext4` containing:
 - Node.js 22.x + Claude Code CLI
 - tmux plugins (dracula theme, sensible, cpu)
 - zsh plugins (zinit, syntax-highlighting, autosuggestions, zsh-z)
-- User `lohar` with sudo, zsh shell
+- User `forge` with sudo, zsh shell
 - `/workspace` directory for project files
-- `lohar` at `/usr/local/bin/lohar` (VM init process)
+- `forge` at `/usr/local/bin/forge` (VM init process)
 - Static DNS (1.1.1.1, 8.8.8.8)
 
 ## 7. Smoke Test — Boot a VM
@@ -150,7 +150,7 @@ curl --unix-socket /tmp/fc-test.sock -s -X PUT \
   http://localhost/boot-source \
   -d '{
     "kernel_image_path": "/var/lib/ahvm/images/vmlinux-arm64",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/lohar quiet loglevel=0"
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/forge quiet loglevel=0"
   }'
 
 curl --unix-socket /tmp/fc-test.sock -s -X PUT \
@@ -199,7 +199,7 @@ On some kernels you may need `kvm` in `/etc/modules-load.d/`.
 **VM doesn't boot / kernel panic** — Check Firecracker's stderr output.
 Common causes:
 - Wrong kernel architecture (needs aarch64 vmlinux)
-- Rootfs doesn't have the agent at `/usr/local/bin/lohar`
+- Rootfs doesn't have the agent at `/usr/local/bin/forge`
 - Rootfs image is corrupt (re-run build-rootfs.sh)
 
 **"CONNECT 1024" hangs** — The agent hasn't started yet. Increase the
@@ -222,7 +222,7 @@ After setup, the Pi looks like:
   jailer               — (optional) sandboxing for firecracker itself
 
 /var/lib/ahvm/
-  lohar          — guest agent binary (copied into rootfs)
+  forge          — guest agent binary (copied into rootfs)
   images/
     vmlinux-arm64       — Linux kernel (~8MB)
     rootfs-base-arm64.ext4  — base rootfs (~2GB)

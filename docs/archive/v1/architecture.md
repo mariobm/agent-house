@@ -9,7 +9,7 @@
 
 # Architecture
 
-AHVM has two binaries. **ahvm** runs on the host — it's the daemon, the CLI, the HTTP server, the thermal manager, and the engine that talks to Firecracker. **lohar** runs inside every microVM as PID 1 — it handles exec, file operations, PTY sessions, and port forwarding.
+AHVM has two binaries. **ahvm** runs on the host — it's the daemon, the CLI, the HTTP server, the thermal manager, and the engine that talks to Firecracker. **forge** runs inside every microVM as PID 1 — it handles exec, file operations, PTY sessions, and port forwarding.
 
 They communicate over TCP using a [binary framing protocol](wire-protocol.md).
 
@@ -46,14 +46,14 @@ They communicate over TCP using a [binary framing protocol](wire-protocol.md).
 │  │  │  vol-*.ext4 (optional)       │  │                        │  │
 │  │  │                              │  │                        │  │
 │  │  │  ┌────────────────────────┐  │  │                        │  │
-│  │  │  │  lohar (PID 1)         │◄─┤──┘                        │  │
+│  │  │  │  forge (PID 1)         │◄─┤──┘                        │  │
 │  │  │  │  TCP :1024 (control)   │  │                           │  │
 │  │  │  │  TCP :1025 (forward)   │  │                           │  │
 │  │  │  │  session registry      │  │                           │  │
 │  │  │  │  file handlers         │  │                           │  │
 │  │  │  │  scrollback buffers    │  │                           │  │
 │  │  │  └────────────────────────┘  │                           │  │
-│  │  │  user: lohar  /workspace     │                           │  │
+│  │  │  user: forge  /workspace     │                           │  │
 │  │  └──────────────────────────────┘                           │  │
 │  │  tapXXXXXXXX ─── brahvm0 (bridge) ─── iptables NAT        │  │
 │  └─────────────────────────────────────────────────────────────┘  │
@@ -131,7 +131,7 @@ The lock discipline has two patterns:
 Here's the complete path of `ahvm exec dev -- echo hello`:
 
 ```
-CLI                     HTTP Server              Engine                  Agent Client            Lohar (guest)
+CLI                     HTTP Server              Engine                  Agent Client            Forge (guest)
  │                          │                       │                       │                       │
  ├─POST /sandboxes/         │                       │                       │                       │
  │  {id}/exec ──────────────►                       │                       │                       │
@@ -163,7 +163,7 @@ CLI                     HTTP Server              Engine                  Agent C
 With `Accept: application/x-ndjson`, exec output streams in real time:
 
 ```
-Client                 Server                   Engine                  Lohar
+Client                 Server                   Engine                  Forge
  │                       │                       │                       │
  ├─POST exec ───────────►│                       │                       │
  │  Accept: x-ndjson     ├─ExecStream()─────────►│                       │
@@ -188,7 +188,7 @@ Each NDJSON line is flushed immediately. The Firecracker engine implements `Stre
 ├── state.db                      SQLite (WAL mode, sandboxes/templates/secrets/FC state)
 ├── age.key                       secret encryption key (age)
 ├── id_ed25519 / .pub             SSH keypair
-├── lohar                         guest agent binary (baked into rootfs)
+├── forge                         guest agent binary (baked into rootfs)
 ├── images/
 │   ├── vmlinux-arm64             kernel (or vmlinux-amd64)
 │   └── rootfs-minimal-arm64.ext4 minimal rootfs (Ubuntu 24.04)
@@ -214,7 +214,7 @@ cmd/
     engine_other.go     stub for macOS (returns "not supported" error)
     recovery_test.go    8 daemon recovery tests (no VMs needed)
     cli_test.go         11 CLI integration tests (real Firecracker)
-  lohar/
+  forge/
     main.go             PID 1 init: mounts, config drive, networking, listeners
     handler.go          protocol dispatch: exec, sessions, files, activity
     tty.go              PTY allocation, sessions, scrollback, detach/reattach

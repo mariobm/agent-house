@@ -99,7 +99,7 @@ state dir), and whether `share`/publish is daemon-only (yes — it needs the res
 - Port the surviving behaviors from `PLAN-snapshot-reliability-fixes.md` (volume persistence through resume, error-on-bad-
   artifact, recovery ordering, destroy race) — the spec; never weaken them.
 
-**B. lohar slimming (cash in the block-root + VMM-clock paydown — `PLAN-krucible-init-model.md` §6)**
+**B. forge slimming (cash in the block-root + VMM-clock paydown — `PLAN-krucible-init-model.md` §6)**
 - Delete the dead FC networking (`net.go`, `ip=` parse) on the krucible path.
 - Idempotent mounts (the libkrun-init path already mounts some); audit for now-redundant clock-jump defensiveness (the VMM
   owns clock continuity).
@@ -135,7 +135,7 @@ The FC suite is ~28 files. Sort them:
 
 ### 4b. Production rootfs (prerequisite for real use cases)
 The current krucible test rootfs is a tiny multi-call util (no shell, no apt). Real use cases need a **production rootfs**:
-a real Ubuntu (or similar) userland built into the block image (`mke2fs -d`) with lohar at `/init.krun`. This is the
+a real Ubuntu (or similar) userland built into the block image (`mke2fs -d`) with forge at `/init.krun`. This is the
 `scripts/krucible-rootfs.sh` → a full image pipeline (the plan §6 deferred the tier-rich userland; productionization needs
 it). Tiers: a **base** (agent only) and a **workload** tier (systemd-shim or real-systemd for Docker/packages).
 
@@ -157,10 +157,10 @@ work on FC today work on krucible, plus the krucible-only wins (faster fs, sub-s
 
 ## 5. Recommended execution order
 
-1. **Cold-tier closeout (A)** + **lohar/daemon slimming (B, C)** — finish + clean up what's already validated on Mac. No
+1. **Cold-tier closeout (A)** + **forge/daemon slimming (B, C)** — finish + clean up what's already validated on Mac. No
    new hardware needed. **— DONE (2026-06-16):** checkpoint magic+version (libkrucible) + the runtime portability gate
-   (`validateBundle`: refuse incomplete/cross-arch/proto-mismatch). **lohar slim resolved as moot** — the kernel-direct
-   block-root (M1′) keeps lohar PID-1 by design; the one FC-only fn (`setupNetworking`) self-skips on krucible and is
+   (`validateBundle`: refuse incomplete/cross-arch/proto-mismatch). **forge slim resolved as moot** — the kernel-direct
+   block-root (M1′) keeps forge PID-1 by design; the one FC-only fn (`setupNetworking`) self-skips on krucible and is
    load-bearing on FC (see `PLAN-krucible-init-model.md` DECISION).
 2. **Production rootfs (4b)** + **CLI-direct mode (D)** — unblocks real use cases locally. **— rootfs DONE (2026-06-16):**
    `oci.PullAndConvert` + `/init.krun` symlink + `Config.BaseImage` boot real OCI images on the block-root path;
@@ -191,7 +191,7 @@ sandboxes. Three tracks, plus streaming. Grounded in what the substrate actually
 
 **Where we are.** Firecracker's L2 model (per-user bridges, subnets, a sibling-name DNS responder) is **gone** under
 krucible/TSI. What krucible has: guest **outbound** via TSI (transparent, host stack) ✓; **host→guest port** via the vsock
-`Forward`/`Tunnel` primitive (lohar bridges vsock→`localhost:port`; the public proxy already rides this) ✓; `ListeningPorts`
+`Forward`/`Tunnel` primitive (forge bridges vsock→`localhost:port`; the public proxy already rides this) ✓; `ListeningPorts`
 via `ss` ✓. **The gap:** no sandbox↔sandbox path (no shared L2), and no clean sandbox→host-services path (guest `127.0.0.1`
 is the guest's loopback). krucible sandboxes are currently **outbound-only islands.**
 
@@ -215,7 +215,7 @@ TSI. krucible currently injects **no token** (`vm.Token == ""`).
 
 **Forward path** (each its own commits; not tangled with the engine):
 1. **Per-sandbox token = the first brick** — **DONE (2026-06-16):** the config drive (§6c.1) carries a generated 128-bit
-   token; lohar enforces it (constant-time AUTH compare); the engine presents it; a wrong-token client is rejected
+   token; forge enforces it (constant-time AUTH compare); the engine presents it; a wrong-token client is rejected
    (`TestKrucibleConfigDrive/TokenEnforced`). Per-sandbox isolation at the agent is live on the block-root path. (Empty
    token ⇒ no auth on the virtio-fs dev path, unchanged.)
 2. **Capability tokens** — `{id, sandbox_id, caps[], expires_at, revoked}`, minted on Create, enforced by route
@@ -229,13 +229,13 @@ TSI. krucible currently injects **no token** (`vm.Token == ""`).
 
 **Where we are.** The interface (`SandboxSpec`) carries `Env`/`Secrets`/`Files`; the server resolves them (req.Env +
 store secrets, secrets override env). FC delivers them via the **config drive** (`configdrive.go` → `/dev/vdb` ext4, read
-by lohar's `loadConfigDrive`). **krucible delivers none of it.** This is the most concrete, MVP-relevant gap — and it's
+by forge's `loadConfigDrive`). **krucible delivers none of it.** This is the most concrete, MVP-relevant gap — and it's
 the move that unblocks §6b's first brick.
 
 **Forward path:**
 1. **Wire the config drive on krucible** — **DONE (2026-06-16):** new cross-platform `pkg/configdrive` (mke2fs -d, no
    mount) builds the `config.json` ext4 from `spec.{Env,Files}` + a generated token + hostname; `cmd/vmm` attaches it via
-   `krun_set_data_disk` (`/dev/vdb`, pairs with `krun_set_root_disk` root=`/dev/vda` on the block-root path); lohar's
+   `krun_set_data_disk` (`/dev/vdb`, pairs with `krun_set_root_disk` root=`/dev/vda` on the block-root path); forge's
    `loadConfigDrive` reads it. Secrets arrive pre-resolved into `spec.Env` by the server (same contract as FC).
    `TestKrucibleConfigDrive` (real VM): env reaches exec, files materialize, token enforced. virtio-fs path stays
    config-less. (`VMSpec.ConfigDrive`; survives cold Stop/Start.)
@@ -243,7 +243,7 @@ the move that unblocks §6b's first brick.
    (`configEnv`); units read `/run/ahvm/config-env`. Add a path to set env *after* boot via the agent (agents mutate
    sandbox env without a reboot).
 3. **Secret hygiene under the cold tier (important)** — the cold bundle's `memory.img` contains guest RAM, which
-   contains secrets (lohar copies env into RAM + `/run/ahvm/config-env` on tmpfs). So **the bundle is as sensitive as
+   contains secrets (forge copies env into RAM + `/run/ahvm/config-env` on tmpfs). So **the bundle is as sensitive as
    the live VM** — it must be protected/encrypted-at-rest and shredded on Destroy, same as the config-drive file. Decide:
    keep secrets out of the snapshotted RAM where possible (e.g. fetch-on-demand from the agent vs. bake into env), and
    never leave the config-drive image world-readable. This is a design constraint to honor, not an afterthought.

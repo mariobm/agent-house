@@ -34,12 +34,12 @@ func startNotifyReceiver(reg *Registry) {
 	os.Remove(sockPath)
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: sockPath, Net: "unixgram"})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: notify receiver: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forge: notify receiver: %v\n", err)
 		return
 	}
 	// World-writable so daemons running as any uid can send.
 	if err := os.Chmod(sockPath, 0666); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: chmod %s: %v\n", sockPath, err)
+		fmt.Fprintf(os.Stderr, "forge: chmod %s: %v\n", sockPath, err)
 	}
 	// Enable SO_PASSCRED so each recvmsg returns the sender's
 	// kernel-vouched (pid, uid, gid) via SCM_CREDENTIALS in the cmsg.

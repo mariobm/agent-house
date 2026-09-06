@@ -99,7 +99,7 @@ func (u *Unit) CreateCgroup() error {
 			// A missing controller file isn't fatal \u2014 just log and continue.
 			// Common case: kernel without +memory in the parent's
 			// subtree_control (some restricted environments).
-			fmt.Fprintf(os.Stderr, "lohar: cgroup write %s = %q: %v\n",
+			fmt.Fprintf(os.Stderr, "forge: cgroup write %s = %q: %v\n",
 				path, val, err)
 		}
 	}

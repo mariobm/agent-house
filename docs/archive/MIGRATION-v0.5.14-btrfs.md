@@ -53,7 +53,7 @@ config schema changes. Existing sandboxes recover normally.
 ## Phase A: Upgrade ahvm to v0.5.14
 
 The install script detects the existing server installation and updates
-all components (binary, lohar, kernel, rootfs). It stops the systemd
+all components (binary, forge, kernel, rootfs). It stops the systemd
 service before updating and restarts after.
 
 During shutdown, SnapshotAll snapshots all running VMs. rory (the only
@@ -94,12 +94,12 @@ the install):
 ```bash
 # Before running install:
 cp /usr/local/bin/ahvm /usr/local/bin/ahvm.v0.5.10
-cp /var/lib/ahvm/lohar /var/lib/ahvm/lohar.v0.5.10
+cp /var/lib/ahvm/forge /var/lib/ahvm/forge.v0.5.10
 
 # To rollback:
 systemctl stop ahvm
 cp /usr/local/bin/ahvm.v0.5.10 /usr/local/bin/ahvm
-cp /var/lib/ahvm/lohar.v0.5.10 /var/lib/ahvm/lohar
+cp /var/lib/ahvm/forge.v0.5.10 /var/lib/ahvm/forge
 systemctl start ahvm
 ```
 

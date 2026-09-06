@@ -57,7 +57,7 @@ If the process exits (crash, OOM, unhandled exception), it stays dead.
 Today kowshik runs the gateway with nohup in a manual exec, not via
 init, specifically because init has no restart.
 
-**Change:** Add `init_restart` field to sandbox spec. Lohar watches the
+**Change:** Add `init_restart` field to sandbox spec. Forge watches the
 init process and restarts it on exit.
 
 **API:**
@@ -82,7 +82,7 @@ the counter if the process runs for >10 minutes (it recovered).
 
 **Files:**
 
-`cmd/lohar/tty.go` — `runInitSession()`:
+`cmd/forge/tty.go` — `runInitSession()`:
 ```go
 func runInitSession(script, user string, restart string) {
     for attempt := 0; ; attempt++ {
@@ -118,7 +118,7 @@ type SandboxConfig struct {
 }
 ```
 
-`cmd/lohar/main.go` — pass restart policy:
+`cmd/forge/main.go` — pass restart policy:
 ```go
 if cfg != nil && cfg.Init != "" {
     go runInitSession(cfg.Init, cfg.User, cfg.InitRestart)
@@ -140,7 +140,7 @@ type createRequest struct {
 
 **Tests:**
 
-- `TestInitRestartOnFailure` — init script `exit 1`, verify lohar
+- `TestInitRestartOnFailure` — init script `exit 1`, verify forge
   re-execs, visible via `SessionList` showing init session alive.
 - `TestInitRestartAlwaysOnCleanExit` — init script `exit 0` with
   `always` policy, verify re-exec.
@@ -306,7 +306,7 @@ sandboxes:
     memory: 4096
     keep_hot: true
     init: |
-      ln -s /opt/data/.hermes /home/lohar/.hermes
+      ln -s /opt/data/.hermes /home/forge/.hermes
       sudo chown -R root:root /opt/hermes
       sudo chmod -R a-w /opt/hermes
       hermes gateway run
@@ -471,7 +471,7 @@ name, not a rename).
 ## Dependency graph
 
 ```
-A.1 (init restart)      — lohar + engine + CLI
+A.1 (init restart)      — forge + engine + CLI
 A.2 (health checks)     — server + store + CLI. Uses A.1 for recovery.
 A.3 (parallel thermal)  — server only, 30 min
 A.4 (snapshot timeout)  — systemd + logging, 5 min
@@ -503,7 +503,7 @@ build on it.
 |------|--------|------|
 | A.3 Parallel thermal | 30 min | None — same pattern as SnapshotAll |
 | A.4 Snapshot timeout | 5 min | None — config change |
-| A.1 Init restart | 2 days | Low — lohar change, needs integration test |
+| A.1 Init restart | 2 days | Low — forge change, needs integration test |
 | A.2 Health checks | 2 days | Low — server goroutine, uses existing Exec |
 | B.1 Yaml schema | Design | — |
 | B.2 Export | 1 day | None — reads existing APIs |

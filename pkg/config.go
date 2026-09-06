@@ -35,7 +35,7 @@ type Config struct {
 
 	// Krucible-specific (libkrun engine; macOS + Linux)
 	KrucibleVMM         string `yaml:"krucible_vmm"`          // path to the ahvm-vmm helper (default: next to binary / PATH)
-	KrucibleRootfs      string `yaml:"krucible_rootfs"`       // base rootfs dir (virtiofs root) with /init.krun=lohar
+	KrucibleRootfs      string `yaml:"krucible_rootfs"`       // base rootfs dir (virtiofs root) with /init.krun=forge
 	KrucibleBaseImage   string `yaml:"krucible_base_image"`   // prebuilt ext4 root image (oci.PullAndConvert output); enables the production block-root path
 	KrucibleBlockRoot   bool   `yaml:"krucible_block_root"`   // boot from a CoW ext4 block image (required for the cold tier); implied when KrucibleBaseImage is set
 	KrucibleLibDir      string `yaml:"krucible_libdir"`       // dir with libkrun/libkrunfw (default: autodetect)

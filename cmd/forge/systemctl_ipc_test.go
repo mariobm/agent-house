@@ -132,7 +132,7 @@ func TestSvcStopRefusesPID1(t *testing.T) {
 	// Defensive: a corrupt pidfile pointing at PID 1 (or 0) must NOT
 	// cause svcStop to send signals — because syscall.Kill(-1, SIGTERM)
 	// is the POSIX "broadcast to every process I'm allowed to signal"
-	// sentinel, and svcStop runs as root inside PID-1 lohar in production.
+	// sentinel, and svcStop runs as root inside PID-1 forge in production.
 	// Without this guard, a single malformed pidfile would take down the
 	// entire VM. (We learned this the hard way: an earlier version of
 	// this test pointed at PID 1 to exercise EPERM and rebooted the Pi5

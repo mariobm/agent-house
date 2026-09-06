@@ -19,7 +19,7 @@ import (
 )
 
 // systemctl shim — reads .service files and manages processes directly.
-// No real systemd. lohar (PID 1) handles zombie reaping.
+// No real systemd. forge (PID 1) handles zombie reaping.
 //
 // Covers the full surface used by Debian/Ubuntu package tooling
 // (deb-systemd-helper, deb-systemd-invoke, invoke-rc.d) plus
@@ -47,7 +47,7 @@ var alwaysActiveTargets = map[string]bool{
 // runSystemctl is the entry point when invoked as /usr/bin/systemctl.
 // A fresh Registry is created per invocation; for command-line use
 // this is fine because each systemctl process resolves only the units
-// it operates on. PID-1 lohar uses a long-lived Registry that's
+// it operates on. PID-1 forge uses a long-lived Registry that's
 // shared with the syslog receiver and journalctl (see C5).
 func runSystemctl(args []string) {
 	var command string
@@ -128,7 +128,7 @@ func runSystemctl(args []string) {
 	// IPC dispatch for privileged ops: if we're not PID 1 and a daemon is
 	// reachable on /run/ahvm/systemctl.sock, forward the request and
 	// replay its output. This is what stops `ahvm exec dev -- systemctl
-	// stop ssh` (running as the unprivileged lohar user) from silently
+	// stop ssh` (running as the unprivileged forge user) from silently
 	// no-op'ing — PID 1 runs the kill as root, errors actually surface,
 	// and a non-root caller gets a clean Access-denied response.
 	//
@@ -530,7 +530,7 @@ func svcStart(u *Unit) error {
 	// is the admin saying 'don't run this right now,' not a service
 	// failure. (F4)
 	if ok, reason := evaluateConditions(u); !ok {
-		fmt.Fprintf(os.Stderr, "lohar: %s skipped: %s\n", u.Canonical, reason)
+		fmt.Fprintf(os.Stderr, "forge: %s skipped: %s\n", u.Canonical, reason)
 		return nil
 	}
 
@@ -672,8 +672,8 @@ func waitForNotifyReady(u *Unit, svc serviceFile) error {
 // spawnHelperPath is the binary invoked by startDaemon to perform the
 // race-free cgroup placement before execve into the daemon. Defaults to
 // /proc/self/exe — the kernel-maintained symlink to the running binary,
-// which in production resolves to lohar itself (started by the kernel
-// as PID 1 from /usr/local/bin/lohar). The argv[1]-verb dispatch in
+// which in production resolves to forge itself (started by the kernel
+// as PID 1 from /usr/local/bin/forge). The argv[1]-verb dispatch in
 // main.go then routes the subprocess to runSpawn.
 //
 // Tests override this (and spawnHelperPrefix / spawnHelperEnv below) so
@@ -700,10 +700,10 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	// just won't have isolation. The KillMode=control-group path detects
 	// the missing cgroup and falls back to PGID-kill.
 	if err := u.CreateCgroup(); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: cgroup setup for %s: %v (proceeding without isolation)\n", u.Canonical, err)
+		fmt.Fprintf(os.Stderr, "forge: cgroup setup for %s: %v (proceeding without isolation)\n", u.Canonical, err)
 	}
 
-	// Spawn via the `lohar spawn` helper instead of /bin/sh directly.
+	// Spawn via the `forge spawn` helper instead of /bin/sh directly.
 	// The helper does one thing before exec'ing into the daemon: writes
 	// its own PID into <cgroup>/cgroup.procs. Because the write happens
 	// before any fork by the daemon (X-server detach, dbus pre-fork, etc.)
@@ -718,7 +718,7 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	// docs/internal/PLAN-spawn-helper.md for the full story.
 	//
 	// spawnHelperPath defaults to /proc/self/exe — the kernel-maintained
-	// symlink to lohar's binary. Cheap (no syscall on Linux: kernel-side
+	// symlink to forge's binary. Cheap (no syscall on Linux: kernel-side
 	// resolve at execve time), test-friendly, and standard practice for
 	// re-exec patterns (gosu, su-exec, runc all use it). The Prefix and
 	// Env slices are empty in production and only populated by tests.
@@ -735,14 +735,14 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	// sd_notify(3) (or any reimplementation) can find our receiver.
 	// Setting it unconditionally is harmless for non-notify daemons --
 	// they just won't connect to it. Inherited through the spawn helper
-	// across both execves (lohar spawn → /bin/sh → daemon).
+	// across both execves (forge spawn → /bin/sh → daemon).
 	cmd.Env = append(cmd.Env, "NOTIFY_SOCKET="+u.reg.Config.NotifySocketPath)
 	cmd.Env = append(cmd.Env, spawnHelperEnv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin = nil
 
 	// Capture stdout/stderr to log file for debugging. The log fd is
-	// inherited by lohar spawn and then by the daemon across both
+	// inherited by forge spawn and then by the daemon across both
 	// execves — close-on-exec is not set by exec.Command, so the fd
 	// survives unless syscall.Exec explicitly closes it (it doesn't).
 	os.MkdirAll(u.reg.Config.LogDir, 0755)
@@ -766,9 +766,9 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	}
 
 	// cmd.Process.Pid is the PID of the forked child, which is the same
-	// PID running lohar spawn, /bin/sh, and ultimately the daemon —
+	// PID running forge spawn, /bin/sh, and ultimately the daemon —
 	// execve preserves PID across all three transitions. The cgroup
-	// placement happens inside lohar spawn before its execve into
+	// placement happens inside forge spawn before its execve into
 	// /bin/sh; no PlaceInCgroup call is needed here.
 	u.WritePID(cmd.Process.Pid)
 	u.ClearFailed() // a new run starts with a clean slate
@@ -784,7 +784,7 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	// which doesn't survive a process restart. In a Firecracker microVM
 	// that snapshot/restores the entire VM atomically, goroutines pause/
 	// resume cleanly so this caveat doesn't apply to the snapshot
-	// lifecycle — only to a hypothetical lohar-only restart.
+	// lifecycle — only to a hypothetical forge-only restart.
 	u.reg.watcherWG.Add(1)
 	go func() {
 		defer u.reg.watcherWG.Done()
@@ -831,7 +831,7 @@ func watchAndMaybeRestart(u *Unit, cmd *exec.Cmd) {
 		return
 	}
 	if !u.reg.restartBurstAllowed(u) {
-		fmt.Fprintf(os.Stderr, "lohar: %s flapping, giving up after start-limit-burst\n", u.Canonical)
+		fmt.Fprintf(os.Stderr, "forge: %s flapping, giving up after start-limit-burst\n", u.Canonical)
 		return
 	}
 
@@ -839,7 +839,7 @@ func watchAndMaybeRestart(u *Unit, cmd *exec.Cmd) {
 	time.Sleep(restartDelay)
 
 	if err := svcStart(u); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: auto-restart of %s failed: %v\n", u.Canonical, err)
+		fmt.Fprintf(os.Stderr, "forge: auto-restart of %s failed: %v\n", u.Canonical, err)
 	}
 }
 
@@ -887,7 +887,7 @@ func parseRestartSec(v string) time.Duration {
 
 // restartBurstAllowed enforces StartLimitBurst / StartLimitIntervalSec
 // (matching systemd's defaults: 5 attempts in 10 seconds). Per-unit
-// history is kept on the Registry so it's shared between PID-1 lohar's
+// history is kept on the Registry so it's shared between PID-1 forge's
 // watcher goroutines but isolated per test Registry. Protected by
 // coordMu.
 func (r *Registry) restartBurstAllowed(u *Unit) bool {
@@ -1423,7 +1423,7 @@ func svcListUnitFiles(reg *Registry, noLegend bool) {
 }
 
 // startEnabledServices starts all services in multi-user.target.wants.
-// Called at boot by lohar (PID 1). Uses globalRegistry so the same Unit
+// Called at boot by forge (PID 1). Uses globalRegistry so the same Unit
 // objects (and their watcher coordination) are visible to syslog,
 // journalctl, and the IPC handler that follow.
 // startEnabledServices boots the units in multi-user.target.wants/
@@ -1461,7 +1461,7 @@ func startEnabledServices() {
 		name := strings.TrimSuffix(e.Name(), ".service")
 		u, err := reg.Resolve(name)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "lohar: cannot resolve %s: %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "forge: cannot resolve %s: %v\n", name, err)
 			continue
 		}
 		enabled = append(enabled, u)
@@ -1476,10 +1476,10 @@ func startEnabledServices() {
 			go func(u *Unit) {
 				defer wg.Done()
 				if err := svcStart(u); err != nil {
-					fmt.Fprintf(os.Stderr, "lohar: failed to start %s: %v\n", u.Canonical, err)
+					fmt.Fprintf(os.Stderr, "forge: failed to start %s: %v\n", u.Canonical, err)
 					return
 				}
-				fmt.Fprintf(os.Stderr, "lohar: started %s (wave %d/%d)\n",
+				fmt.Fprintf(os.Stderr, "forge: started %s (wave %d/%d)\n",
 					u.Canonical, groupIdx+1, len(groups))
 			}(u)
 		}

@@ -1,6 +1,6 @@
-# Package Compatibility — lohar as PID 1 with systemctl shim
+# Package Compatibility — forge as PID 1 with systemctl shim
 
-lohar stays as PID 1. A built-in systemctl implementation makes
+forge stays as PID 1. A built-in systemctl implementation makes
 `apt-get install openssh-server` work without real systemd.
 Snapshot/restore keeps working. Addresses GitHub issue #12.
 
@@ -10,17 +10,17 @@ Snapshot/restore keeps working. Addresses GitHub issue #12.
 
 ## Why not systemd
 
-We spent a week trying to run systemd as PID 1 with lohar as a
+We spent a week trying to run systemd as PID 1 with forge as a
 systemd service. Here's what happened and why we're not doing it.
 
 ### What we tried
 
 1. Built a systemd-native rootfs (systemd + dbus + journald +
-   lohar.service)
+   forge.service)
 2. Fresh boot works — `systemctl is-system-running` returns
-   "running", lohar.service active, exec works
+   "running", forge.service active, exec works
 3. Stop (snapshot) works
-4. Start (restore) **breaks** — lohar's TCP listeners accept
+4. Start (restore) **breaks** — forge's TCP listeners accept
    connections at the kernel level but the Go runtime never
    processes them. First exec after restore works (WaitReady),
    every subsequent exec hangs forever.
@@ -29,17 +29,17 @@ systemd service. Here's what happened and why we're not doing it.
 
 - **Not a Firecracker version issue.** Tested on FC 1.14.0 and
   1.15.1. Same failure.
-- **Not our lohar code changes.** The POC systemd rootfs (built
-  weeks earlier with different lohar.service config) has the same
+- **Not our forge code changes.** The POC systemd rootfs (built
+  weeks earlier with different forge.service config) has the same
   failure.
 - **Not our service file.** Tested with both `Restart=no` and
   `Restart=always`. Same failure.
 - **Not a network issue.** After restore: ping works, port 22
   returns RST (guest kernel responsive), port 1024 accepts TCP
-  connections (lohar listener still registered in kernel).
-- **Not a general Firecracker snapshot bug.** The same lohar
+  connections (forge listener still registered in kernel).
+- **Not a general Firecracker snapshot bug.** The same forge
   binary, same Firecracker, same host kernel — works perfectly
-  when lohar is PID 1 (no systemd). CI tests for stop/start/exec
+  when forge is PID 1 (no systemd). CI tests for stop/start/exec
   pass consistently.
 
 ### The root cause
@@ -58,8 +58,8 @@ restoration order (PR #4666). The ARM64 variant with child processes
 of systemd has no fix.
 
 The fundamental problem: **systemd and its children (dbus, journald,
-lohar) introduce kernel state (timers, epoll sets, inotify watches)
-that doesn't survive snapshot restore cleanly.** When lohar is PID 1
+forge) introduce kernel state (timers, epoll sets, inotify watches)
+that doesn't survive snapshot restore cleanly.** When forge is PID 1
 and is the only userspace process, the kernel state is minimal and
 resumes correctly.
 
@@ -82,28 +82,28 @@ Users don't need systemd. They need `systemctl` to work — the
 binary that reads `.service` files and starts/stops processes.
 These are different things.
 
-### The design: busybox-pattern systemctl built into lohar
+### The design: busybox-pattern systemctl built into forge
 
-lohar (already in every rootfs) gains a systemctl personality.
+forge (already in every rootfs) gains a systemctl personality.
 One binary, three symlinks:
 
 ```
-/usr/local/bin/lohar         — the actual binary
-/sbin/init → lohar           — kernel boots this as PID 1
-/usr/bin/systemctl → lohar   — packages call this
+/usr/local/bin/forge         — the actual binary
+/sbin/init → forge           — kernel boots this as PID 1
+/usr/bin/systemctl → forge   — packages call this
 ```
 
-When invoked as `init` or `lohar`: run the agent (existing code).
+When invoked as `init` or `forge`: run the agent (existing code).
 When invoked as `systemctl`: handle service management commands.
 
 This is the busybox pattern — a single binary that checks
 `os.Args[0]` to determine its behavior. busybox provides 300+
-Unix utilities in one binary this way. lohar provides the sandbox
+Unix utilities in one binary this way. forge provides the sandbox
 agent + systemctl in one binary.
 
 No Python. No external dependencies. No separate daemon. The
 systemctl implementation reads `.service` files directly, manages
-processes via PID files, and exits. lohar (PID 1) handles zombie
+processes via PID files, and exits. forge (PID 1) handles zombie
 reaping for everything.
 
 The systemctl shim is a common pattern in container runtimes that
@@ -117,20 +117,20 @@ to ahvm's snapshot/restore lifecycle.
 
 Tag: `v1.9.0-rc.1` → `v1.9.0`
 
-lohar gets the systemctl personality. The rootfs gets the symlinks.
+forge gets the systemctl personality. The rootfs gets the symlinks.
 Packages that call systemctl during install work. Services start.
-Snapshot/restore keeps working because lohar stays as PID 1.
+Snapshot/restore keeps working because forge stays as PID 1.
 
 ---
 
-## A1 — Restore lohar PID 1 init duties
+## A1 — Restore forge PID 1 init duties
 
 We deleted the PID 1 path in the previous commit. We need to bring
 back the init duties (mounts, loopback, signal handlers) but keep
 the code clean — no dual-mode, no `runAsAgent()` copy-paste.
 
 The current `runAgent()` assumes systemd handles mounts and
-loopback. Since lohar is PID 1 again, it needs to do these itself.
+loopback. Since forge is PID 1 again, it needs to do these itself.
 
 Restore from the git history:
 - `mustMount()` calls for proc, sys, dev, devpts, tmpfs, run, shm
@@ -143,7 +143,7 @@ Keep the fixes from the systemd attempt:
 - Boot timing to `/run/ahvm/boot-timing.txt`
 - Clean single-function structure (`runAgent()`)
 
-Add zombie reaping (lohar is PID 1, must reap orphans):
+Add zombie reaping (forge is PID 1, must reap orphans):
 ```go
 // Reap orphaned zombie processes. Go's runtime handles SIGCHLD for
 // processes started via exec.Command, but grandchild processes
@@ -162,29 +162,29 @@ go func() {
 
 ### Changes
 
-- `cmd/lohar/main.go`: Restore PID 1 init in `runAgent()`, add
+- `cmd/forge/main.go`: Restore PID 1 init in `runAgent()`, add
   zombie reaper. Keep the DNS fix and boot-timing fix.
 
 ---
 
-## A2 — Revert engine init= to /usr/local/bin/lohar
+## A2 — Revert engine init= to /usr/local/bin/forge
 
 We changed `init=/sbin/init` in the previous commit. Revert to
-`init=/usr/local/bin/lohar` since lohar is PID 1 again.
+`init=/usr/local/bin/forge` since forge is PID 1 again.
 
-The `/sbin/init → lohar` symlink in the rootfs means both paths
-work, but being explicit about lohar avoids ambiguity.
+The `/sbin/init → forge` symlink in the rootfs means both paths
+work, but being explicit about forge avoids ambiguity.
 
 ### Changes
 
 - `pkg/engine/firecracker/create.go`: Change `init=/sbin/init`
-  back to `init=/usr/local/bin/lohar`.
+  back to `init=/usr/local/bin/forge`.
 
 ---
 
-## A3 — Build the systemctl shim into lohar
+## A3 — Build the systemctl shim into forge
 
-New file: `cmd/lohar/systemctl.go`
+New file: `cmd/forge/systemctl.go`
 
 ### Dispatch (busybox pattern)
 
@@ -193,7 +193,7 @@ In `main()`:
 func main() {
     name := filepath.Base(os.Args[0])
     switch {
-    case os.Getenv("LOHAR_TEST") == "1":
+    case os.Getenv("FORGE_TEST") == "1":
         runTestMode()
     case name == "systemctl":
         runSystemctl(os.Args[1:])
@@ -293,8 +293,8 @@ Handle multi-line values (backslash continuation). Handle multiple
 ### PID file location
 
 All PID files go to `/run/ahvm/services/<name>.pid`. This is
-a tmpfs directory, cleared on reboot. lohar creates it at boot.
-The shim reads/writes PID files. lohar (PID 1) reaps the zombies.
+a tmpfs directory, cleared on reboot. forge creates it at boot.
+The shim reads/writes PID files. forge (PID 1) reaps the zombies.
 
 ### What we explicitly DON'T implement
 
@@ -305,16 +305,16 @@ The shim reads/writes PID files. lohar (PID 1) reaps the zombies.
 - Timer units — cron exists
 - Slice/scope/cgroup management — Firecracker already constrains
   the VM
-- `journalctl` — services write to stdout/stderr, lohar can
+- `journalctl` — services write to stdout/stderr, forge can
   capture if needed later
 - `systemd-tmpfiles`, `systemd-sysusers` — handle manually in
   rootfs build
 
 ### Changes
 
-- `cmd/lohar/main.go`: Add busybox dispatch in `main()`
-- `cmd/lohar/systemctl.go`: New file, ~400-500 lines
-- `cmd/lohar/service_parser.go`: New file, .service file parser,
+- `cmd/forge/main.go`: Add busybox dispatch in `main()`
+- `cmd/forge/systemctl.go`: New file, ~400-500 lines
+- `cmd/forge/service_parser.go`: New file, .service file parser,
   ~100 lines
 
 ---
@@ -324,8 +324,8 @@ The shim reads/writes PID files. lohar (PID 1) reaps the zombies.
 Modify `scripts/tiers/minimal.sh` to set up the shim:
 
 ```bash
-# systemctl shim — lohar handles systemctl commands via busybox pattern
-ln -sf /usr/local/bin/lohar "$MOUNT/usr/bin/systemctl"
+# systemctl shim — forge handles systemctl commands via busybox pattern
+ln -sf /usr/local/bin/forge "$MOUNT/usr/bin/systemctl"
 
 # Create the services PID directory
 mkdir -p "$MOUNT/run/ahvm/services"
@@ -336,7 +336,7 @@ mkdir -p "$MOUNT/run/ahvm/services"
 mkdir -p "$MOUNT/run/systemd/system"
 ```
 
-Also in `minimal.sh` — lohar needs to create `/run/systemd/system`
+Also in `minimal.sh` — forge needs to create `/run/systemd/system`
 at boot (it's tmpfs, gone on reboot). Add to `runAgent()`:
 ```go
 os.MkdirAll("/run/systemd/system", 0755)
@@ -344,7 +344,7 @@ os.MkdirAll("/run/ahvm/services", 0755)
 ```
 
 **Auto-start enabled services at boot.** After listeners are up
-and before the boot profile runs, lohar scans
+and before the boot profile runs, forge scans
 `/etc/systemd/system/multi-user.target.wants/` and starts each
 enabled service:
 
@@ -362,7 +362,7 @@ installed with `apt-get install` and enabled via
 - `scripts/tiers/minimal.sh`: Add symlink, keep rootfs at 512 MB
   (no systemd packages needed)
 - `scripts/build-tier.sh`: Revert minimal size to 512 MB
-- `cmd/lohar/main.go`: Create /run/systemd/system and
+- `cmd/forge/main.go`: Create /run/systemd/system and
   /run/ahvm/services at boot, call `startEnabledServices()`
 
 ---
@@ -438,7 +438,7 @@ func TestServiceSurvivesSnapshot(t *testing.T) {
     // Stop (snapshot)
     eng.Stop(ctx, info.ID)
 
-    // Start (restore) — lohar resumes as PID 1, restarts services
+    // Start (restore) — forge resumes as PID 1, restarts services
     eng.Start(ctx, info.ID)
 
     // nginx should be running again
@@ -1078,7 +1078,7 @@ services), we'd revisit with VMGenID-based restore detection —
 but that's a different project.
 
 **`Type=notify` services.** Requires implementing the sd_notify
-protocol (lohar listens on a socket, service sends READY=1).
+protocol (forge listens on a socket, service sends READY=1).
 openssh, nginx, postgres, redis all use `Type=simple` or
 `Type=forking`. notify can be added later if needed.
 

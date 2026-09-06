@@ -99,7 +99,7 @@ func TestSyslogTagReconciledToCanonicalUnit(t *testing.T) {
 func TestSyslogUnknownTagFallsBack(t *testing.T) {
 	// Tags that don't resolve to any unit (kernel, cron, login, custom
 	// daemons) keep the legacy behaviour: a tag-keyed file under LogDir.
-	// This is what makes the receiver useful even for things lohar
+	// This is what makes the receiver useful even for things forge
 	// doesn't manage.
 	dir := t.TempDir()
 	logDirSandbox := t.TempDir()

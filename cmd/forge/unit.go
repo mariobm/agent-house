@@ -16,7 +16,7 @@ import (
 )
 
 // Config holds the filesystem locations the shim reads and writes. It's
-// constructed once — by runAgent for PID-1 lohar, by runSystemctl for
+// constructed once — by runAgent for PID-1 forge, by runSystemctl for
 // short-lived client invocations, by tests for their sandboxed view —
 // and never mutated thereafter. That immutability is the structural
 // reason watcher goroutines can read paths concurrently with everything
@@ -68,7 +68,7 @@ type Config struct {
 	NotifySocketPath string
 }
 
-// ProductionConfig returns the Config that PID-1 lohar uses inside a
+// ProductionConfig returns the Config that PID-1 forge uses inside a
 // real ahvm VM. The same values were package-level globals before
 // the Config refactor; preserving the literal paths here matches
 // existing on-disk state (pidfiles in /run/ahvm/services, etc.).
@@ -296,7 +296,7 @@ func (u *Unit) HasName(name string) bool {
 // globals.
 //
 // A Registry is created per process invocation; for the systemctl shim
-// it lives for the duration of one command, for PID-1 lohar it's
+// it lives for the duration of one command, for PID-1 forge it's
 // long-lived and shared with the syslog receiver and journalctl
 // invocations.
 type Registry struct {
@@ -367,7 +367,7 @@ func (r *Registry) isStopRequested(canonical string) bool {
 
 // WaitForWatchers blocks until every watcher goroutine spawned via this
 // Registry's startDaemon has returned. Test-only helper. Production
-// code never calls this because PID-1 lohar lives forever.
+// code never calls this because PID-1 forge lives forever.
 func (r *Registry) WaitForWatchers() { r.watcherWG.Wait() }
 
 // Reload re-reads on-disk unit state, matching real systemd's
@@ -402,7 +402,7 @@ func (r *Registry) Reload() {
 	r.mu.Unlock()
 }
 
-// globalRegistry is the long-lived Registry used by PID-1 lohar's syslog
+// globalRegistry is the long-lived Registry used by PID-1 forge's syslog
 // receiver, target-wants service activation, and IPC handler. Created in
 // runAgent at boot via NewRegistry(ProductionConfig()).
 //

@@ -88,8 +88,8 @@ func TestKrucibleProductionImage(t *testing.T) {
 	}
 }
 
-// buildOCIImage cross-builds lohar and converts an OCI ref to an ext4 root image
-// (with /init.krun -> lohar) via the production pipeline.
+// buildOCIImage cross-builds forge and converts an OCI ref to an ext4 root image
+// (with /init.krun -> forge) via the production pipeline.
 func buildOCIImage(t *testing.T, repo, ref string) string {
 	t.Helper()
 	guestArch := "arm64"
@@ -97,18 +97,18 @@ func buildOCIImage(t *testing.T, repo, ref string) string {
 		guestArch = v
 	}
 	dir := t.TempDir()
-	loharPath := filepath.Join(dir, "lohar")
-	build := exec.Command("go", "build", "-o", loharPath, "./cmd/lohar")
+	forgePath := filepath.Join(dir, "forge")
+	build := exec.Command("go", "build", "-o", forgePath, "./cmd/forge")
 	build.Dir = repo
 	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+guestArch, "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("cross-build lohar: %s: %v", out, err)
+		t.Fatalf("cross-build forge: %s: %v", out, err)
 	}
 
 	out := filepath.Join(dir, "root.img")
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
-	if _, err := oci.PullAndConvert(ctx, ref, out, loharPath, oci.WithPlatform("linux", guestArch)); err != nil {
+	if _, err := oci.PullAndConvert(ctx, ref, out, forgePath, oci.WithPlatform("linux", guestArch)); err != nil {
 		t.Skipf("OCI pull/convert %q failed (network?): %v", ref, err)
 	}
 	return out

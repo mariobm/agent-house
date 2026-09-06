@@ -668,7 +668,7 @@ func (s *Server) handleImagePull(w http.ResponseWriter, r *http.Request, user *s
 	s.pullCancels[taskID] = cancel
 	s.pullCancelMu.Unlock()
 
-	loharPath := filepath.Join(s.dataDir, "lohar")
+	forgePath := filepath.Join(s.dataDir, "forge")
 	outputDir := filepath.Join(s.dataDir, "images", user.ID)
 	os.MkdirAll(outputDir, 0700)
 	outputPath := filepath.Join(outputDir, req.Name+".ext4")
@@ -693,7 +693,7 @@ func (s *Server) handleImagePull(w http.ResponseWriter, r *http.Request, user *s
 			}
 		}
 
-		config, err := oci.PullAndConvert(ctx, req.Ref, outputPath, loharPath, ociOpts...)
+		config, err := oci.PullAndConvert(ctx, req.Ref, outputPath, forgePath, ociOpts...)
 		if err != nil {
 			os.Remove(outputPath)
 			s.store.FailTask(taskID, err.Error())
@@ -774,12 +774,12 @@ func (s *Server) handleImageImport(w http.ResponseWriter, r *http.Request, user 
 	}
 	tmpFile.Close()
 
-	loharPath := filepath.Join(s.dataDir, "lohar")
+	forgePath := filepath.Join(s.dataDir, "forge")
 	outputDir := filepath.Join(s.dataDir, "images", user.ID)
 	os.MkdirAll(outputDir, 0700)
 	outputPath := filepath.Join(outputDir, name+".ext4")
 
-	config, err := oci.ImportFromTarball(r.Context(), tmpFile.Name(), outputPath, loharPath)
+	config, err := oci.ImportFromTarball(r.Context(), tmpFile.Name(), outputPath, forgePath)
 	if err != nil {
 		os.Remove(outputPath)
 		errResp(w, 400, "import failed: "+err.Error())
