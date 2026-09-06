@@ -591,28 +591,30 @@ fn pump_stream(
     counter.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// Exit code from a raw wait status: real code, or our 124 kill/timeout
-/// bucket when killed by a signal.
-fn code_of(status: libc::c_int) -> Option<i32> {
-    if libc::WIFEXITED(status) {
-        Some(libc::WEXITSTATUS(status))
-    } else if libc::WIFSIGNALED(status) {
-        Some(124)
-    } else {
-        None
-    }
+/// Outcome of [`wait_zombie`]. The split exists so callers fail closed:
+/// only [`Observed::Reserved`] carries the PID-reservation guarantee that
+/// makes signaling the stored group safe.
+enum Observed {
+    /// Leader exited and is still a reserved zombie — no unrelated process
+    /// can hold the number, so signaling the stored group is safe.
+    Reserved { code: Option<i32> },
+    /// Observation failed (already reaped, or unexpected error): there is NO
+    /// reservation. The caller must invalidate the signal target WITHOUT
+    /// signaling it — killing a possibly-recycled group is worse than
+    /// lingering strays.
+    Unreserved,
 }
 
-/// Block until `pid` has exited, WITHOUT reaping it, and return the
-/// observed exit code.
+/// Block until `pid` has exited, WITHOUT reaping it, and report whether the
+/// PID is still reserved.
 ///
 /// This MUST be `waitid`, not `waitpid`: `WNOWAIT` belongs to `waitid` —
 /// `waitpid(..., WNOWAIT)` is EINVAL on both Linux and macOS (verified by C
 /// probe on both, 2026-09-06). `waitid(P_PID, pid, WEXITED | WNOWAIT)` blocks
-/// until exit and leaves the child as a reserved zombie, so its PID cannot
-/// be recycled underneath us. Callers must still reap afterwards; every
-/// return path below requires the caller to wait, never leaks a zombie.
-fn wait_zombie(pid: i32) -> Option<i32> {
+/// until exit and leaves the child as a reserved zombie. Callers must still
+/// reap afterwards; every return path below requires the caller to wait,
+/// never leaks a zombie.
+fn wait_zombie(pid: i32) -> Observed {
     loop {
         // SAFETY: zeroed siginfo_t written by waitid on success.
         let mut si: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -629,8 +631,10 @@ fn wait_zombie(pid: i32) -> Option<i32> {
             // NOTE: si_pid/si_status are accessor METHODS on Linux (union
             // fields); plain `.si_pid` field access only builds on macOS.
             return match si.si_code {
-                libc::CLD_EXITED => Some(unsafe { si.si_status() }),
-                libc::CLD_KILLED | libc::CLD_DUMPED => Some(124),
+                libc::CLD_EXITED => Observed::Reserved {
+                    code: Some(unsafe { si.si_status() }),
+                },
+                libc::CLD_KILLED | libc::CLD_DUMPED => Observed::Reserved { code: Some(124) },
                 _ => continue,
             };
         }
@@ -638,40 +642,43 @@ fn wait_zombie(pid: i32) -> Option<i32> {
         if err.kind() == std::io::ErrorKind::Interrupted {
             continue;
         }
-        if err.raw_os_error() == Some(libc::ECHILD) {
-            return None; // already reaped elsewhere; nothing reserved
-        }
-        // Unexpected: blocking reap (old behavior). Unreachable in practice.
-        let mut status = 0;
-        let r2 = unsafe { libc::waitpid(pid, &mut status as *mut _, 0) };
-        return if r2 == pid { code_of(status) } else { None };
+        // ECHILD (already reaped elsewhere) or anything unexpected: NO
+        // reservation. Deliberately no blocking-reap fallback here — reaping
+        // would free the PID and hand the caller a number it must not
+        // signal; the caller reaps via Child::wait unconditionally below.
+        return Observed::Unreserved;
     }
 }
 
 /// Reap protocol — the single lifecycle owner for session teardown:
 ///
-/// 1. observe leader exit via [`wait_zombie`] (PID still reserved);
-/// 2. take the pgid under the lifecycle lock and signal the group while no
-///    unrelated process can hold the number (also unblocks any writer parked
-///    on a descendant-held pipe);
-/// 3. reap (`Child::wait`), drain pumps, publish exit.
+/// 1. observe leader exit via [`wait_zombie`];
+/// 2. take the pgid under the lifecycle lock — and signal the group ONLY on
+///    [`Observed::Reserved`], while no unrelated process can hold the number
+///    (this also unblocks any writer parked on a descendant-held pipe). On
+///    [`Observed::Unreserved`] the target is invalidated WITHOUT signaling;
+/// 3. reap (`Child::wait` — unconditional, so no path leaks a zombie),
+///    drain pumps, publish exit.
 ///
 /// `kill()`/`delete()` only ever signal a pgid taken under the same lock
 /// while `exit` is unset, so a reaped number is never signaled.
 fn reap_session(mut child: std::process::Child, session: &Arc<Session>, pumps: &Arc<AtomicUsize>) {
     let leader = child.id() as i32;
     let observed = wait_zombie(leader);
-    let pgid = {
+    // Take the target in ALL cases (invalidates future kill()), but only
+    // signal it when observation reserved the PID.
+    let (signal, fallback_code) = {
         let mut lc = session.lifecycle.lock().unwrap();
-        lc.pgid.take()
+        let pgid = lc.pgid.take();
+        match observed {
+            Observed::Reserved { code } => (pgid, code),
+            Observed::Unreserved => (None, None),
+        }
     };
-    if let Some(pgid) = pgid {
+    if let Some(pgid) = signal {
         kill_group(pgid);
     }
-    // Linux: the leader is a reserved zombie here, so wait() reaps exactly
-    // it. Elsewhere wait_zombie already reaped; wait() then fails and the
-    // observed code carries the exit.
-    let code = child.wait().ok().and_then(|s| s.code()).or(observed);
+    let code = child.wait().ok().and_then(|s| s.code()).or(fallback_code);
     for _ in 0..50 {
         if pumps.load(Ordering::SeqCst) == 0 {
             break;
@@ -743,7 +750,8 @@ mod tests {
     /// Deterministic guard for the reap protocol: after wait_zombie, the
     /// PID must still be reserved (signalable) with exactly one reap left.
     /// A waitpid-based implementation takes the EINVAL/fallback path here
-    /// and fails loudly — which is the point.
+    /// and fails loudly — which is the point. The bogus-PID case pins the
+    /// fail-closed path: no reservation, never signaled.
     #[test]
     fn wait_zombie_keeps_pid_reserved() {
         let mut child = std::process::Command::new("sh")
@@ -752,7 +760,10 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id() as i32;
-        assert_eq!(wait_zombie(pid), Some(42));
+        assert!(matches!(
+            wait_zombie(pid),
+            Observed::Reserved { code: Some(42) }
+        ));
         assert_eq!(
             unsafe { libc::kill(pid, 0) },
             0,
@@ -761,6 +772,11 @@ mod tests {
         let mut status = 0;
         assert_eq!(unsafe { libc::waitpid(pid, &mut status as *mut _, 0) }, pid);
         let _ = child.wait(); // ECHILD now; must not panic or hang
+    }
+
+    #[test]
+    fn wait_zombie_bogus_pid_is_unreserved() {
+        assert!(matches!(wait_zombie(i32::MAX), Observed::Unreserved));
     }
 
     /// Deterministic guard for the PTY tail-loss: WouldBlock mid-stream must
