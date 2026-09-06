@@ -18,7 +18,10 @@ fn main() {
         eprintln!("forge: listen {}: {e}", cfg.listen_addr);
         std::process::exit(1);
     });
-    eprintln!("forge: listening on {}", cfg.listen_addr);
+    // Report the BOUND address (differs from config when :0 was given) —
+    // integration tests parse this line to find us without port probing.
+    let bound = listener.local_addr().map(|a| a.to_string()).unwrap_or(cfg.listen_addr.clone());
+    eprintln!("forge: listening on {bound}");
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {

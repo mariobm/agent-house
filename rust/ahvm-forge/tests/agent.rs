@@ -5,7 +5,7 @@ use ahvm_proto::{read_frame, write_frame, Frame, FrameType};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use std::collections::HashMap;
 use std::io::BufReader;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -23,12 +23,45 @@ struct AgentConn {
     w: TcpStream,
 }
 
+/// Block until the child prints its bound address (or dies/exhausts).
+fn wait_listen_addr(err: &mut BufReader<std::process::ChildStderr>, child: &mut Child) -> String {
+    use std::io::BufRead as _;
+    let mut line = String::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        line.clear();
+        if std::time::Instant::now() > deadline {
+            panic!("timed out waiting for forge listen address");
+        }
+        match err.read_line(&mut line) {
+            Ok(0) => {
+                let _ = child.try_wait();
+                panic!("forge stderr closed before listen address");
+            }
+            Ok(_) => {
+                if let Some(addr) = line.strip_prefix("forge: listening on ") {
+                    let addr = addr.trim().to_owned();
+                    // Confirm connectable before returning.
+                    for _ in 0..50 {
+                        if TcpStream::connect(&addr).is_ok() {
+                            return addr;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    panic!("forge reported {addr} but it never accepted");
+                }
+            }
+            Err(e) => panic!("reading forge stderr: {e}"),
+        }
+    }
+}
+
 impl Agent {
     fn spawn(token: &str) -> Self {
         let bin = env!("CARGO_BIN_EXE_ahvm-forge");
-        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = probe.local_addr().unwrap().to_string();
-        drop(probe);
+        // No port probing: bind :0, spawn, and read the bound address back
+        // from the child's stderr. Probing (bind-then-release-then-rebind)
+        // lets a parallel test steal the port between release and rebind.
         let dir = std::env::temp_dir().join(format!(
             "forge-test-{}-{}",
             std::process::id(),
@@ -37,23 +70,16 @@ impl Agent {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut child = Command::new(bin)
-            .env("AHVM_FORGE_LISTEN", &addr)
+            .env("AHVM_FORGE_LISTEN", "127.0.0.1:0")
             .env("AHVM_FORGE_TOKEN", token)
             .env("AHVM_FORGE_ROOT", &dir)
             .env("AHVM_FORGE_EXEC_TIMEOUT", "20")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        for _ in 0..100 {
-            if TcpStream::connect(&addr).is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-            if child.try_wait().unwrap().is_some() {
-                panic!("forge exited early");
-            }
-        }
+        let mut err = std::io::BufReader::new(child.stderr.take().unwrap());
+        let addr = wait_listen_addr(&mut err, &mut child);
         Self { child, addr, dir }
     }
 
