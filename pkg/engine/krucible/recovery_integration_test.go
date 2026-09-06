@@ -120,7 +120,15 @@ func TestKrucibleRecoveryDeadHelper(t *testing.T) {
 		if err == nil || attempt == 3 {
 			break
 		}
-		t.Logf("Create attempt %d failed, retrying: %v", attempt, err)
+		// Back off before retrying: a hard-killed helper can leave stale
+		// host-side vsock state behind (libkrun reuses guest CIDs from 3 in
+		// every fresh helper), and an immediate relaunch can land on it.
+		t.Logf("Create attempt %d failed, backing off and retrying: %v", attempt, err)
+		select {
+		case <-ctx.Done():
+			t.Fatalf("Create: %v", ctx.Err())
+		case <-time.After(15 * time.Second):
+		}
 	}
 	if err != nil {
 		t.Fatalf("Create: %v", err)
