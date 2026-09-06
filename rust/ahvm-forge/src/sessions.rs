@@ -36,14 +36,19 @@ pub struct SessionManager {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
 }
 
+#[derive(Debug, Default)]
+struct Lifecycle {
+    pgid: Option<i32>,
+    exit: Option<i32>,
+}
+
 #[derive(Debug)]
 pub struct Session {
     pub id: String,
     pub argv: Vec<String>,
     pub started_at: i64,
-    pgid: Mutex<Option<i32>>,
+    lifecycle: Mutex<Lifecycle>,
     ring: Mutex<Ring>,
-    exit: Mutex<Option<i32>>,
     stdin: Mutex<Option<std::process::ChildStdin>>,
     master: Mutex<Option<std::fs::File>>,
     is_pty: bool,
@@ -57,7 +62,6 @@ struct Ring {
     buf: VecDeque<u8>,
 }
 
-#[allow(unsafe_code)]
 fn open_ptmx() -> Result<(std::fs::File, String), String> {
     let fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
     if fd < 0 {
@@ -93,22 +97,40 @@ impl SessionManager {
         if argv.is_empty() {
             return Err("empty argv".into());
         }
-        // Bounded retention: evict oldest completed if at limit
+        let id = format!(
+            "s-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        );
+
+        // Reserve slot atomically before spawning: insert placeholder so
+        // concurrent creators see the reservation. Released on spawn failure.
+        // We do eviction and reservation under same lock.
+        let placeholder = Arc::new(Session {
+            id: id.clone(),
+            argv: argv.clone(),
+            started_at: unix_now(),
+            lifecycle: Mutex::new(Lifecycle { pgid: None, exit: None }),
+            ring: Mutex::new(Ring::default()),
+            stdin: Mutex::new(None),
+            master: Mutex::new(None),
+            is_pty: pty,
+            active_pumps: Arc::new(AtomicUsize::new(0)),
+        });
         {
             let mut map = self.sessions.lock().unwrap();
             if map.len() >= MAX_SESSIONS {
-                // Find oldest completed
                 let mut oldest: Option<(String, i64)> = None;
-                for (id, s) in map.iter() {
-                    if s.exit.lock().unwrap().is_some() {
+                for (oid, s) in map.iter() {
+                    let lc = s.lifecycle.lock().unwrap();
+                    if lc.exit.is_some() {
                         let started = s.started_at;
-                        let candidate = (id.clone(), started);
                         let is_older = match &oldest {
                             None => true,
-                            Some((oid, ot)) => (started, id) < (*ot, oid),
+                            Some((ooid, ot)) => (started, oid) < (*ot, ooid),
                         };
                         if is_older {
-                            oldest = Some(candidate);
+                            oldest = Some((oid.clone(), started));
                         }
                     }
                 }
@@ -118,17 +140,36 @@ impl SessionManager {
                     return Err("too many active sessions".into());
                 }
             }
-        }
-        let id = format!(
-            "s-{}-{}",
-            std::process::id(),
-            NEXT_ID.fetch_add(1, Ordering::Relaxed)
-        );
-
-        if pty {
-            return self.create_pty(id, argv, env, cwd);
+            map.insert(id.clone(), placeholder);
         }
 
+        let result = if pty {
+            self.create_pty_inner(id.clone(), argv.clone(), env.clone(), cwd.clone())
+        } else {
+            self.create_piped_inner(id.clone(), argv.clone(), env.clone(), cwd.clone())
+        };
+
+        match result {
+            Ok(real) => {
+                let mut map = self.sessions.lock().unwrap();
+                map.insert(id.clone(), real);
+                Ok(id)
+            }
+            Err(e) => {
+                let mut map = self.sessions.lock().unwrap();
+                map.remove(&id);
+                Err(e)
+            }
+        }
+    }
+
+    fn create_piped_inner(
+        &self,
+        id: String,
+        argv: Vec<String>,
+        env: HashMap<String, String>,
+        cwd: Option<String>,
+    ) -> Result<Arc<Session>, String> {
         let mut cmd = std::process::Command::new(&argv[0]);
         cmd.args(&argv[1..])
             .stdin(std::process::Stdio::piped())
@@ -141,7 +182,6 @@ impl SessionManager {
             cmd.env(k, v);
         }
         use std::os::unix::process::CommandExt;
-        #[allow(unsafe_code)]
         unsafe {
             cmd.pre_exec(|| {
                 libc::setpgid(0, 0);
@@ -154,9 +194,8 @@ impl SessionManager {
             id: id.clone(),
             argv,
             started_at: unix_now(),
-            pgid: Mutex::new(Some(child.id() as i32)),
+            lifecycle: Mutex::new(Lifecycle { pgid: Some(child.id() as i32), exit: None }),
             ring: Mutex::new(Ring::default()),
-            exit: Mutex::new(None),
             stdin: Mutex::new(child.stdin.take()),
             master: Mutex::new(None),
             is_pty: false,
@@ -187,41 +226,45 @@ impl SessionManager {
             session.clone(),
             active_pumps.clone(),
         );
-        std::thread::spawn({
-            let session = session.clone();
-            let pumps = active_pumps.clone();
-            move || {
-                let code = child.wait().ok().and_then(|s| s.code());
-                // Wait for pumps to drain buffered output before publishing exit
-                // (otherwise attach sees exit+currently drained as EOF with missing tail)
-                for _ in 0..50 {
-                    if pumps.load(Ordering::SeqCst) == 0 {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                *session.exit.lock().unwrap() = Some(code.unwrap_or(124));
-                // Close I/O to free FDs; drop stdin
-                *session.stdin.lock().unwrap() = None;
-                // Invalidate pgid so later kill cannot hit reused PID
-                let pgid = session.pgid.lock().unwrap().take();
-                if let Some(pgid) = pgid {
-                    kill_group(pgid);
-                }
+        let pumps = active_pumps.clone();
+        let session_clone = session.clone();
+        std::thread::spawn(move || {
+            let code = child.wait().ok().and_then(|s| s.code());
+            // Kill group immediately to free pipes blocked by descendants,
+            // before waiting for pumps. This unblocks any writer holding stdin.
+            let pgid = {
+                let mut lc = session_clone.lifecycle.lock().unwrap();
+                let pgid = lc.pgid.take();
+                // Don't set exit yet; let pumps drain first, but invalidating
+                // pgid now prevents future kill() from hitting reused pid.
+                pgid
+            };
+            if let Some(pgid) = pgid {
+                kill_group(pgid);
             }
+            for _ in 0..50 {
+                if pumps.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            {
+                let mut lc = session_clone.lifecycle.lock().unwrap();
+                lc.exit = Some(code.unwrap_or(124));
+            }
+            // Close I/O to free FDs
+            *session_clone.stdin.lock().unwrap() = None;
         });
-        self.sessions.lock().unwrap().insert(id.clone(), session);
-        Ok(id)
+        Ok(session)
     }
 
-    #[allow(unsafe_code)]
-    fn create_pty(
+    fn create_pty_inner(
         &self,
         id: String,
         argv: Vec<String>,
         env: HashMap<String, String>,
         cwd: Option<String>,
-    ) -> Result<String, String> {
+    ) -> Result<Arc<Session>, String> {
         let (master_file, slave_path) = open_ptmx()?;
         let master_fd = master_file.as_raw_fd();
         {
@@ -278,9 +321,8 @@ impl SessionManager {
             id: id.clone(),
             argv,
             started_at: unix_now(),
-            pgid: Mutex::new(Some(child.id() as i32)),
+            lifecycle: Mutex::new(Lifecycle { pgid: Some(child.id() as i32), exit: None }),
             ring: Mutex::new(Ring::default()),
-            exit: Mutex::new(None),
             stdin: Mutex::new(None),
             master: Mutex::new(Some(master_file)),
             is_pty: true,
@@ -307,28 +349,30 @@ impl SessionManager {
                 pumps.fetch_sub(1, Ordering::SeqCst);
             });
         }
-        std::thread::spawn({
-            let session = session.clone();
-            let pumps = active_pumps.clone();
-            move || {
-                let code = child.wait().ok().and_then(|s| s.code());
-                for _ in 0..50 {
-                    if pumps.load(Ordering::SeqCst) == 0 {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                *session.exit.lock().unwrap() = Some(code.unwrap_or(124));
-                // Close master to free FD
-                *session.master.lock().unwrap() = None;
-                let pgid = session.pgid.lock().unwrap().take();
-                if let Some(pgid) = pgid {
-                    kill_group(pgid);
-                }
+        let pumps = active_pumps.clone();
+        let session_clone = session.clone();
+        std::thread::spawn(move || {
+            let code = child.wait().ok().and_then(|s| s.code());
+            let pgid = {
+                let mut lc = session_clone.lifecycle.lock().unwrap();
+                lc.pgid.take()
+            };
+            if let Some(pgid) = pgid {
+                kill_group(pgid);
             }
+            for _ in 0..50 {
+                if pumps.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            {
+                let mut lc = session_clone.lifecycle.lock().unwrap();
+                lc.exit = Some(code.unwrap_or(124));
+            }
+            *session_clone.master.lock().unwrap() = None;
         });
-        self.sessions.lock().unwrap().insert(id.clone(), session);
-        Ok(id)
+        Ok(session)
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Session>> {
@@ -339,12 +383,11 @@ impl SessionManager {
         let s = self
             .get(id)
             .ok_or_else(|| format!("no such session: {id}"))?;
-        // Synchronize: if already exited, kill would hit reused PID
-        if s.exit.lock().unwrap().is_some() {
+        let mut lc = s.lifecycle.lock().unwrap();
+        if lc.exit.is_some() {
             return Err(format!("session {id} already completed"));
         }
-        let pgid = *s.pgid.lock().unwrap();
-        match pgid {
+        match lc.pgid {
             Some(pgid) => {
                 kill_group(pgid);
                 Ok(())
@@ -356,13 +399,16 @@ impl SessionManager {
     pub fn delete(&self, id: &str) -> Result<(), String> {
         let mut map = self.sessions.lock().unwrap();
         let s = map.get(id).ok_or_else(|| format!("no such session: {id}"))?.clone();
-        // Kill if still running, then remove
-        if s.exit.lock().unwrap().is_none() {
-            if let Some(pgid) = *s.pgid.lock().unwrap() {
-                kill_group(pgid);
+        {
+            let mut lc = s.lifecycle.lock().unwrap();
+            if lc.exit.is_none() {
+                if let Some(pgid) = lc.pgid.take() {
+                    kill_group(pgid);
+                }
             }
+            lc.exit = Some(124);
+            lc.pgid = None;
         }
-        // Close handles
         *s.stdin.lock().unwrap() = None;
         *s.master.lock().unwrap() = None;
         map.remove(id);
@@ -393,11 +439,14 @@ impl SessionManager {
         let map = self.sessions.lock().unwrap();
         let mut out: Vec<SessionInfo> = map
             .values()
-            .map(|s| SessionInfo {
-                id: s.id.clone(),
-                argv: s.argv.clone(),
-                running: s.exit.lock().unwrap().is_none(),
-                started_at: s.started_at,
+            .map(|s| {
+                let lc = s.lifecycle.lock().unwrap();
+                SessionInfo {
+                    id: s.id.clone(),
+                    argv: s.argv.clone(),
+                    running: lc.exit.is_none(),
+                    started_at: s.started_at,
+                }
             })
             .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -432,7 +481,7 @@ impl Session {
         let end = (start + CHUNK).min(ring.buf.len());
         let chunk = ring.buf.range(start..end).copied().collect();
         let next = ring.base + end as u64;
-        let exit = *self.exit.lock().unwrap();
+        let exit = self.lifecycle.lock().unwrap().exit;
         (chunk, next, exit, truncated)
     }
 
@@ -445,24 +494,132 @@ impl Session {
     }
 
     pub fn write_stdin(&self, data: &[u8]) -> Result<(), String> {
-        use std::io::Write as _;
         if self.is_pty {
-            let mut guard = self.master.lock().unwrap();
-            match guard.as_mut() {
-                Some(f) => f.write_all(data).map_err(|e| format!("pty write: {e}")),
-                None => Err("pty closed".into()),
+            // Take master out, write without holding lock, then put back if still valid
+            let mut file = {
+                let mut guard = self.master.lock().unwrap();
+                guard.take().ok_or("pty closed")?
+            };
+            // Use poll with timeout to make cancellable: set non-blocking and wait
+            let fd = file.as_raw_fd();
+            let orig_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if orig_flags >= 0 {
+                unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK); }
             }
+            let mut written = 0;
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(5);
+            let mut result: Result<(), String> = Ok(());
+            while written < data.len() {
+                if start.elapsed() > timeout {
+                    result = Err("pty write timeout".into());
+                    break;
+                }
+                if self.lifecycle.lock().unwrap().exit.is_some() {
+                    result = Err("session completed".into());
+                    break;
+                }
+                let n = unsafe {
+                    libc::write(fd, data[written..].as_ptr() as *const _, data.len() - written)
+                };
+                if n < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.kind() == std::io::ErrorKind::WouldBlock {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    } else if err.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    } else {
+                        result = Err(format!("pty write: {err}"));
+                        break;
+                    }
+                } else {
+                    written += n as usize;
+                }
+            }
+            if orig_flags >= 0 {
+                unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags); }
+            }
+            // Return file to guard if session still alive and guard is empty
+            {
+                let mut guard = self.master.lock().unwrap();
+                if guard.is_none() && result.is_ok() {
+                    // Only put back if not already closed by reaper and no error
+                    let lc = self.lifecycle.lock().unwrap();
+                    if lc.exit.is_none() {
+                        *guard = Some(file);
+                    }
+                } else if result.is_ok() {
+                    // Should not happen: guard was Some but we took it, so it is None
+                    *guard = Some(file);
+                }
+                // On error, drop file (don't put back)
+            }
+            result
         } else {
-            let mut guard = self.stdin.lock().unwrap();
-            match guard.as_mut() {
-                Some(stdin) => stdin.write_all(data).map_err(|e| format!("stdin: {e}")),
-                None => Err("stdin closed".into()),
+            // Piped stdin: take, write without holding lock
+            let mut stdin = {
+                let mut guard = self.stdin.lock().unwrap();
+                guard.take().ok_or("stdin closed")?
+            };
+            use std::io::Write as _;
+            // Make cancellable: check exit before and use timeout via poll?
+            // For pipes, we use similar non-blocking approach
+            let fd = stdin.as_raw_fd();
+            let orig_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if orig_flags >= 0 {
+                unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK); }
             }
+            let mut written = 0;
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(5);
+            let mut result: Result<(), String> = Ok(());
+            while written < data.len() {
+                if start.elapsed() > timeout {
+                    result = Err("stdin write timeout".into());
+                    break;
+                }
+                if self.lifecycle.lock().unwrap().exit.is_some() {
+                    result = Err("session completed".into());
+                    break;
+                }
+                let n = unsafe {
+                    libc::write(fd, data[written..].as_ptr() as *const _, data.len() - written)
+                };
+                if n < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.kind() == std::io::ErrorKind::WouldBlock {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    } else if err.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    } else {
+                        result = Err(format!("stdin write: {err}"));
+                        break;
+                    }
+                } else {
+                    written += n as usize;
+                }
+            }
+            if orig_flags >= 0 {
+                unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags); }
+            }
+            {
+                let mut guard = self.stdin.lock().unwrap();
+                if guard.is_none() && result.is_ok() {
+                    let lc = self.lifecycle.lock().unwrap();
+                    if lc.exit.is_none() {
+                        *guard = Some(stdin);
+                    }
+                } else if result.is_ok() {
+                    *guard = Some(stdin);
+                }
+            }
+            result
         }
     }
 }
 
-#[allow(unsafe_code)]
 fn kill_group(pgid: i32) {
     unsafe {
         libc::kill(-pgid, libc::SIGKILL);
