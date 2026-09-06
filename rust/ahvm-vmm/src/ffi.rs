@@ -1,74 +1,26 @@
 //! Raw FFI to the libkrucible C ABI (mirrors `libkrun.h`).
 //!
+//! The symbols come from the `krun` crate itself (re-exported below), NOT
+//! from a hand-written extern block: declaring `extern "C"` locally creates
+//! no link edge, and cargo silently omits the rlib (undefined symbols at
+//! link time). `use krun::...` is what pulls it into the link.
+//!
 //! Every function returns 0 on success or a negative errno on failure.
 //! All `*const c_char` params borrow from the caller's CString arena.
 //!
 //! Unsafe is allowed file-wide here and nowhere else in this crate: this
-//! file contains ONLY extern declarations (no logic, no calls).
+//! file contains ONLY FFI calls (no logic).
 
 #![allow(unsafe_code)]
 
-use std::ffi::c_char;
+pub use krun::{
+    krun_add_disk2, krun_add_net_unixstream, krun_add_virtio_console_default, krun_add_virtiofs3,
+    krun_add_vsock, krun_add_vsock_port2, krun_create_ctx, krun_create_disk_overlay,
+    krun_disable_implicit_init, krun_init_log, krun_set_control_socket, krun_set_exec,
+    krun_set_kernel, krun_set_root_disk2, krun_set_snapshot, krun_set_vm_config, krun_start_enter,
+};
 
-unsafe extern "C" {
-    pub fn krun_init_log(target_fd: i32, level: u32, style: u32, options: u32) -> i32;
-    pub fn krun_create_ctx() -> i32;
-    pub fn krun_set_vm_config(ctx_id: u32, num_vcpus: u8, ram_mib: u32) -> i32;
-    pub fn krun_set_kernel(
-        ctx_id: u32,
-        kernel_path: *const c_char,
-        kernel_format: u32,
-        initramfs: *const c_char,
-        cmdline: *const c_char,
-    ) -> i32;
-    pub fn krun_disable_implicit_init(ctx_id: u32) -> i32;
-    pub fn krun_set_root_disk2(ctx_id: u32, disk_path: *const c_char, disk_format: u32) -> i32;
-    pub fn krun_create_disk_overlay(
-        overlay_path: *const c_char,
-        backing_path: *const c_char,
-        backing_size: u64,
-    ) -> i32;
-    pub fn krun_add_disk2(
-        ctx_id: u32,
-        block_id: *const c_char,
-        disk_path: *const c_char,
-        disk_format: u32,
-        read_only: bool,
-    ) -> i32;
-    pub fn krun_add_virtiofs3(
-        ctx_id: u32,
-        tag: *const c_char,
-        path: *const c_char,
-        shm_size: u64,
-        read_only: bool,
-    ) -> i32;
-    pub fn krun_add_virtio_console_default(
-        ctx_id: u32,
-        input_fd: i32,
-        output_fd: i32,
-        err_fd: i32,
-    ) -> i32;
-    pub fn krun_add_vsock(ctx_id: u32, tsi_features: u32) -> i32;
-    pub fn krun_add_vsock_port2(ctx_id: u32, port: u32, filepath: *const c_char, listen: bool)
-        -> i32;
-    pub fn krun_add_net_unixstream(
-        ctx_id: u32,
-        path: *const c_char,
-        fd: i32,
-        mac: *const u8,
-        features: u32,
-        flags: u32,
-    ) -> i32;
-    pub fn krun_set_control_socket(ctx_id: u32, socket_path: *const c_char) -> i32;
-    pub fn krun_set_snapshot(ctx_id: u32, snapshot_dir: *const c_char) -> i32;
-    pub fn krun_set_exec(
-        ctx_id: u32,
-        exec_path: *const c_char,
-        argv: *const *const c_char,
-        envp: *const *const c_char,
-    ) -> i32;
-    pub fn krun_start_enter(ctx_id: u32) -> i32;
-}
+use std::ffi::c_char;
 
 /// Disk image formats (`KRUN_DISK_FORMAT_*`).
 pub const DISK_RAW: u32 = 0;
