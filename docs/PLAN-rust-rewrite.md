@@ -134,6 +134,33 @@ with a translation shim at the boundary during transition, removed at cutover.
 
 ## 6. First step after PR #2 merges
 
-Phase 0 only: freeze protocol vectors + land the conformance harness on Go.
+Phase 0 only: record protocol vectors + land the conformance harness on Go.
 Nothing gets rewritten until the harness is green — that harness is what makes
 the rest safe to do.
+
+## 7. Adopted decisions (from parallel design probes)
+
+- **Backends: trait-abstract now, ship krucible-only.** The Go `Engine`
+  interface is already backend-neutral with optional capabilities and opaque
+  snapshot manifests — ~1 week to formalize (generalize dead FC state
+  columns, per-engine capability gating, per-OS selection). Resurrecting
+  Firecracker now would cost ~4–8 weeks for a Linux-only backend with
+  disjoint snapshots/networking and zero macOS story, doubling the test
+  matrix with no user-visible payoff. krucible stays the preferred and only
+  backend; Firecracker returns only on real hostile-multitenancy demand.
+  Structurally: Firecracker can never do macOS/HVF, so any dual-backend
+  future keeps krucible as the dev-machine path regardless.
+- **Durability: local NVMe hot path + S3 async backup (Sprites-style).**
+  Full `memory.img` + qcow2 deltas chunked content-addressed (Rabin CDC +
+  SHA-256, ~2 MB avg), manifests with strict compat gates (arch, VMM,
+  kernel), background push on cold-stop, parallel prefetch on wake,
+  refcounted GC, per-chunk XChaCha20-Poly1305. Rollout: single-node backup
+  → prefetch-on-wake → multi-node restore. S3 is the durability story that
+  makes multi-node and the dashboard's snapshot views real.
+- **API: dashboard-first.** Cursor pagination + filters on every list (never
+  another unbounded array), one typed event bus (queryable table + SSE
+  stream; axum WS only for shells), OpenAPI generated from code and
+  CI-gated, per-sandbox detail embedding thermal/activity/ports/rules so a
+  detail view costs one call. Auth stays header-keys (no CSRF surface);
+  harden WS origins before any browser ships. Drop CLI-only cruft
+  (`/_shell` page, proxy path surgery, name-vs-ID ambiguity) from the v2 API.
