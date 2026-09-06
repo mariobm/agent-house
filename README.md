@@ -243,7 +243,7 @@ Each user gets their own API key, sandbox limits, and network:
 
 ```bash
 sudo ahvm user create --name alice --max-sandboxes 5
-# → API key: bht_...  (shown once)
+# → API key: ahv_...  (shown once)
 ```
 
 - **API scoping** — users see only their own sandboxes and secrets

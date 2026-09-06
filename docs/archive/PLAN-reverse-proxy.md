@@ -11,7 +11,7 @@ Browser → Cloudflare Tunnel → ahvm :8080 → /sandboxes/:id/proxy/:port/path
 This requires a valid API key. If a user runs a web app inside a sandbox
 and wants to share it — hand someone a URL — they can't. The only path
 is through the Cloudflare tunnel pointing at `:8080`, which demands
-`Authorization: Bearer bht_...` on every request.
+`Authorization: Bearer ahv_...` on every request.
 
 Beyond the proxy problem, the Cloudflare tunnel is itself an imposition.
 Self-hosters shouldn't need a Cloudflare account, a tunnel daemon, or

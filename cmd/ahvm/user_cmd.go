@@ -243,7 +243,7 @@ func openLocalStore() *store.Store {
 func generateAPIKey() string {
 	b := make([]byte, 32)
 	rand.Read(b)
-	return "bht_" + hex.EncodeToString(b)
+	return "ahv_" + hex.EncodeToString(b)
 }
 
 func sha256HexCLI(s string) string {

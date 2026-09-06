@@ -197,7 +197,7 @@ Future users are created via a CLI command:
 
 ```bash
 ahvm user create --name alice --max-sandboxes 5
-# → API key: bht_abc123...  (shown once, never stored plaintext)
+# → API key: ahv_abc123...  (shown once, never stored plaintext)
 ```
 
 ### 1.5 Secret Scoping
@@ -279,7 +279,7 @@ sandboxes, secrets, subnet, or identity.
 
 ```bash
 ahvm user rotate-key alice
-# → New API key: bht_xyz789...  (shown once)
+# → New API key: ahv_xyz789...  (shown once)
 #   Old key is immediately invalidated.
 ```
 

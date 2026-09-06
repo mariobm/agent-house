@@ -40,7 +40,7 @@ EOF
 export AHVM_CONFIG="$CFG"
 
 echo "==> create local user (direct store write)"
-KEY="$(./ahvm user create --name dev 2>&1 | grep -oE 'bht_[A-Za-z0-9]+' | head -1)"
+KEY="$(./ahvm user create --name dev 2>&1 | grep -oE 'ahv_[A-Za-z0-9]+' | head -1)"
 [ -n "$KEY" ] || { echo "ERROR: could not mint API key"; exit 1; }
 export AHVM_TOKEN="$KEY"
 echo "    token: ${KEY:0:12}…"

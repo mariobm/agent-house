@@ -16,7 +16,7 @@ import (
 // aliasMarker is a fixed infix embedded in every alias so a leaked alias is
 // recognizable as ahvm's even if it's no longer in a live table (a canary the
 // audit layer can scan for globally). High-entropy random bytes surround it.
-const aliasMarker = "bht"
+const aliasMarker = "ahv"
 
 var aliasEnc = base32.StdEncoding.WithPadding(base32.NoPadding)
 

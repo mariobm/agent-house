@@ -353,10 +353,10 @@ func testLocalStore(t *testing.T) *store.Store {
 
 func TestGenerateAPIKey(t *testing.T) {
 	key := generateAPIKey()
-	if !strings.HasPrefix(key, "bht_") {
-		t.Errorf("key should have bht_ prefix, got %q", key)
+	if !strings.HasPrefix(key, "ahv_") {
+		t.Errorf("key should have ahv_ prefix, got %q", key)
 	}
-	if len(key) != 4+64 { // "bht_" + 32 bytes hex
+	if len(key) != 4+64 { // "ahv_" + 32 bytes hex
 		t.Errorf("key length: %d, want %d", len(key), 68)
 	}
 

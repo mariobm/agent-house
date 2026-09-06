@@ -65,7 +65,7 @@ themselves automatically and resume on the next request. See
 
 ```bash
 sudo ahvm user create --name alice --max-sandboxes 5
-# → API key: bht_...  (shown once)
+# → API key: ahv_...  (shown once)
 ```
 
 Send Alice the key over a secure channel. On her machine she follows
@@ -103,7 +103,7 @@ host.
 curl -fsSL ahvm.sh/install | bash
 
 # 2. Configure
-ahvm setup --url https://your-server:8080 --token bht_...
+ahvm setup --url https://your-server:8080 --token ahv_...
 # or interactively:
 ahvm setup
 ```
@@ -118,7 +118,7 @@ config at runtime:
 
 ```bash
 export AHVM_URL=https://your-server:8080
-export AHVM_TOKEN=bht_your_api_key_here
+export AHVM_TOKEN=ahv_your_api_key_here
 ```
 
 Once configured, every other command is the same as the self-hosted

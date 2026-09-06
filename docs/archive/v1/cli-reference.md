@@ -44,7 +44,7 @@ ahvm setup
 Non-interactive (agents, CI, provisioning scripts):
 
 ```bash
-ahvm setup --url https://api.ahvm.sh --token bht_your_key_here
+ahvm setup --url https://api.ahvm.sh --token ahv_your_key_here
 ```
 
 Writes to `~/.ahvm/config.yaml` and tests the connection by listing sandboxes. Exits non-zero on auth failure so scripts can detect it. Key input is masked when typed at the prompt.
@@ -55,14 +55,14 @@ Writes to `~/.ahvm/config.yaml` and tests the connection by listing sandboxes. E
 
 ```yaml
 api_url: https://api.ahvm.sh
-auth_token: bht_your_key_here
+auth_token: ahv_your_key_here
 ```
 
 ### Environment variables (override for CI/scripts)
 
 ```bash
 export AHVM_URL=https://api.ahvm.sh    # API endpoint
-export AHVM_TOKEN=bht_your_key_here      # API key
+export AHVM_TOKEN=ahv_your_key_here      # API key
 ```
 
 Priority: `--flag` > config file > environment variable > default.
@@ -196,7 +196,7 @@ User management operates directly on the local SQLite database. Requires access 
 ```bash
 # Create a user
 sudo ahvm user create --name alice --max-sandboxes 5 --max-cpus 4 --max-memory 4096
-# → API key: bht_...  (shown once)
+# → API key: ahv_...  (shown once)
 
 # List users
 sudo ahvm user list

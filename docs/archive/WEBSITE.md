@@ -269,7 +269,7 @@ Your server is running. Create an API key:
 
 ```bash
 sudo ahvm user create --name alice
-# → API key: bht_...
+# → API key: ahv_...
 ```
 
 Give alice the key. She installs the CLI on her Mac:
@@ -323,13 +323,13 @@ Sandboxes are limited to 1 vCPU, 512MB RAM, and are destroyed after
 After submitting, the same page reveals:
 
 ```
-Your API key: bht_abc123...          [Copy]
+Your API key: ahv_abc123...          [Copy]
 
 Get started:
   curl -fsSL https://ahvm.sh/cli | sh
   ahvm setup
   # Endpoint: https://demo.ahvm.sh
-  # API key:  bht_abc123...
+  # API key:  ahv_abc123...
 ```
 
 No page change. The form section transforms into the setup instructions.

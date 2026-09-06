@@ -31,7 +31,7 @@ CI scripts, and provisioning tools that can't answer prompts.`,
   ahvm setup
 
   # Non-interactive (agents, CI)
-  ahvm setup --url https://api.ahvm.sh --token bht_abc123`,
+  ahvm setup --url https://api.ahvm.sh --token ahv_abc123`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var endpoint, key string
 

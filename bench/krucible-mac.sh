@@ -103,7 +103,7 @@ EOF
 export AHVM_CONFIG="$CFG"
 
 echo "==> minting bench user (high limits)"
-KEY="$("$REPO/ahvm" user create --name bench --max-sandboxes 100 --max-cpus 8 --max-memory 8192 2>&1 | grep -oE 'bht_[A-Za-z0-9]+' | head -1)"
+KEY="$("$REPO/ahvm" user create --name bench --max-sandboxes 100 --max-cpus 8 --max-memory 8192 2>&1 | grep -oE 'ahv_[A-Za-z0-9]+' | head -1)"
 [ -n "$KEY" ] || { echo "ERROR: could not mint API key"; exit 1; }
 export AHVM_TOKEN="$KEY"
 
