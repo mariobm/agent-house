@@ -32,43 +32,49 @@ throughout; it is the rewrite's safety net, not its victim.
 
 ```text
 rust/
-  ahvm-proto/    frame codec + message types (byte-identical to pkg/agent/proto)
+  ahvm-proto/    new frame codec + message types (+ shim parsing old bytes)
   ahvm-store/    rusqlite, same schema + migrations as pkg/store
   ahvm-forge/    guest agent (static musl, size-budgeted, replaces cmd/forge)
   ahvm-engine/   VMM lifecycle, links libkrucible as a native crate (no cgo),
                  spawns one worker process per VM (keeps today's isolation)
   ahvm-netd/     userspace gateway (replaces gVisor; biggest unknown, §4)
   ahvm-daemon/   axum REST/WS + thermal manager + scheduler
-  ahvm-cli/      clap CLI, identical UX (golden-tested against Go CLI)
+  ahvm-cli/      clap CLI, same workflows (output free to improve)
   ahvm-oci/      image pull/flatten
   ahvm-dns/      embedded responder
 ```
 
-Non-negotiable compatibilities (enforced by tests in §3):
-- Wire protocol bytes identical (forge↔daemon, old↔new mix must work).
-- SQLite schema identical (a DB written by Go opens in Rust and vice versa).
-- Snapshot bundles interchangeable (Rust restores Go checkpoints and reverse).
-- CLI flags/output identical (golden tests).
+Guiding rule: nothing needs to be byte-identical for its own sake. Wherever
+the Rust version can be more efficient or cleaner, do it better — frozen
+vectors below exist to build exact migration tooling and parity tests, not to
+chain the new design to old bytes. Compat is required only where data gravity
+demands it (existing SQLite DBs and snapshot bundles must import cleanly);
+everything else (wire frames, CLI output, internal APIs) may be redesigned,
+with a translation shim at the boundary during transition, removed at cutover.
 
 ## 3. Phases (each shippable, each gated)
 
-### Phase 0 — Freeze + conformance harness (1–2 wks)
-- Freeze `pkg/agent/proto` bytes; record golden vectors (frames, config JSON).
-- Black-box conformance suite at CLI level runnable against EITHER binary
-  (`ahvm` from Go or Rust): create/exec/shell/files/snapshot/publish flows.
+### Phase 0 — Vectors + conformance harness (1–2 wks)
+- Record protocol vectors (frames, config JSON) as the migration reference
+  and translation-shim contract — not a freeze on the new design.
+- Black-box conformance suite at CLI level: same workflows must work on both
+  trees (behavioral parity; output text may improve).
 - CI builds both trees; conformance must pass on Go before Rust exists.
-- **Exit:** harness green on Go; protocol vectors frozen in repo.
+- **Exit:** harness green on Go; vectors recorded in repo.
 
 ### Phase 1 — `ahvm-proto` + `ahvm-store` (2–3 wks)
-- Port frame codec with proptest/fuzz against golden vectors.
-- rusqlite store with identical schema; open Go-written DBs in tests.
-- **Exit:** fuzz clean 1h; cross-open tests pass both directions.
+- New protocol design, plus a translation shim that parses every golden
+  vector (fuzz the shim against the vectors).
+- rusqlite store: must open Go-written DBs (data gravity); schema itself may
+  be redesigned with a one-shot migration.
+- **Exit:** fuzz clean 1h; Go DBs open in Rust.
 
 ### Phase 2 — `ahvm-forge` guest agent (3–4 wks)
 - Port exec/PTY/files/sessions/systemctl-shim; static musl; strip; size budget
   (e.g. <8 MB) enforced in CI.
-- Validate with the ported guest unit suite + live boot against the GO daemon
-  (mixed-version interop is the point of the frozen protocol).
+- Validate with the ported guest unit suite + live boot driven by a Rust
+  test engine (mixed-version runs against the Go daemon only where the
+  translation shim makes them cheap).
 - **Exit:** Go daemon + Rust forge passes agent KVM suite; binary size in budget.
 
 ### Phase 3 — `ahvm-engine` (4–6 wks)
@@ -77,11 +83,13 @@ Non-negotiable compatibilities (enforced by tests in §3):
 - This is where this week's vsock flake lives: add a deterministic
   regression test for back-to-back SIGKILL→relaunch (fixed-CID reuse) and
   keep a bounded retry until the fork-level fix lands.
-- Snapshot-compat tests both directions are mandatory here.
+- Snapshot import tests (Go-written bundles restore in Rust) are mandatory
+  here; export back need not be preserved if the format improves.
 - **Exit:** full KVM suite green on Rust engine + Go daemon.
 
 ### Phase 4 — `ahvm-daemon` (4–6 wks)
-- axum REST/WS, auth, thermal manager, scheduler; OpenAPI diff vs Go in CI.
+- axum REST/WS, auth, thermal manager, scheduler; API surface free to improve,
+  with the conformance suite (not byte diffs) as the gate.
 - **Exit:** conformance suite green on Rust daemon + Rust engine; Go daemon
   retired from CI (kept as reference for one release).
 
@@ -95,13 +103,13 @@ Non-negotiable compatibilities (enforced by tests in §3):
 - **Exit:** gateway KVM suite + fuzz green; perf within 2x of gVisor baseline.
 
 ### Phase 6 — CLI + packaging (2–3 wks)
-- clap CLI, golden output tests vs Go CLI; install.sh, systemd units, release
-  workflow, docs.
+- clap CLI: same workflows must work (conformance), output and flags free to
+  improve; install.sh, systemd units, release workflow, docs.
 - **Exit:** install-from-scratch on ahvm-node-01 using only Rust artifacts.
 
 ### Phase 7 — Cutover (2 wks)
-- SQLite carries over untouched; snapshot bundles interchangeable; flag-day
-  cutover per host with rollback = previous binary. Delete Go tree.
+- SQLite migrates (same file or one-shot migration); snapshot bundles import;
+  flag-day cutover per host with rollback = previous binary. Delete Go tree.
 - **Exit:** repo is Rust + libkrucible submodule only; CI has zero Go.
 
 ## 4. Risks (stated plainly)
