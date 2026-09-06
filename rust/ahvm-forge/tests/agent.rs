@@ -170,11 +170,12 @@ fn file_write_read_list_roundtrip() {
     let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
     assert_eq!(b64str(&v, "data_b64"), b"contents");
 
-    let body = serde_json::json!({ "op": "list", "path": "sub/dir" }).to_string().into_bytes();
+    let body = serde_json::json!({ "op": "list", "path": "sub/dir", "offset": 0, "limit": 100 }).to_string().into_bytes();
     write_frame(&mut c.w, &Frame { msg_type: FrameType::FileReq, payload: body }).unwrap();
     let f = read_frame(&mut c.r).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
     assert_eq!(v["entries"][0]["name"], "note.txt");
+    assert_eq!(v["next_offset"], serde_json::Value::Null);
 }
 
 #[test]
@@ -199,4 +200,112 @@ fn output_is_capped() {
     let out = exec(&mut c, &["sh", "-c", "head -c 30000000 /dev/zero | tr '\\0' x"]);
     assert_eq!(out["truncated"], true);
     assert_eq!(b64str(&out, "stdout_b64").len(), 256 << 10);
+}
+
+fn file_op(c: &mut AgentConn, body: serde_json::Value) -> serde_json::Value {
+    let body = body.to_string().into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::FileReq, payload: body }).unwrap();
+    let f = read_frame(&mut c.r).unwrap();
+    assert_eq!(f.msg_type, FrameType::FileResp);
+    serde_json::from_slice(&f.payload).unwrap()
+}
+
+#[test]
+fn write_beats_planted_symlink_tmp() {
+    // Regression: predictable `<name>.ahvm-tmp` let a pre-planted symlink
+    // redirect the write outside the jail (and destroyed the planter file).
+    let agent = Agent::spawn("");
+    // Plant the exact legacy temp name as a symlink pointing outside.
+    let outside = agent.dir.join("outside.txt");
+    std::fs::write(&outside, b"untouched").unwrap();
+    std::os::unix::fs::symlink(&outside, agent.dir.join("note.ahvm-tmp")).unwrap();
+    let mut c = agent.connect();
+    let data = B64.encode(b"hello");
+    let v = file_op(
+        &mut c,
+        serde_json::json!({ "op": "write", "path": "note.txt", "data_b64": data }),
+    );
+    assert_eq!(v["bytes"], 5);
+    // Target written through the unique temp, not the planted link...
+    let got = std::fs::read(agent.dir.join("note.txt")).unwrap();
+    assert_eq!(got, b"hello");
+    // ...and the outside file plus the planted link are intact.
+    assert_eq!(std::fs::read(&outside).unwrap(), b"untouched");
+    assert!(std::fs::symlink_metadata(agent.dir.join("note.ahvm-tmp"))
+        .unwrap()
+        .is_symlink());
+}
+
+#[test]
+fn exec_timeout_kills_descendants() {
+    // `sh -c 'sleep 30 & wait'`: killing only the direct child leaves the
+    // grandchild holding the pipes, which used to wedge the response forever.
+    // Forge runs with a 20s exec timeout in tests; the grandchild would exit
+    // on its own at 30s, so anything under ~28s proves the group kill.
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    c.w
+        .set_read_timeout(Some(Duration::from_secs(28)))
+        .unwrap();
+    let start = std::time::Instant::now();
+    let body = serde_json::json!({ "argv": ["sh", "-c", "sleep 30 & wait"] })
+        .to_string()
+        .into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::ExecReq, payload: body }).unwrap();
+    let f = read_frame(&mut c.r).unwrap();
+    assert_eq!(f.msg_type, FrameType::ExecResp);
+    let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
+    assert_eq!(v["exit_code"], 124);
+    assert!(start.elapsed() < Duration::from_secs(28), "took {:?}", start.elapsed());
+}
+
+#[test]
+fn exec_exited_parent_with_live_descendant_still_responds() {
+    // Parent exits at once, grandchild keeps the pipe open: the response
+    // must still arrive (bounded drain), not hang on the orphan.
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    c.w
+        .set_read_timeout(Some(Duration::from_secs(25)))
+        .unwrap();
+    let body = serde_json::json!({ "argv": ["sh", "-c", "echo out; sleep 30 &"] })
+        .to_string()
+        .into_bytes();
+    write_frame(&mut c.w, &Frame { msg_type: FrameType::ExecReq, payload: body }).unwrap();
+    // Drain threads see EOF only after the grandchild dies (30s) — bounded
+    // by the 20s test exec timeout + 5s drain grace, all under our 25s cap.
+    // Either a clean short response or a 124 timeout response is acceptable;
+    // hanging is not.
+    let f = read_frame(&mut c.r).unwrap();
+    assert_eq!(f.msg_type, FrameType::ExecResp);
+}
+
+#[test]
+fn large_listing_pages_instead_of_dropping() {
+    // 5,000 long filenames: used to exceed the 1 MiB frame and kill the
+    // connection with no response. Now pages through with next_offset.
+    let agent = Agent::spawn("");
+    let big = agent.dir.join("big");
+    std::fs::create_dir_all(&big).unwrap();
+    for i in 0..5000 {
+        std::fs::write(big.join(format!("file-{i:05}-with-a-long-name-to-bloat-the-listing.txt")), b"x")
+            .unwrap();
+    }
+    let mut c = agent.connect();
+    let mut seen = 0usize;
+    let mut offset = 0u64;
+    loop {
+        let v = file_op(
+            &mut c,
+            serde_json::json!({ "op": "list", "path": "big", "offset": offset, "limit": 1000 }),
+        );
+        let n = v["entries"].as_array().unwrap().len();
+        seen += n;
+        match v["next_offset"].as_u64() {
+            Some(next) => offset = next,
+            None => break,
+        }
+        assert!(seen < 6000, "paging looped");
+    }
+    assert_eq!(seen, 5000);
 }

@@ -34,7 +34,7 @@ pub struct ExecResp {
 pub enum FileReq {
     Read { path: String, offset: u64, limit: u64 },
     Write { path: String, data_b64: String },
-    List { path: String },
+    List { path: String, offset: u64, limit: u64 },
 }
 
 #[derive(Debug, Serialize)]
@@ -42,7 +42,7 @@ pub enum FileReq {
 pub enum FileResp {
     Read { data_b64: String, eof: bool },
     Write { bytes: u64 },
-    List { entries: Vec<DirEntry> },
+    List { entries: Vec<DirEntry>, next_offset: Option<u64> },
 }
 
 #[derive(Debug, Serialize)]
