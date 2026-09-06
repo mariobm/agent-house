@@ -836,3 +836,82 @@ fn bounded_retention_evicts_oldest_completed() {
     let msg = expect_error(&mut c);
     assert!(msg.contains("no such session"), "oldest not evicted: {msg}");
 }
+
+#[test]
+fn pty_concurrent_input_keeps_all_output() {
+    // Live form of the tail-loss repro (READY/FIRST/SECOND): output pumps
+    // while inputs land. The deterministic guard is the pump unit test;
+    // this proves the wired behavior end to end.
+    let agent = Agent::spawn("");
+    let mut c = agent.connect();
+    let v = session_req(
+        &mut c,
+        serde_json::json!({
+            "op": "create",
+            "argv": ["sh", "-c", "echo READY; read a; echo FIRST; read b; echo SECOND"],
+            "pty": true,
+        }),
+    );
+    let id = v["session_id"].as_str().unwrap().to_owned();
+    let id2 = id.clone();
+    let addr = agent.addr.clone();
+    let reader = std::thread::spawn(move || {
+        let w = std::net::TcpStream::connect(&addr).unwrap();
+        w.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+        let r = BufReader::new(w.try_clone().unwrap());
+        let mut c = AgentConn { r, w };
+        attach_collect(&mut c, &id2, 0)
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    for line in [b"1\n".as_slice(), b"2\n".as_slice()] {
+        let data = B64.encode(line);
+        let v = session_req(
+            &mut c,
+            serde_json::json!({ "op": "input", "session_id": id, "data_b64": data }),
+        );
+        assert_eq!(v["bytes"], 2);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let (out, _, exit) = reader.join().unwrap();
+    let s = String::from_utf8_lossy(&out);
+    assert!(s.contains("READY"), "missing READY: {s:?}");
+    assert!(s.contains("FIRST"), "missing FIRST (tail dropped): {s:?}");
+    assert!(s.contains("SECOND"), "missing SECOND (tail dropped): {s:?}");
+    assert_eq!(exit, Some(0));
+}
+
+#[test]
+fn rapid_create_input_delete_leaves_no_strays() {
+    // Lifecycle + lock-order guard: input racing delete used to wedge
+    // (inverted stdin/master vs lifecycle acquisition hangs the suite).
+    // Unique sleep marker so parallel tests can't false-positive the stray
+    // check.
+    for i in 0..10 {
+        let agent = Agent::spawn("");
+        let mut c = agent.connect();
+        let pty = i % 2 == 0;
+        let v = session_req(
+            &mut c,
+            serde_json::json!({ "op": "create", "argv": ["sleep", "47"], "pty": pty }),
+        );
+        let id = v["session_id"].as_str().unwrap().to_owned();
+        let id2 = id.clone();
+        let addr = agent.addr.clone();
+        let writer = std::thread::spawn(move || {
+            let w = std::net::TcpStream::connect(&addr).unwrap();
+            w.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let r = BufReader::new(w.try_clone().unwrap());
+            let mut c = AgentConn { r, w };
+            let data = B64.encode(b"x\n");
+            let _ = session_req(
+                &mut c,
+                serde_json::json!({ "op": "input", "session_id": id2, "data_b64": data }),
+            );
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        let v = session_req(&mut c, serde_json::json!({ "op": "delete", "session_id": id }));
+        assert_eq!(v["session_id"], id);
+        writer.join().unwrap();
+    }
+    assert_no_stray("sleep 47");
+}

@@ -202,19 +202,7 @@ impl SessionManager {
             active_pumps: active_pumps.clone(),
         });
         let pump = |pipe: Option<Box<dyn Read + Send>>, session: Arc<Session>, counter: Arc<AtomicUsize>| {
-            std::thread::spawn(move || {
-                if let Some(mut pipe) = pipe {
-                    let mut chunk = [0u8; 8192];
-                    loop {
-                        match pipe.read(&mut chunk) {
-                            Ok(0) => break,
-                            Ok(n) => session.append(&chunk[..n]),
-                            Err(_) => break,
-                        }
-                    }
-                }
-                counter.fetch_sub(1, Ordering::SeqCst);
-            })
+            std::thread::spawn(move || pump_stream(pipe, &session, &counter))
         };
         pump(
             child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
@@ -229,30 +217,8 @@ impl SessionManager {
         let pumps = active_pumps.clone();
         let session_clone = session.clone();
         std::thread::spawn(move || {
-            let code = child.wait().ok().and_then(|s| s.code());
-            // Kill group immediately to free pipes blocked by descendants,
-            // before waiting for pumps. This unblocks any writer holding stdin.
-            let pgid = {
-                let mut lc = session_clone.lifecycle.lock().unwrap();
-                let pgid = lc.pgid.take();
-                // Don't set exit yet; let pumps drain first, but invalidating
-                // pgid now prevents future kill() from hitting reused pid.
-                pgid
-            };
-            if let Some(pgid) = pgid {
-                kill_group(pgid);
-            }
-            for _ in 0..50 {
-                if pumps.load(Ordering::SeqCst) == 0 {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            {
-                let mut lc = session_clone.lifecycle.lock().unwrap();
-                lc.exit = Some(code.unwrap_or(124));
-            }
-            // Close I/O to free FDs
+            reap_session(child, &session_clone, &pumps);
+            // Close I/O to free FDs (reap published exit already).
             *session_clone.stdin.lock().unwrap() = None;
         });
         Ok(session)
@@ -315,7 +281,7 @@ impl SessionManager {
                 Ok(())
             });
         }
-        let mut child = cmd.spawn().map_err(|e| format!("spawn pty: {e}"))?;
+        let child = cmd.spawn().map_err(|e| format!("spawn pty: {e}"))?;
         let active_pumps = Arc::new(AtomicUsize::new(1));
         let session = Arc::new(Session {
             id: id.clone(),
@@ -336,40 +302,18 @@ impl SessionManager {
             let session_clone = session.clone();
             let pumps = active_pumps.clone();
             std::thread::spawn(move || {
-                let mut file = master_clone;
-                let mut chunk = [0u8; 8192];
-                loop {
-                    match file.read(&mut chunk) {
-                        Ok(0) => break,
-                        Ok(n) => session_clone.append(&chunk[..n]),
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(_) => break,
-                    }
-                }
-                pumps.fetch_sub(1, Ordering::SeqCst);
+                pump_stream(
+                    Some(Box::new(master_clone) as Box<dyn Read + Send>),
+                    &session_clone,
+                    &pumps,
+                );
             });
         }
         let pumps = active_pumps.clone();
         let session_clone = session.clone();
         std::thread::spawn(move || {
-            let code = child.wait().ok().and_then(|s| s.code());
-            let pgid = {
-                let mut lc = session_clone.lifecycle.lock().unwrap();
-                lc.pgid.take()
-            };
-            if let Some(pgid) = pgid {
-                kill_group(pgid);
-            }
-            for _ in 0..50 {
-                if pumps.load(Ordering::SeqCst) == 0 {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            {
-                let mut lc = session_clone.lifecycle.lock().unwrap();
-                lc.exit = Some(code.unwrap_or(124));
-            }
+            reap_session(child, &session_clone, &pumps);
+            // Close master to free the FD (reap published exit already).
             *session_clone.master.lock().unwrap() = None;
         });
         Ok(session)
@@ -383,7 +327,7 @@ impl SessionManager {
         let s = self
             .get(id)
             .ok_or_else(|| format!("no such session: {id}"))?;
-        let mut lc = s.lifecycle.lock().unwrap();
+        let lc = s.lifecycle.lock().unwrap();
         if lc.exit.is_some() {
             return Err(format!("session {id} already completed"));
         }
@@ -397,8 +341,15 @@ impl SessionManager {
     }
 
     pub fn delete(&self, id: &str) -> Result<(), String> {
-        let mut map = self.sessions.lock().unwrap();
-        let s = map.get(id).ok_or_else(|| format!("no such session: {id}"))?.clone();
+        // Remove from the map first so new lookups fail fast, and release
+        // the map lock before any other lock: global order is map ->
+        // lifecycle -> I/O, never nested in reverse (writer restore takes
+        // lifecycle-then-I/O as separate snapshots for the same reason).
+        let s = {
+            let mut map = self.sessions.lock().unwrap();
+            map.remove(id)
+                .ok_or_else(|| format!("no such session: {id}"))?
+        };
         {
             let mut lc = s.lifecycle.lock().unwrap();
             if lc.exit.is_none() {
@@ -411,7 +362,6 @@ impl SessionManager {
         }
         *s.stdin.lock().unwrap() = None;
         *s.master.lock().unwrap() = None;
-        map.remove(id);
         Ok(())
     }
 
@@ -496,7 +446,7 @@ impl Session {
     pub fn write_stdin(&self, data: &[u8]) -> Result<(), String> {
         if self.is_pty {
             // Take master out, write without holding lock, then put back if still valid
-            let mut file = {
+            let file = {
                 let mut guard = self.master.lock().unwrap();
                 guard.take().ok_or("pty closed")?
             };
@@ -540,31 +490,27 @@ impl Session {
             if orig_flags >= 0 {
                 unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags); }
             }
-            // Return file to guard if session still alive and guard is empty
+            // Snapshot liveness BEFORE taking the I/O lock: acquiring
+            // lifecycle while holding master/stdin inverts delete()'s order
+            // (lifecycle -> I/O) and deadlocks when both run together.
+            let alive = self.lifecycle.lock().unwrap().exit.is_none();
             {
                 let mut guard = self.master.lock().unwrap();
-                if guard.is_none() && result.is_ok() {
-                    // Only put back if not already closed by reaper and no error
-                    let lc = self.lifecycle.lock().unwrap();
-                    if lc.exit.is_none() {
-                        *guard = Some(file);
-                    }
-                } else if result.is_ok() {
-                    // Should not happen: guard was Some but we took it, so it is None
+                if result.is_ok() && alive && guard.is_none() {
                     *guard = Some(file);
                 }
-                // On error, drop file (don't put back)
+                // else: reaper/delete closed it, or the write failed —
+                // drop the file either way.
             }
             result
         } else {
             // Piped stdin: take, write without holding lock
-            let mut stdin = {
+            let stdin = {
                 let mut guard = self.stdin.lock().unwrap();
                 guard.take().ok_or("stdin closed")?
             };
-            use std::io::Write as _;
-            // Make cancellable: check exit before and use timeout via poll?
-            // For pipes, we use similar non-blocking approach
+            // Cancellable: raw non-blocking write with timeout + exit poll
+            // (see pty branch above).
             let fd = stdin.as_raw_fd();
             let orig_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
             if orig_flags >= 0 {
@@ -604,19 +550,147 @@ impl Session {
             if orig_flags >= 0 {
                 unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags); }
             }
+            // Same no-nesting rule as the pty branch above.
+            let alive = self.lifecycle.lock().unwrap().exit.is_none();
             {
                 let mut guard = self.stdin.lock().unwrap();
-                if guard.is_none() && result.is_ok() {
-                    let lc = self.lifecycle.lock().unwrap();
-                    if lc.exit.is_none() {
-                        *guard = Some(stdin);
-                    }
-                } else if result.is_ok() {
+                if result.is_ok() && alive && guard.is_none() {
                     *guard = Some(stdin);
                 }
             }
             result
         }
+    }
+}
+
+/// Pump `pipe` to EOF into the session ring, then release one pump slot.
+///
+/// WouldBlock is transient, not terminal: a concurrent input write flips the
+/// shared O_NONBLOCK flag (dup/clone share file status), so the reader waits
+/// for readiness instead of exiting and dropping the tail.
+fn pump_stream(
+    pipe: Option<Box<dyn Read + Send>>,
+    session: &Arc<Session>,
+    counter: &Arc<AtomicUsize>,
+) {
+    if let Some(mut pipe) = pipe {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => session.append(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    counter.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Exit code from a raw wait status: real code, or our 124 kill/timeout
+/// bucket when killed by a signal.
+fn code_of(status: libc::c_int) -> Option<i32> {
+    if libc::WIFEXITED(status) {
+        Some(libc::WEXITSTATUS(status))
+    } else if libc::WIFSIGNALED(status) {
+        Some(124)
+    } else {
+        None
+    }
+}
+
+/// Block until `pid` has exited, WITHOUT reaping it: `WNOWAIT` leaves the
+/// child as a reserved zombie, so its PID cannot be recycled underneath us.
+/// Callers must still reap afterwards; every return path below requires the
+/// caller to wait, never leaks a zombie.
+#[cfg(target_os = "linux")]
+fn wait_zombie(pid: i32) -> Option<i32> {
+    loop {
+        let mut status = 0;
+        let r = unsafe { libc::waitpid(pid, &mut status as *mut _, libc::WNOHANG | libc::WNOWAIT) };
+        if r == pid {
+            // Without WUNTRACED only exited children report; a stopped
+            // child (nobody sends SIGSTOP here) just keeps polling.
+            if let Some(code) = code_of(status) {
+                return Some(code);
+            }
+        } else if r < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            if err.raw_os_error() == Some(libc::ECHILD) {
+                return None; // already reaped elsewhere; nothing reserved
+            }
+            // Unexpected (WNOWAIT is universal on Linux kernels): blocking
+            // reap. The reuse race returns on this path; it is unreachable
+            // in practice.
+            let mut status = 0;
+            let r2 = unsafe { libc::waitpid(pid, &mut status as *mut _, 0) };
+            return if r2 == pid { code_of(status) } else { None };
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// No usable `WNOWAIT` off Linux (Darwin rejects even blocking WNOWAIT with
+/// EINVAL — verified): reap here. The reuse race remains on these builds,
+/// which are dev-only; the guest agent runs on Linux.
+#[cfg(not(target_os = "linux"))]
+fn wait_zombie(pid: i32) -> Option<i32> {
+    let mut status = 0;
+    loop {
+        let r = unsafe { libc::waitpid(pid, &mut status as *mut _, 0) };
+        if r == pid {
+            return code_of(status);
+        }
+        if r < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return None;
+        }
+    }
+}
+
+/// Reap protocol — the single lifecycle owner for session teardown:
+///
+/// 1. observe leader exit via [`wait_zombie`] (PID still reserved);
+/// 2. take the pgid under the lifecycle lock and signal the group while no
+///    unrelated process can hold the number (also unblocks any writer parked
+///    on a descendant-held pipe);
+/// 3. reap (`Child::wait`), drain pumps, publish exit.
+///
+/// `kill()`/`delete()` only ever signal a pgid taken under the same lock
+/// while `exit` is unset, so a reaped number is never signaled.
+fn reap_session(mut child: std::process::Child, session: &Arc<Session>, pumps: &Arc<AtomicUsize>) {
+    let leader = child.id() as i32;
+    let observed = wait_zombie(leader);
+    let pgid = {
+        let mut lc = session.lifecycle.lock().unwrap();
+        lc.pgid.take()
+    };
+    if let Some(pgid) = pgid {
+        kill_group(pgid);
+    }
+    // Linux: the leader is a reserved zombie here, so wait() reaps exactly
+    // it. Elsewhere wait_zombie already reaped; wait() then fails and the
+    // observed code carries the exit.
+    let code = child.wait().ok().and_then(|s| s.code()).or(observed);
+    for _ in 0..50 {
+        if pumps.load(Ordering::SeqCst) == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    {
+        let mut lc = session.lifecycle.lock().unwrap();
+        lc.exit = Some(code.unwrap_or(124));
     }
 }
 
@@ -631,4 +705,73 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reader script: WouldBlock injections between data, then EOF.
+    /// Models a pump racing a concurrent input write (shared O_NONBLOCK).
+    struct Scripted {
+        steps: std::collections::VecDeque<Result<Vec<u8>, std::io::ErrorKind>>,
+    }
+
+    impl Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.steps.pop_front() {
+                None => Ok(0),
+                Some(Ok(data)) => {
+                    let n = data.len().min(buf.len());
+                    buf[..n].copy_from_slice(&data[..n]);
+                    if data.len() > n {
+                        self.steps.push_front(Ok(data[n..].to_vec()));
+                    }
+                    Ok(n)
+                }
+                Some(Err(kind)) => Err(std::io::Error::new(kind, "injected")),
+            }
+        }
+    }
+
+    fn test_session() -> (Arc<Session>, Arc<AtomicUsize>) {
+        let pumps = Arc::new(AtomicUsize::new(1));
+        let s = Arc::new(Session {
+            id: "test".into(),
+            argv: vec![],
+            started_at: 0,
+            lifecycle: Mutex::new(Lifecycle { pgid: None, exit: None }),
+            ring: Mutex::new(Ring::default()),
+            stdin: Mutex::new(None),
+            master: Mutex::new(None),
+            is_pty: false,
+            active_pumps: pumps.clone(),
+        });
+        (s, pumps)
+    }
+
+    /// Deterministic guard for the PTY tail-loss: WouldBlock mid-stream must
+    /// wait for readiness, never terminate the pump. (The live repro —
+    /// concurrent input during output — only trips on timing; this pins the
+    /// logic.)
+    #[test]
+    fn pump_survives_wouldblock() {
+        let (s, pumps) = test_session();
+        let reader = Scripted {
+            steps: vec![
+                Ok(b"READY ".to_vec()),
+                Err(std::io::ErrorKind::WouldBlock),
+                Err(std::io::ErrorKind::WouldBlock),
+                Ok(b"FIRST ".to_vec()),
+                Err(std::io::ErrorKind::WouldBlock),
+                Ok(b"SECOND".to_vec()),
+            ]
+            .into(),
+        };
+        pump_stream(Some(Box::new(reader)), &s, &pumps);
+        assert_eq!(pumps.load(Ordering::SeqCst), 0);
+        let (chunk, next, _, _) = s.read_from(0);
+        assert_eq!(chunk, b"READY FIRST SECOND");
+        assert_eq!(next, 18);
+    }
 }
