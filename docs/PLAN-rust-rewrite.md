@@ -83,9 +83,13 @@ redesigned better. No migration shims, no legacy readers.
   no import path from Go bundles (nothing in production to import).
 - **Exit:** full KVM suite green on Rust engine + Go daemon.
 
-### Phase 4 — `ahvm-daemon` (4–6 wks)
-- axum REST/WS, auth, thermal manager, scheduler; API surface free to improve,
-  with the conformance suite (not byte diffs) as the gate.
+### Phase 4 — `ahvm-daemon` (4–6 wks, split in two)
+- (a) axum REST/WS, auth, persistent sandbox records; exec/files/sessions
+  over the engine backend. (b) Thermal manager, scheduler; lifecycle
+  transitions, concurrency limits, restart recovery.
+- API surface free to improve, with the conformance suite (not byte diffs)
+  as the gate. Acceptance on a KVM host: create → exec → snapshot → kill
+  worker → restore → exec, plus daemon restart with state preserved.
 - **Exit:** conformance suite green on Rust daemon + Rust engine; Go daemon
   retired from CI (kept as reference for one release).
 
