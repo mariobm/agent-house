@@ -17,8 +17,15 @@
 //!   path); backends without `Capabilities::fork` reject it.
 //! * `create_snapshot` / `restore` move typed [`SnapshotManifest`](crate::SnapshotManifest)
 //!   bundles; `restore` re-checks the manifest compat gate.
+//! * `file_*` / `session_*` are the guest file and session surface (Go's
+//!   fileEngine + session ops); sessions stream via repeated
+//!   `session_read` drains rather than a persistent connection.
 
-use crate::{ExecResult, Result, SandboxInfo, SandboxSpec, SnapshotManifest};
+use crate::{
+    DirListing, ExecResult, FileChunk, Result, SandboxInfo, SandboxSpec, SessionChunk, SessionInfo,
+    SnapshotManifest,
+};
+use std::time::Duration;
 
 /// What a backend can do. Capability-gated callers must check these
 /// before invoking `fork` / typed snapshots / live migration instead of
@@ -46,6 +53,30 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     fn restore(&self, snapshot: &SnapshotManifest, new_id: &str) -> Result<SandboxInfo>;
     fn fork(&self, id: &str, new_id: &str) -> Result<SandboxInfo>;
     fn capabilities(&self) -> Capabilities;
+
+    // -- files (cf. Go's fileEngine surface) --
+    fn file_read(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<FileChunk>;
+    fn file_write(&self, id: &str, path: &str, data: &[u8]) -> Result<u64>;
+    fn file_list(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<DirListing>;
+
+    // -- sessions (cf. forge SessionReq ops) --
+    //
+    // `session_read` drains output from `from_seq` until EOF or the budget
+    // runs out (partial chunk with `eof: false`). Streaming callers (the
+    // daemon's WS bridge) loop on it; the trait stays synchronous.
+    fn session_create(&self, id: &str, argv: &[String], pty: bool) -> Result<String>;
+    fn session_read(
+        &self,
+        id: &str,
+        session_id: &str,
+        from_seq: u64,
+        budget: Duration,
+    ) -> Result<SessionChunk>;
+    fn session_input(&self, id: &str, session_id: &str, data: &[u8]) -> Result<u64>;
+    fn session_kill(&self, id: &str, session_id: &str) -> Result<()>;
+    fn session_delete(&self, id: &str, session_id: &str) -> Result<()>;
+    fn session_list(&self, id: &str) -> Result<Vec<SessionInfo>>;
+    fn session_resize(&self, id: &str, session_id: &str, rows: u16, cols: u16) -> Result<()>;
 
     /// Alias for [`Backend::create_snapshot`] kept so both spellings in
     /// circulation resolve to the same operation.

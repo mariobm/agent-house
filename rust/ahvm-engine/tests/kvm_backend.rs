@@ -134,6 +134,38 @@ fn kvm_backend_lifecycle_and_recovery() {
     let r = be.exec("be-3", &sh("printf forked")).unwrap();
     assert_eq!(r.stdout, "forked");
 
+    // ---- files + sessions through the backend ----
+    assert_eq!(
+        be.file_write("be-3", "/workspace/be-proof", b"FILEVAL")
+            .unwrap(),
+        7
+    );
+    let c = be.file_read("be-3", "/workspace/be-proof", 0, 100).unwrap();
+    assert_eq!(c.data, b"FILEVAL");
+    assert!(c.eof);
+    let l = be.file_list("be-3", "/workspace", 0, 100).unwrap();
+    assert!(l.entries.iter().any(|e| e.name == "be-proof" && !e.is_dir));
+    let sid = be
+        .session_create("be-3", &sh("echo SESSMARKER"), false)
+        .unwrap();
+    let chunk = be
+        .session_read("be-3", &sid, 0, Duration::from_secs(20))
+        .unwrap();
+    assert!(
+        chunk
+            .data
+            .windows(b"SESSMARKER\n".len())
+            .any(|w| w == b"SESSMARKER\n"),
+        "no marker: {:?}",
+        String::from_utf8_lossy(&chunk.data)
+    );
+    assert!(chunk.eof, "quick session should EOF");
+    let list = be.session_list("be-3").unwrap();
+    assert!(list.iter().any(|s| s.id == sid));
+    be.session_kill("be-3", &sid).unwrap();
+    be.session_delete("be-3", &sid).unwrap();
+    assert!(be.session_list("be-3").unwrap().iter().all(|s| s.id != sid));
+
     // ---- supervisor restart: drop the backend (workers survive:
     // LiveWorker Drop never kills a running child), reopen, adopt ----
     let data = {

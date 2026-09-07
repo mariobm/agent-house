@@ -12,9 +12,11 @@ use std::sync::Mutex;
 
 use crate::snapshot::{unix_now, Artifacts, Compat, VmmId, DEVICE_LAYOUT_VER};
 use crate::{
-    host_caps, Backend, BackendKind, Capabilities, Error, ExecResult, Result, SandboxInfo,
-    SandboxSpec, SnapshotManifest, State, Thermal,
+    host_caps, Backend, BackendKind, Capabilities, DirEntry, DirListing, Error, ExecResult,
+    FileChunk, Result, SandboxInfo, SandboxSpec, SessionChunk, SessionInfo, SnapshotManifest,
+    State, Thermal,
 };
+use std::time::Duration;
 
 /// Kernel digest stamped on mock snapshots. Tests that need a matching
 /// host build it with [`host_caps`] + this digest + the crate version.
@@ -23,9 +25,19 @@ pub const MOCK_KERNEL_DIGEST: &str = "mock-kernel-dev";
 pub const MAX_EXEC_OUTPUT: usize = 256 * 1024;
 
 #[derive(Debug)]
+struct MockSession {
+    argv: Vec<String>,
+    output: Vec<u8>,
+    running: bool,
+}
+
+#[derive(Debug)]
 struct Inner {
     next: u64,
     sandboxes: HashMap<String, (SandboxSpec, SandboxInfo)>,
+    files: HashMap<(String, String), Vec<u8>>,
+    sessions: HashMap<(String, String), MockSession>,
+    session_next: u64,
 }
 
 /// In-memory backend. Create with [`MockBackend::new`] pointing at a
@@ -42,6 +54,9 @@ impl MockBackend {
             inner: Mutex::new(Inner {
                 next: 0,
                 sandboxes: HashMap::new(),
+                files: HashMap::new(),
+                sessions: HashMap::new(),
+                session_next: 0,
             }),
             snapshot_dir: snapshot_dir.as_ref().to_path_buf(),
         }
@@ -77,6 +92,23 @@ impl MockBackend {
                 root_delta_bytes: 0,
             },
         }
+    }
+
+    /// The sandbox must exist and be running for any guest-touching op.
+    fn live<'a>(
+        sandboxes: &'a HashMap<String, (SandboxSpec, SandboxInfo)>,
+        id: &str,
+    ) -> Result<&'a SandboxInfo> {
+        let (_, info) = sandboxes
+            .get(id)
+            .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?;
+        if info.state != State::Running {
+            return Err(Error::InvalidState(format!(
+                "sandbox {id} is not running (state {:?})",
+                info.state
+            )));
+        }
+        Ok(info)
     }
 }
 
@@ -243,6 +275,187 @@ impl Backend for MockBackend {
     fn capabilities(&self) -> Capabilities {
         BackendKind::Krucible.capabilities()
     }
+
+    fn file_read(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<FileChunk> {
+        let inner = self.lock();
+        Self::live(&inner.sandboxes, id)?;
+        let data = inner
+            .files
+            .get(&(id.to_string(), path.to_string()))
+            .ok_or_else(|| Error::NotFound(format!("sandbox {id} file {path}")))?;
+        let start = (offset as usize).min(data.len());
+        let end = start.saturating_add(limit as usize).min(data.len());
+        Ok(FileChunk {
+            data: data[start..end].to_vec(),
+            eof: end >= data.len(),
+        })
+    }
+
+    fn file_write(&self, id: &str, path: &str, data: &[u8]) -> Result<u64> {
+        let mut inner = self.lock();
+        Self::live(&inner.sandboxes, id)?;
+        inner
+            .files
+            .insert((id.to_string(), path.to_string()), data.to_vec());
+        Ok(data.len() as u64)
+    }
+
+    fn file_list(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<DirListing> {
+        let inner = self.lock();
+        Self::live(&inner.sandboxes, id)?;
+        // Immediate children of `path` over flat (sandbox, path) keys.
+        let prefix = if path == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", path.trim_end_matches('/'))
+        };
+        let mut children: HashMap<String, DirEntry> = HashMap::new();
+        let mut keys: Vec<(String, String)> = inner.files.keys().cloned().collect();
+        keys.sort();
+        for (sid, p) in keys {
+            if sid != id || !p.starts_with(&prefix) {
+                continue;
+            }
+            let rest = &p[prefix.len()..];
+            if rest.is_empty() {
+                continue;
+            }
+            match rest.split_once('/') {
+                Some((dir, _)) => {
+                    children.entry(dir.to_string()).or_insert(DirEntry {
+                        name: dir.to_string(),
+                        is_dir: true,
+                        size: 0,
+                    });
+                }
+                None => {
+                    children.insert(
+                        rest.to_string(),
+                        DirEntry {
+                            name: rest.to_string(),
+                            is_dir: false,
+                            size: inner.files[&(sid, p)].len() as u64,
+                        },
+                    );
+                }
+            }
+        }
+        let mut entries: Vec<DirEntry> = children.into_values().collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        let start = (offset as usize).min(entries.len());
+        let end = start.saturating_add(limit as usize).min(entries.len());
+        let next_offset = (end < entries.len()).then_some(end as u64);
+        entries.truncate(end);
+        Ok(DirListing {
+            entries: entries[start..].to_vec(),
+            next_offset,
+        })
+    }
+
+    fn session_create(&self, id: &str, argv: &[String], _pty: bool) -> Result<String> {
+        let mut inner = self.lock();
+        Self::live(&inner.sandboxes, id)?;
+        inner.session_next += 1;
+        let sid = format!("sess-{:04}", inner.session_next);
+        // Echo-style session: output exists from birth, already exited.
+        // Enough to exercise create/read/kill/delete/list flows.
+        let mut output = argv.join(" ").into_bytes();
+        output.push(b'\n');
+        inner.sessions.insert(
+            (id.to_string(), sid.clone()),
+            MockSession {
+                argv: argv.to_vec(),
+                output,
+                running: false,
+            },
+        );
+        Ok(sid)
+    }
+
+    fn session_read(
+        &self,
+        id: &str,
+        session_id: &str,
+        from_seq: u64,
+        _budget: Duration,
+    ) -> Result<SessionChunk> {
+        let inner = self.lock();
+        Self::live(&inner.sandboxes, id)?;
+        let sess = inner
+            .sessions
+            .get(&(id.to_string(), session_id.to_string()))
+            .ok_or_else(|| Error::NotFound(format!("session {session_id}")))?;
+        let start = (from_seq as usize).min(sess.output.len());
+        Ok(SessionChunk {
+            data: sess.output[start..].to_vec(),
+            eof: true,
+            exit_code: Some(0),
+        })
+    }
+
+    fn session_input(&self, id: &str, session_id: &str, data: &[u8]) -> Result<u64> {
+        let mut inner = self.lock();
+        Self::live(&inner.sandboxes, id)?;
+        let sess = inner
+            .sessions
+            .get_mut(&(id.to_string(), session_id.to_string()))
+            .ok_or_else(|| Error::NotFound(format!("session {session_id}")))?;
+        if !sess.running {
+            return Err(Error::InvalidState(format!(
+                "session {session_id} already exited"
+            )));
+        }
+        Ok(data.len() as u64)
+    }
+
+    fn session_kill(&self, id: &str, session_id: &str) -> Result<()> {
+        let mut inner = self.lock();
+        Self::live(&inner.sandboxes, id)?;
+        let sess = inner
+            .sessions
+            .get_mut(&(id.to_string(), session_id.to_string()))
+            .ok_or_else(|| Error::NotFound(format!("session {session_id}")))?;
+        sess.running = false;
+        Ok(())
+    }
+
+    fn session_delete(&self, id: &str, session_id: &str) -> Result<()> {
+        let mut inner = self.lock();
+        Self::live(&inner.sandboxes, id)?;
+        inner
+            .sessions
+            .remove(&(id.to_string(), session_id.to_string()))
+            .map(|_| ())
+            .ok_or_else(|| Error::NotFound(format!("session {session_id}")))
+    }
+
+    fn session_list(&self, id: &str) -> Result<Vec<SessionInfo>> {
+        let inner = self.lock();
+        Self::live(&inner.sandboxes, id)?;
+        let mut out: Vec<SessionInfo> = inner
+            .sessions
+            .iter()
+            .filter(|((sid, _), _)| sid == id)
+            .map(|((_, sess_id), s)| SessionInfo {
+                id: sess_id.clone(),
+                argv: s.argv.clone(),
+                running: s.running,
+                started_at: 0,
+            })
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(out)
+    }
+
+    fn session_resize(&self, id: &str, session_id: &str, _rows: u16, _cols: u16) -> Result<()> {
+        let inner = self.lock();
+        Self::live(&inner.sandboxes, id)?;
+        inner
+            .sessions
+            .get(&(id.to_string(), session_id.to_string()))
+            .ok_or_else(|| Error::NotFound(format!("session {session_id}")))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -322,6 +535,88 @@ mod tests {
 
         be.destroy(&info.id).unwrap();
         assert!(matches!(be.status(&info.id), Err(Error::NotFound(_))));
+    }
+
+    #[test]
+    fn mock_files_roundtrip_with_paging() {
+        let dir = crate::test_scratch("mock-files");
+        let be = MockBackend::new(dir.join("snapshots"));
+        let info = be.create(&spec()).unwrap();
+
+        assert_eq!(
+            be.file_write(&info.id, "/a.txt", b"hello world").unwrap(),
+            11
+        );
+        assert_eq!(be.file_write(&info.id, "/sub/b.txt", b"bye").unwrap(), 3);
+        let c = be.file_read(&info.id, "/a.txt", 6, 100).unwrap();
+        assert_eq!(c.data, b"world");
+        assert!(c.eof);
+        let c = be.file_read(&info.id, "/a.txt", 0, 5).unwrap();
+        assert_eq!(c.data, b"hello");
+        assert!(!c.eof);
+        assert!(matches!(
+            be.file_read(&info.id, "/missing", 0, 9),
+            Err(Error::NotFound(_))
+        ));
+
+        let l = be.file_list(&info.id, "/", 0, 10).unwrap();
+        assert_eq!(l.next_offset, None);
+        let names: Vec<_> = l
+            .entries
+            .iter()
+            .map(|e| (e.name.clone(), e.is_dir))
+            .collect();
+        assert!(names.contains(&("a.txt".to_string(), false)));
+        assert!(names.contains(&("sub".to_string(), true)));
+        let l = be.file_list(&info.id, "/", 1, 1).unwrap();
+        assert_eq!(l.entries.len(), 1);
+        assert_eq!(l.next_offset, None);
+
+        // Stopped sandboxes refuse guest file access like exec does.
+        be.stop(&info.id).unwrap();
+        assert!(matches!(
+            be.file_read(&info.id, "/a.txt", 0, 1),
+            Err(Error::InvalidState(_))
+        ));
+    }
+
+    #[test]
+    fn mock_sessions_echo_lifecycle() {
+        let dir = crate::test_scratch("mock-sessions");
+        let be = MockBackend::new(dir.join("snapshots"));
+        let info = be.create(&spec()).unwrap();
+
+        let sid = be
+            .session_create(&info.id, &["echo".to_string(), "hi".to_string()], false)
+            .unwrap();
+        let chunk = be
+            .session_read(&info.id, &sid, 0, Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(chunk.data, b"echo hi\n");
+        assert!(chunk.eof);
+        assert_eq!(chunk.exit_code, Some(0));
+        // Drain past the end: empty but still EOF, not an error.
+        let chunk = be
+            .session_read(&info.id, &sid, 999, Duration::from_secs(1))
+            .unwrap();
+        assert!(chunk.data.is_empty() && chunk.eof);
+
+        let list = be.session_list(&info.id).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, sid);
+        assert!(!list[0].running);
+        be.session_resize(&info.id, &sid, 24, 80).unwrap();
+        be.session_kill(&info.id, &sid).unwrap();
+        assert!(matches!(
+            be.session_input(&info.id, &sid, b"x"),
+            Err(Error::InvalidState(_))
+        ));
+        be.session_delete(&info.id, &sid).unwrap();
+        assert!(be.session_list(&info.id).unwrap().is_empty());
+        assert!(matches!(
+            be.session_read(&info.id, &sid, 0, Duration::from_secs(1)),
+            Err(Error::NotFound(_))
+        ));
     }
 
     #[test]

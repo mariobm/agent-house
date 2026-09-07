@@ -39,8 +39,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     host_caps, is_alive, process_starttime, send_ctl, spawn_worker_cfg, terminate_adopted, Backend,
-    BackendKind, Capabilities, Error, ExecResult, LiveWorker, Result, SandboxInfo, SandboxSpec,
-    SnapshotManifest, SpawnConfig, State, Thermal, Worker, MAX_EXEC_OUTPUT,
+    BackendKind, Capabilities, DirListing, Error, ExecResult, FileChunk, LiveWorker, Result,
+    SandboxInfo, SandboxSpec, SessionChunk, SessionInfo, SnapshotManifest, SpawnConfig, State,
+    Thermal, Worker, MAX_EXEC_OUTPUT,
 };
 
 /// VMM identity stamped into snapshot sidecars (must match the worker's
@@ -405,36 +406,14 @@ fn connect_rpc(sock: &Path, budget: Duration) -> Result<UnixStream> {
 /// (default 300s) — a slow-but-valid reply must never be abandoned by a
 /// readiness-sized timeout.
 fn rpc_exec(sock: &Path, argv: &[String], exec_timeout: Duration) -> Result<ExecResult> {
-    let mut c = connect_rpc(sock, CONNECT_BUDGET)?;
-    // The reply may legitimately take the whole execution budget.
-    c.set_read_timeout(Some(exec_timeout)).map_err(Error::Io)?;
-    let body = serde_json::json!({ "argv": argv }).to_string().into_bytes();
-    write_frame(
-        &mut c,
-        &Frame {
-            msg_type: FrameType::ExecReq,
-            payload: body,
-        },
-    )
-    .map_err(|e| Error::Control(format!("exec write: {e}")))?;
-    let mut r = BufReader::new(c.try_clone().map_err(Error::Io)?);
-    let f = read_frame(&mut r).map_err(|e| Error::Control(format!("exec read: {e}")))?;
-    if f.msg_type != FrameType::ExecResp {
-        return Err(Error::Control(format!(
-            "want ExecResp, got {:?}",
-            f.msg_type
-        )));
-    }
-    let v: serde_json::Value = serde_json::from_slice(&f.payload)
-        .map_err(|e| Error::Control(format!("exec JSON: {e}")))?;
-    let decode = |k: &str| -> Result<String> {
-        let s = v[k]
-            .as_str()
-            .ok_or_else(|| Error::Control(format!("exec reply lacks {k}")))?;
-        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s)
-            .map_err(|e| Error::Control(format!("exec {k} not base64: {e}")))?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
-    };
+    let body = serde_json::json!({ "argv": argv });
+    let v = forge_call(
+        sock,
+        FrameType::ExecReq,
+        body,
+        FrameType::ExecResp,
+        exec_timeout,
+    )?;
     let exit_code = v["exit_code"]
         .as_i64()
         .ok_or_else(|| Error::Control("exec reply lacks exit_code".to_string()))?;
@@ -448,14 +427,64 @@ fn rpc_exec(sock: &Path, argv: &[String], exec_timeout: Duration) -> Result<Exec
         }
         (s, truncated)
     };
-    let (stdout, t1) = cap(decode("stdout_b64")?);
-    let (stderr, t2) = cap(decode("stderr_b64")?);
+    let stdout = String::from_utf8_lossy(&forge_b64(&v, "stdout_b64")?).into_owned();
+    let stderr = String::from_utf8_lossy(&forge_b64(&v, "stderr_b64")?).into_owned();
+    let (stdout, t1) = cap(stdout);
+    let (stderr, t2) = cap(stderr);
     Ok(ExecResult {
         exit_code: exit_code as i32,
         stdout,
         stderr,
         truncated: guest_truncated || t1 || t2,
     })
+}
+
+/// One forge request/response round trip. `Error` frames map to
+/// `NotFound` for unknown sessions/files (best-effort message match —
+/// forge reports OS errors as text) and `Control` for everything else.
+fn forge_call(
+    sock: &Path,
+    req_type: FrameType,
+    body: serde_json::Value,
+    expect: FrameType,
+    exec_timeout: Duration,
+) -> Result<serde_json::Value> {
+    let mut c = connect_rpc(sock, CONNECT_BUDGET)?;
+    c.set_read_timeout(Some(exec_timeout)).map_err(Error::Io)?;
+    let payload = serde_json::to_vec(&body)?;
+    write_frame(
+        &mut c,
+        &Frame {
+            msg_type: req_type,
+            payload,
+        },
+    )
+    .map_err(|e| Error::Control(format!("forge write: {e}")))?;
+    let mut r = BufReader::new(c.try_clone().map_err(Error::Io)?);
+    let f = read_frame(&mut r).map_err(|e| Error::Control(format!("forge read: {e}")))?;
+    if f.msg_type == FrameType::Error {
+        let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap_or_default();
+        let msg = v["message"].as_str().unwrap_or("forge error").to_string();
+        if msg.starts_with("no such session") || msg.contains("No such file") {
+            return Err(Error::NotFound(msg));
+        }
+        return Err(Error::Control(msg));
+    }
+    if f.msg_type != expect {
+        return Err(Error::Control(format!(
+            "want {expect:?}, got {:?}",
+            f.msg_type
+        )));
+    }
+    serde_json::from_slice(&f.payload).map_err(|e| Error::Control(format!("forge JSON: {e}")))
+}
+
+fn forge_b64(v: &serde_json::Value, k: &str) -> Result<Vec<u8>> {
+    let s = v[k]
+        .as_str()
+        .ok_or_else(|| Error::Control(format!("forge reply lacks {k}")))?;
+    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s)
+        .map_err(|e| Error::Control(format!("forge {k} not base64: {e}")))
 }
 
 fn wait_ready(sock: &Path, timeout: Duration) -> Result<()> {
@@ -651,6 +680,24 @@ impl KrucibleBackend {
         Ok(())
     }
 
+    /// The sandbox must exist with a live worker; returns its directory.
+    /// Mirrors the mock's Running gate so both backends agree on InvalidState.
+    fn live_dir(&self, id: &str) -> Result<PathBuf> {
+        validate_id(id)?;
+        let inner = self.lock();
+        let rec = inner
+            .sandboxes
+            .get(id)
+            .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?;
+        if rec.record.info.state != State::Running || rec.worker.is_none() {
+            return Err(Error::InvalidState(format!(
+                "sandbox {id} is not running (state {:?})",
+                rec.record.info.state
+            )));
+        }
+        Ok(rec.dir.clone())
+    }
+
     /// Copy a frozen bundle root into place and cold-boot it (compat-gated).
     /// Caller holds no lock; returns the owned worker on success.
     fn boot_from_bundle(
@@ -827,6 +874,43 @@ impl KrucibleBackend {
                 Err(e)
             }
         }
+    }
+}
+
+impl KrucibleBackend {
+    /// Session request/response plumbing shared by the session_* trait
+    /// methods (inherent so the trait surface stays exactly the Backend
+    /// seam; see also `snapshot_to_registry` / `restore_inner`).
+    fn session_rpc(
+        &self,
+        id: &str,
+        body: serde_json::Value,
+        op: &str,
+    ) -> Result<serde_json::Value> {
+        let dir = self.live_dir(id)?;
+        let v = forge_call(
+            &forge_sock(&dir),
+            FrameType::SessionReq,
+            body,
+            FrameType::SessionResp,
+            self.cfg.exec_timeout,
+        )?;
+        require_op(&v, op)?;
+        Ok(v)
+    }
+}
+
+/// The forge response must be the operation we asked for (internally-tagged
+/// enums serialize as `{"op": "<snake>", ...}`); anything else is a
+/// backend/guest version skew, never silently accepted.
+fn require_op(v: &serde_json::Value, op: &str) -> Result<()> {
+    if v["op"].as_str() == Some(op) {
+        Ok(())
+    } else {
+        Err(Error::Control(format!(
+            "forge replied op {:?}, want {op:?}",
+            v["op"].as_str()
+        )))
     }
 }
 
@@ -1137,22 +1221,226 @@ impl Backend for KrucibleBackend {
     }
 
     fn exec(&self, id: &str, argv: &[String]) -> Result<ExecResult> {
-        validate_id(id)?;
-        let dir = {
-            let inner = self.lock();
-            let rec = inner
-                .sandboxes
-                .get(id)
-                .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?;
-            if rec.record.info.state != State::Running || rec.worker.is_none() {
-                return Err(Error::InvalidState(format!(
-                    "sandbox {id} is not running (state {:?})",
-                    rec.record.info.state
+        let dir = self.live_dir(id)?;
+        rpc_exec(&forge_sock(&dir), argv, self.cfg.exec_timeout)
+    }
+
+    fn file_read(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<FileChunk> {
+        let dir = self.live_dir(id)?;
+        let v = forge_call(
+            &forge_sock(&dir),
+            FrameType::FileReq,
+            serde_json::json!({ "op": "read", "path": path, "offset": offset, "limit": limit }),
+            FrameType::FileResp,
+            self.cfg.exec_timeout,
+        )?;
+        require_op(&v, "read")?;
+        Ok(FileChunk {
+            data: forge_b64(&v, "data_b64")?,
+            eof: v["eof"].as_bool().unwrap_or(true),
+        })
+    }
+
+    fn file_write(&self, id: &str, path: &str, data: &[u8]) -> Result<u64> {
+        let dir = self.live_dir(id)?;
+        let v = forge_call(
+            &forge_sock(&dir),
+            FrameType::FileReq,
+            serde_json::json!({ "op": "write", "path": path, "data_b64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data) }),
+            FrameType::FileResp,
+            self.cfg.exec_timeout,
+        )?;
+        require_op(&v, "write")?;
+        v["bytes"]
+            .as_u64()
+            .ok_or_else(|| Error::Control("file write reply lacks bytes".to_string()))
+    }
+
+    fn file_list(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<DirListing> {
+        let dir = self.live_dir(id)?;
+        let v = forge_call(
+            &forge_sock(&dir),
+            FrameType::FileReq,
+            serde_json::json!({ "op": "list", "path": path, "offset": offset, "limit": limit }),
+            FrameType::FileResp,
+            self.cfg.exec_timeout,
+        )?;
+        require_op(&v, "list")?;
+        let entries = v["entries"]
+            .as_array()
+            .ok_or_else(|| Error::Control("file list reply lacks entries".to_string()))?
+            .iter()
+            .map(|e| {
+                Ok(crate::DirEntry {
+                    name: e["name"]
+                        .as_str()
+                        .ok_or_else(|| Error::Control("dir entry lacks name".to_string()))?
+                        .to_string(),
+                    is_dir: e["is_dir"].as_bool().unwrap_or(false),
+                    size: e["size"].as_u64().unwrap_or(0),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(DirListing {
+            entries,
+            next_offset: v["next_offset"].as_u64(),
+        })
+    }
+
+    fn session_create(&self, id: &str, argv: &[String], pty: bool) -> Result<String> {
+        let dir = self.live_dir(id)?;
+        let v = forge_call(
+            &forge_sock(&dir),
+            FrameType::SessionReq,
+            serde_json::json!({ "op": "create", "argv": argv, "pty": pty }),
+            FrameType::SessionResp,
+            self.cfg.exec_timeout,
+        )?;
+        require_op(&v, "started")?;
+        v["session_id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| Error::Control("session create reply lacks session_id".to_string()))
+    }
+
+    fn session_read(
+        &self,
+        id: &str,
+        session_id: &str,
+        from_seq: u64,
+        budget: Duration,
+    ) -> Result<SessionChunk> {
+        let dir = self.live_dir(id)?;
+        let sock = forge_sock(&dir);
+        let mut c = connect_rpc(&sock, CONNECT_BUDGET)?;
+        c.set_read_timeout(Some(budget)).map_err(Error::Io)?;
+        let body =
+            serde_json::json!({ "op": "attach", "session_id": session_id, "from_seq": from_seq });
+        let payload = serde_json::to_vec(&body)?;
+        write_frame(
+            &mut c,
+            &Frame {
+                msg_type: FrameType::SessionReq,
+                payload,
+            },
+        )
+        .map_err(|e| Error::Control(format!("session attach write: {e}")))?;
+        // Drain SessionData frames until EOF or the budget (read timeout)
+        // runs out; a timeout returns whatever arrived (eof: false).
+        let mut r = BufReader::new(c.try_clone().map_err(Error::Io)?);
+        let mut out = Vec::new();
+        let mut exit_code = None;
+        let deadline = Instant::now() + budget;
+        loop {
+            if Instant::now() > deadline {
+                return Ok(SessionChunk {
+                    data: out,
+                    eof: false,
+                    exit_code,
+                });
+            }
+            let f = match read_frame(&mut r) {
+                Ok(f) => f,
+                Err(_) => {
+                    return Ok(SessionChunk {
+                        data: out,
+                        eof: false,
+                        exit_code,
+                    })
+                }
+            };
+            if f.msg_type == FrameType::Error {
+                let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap_or_default();
+                let msg = v["message"].as_str().unwrap_or("forge error").to_string();
+                if msg.starts_with("no such session") {
+                    return Err(Error::NotFound(msg));
+                }
+                return Err(Error::Control(msg));
+            }
+            if f.msg_type != FrameType::SessionData {
+                return Err(Error::Control(format!(
+                    "want SessionData, got {:?}",
+                    f.msg_type
                 )));
             }
-            rec.dir.clone()
-        };
-        rpc_exec(&forge_sock(&dir), argv, self.cfg.exec_timeout)
+            let v: serde_json::Value = serde_json::from_slice(&f.payload)
+                .map_err(|e| Error::Control(format!("session data JSON: {e}")))?;
+            out.extend_from_slice(&forge_b64(&v, "data_b64")?);
+            exit_code = v["exit_code"].as_i64().map(|c| c as i32).or(exit_code);
+            if v["eof"].as_bool().unwrap_or(false) {
+                return Ok(SessionChunk {
+                    data: out,
+                    eof: true,
+                    exit_code,
+                });
+            }
+        }
+    }
+
+    fn session_input(&self, id: &str, session_id: &str, data: &[u8]) -> Result<u64> {
+        let v = self.session_rpc(
+            id,
+            serde_json::json!({ "op": "input", "session_id": session_id, "data_b64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data) }),
+            "input_acked",
+        )?;
+        // Forge replies InputAcked{bytes}; accept the field or fall back
+        // to the sent length when an older forge omits it.
+        Ok(v["bytes"].as_u64().unwrap_or(data.len() as u64))
+    }
+
+    fn session_kill(&self, id: &str, session_id: &str) -> Result<()> {
+        self.session_rpc(
+            id,
+            serde_json::json!({ "op": "kill", "session_id": session_id }),
+            "killed",
+        )?;
+        Ok(())
+    }
+
+    fn session_delete(&self, id: &str, session_id: &str) -> Result<()> {
+        self.session_rpc(
+            id,
+            serde_json::json!({ "op": "delete", "session_id": session_id }),
+            "deleted",
+        )?;
+        Ok(())
+    }
+
+    fn session_list(&self, id: &str) -> Result<Vec<SessionInfo>> {
+        let v = self.session_rpc(id, serde_json::json!({ "op": "list" }), "listed")?;
+        let sessions = v["sessions"]
+            .as_array()
+            .ok_or_else(|| Error::Control("session list reply lacks sessions".to_string()))?;
+        sessions
+            .iter()
+            .map(|s| {
+                Ok(SessionInfo {
+                    id: s["id"]
+                        .as_str()
+                        .ok_or_else(|| Error::Control("session lacks id".to_string()))?
+                        .to_string(),
+                    argv: s["argv"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    running: s["running"].as_bool().unwrap_or(false),
+                    started_at: s["started_at"].as_i64().unwrap_or(0),
+                })
+            })
+            .collect()
+    }
+
+    fn session_resize(&self, id: &str, session_id: &str, rows: u16, cols: u16) -> Result<()> {
+        self.session_rpc(
+            id,
+            serde_json::json!({ "op": "resize", "session_id": session_id, "rows": rows, "cols": cols }),
+            "resized",
+        )?;
+        Ok(())
     }
 
     fn create_snapshot(&self, id: &str, snapshot_id: &str) -> Result<SnapshotManifest> {
