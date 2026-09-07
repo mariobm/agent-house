@@ -963,7 +963,7 @@ impl Backend for KrucibleBackend {
             Restore { dir: PathBuf, spec: SandboxSpec, bundle: PathBuf },
             Fresh { dir: PathBuf, spec: SandboxSpec },
         }
-        let plan = {
+        let (plan, failed) = {
             let mut inner = self.lock();
             let rec = inner
                 .sandboxes
@@ -977,23 +977,16 @@ impl Backend for KrucibleBackend {
                 // Drop the dead handle (owned children are reaped by
                 // alive()) so the boot paths below start clean.
                 rec.worker = None;
-                if rec.record.info.state == State::Running {
-                    rec.record.info.state = State::Failed;
-                    let record = rec.record.clone();
-                    let dir = rec.dir.clone();
-                    drop(inner);
-                    let _ = self.persist_record(&dir, &record);
-                }
-            } else if rec.record.info.state == State::Running {
+            }
+            // A live worker means running, whatever the cached state says
+            // (liveness is ground truth; this also never double-boots).
+            if alive {
                 return Ok(());
             }
-            // Re-acquire after the persist above (if any).
-            let inner = self.lock();
-            let rec = inner
-                .sandboxes
-                .get(id)
-                .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?;
-            if rec.dir.join("bundle").join("manifest.json").is_file() {
+            if !alive && rec.record.info.state == State::Running {
+                rec.record.info.state = State::Failed;
+            }
+            let plan = if rec.dir.join("bundle").join("manifest.json").is_file() {
                 Plan::Restore {
                     dir: rec.dir.clone(),
                     spec: rec.record.spec.clone(),
@@ -1004,8 +997,17 @@ impl Backend for KrucibleBackend {
                     dir: rec.dir.clone(),
                     spec: rec.record.spec.clone(),
                 }
-            }
+            };
+            let failed = if rec.record.info.state == State::Failed && !alive {
+                Some((rec.dir.clone(), rec.record.clone()))
+            } else {
+                None
+            };
+            (plan, failed)
         };
+        if let Some((dir, record)) = failed {
+            let _ = self.persist_record(&dir, &record);
+        }
         match plan {
             Plan::Restore { dir, spec, bundle } => {
                 let worker = self.boot_from_bundle(&dir, &spec, &bundle)?;
@@ -1104,6 +1106,15 @@ impl Backend for KrucibleBackend {
             // surface Failed (never silently Running).
             rec.worker = None;
             rec.record.info.state = State::Failed;
+            let record = rec.record.clone();
+            let dir = rec.dir.clone();
+            drop(inner);
+            let _ = self.persist_record(&dir, &record);
+            return Ok(record.info);
+        }
+        if alive && rec.record.info.state == State::Failed {
+            // Healed: liveness is ground truth (see start()).
+            rec.record.info.state = State::Running;
             let record = rec.record.clone();
             let dir = rec.dir.clone();
             drop(inner);
