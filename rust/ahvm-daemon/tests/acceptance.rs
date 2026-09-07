@@ -32,6 +32,8 @@ fn hash(token: &str) -> String {
 
 struct Ctx {
     app: axum::Router,
+    backend: Arc<dyn ahvm_engine::Backend>,
+    store: Arc<ahvm_store::Store>,
 }
 
 fn open(dir: &PathBuf) -> Ctx {
@@ -62,14 +64,55 @@ fn open(dir: &PathBuf) -> Ctx {
         .unwrap(),
     );
     let app = build_router(AppState {
-        store,
-        backend,
+        store: store.clone(),
+        backend: backend.clone(),
         quotas: ahvm_daemon::quotas::Registry::new(),
         activity: ahvm_daemon::thermal::ActivityTracker::new(),
         ops: ahvm_daemon::scheduler::OpsLimiter::new(4),
         lifecycle: ahvm_daemon::scheduler::LifecycleLocks::new(),
     });
-    Ctx { app }
+    Ctx {
+        app,
+        backend,
+        store,
+    }
+}
+
+/// Best-effort cleanup guard: destroying sandboxes and removing the temp
+/// dir on BOTH success and failure paths (a panic unwinds past the
+/// explicit cleanup section, and dropping the backend deliberately
+/// preserves running workers — so do it explicitly here).
+struct Cleanup {
+    backend: Option<Arc<dyn ahvm_engine::Backend>>,
+    store: Option<Arc<ahvm_store::Store>>,
+    dir: PathBuf,
+    ids: Vec<String>,
+}
+
+impl Cleanup {
+    fn adopt(&mut self, ctx: &Ctx) {
+        self.backend = Some(ctx.backend.clone());
+        self.store = Some(ctx.store.clone());
+    }
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        if let (Some(be), Some(st)) = (self.backend.take(), self.store.take()) {
+            for id in &self.ids {
+                let _ = be.destroy(id);
+                let _ = st.delete_sandbox(id);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// (pid, starttime) identity of a live worker from its state.json.
+fn worker_ident(dir: &PathBuf, id: &str) -> (u64, Option<u64>) {
+    let raw = std::fs::read(dir.join("sandboxes").join(id).join("state.json")).unwrap();
+    let v: Value = serde_json::from_slice(&raw).unwrap();
+    (v["pid"].as_u64().unwrap(), v["starttime"].as_u64())
 }
 
 async fn call(
@@ -134,8 +177,19 @@ async fn acceptance_crash_recovery_and_restart() {
         "AHVM_KVM_TEST=1 requires /dev/kvm"
     );
     let dir: PathBuf = std::env::temp_dir().join(format!("ahvm-accept-{}", std::process::id()));
+    let mut cleanup = Cleanup {
+        backend: None,
+        store: None,
+        dir: dir.clone(),
+        ids: vec!["acc1".to_string(), "acc2".to_string()],
+    };
+    // Worker identities pre-restart (pid + starttime defeat pid reuse).
+    let mut pre_restart = Vec::new();
+    // Marker session id, needed again post-restart (RAM continuity proof).
+    let marker_sid: String;
     {
         let ctx = open(&dir);
+        cleanup.adopt(&ctx);
         let app = || ctx.app.clone();
 
         // ---- create + exec + files + session marker ----
@@ -173,7 +227,7 @@ async fn acceptance_crash_recovery_and_restart() {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        let marker_sid = sess["session_id"].as_str().unwrap().to_string();
+        marker_sid = sess["session_id"].as_str().unwrap().to_string();
 
         // ---- stop + start (bundle restore) ----
         assert_eq!(
@@ -269,11 +323,52 @@ async fn acceptance_crash_recovery_and_restart() {
             out["stdout"], "V1",
             "restored disk must show frozen V1, not live V2"
         );
+        // The live box must show the divergence (guards against a vacuous
+        // rollback proof where V2 never actually landed).
+        let (status, out) = call(
+            app(),
+            "POST",
+            "/v1/sandboxes/acc1/exec",
+            Some(serde_json::json!({ "argv": ["/bin/sh", "-c", "cat /workspace/acc-proof"] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(out["stdout"], "V2", "live disk must show diverged V2");
+        pre_restart.push(("acc1".to_string(), worker_ident(&dir, "acc1")));
+        pre_restart.push(("acc2".to_string(), worker_ident(&dir, "acc2")));
     } // end phase 1: ctx and its request closure drop here (workers survive)
 
     // ---- daemon restart: reopen against the same dirs, adopt workers ----
     let ctx = open(&dir);
+    cleanup.adopt(&ctx);
     let app = || ctx.app.clone();
+    // Same processes, not replacements: pid + starttime identity must be
+    // unchanged across the reopen (a reboot-on-open regression would pass
+    // listing+exec but fail here).
+    for (id, (pid, starttime)) in &pre_restart {
+        let (now_pid, now_st) = worker_ident(&dir, id);
+        assert_eq!(
+            (now_pid, now_st),
+            (*pid, *starttime),
+            "worker {id} was replaced, not adopted"
+        );
+    }
+    // RAM continuity across the restart: the pre-restart session on acc1
+    // re-attaches with its marker output (same guest, same memory).
+    let (status, chunk) = call(
+        app(),
+        "GET",
+        &format!("/v1/sandboxes/acc1/sessions/{marker_sid}/read?from_seq=0&budget_ms=15000"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        unb64(&chunk)
+            .windows(b"ACCMARKER\n".len())
+            .any(|w| w == b"ACCMARKER\n"),
+        "RAM marker lost across daemon restart"
+    );
     let (status, list) = call(app(), "GET", "/v1/sandboxes", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list["sandboxes"].as_array().unwrap().len(), 2);
