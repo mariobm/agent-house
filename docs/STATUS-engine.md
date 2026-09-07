@@ -97,8 +97,10 @@ manifests); restore logs `cold restore: resumed from snapshot`.
    theory is dead; update/close it pointing at the fork restore bug.
 2. ~~`perf kvm_entry` on restored worker~~ DONE: vCPUs tick (~1k/s), rng +
    vsock handshake answer — guest kernel alive, userspace/IRQ-deaf.
-3. File fork issue (trace: server `/tmp/man4/rvmm5.log` + `/tmp/ahvm-kvm-105502/vmm.log`;
-   suspect: x86 VmState lacks LAPIC replay) → attempt LAPIC fix or await upstream.
+3. ~~File fork issue~~ DONE: tracked as **issue #11** (upstream repo has
+   issues disabled). Suspect: x86 VmState lacks LAPIC replay. Attempt LAPIC
+   fix in fork or await upstream; flip `AHVM_KVM_RESTORE` default when green.
+   Full trace preserved at server `/tmp/man4/rvmm5.log` (+ `/tmp/ahvm-kvm-105502/vmm.log`).
 4. Run green KVM gate (boot/exec/snapshot, no flag) → PR `rust/engine` →
    fresh `rust/daemon` branch.
 5. Report imago HashMap ordering upstream (with det-*.qcow2 repro).
