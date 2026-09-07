@@ -172,9 +172,14 @@ fn kvm_backend_lifecycle_and_recovery() {
 
     // Idle attach hygiene (review P1): repeated short-budget reads must
     // not accumulate guest threads — each forge attach self-closes.
+    // The guest image ships without /proc mounted; mount it (idempotent,
+    // one exec) so the Threads counter is readable.
     let threads = || -> usize {
         let out = be
-            .exec("be-3", &sh("grep Threads /proc/1/status"))
+            .exec(
+                "be-3",
+                &sh("mkdir -p /proc; mount -t proc proc /proc 2>/dev/null; grep Threads /proc/1/status"),
+            )
             .unwrap()
             .stdout;
         out.split_whitespace()
