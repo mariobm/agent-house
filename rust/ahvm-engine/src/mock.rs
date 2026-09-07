@@ -622,10 +622,7 @@ mod tests {
         assert!(!list[0].running);
         be.session_resize(&info.id, &sid, 24, 80).unwrap();
         assert!(
-            matches!(
-                be.session_kill(&info.id, &sid),
-                Err(Error::InvalidState(_))
-            ),
+            matches!(be.session_kill(&info.id, &sid), Err(Error::InvalidState(_))),
             "kill on an exited session errors (forge parity)"
         );
         assert!(matches!(

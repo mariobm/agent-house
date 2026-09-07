@@ -337,6 +337,64 @@ async fn quotas_reject_over_limit_creates() {
 }
 
 #[tokio::test]
+async fn concurrent_creates_enforce_quota() {
+    // The reviewer's repro: two concurrent creates with max_sandboxes=1.
+    // Exactly one succeeds regardless of interleaving — serialized, the
+    // second sees the committed row; overlapped, it sees the hold.
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+    let app = app();
+    let store = ahvm_store::Store::open_in_memory().unwrap();
+    store
+        .upsert_user(&ahvm_store::User {
+            id: "racer".to_string(),
+            name: "racer".to_string(),
+            api_key_hash: hash("racer-token"),
+            max_sandboxes: 1,
+            max_cpus: 32,
+            max_memory_mb: 65536,
+            max_volumes_mb: 0,
+            max_snapshots: 0,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .unwrap();
+    // Rebuild the app on a store containing the racer (app() seeds fixed users).
+    let dir = std::env::temp_dir().join(format!("ahvm-daemon-race-{}", std::process::id()));
+    let backend: Arc<dyn ahvm_engine::Backend> = Arc::new(MockBackend::new(dir.join("snapshots")));
+    let app = build_router(AppState {
+        store: Arc::new(store),
+        backend,
+        quotas: ahvm_daemon::quotas::Registry::new(),
+    });
+    let barrier = Arc::new(Barrier::new(2));
+    let mk = |name: &'static str| {
+        let app = app.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            call(
+                app,
+                Some("racer-token"),
+                "POST",
+                "/v1/sandboxes",
+                Some(serde_json::json!({ "name": name })),
+            )
+            .await
+            .0
+        })
+    };
+    let (a, b) = tokio::join!(mk("race-a"), mk("race-b"));
+    let mut codes = [a.unwrap(), b.unwrap()];
+    codes.sort();
+    assert_eq!(
+        codes,
+        [StatusCode::CREATED, StatusCode::FORBIDDEN],
+        "exactly one concurrent create must win"
+    );
+}
+
+#[tokio::test]
 async fn stop_start_cycle_gates_exec() {
     let app = app();
     let (_, created) = call(
