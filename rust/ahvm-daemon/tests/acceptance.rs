@@ -109,7 +109,7 @@ impl Drop for Cleanup {
 }
 
 /// (pid, starttime) identity of a live worker from its state.json.
-fn worker_ident(dir: &PathBuf, id: &str) -> (u64, Option<u64>) {
+fn worker_ident(dir: &std::path::Path, id: &str) -> (u64, Option<u64>) {
     let raw = std::fs::read(dir.join("sandboxes").join(id).join("state.json")).unwrap();
     let v: Value = serde_json::from_slice(&raw).unwrap();
     (v["pid"].as_u64().unwrap(), v["starttime"].as_u64())
@@ -160,7 +160,7 @@ fn sigkill(pid: i32) {
     assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
 }
 
-fn worker_pid(dir: &PathBuf, id: &str) -> i32 {
+fn worker_pid(dir: &std::path::Path, id: &str) -> i32 {
     let raw = std::fs::read(dir.join("sandboxes").join(id).join("state.json")).unwrap();
     let v: Value = serde_json::from_slice(&raw).unwrap();
     v["pid"].as_u64().unwrap() as i32
