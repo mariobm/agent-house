@@ -106,6 +106,9 @@ pub async fn create(
         let _ = blocking(move || backend.destroy(&id)).await;
         return Err(e.into());
     }
+    // A newborn VM is definitionally active; without this a start/create
+    // followed by silence would be reaped on stale first-seen timestamps.
+    state.activity.touch(&info.id);
     Ok((StatusCode::CREATED, Json(SandboxView::new(&row, &info))))
 }
 
@@ -175,6 +178,7 @@ pub async fn destroy(
         Ok(()) | Err(ApiError::NotFound(_)) => {}
         Err(e) => return Err(e),
     }
+    state.activity.remove(&id);
     match state.store.delete_sandbox(&id) {
         Ok(()) | Err(ahvm_store::Error::NotFound(_)) => {}
         Err(e) => return Err(e.into()),
@@ -224,6 +228,11 @@ async fn set_running(
         &thermal_str(&live.thermal),
         unix_now(),
     )?;
+    if live.state == ahvm_engine::State::Running {
+        // A (re)started VM is active now; without this a start followed by
+        // silence would be reaped on its stale pre-stop timestamp.
+        state.activity.touch(&live.id);
+    }
     // Re-fetch the row for stable identity fields.
     let row = state.store.get_sandbox(&live.id)?;
     Ok(Json(SandboxView::new(&row, &live)))

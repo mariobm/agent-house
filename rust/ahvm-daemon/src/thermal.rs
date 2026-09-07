@@ -37,6 +37,14 @@ impl ActivityTracker {
         }
     }
 
+    /// Forget an id (destroy). Keeps the map bounded; a recreated id
+    /// starts fresh under the first-seen rule.
+    pub fn remove(&self, id: &str) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.remove(id);
+        }
+    }
+
     pub fn last(&self, id: &str) -> Option<Instant> {
         self.inner.lock().ok()?.get(id).copied()
     }

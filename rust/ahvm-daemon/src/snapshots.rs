@@ -171,6 +171,7 @@ pub async fn restore(
         let _ = blocking(move || backend.destroy(&id)).await;
         return Err(e.into());
     }
+    state.activity.touch(&info.id);
     Ok((
         StatusCode::CREATED,
         Json(crate::SandboxView::new(&sandbox_row, &info)),
