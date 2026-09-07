@@ -50,11 +50,7 @@ fn spec(name: &str) -> ahvm_engine::SandboxSpec {
 }
 
 fn sh(cmd: &str) -> Vec<String> {
-    vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        cmd.to_string(),
-    ]
+    vec!["/bin/sh".to_string(), "-c".to_string(), cmd.to_string()]
 }
 
 // SAFETY: kill(pid, SIGKILL) performs no action on the caller; used to
@@ -79,9 +75,7 @@ fn kvm_backend_lifecycle_and_recovery() {
 
     // Slow exec: a valid reply arriving after the old 15s readiness
     // timeout must be waited out, not abandoned (forge allows 300s).
-    let r = be
-        .exec(&info.id, &sh("sleep 16; printf slow"))
-        .unwrap();
+    let r = be.exec(&info.id, &sh("sleep 16; printf slow")).unwrap();
     assert_eq!(r.exit_code, 0);
     assert_eq!(r.stdout, "slow");
 
