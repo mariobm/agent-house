@@ -394,3 +394,29 @@ async fn acceptance_crash_recovery_and_restart() {
     assert!(list["sandboxes"].as_array().unwrap().is_empty());
     let _ = dir;
 }
+
+/// The cleanup guard must run on failure paths too, not just success:
+/// panic-unwind still drops it (destroy best-effort + temp dir removal).
+/// No KVM needed (mock backend, memory store).
+#[test]
+fn cleanup_guard_runs_on_panic() {
+    use ahvm_engine::MockBackend;
+    let dir: PathBuf = std::env::temp_dir().join(format!("ahvm-cleanup-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    let backend: Arc<dyn ahvm_engine::Backend> = Arc::new(MockBackend::new(dir.join("snaps")));
+    let store = Arc::new(ahvm_store::Store::open_in_memory().unwrap());
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = Cleanup {
+            backend: Some(backend),
+            store: Some(store),
+            dir: dir.clone(),
+            ids: vec!["ghost".to_string()],
+        };
+        panic!("boom");
+    }));
+    assert!(result.is_err());
+    assert!(
+        !dir.exists(),
+        "guard must remove the temp dir even on panic"
+    );
+}
