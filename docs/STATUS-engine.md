@@ -104,6 +104,21 @@ of `e9dcedc` (VMM PR #1). Hosts whose deploy key cannot fetch the fork can
 keep building from `e9dcedc` with zero functional difference; run
 `git submodule update` where network allows to clear the dirty flag.
 
+Review round on PR #12 (all fixed on `rust/engine-backend`): per-sandbox
+operation reservations (second op on a busy id fails fast with Conflict);
+pid-identity adoption via recorded `/proc` starttime with reuse-safe
+adopted signalling; generational snapshot publish (bundle.new → rename
+swap, registry tmp → rename, crash-debris sweep on open); stored-bundle-
+authoritative restore (caller manifest is only a lookup handle);
+split connect vs 300s exec budgets; guest `truncated` flag preserved;
+start() reconciles liveness instead of trusting cache (plus a start()
+contract: out-of-band killers must observe death via status() first —
+kill/reap race is indistinguishable from alive for any supervisor);
+custom `kernel_image` explicitly rejected. Verification caught one more
+own bug along the way: the reconcile edit briefly double-locked the map
+(self-deadlock, found via gdb futex trace); single-scope fix, KVM gate
+green since (backend 18s incl. 16s slow-exec, lifecycle 1.5s).
+
 The imago qcow2 feature-name table has nondeterministic byte ordering. It
 does not break disk correctness; normalization remains future dedup work.
 Issue #3's Go config-fetch path remains separate from the Rust regression.
