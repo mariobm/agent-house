@@ -942,6 +942,16 @@ impl Backend for KrucibleBackend {
         Ok(())
     }
 
+    /// Start a stopped/failed sandbox (compat-gated restore from its
+    /// bundle, fresh boot otherwise). Already-running is Ok.
+    ///
+    /// Contract: liveness is reconciled best-effort at call time. A worker
+    /// terminated out-of-band (SIGKILL/admin/OOM) dies asynchronously: a
+    /// `start()` issued in the microseconds between the kill and actual
+    /// death is indistinguishable from alive, and correctly reports Ok
+    /// without rebooting. Callers that kill out-of-band must first observe
+    /// the death (`status()` → `Failed`) and only then call `start()`.
+    /// In-band paths (`stop`/`destroy`) are synchronous and race-free.
     fn start(&self, id: &str) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;

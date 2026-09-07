@@ -10,7 +10,7 @@
 
 use ahvm_engine::{Backend, KrucibleBackend, KrucibleConfig, State, Thermal};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn gated() -> Option<KrucibleBackend> {
     if std::env::var("AHVM_KVM_TEST").as_deref() != Ok("1") {
@@ -86,11 +86,26 @@ fn kvm_backend_lifecycle_and_recovery() {
     assert_eq!(r.stdout, "slow");
 
     // Worker death behind the backend's back: start() must reboot,
-    // not trust the cached Running state.
+    // not trust the cached Running state. SIGKILL is asynchronous, so
+    // first wait until the backend OBSERVES the death (status reconciles
+    // via try_reap): calling start() in the microseconds between kill()
+    // and actual death is indistinguishable from alive for ANY supervisor
+    // (kill/reap race), and start() correctly reports Ok in that window.
     let data = std::env::temp_dir().join(format!("ahvm-kvm-be-{}", std::process::id()));
     let state_raw = std::fs::read(data.join("be-1").join("state.json")).unwrap();
     let state: serde_json::Value = serde_json::from_slice(&state_raw).unwrap();
     sigkill(state["pid"].as_u64().unwrap() as i32);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if be.status(&info.id).unwrap().state == State::Failed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "backend never observed the SIGKILLed worker's death"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     be.start(&info.id).unwrap();
     let r = be.exec(&info.id, &sh("printf rebooted")).unwrap();
     assert_eq!(r.stdout, "rebooted");
