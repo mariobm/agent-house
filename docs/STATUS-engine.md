@@ -50,16 +50,34 @@ manifests); restore logs `cold restore: resumed from snapshot`.
 
 ## NOT done / blocked
 
-1. **KVM gate does not pass end-to-end yet.** Boot under `cargo test`
-   hangs pre-guest (~60s budget) while the same binary/spec/overlay boots
-   from bash in ~10–30s. Hermetic spawn (`env_clear`) fixed *boot reach*
-   (bridges come up, frames reach the guest) but exec then times out.
-   Opened as **issue #10** (env hang). Bisected hard: NOT single env var,
-   CWD, stdio, contention, cgroups, caps, seccomp, AppArmor, overlay file.
-   Prime suspects left: (a) early exec frames (wait_ready polls from t+1s,
-   before forge listens) poison per-port muxer proxy state — vsock `id`
-   reuse across connections looks racy; (b) restored-guest vsock RX stall
-   (frames pushed + IRQ raised, guest never replies).
+1. **KVM cold restore broken in the VMM fork (proven upstream, 2026-09-07
+   morning).** `kvm_lifecycle` restore cycles gated behind
+   `AHVM_KVM_RESTORE=1` (default: gate proves boot → exec → snapshot only).
+   - Repro (deterministic, cargo-env-independent): manual boot → exec OK →
+     `SNAPSHOT` OK → kill → restore resumes (`cold restore: resumed from
+     snapshot`, vCPUs tick, rng serves) → exec hangs. Fails identically for
+     pristine (zero pre-snapshot traffic) and quiesced (8s post-exec)
+     snapshots. PAUSE/RESUME on a live VM works — the bug is in the
+     snapshot→fresh-process restore path, not vCPU pause/resume.
+   - Host side flawless (trace log): new_reverse → push_op_request → IRQ →
+     guest TX answers OP_RESPONSE (guest kernel alive) → proxy armed →
+     88-byte exec frame pushed to guest RX → IRQ → console TX kick … then
+     silence. Guest never replies; no block I/O attempted. A second
+     connection's handshake is never answered either (105502 log: 1st of
+     ~40 wait_ready polls got TX, rest got push+IRQ only).
+   - Queue save/restore code reviewed OK (`QueueState` replays size/ready/
+     addrs/next_avail/next_used/event_idx/num_added; `VsockState` carries
+     queues+features, no flows). x86 `VmState` replays PIT/clock/PIC/IOAPIC
+     but **no LAPIC** (`KVM_GET/SET_LAPIC` absent) — prime suspect for the
+     guest going IRQ-deaf (level-IRQ stuck-asserted explains "first vector
+     lands, rest don't"; guest→host eventfds keep working, which matches
+     every observation). Needs fork-author confirmation.
+   - Go's `TestKrucibleSnapshotSuite` also fails on this KVM box (never
+     reaches restore: their Create doesn't get agent-ready in 30s — possibly
+     the issue-#3 config-fetch flake or a stale Go worker; inconclusive for
+     restore but confirms the KVM cold tier is unproven upstream).
+   - Next: file the fork issue with the /tmp/man4/rvmm5.log trace, then fix
+     (LAPIC replay?) or wait for upstream; flip the test default when green.
 2. **imago HashMap nondeterminism (real, proven):** `create-overlay` emits
    different header bytes run-to-run (feature-name table is a `HashMap`,
    random order — strings like `dirty`/`corrupt` in output). Valid qcow2
@@ -74,14 +92,16 @@ manifests); restore logs `cold restore: resumed from snapshot`.
 
 ## Next session, in order
 
-1. Repro the exec-timeout on a KNOWN-good manual worker vs test worker with
-   identical timing (delay first exec 20s in test) — separates "early-dial
-   poisoning" from "restore/deep" causes. If early-dial: fix is wait-for-ready
-   via control-socket/console marker instead of exec polling.
-2. If restore-side: `perf kvm_entry` on restored worker (0 entries =
-   vCPUs never resume → fork resume bug; ticking = vsock RX bug).
-3. Land green KVM gate → PR → `rust/daemon` branch.
-4. Report imago HashMap ordering upstream (with det-*.qcow2 repro).
+1. ~~Repro exec-timeout on manual vs test worker~~ DONE (morning): cargo env
+   innocent — restore itself broken (see §1 above). Issue #10's env-hang
+   theory is dead; update/close it pointing at the fork restore bug.
+2. ~~`perf kvm_entry` on restored worker~~ DONE: vCPUs tick (~1k/s), rng +
+   vsock handshake answer — guest kernel alive, userspace/IRQ-deaf.
+3. File fork issue (trace: server `/tmp/man4/rvmm5.log` + `/tmp/ahvm-kvm-105502/vmm.log`;
+   suspect: x86 VmState lacks LAPIC replay) → attempt LAPIC fix or await upstream.
+4. Run green KVM gate (boot/exec/snapshot, no flag) → PR `rust/engine` →
+   fresh `rust/daemon` branch.
+5. Report imago HashMap ordering upstream (with det-*.qcow2 repro).
 
 ## Hygiene notes (learned the hard way)
 
