@@ -100,7 +100,28 @@ async fn main() {
         store: Arc::new(store),
         backend: Arc::new(backend),
         quotas: ahvm_daemon::quotas::Registry::new(),
+        activity: ahvm_daemon::thermal::ActivityTracker::new(),
+        ops: ahvm_daemon::scheduler::OpsLimiter::new(
+            std::env::var("AHVM_MAX_CONCURRENT_OPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(4),
+        ),
     };
+    // Thermal sweep (idle stop + reconcile) runs for the daemon lifetime.
+    // Shutdown is process exit: activity rebuilds, records persist per-op.
+    let thermal_state = state.clone();
+    let thermal_cfg = ahvm_daemon::thermal::ThermalConfig {
+        idle_secs: std::env::var("AHVM_IDLE_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600),
+        sweep_secs: std::env::var("AHVM_SWEEP_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60),
+    };
+    tokio::spawn(async move { ahvm_daemon::thermal::run(thermal_state, thermal_cfg).await });
     let addr: SocketAddr = env("AHVM_LISTEN", "127.0.0.1:8080")
         .parse()
         .unwrap_or_else(|e| {

@@ -36,6 +36,7 @@ pub async fn read(
     if q.path.is_empty() {
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
+    state.activity.touch(&id);
     let backend = state.backend.clone();
     let chunk = blocking(move || backend.file_read(&id, &q.path, q.offset, q.limit)).await?;
     Ok(Json(ReadResponse {
@@ -65,6 +66,7 @@ pub async fn write(
     if body.path.is_empty() {
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
+    state.activity.touch(&id);
     let data = base64_decode(&body.data_b64)?;
     let backend = state.backend.clone();
     let bytes = blocking(move || backend.file_write(&id, &body.path, &data)).await?;
@@ -94,6 +96,7 @@ pub async fn list(
     if q.path.is_empty() {
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
+    state.activity.touch(&id);
     let backend = state.backend.clone();
     let listing = blocking(move || backend.file_list(&id, &q.path, q.offset, q.limit)).await?;
     Ok(Json(ListResponse {

@@ -38,6 +38,7 @@ pub async fn create(
         return Err(ApiError::Invalid("argv must not be empty".to_string()));
     }
     owned(&state, &user.0, &id).await?;
+    state.activity.touch(&id);
     let backend = state.backend.clone();
     let session_id = blocking(move || backend.session_create(&id, &body.argv, body.pty)).await?;
     Ok(Json(CreateResponse { session_id }))
@@ -49,6 +50,7 @@ pub async fn list(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<ahvm_engine::SessionInfo>>> {
     owned(&state, &user.0, &id).await?;
+    state.activity.touch(&id);
     let backend = state.backend.clone();
     Ok(Json(blocking(move || backend.session_list(&id)).await?))
 }
@@ -71,6 +73,7 @@ pub async fn input(
 ) -> ApiResult<Json<InputResponse>> {
     use base64::Engine;
     owned(&state, &user.0, &id).await?;
+    state.activity.touch(&id);
     let data = base64::engine::general_purpose::STANDARD
         .decode(&body.data_b64)
         .map_err(|e| ApiError::Invalid(format!("data_b64 is not base64: {e}")))?;
@@ -85,6 +88,7 @@ pub async fn kill(
     Path((id, sid)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     owned(&state, &user.0, &id).await?;
+    state.activity.touch(&id);
     let backend = state.backend.clone();
     let sid_reply = sid.clone();
     blocking(move || backend.session_kill(&id, &sid)).await?;
@@ -97,6 +101,7 @@ pub async fn delete(
     Path((id, sid)): Path<(String, String)>,
 ) -> ApiResult<axum::http::StatusCode> {
     owned(&state, &user.0, &id).await?;
+    state.activity.touch(&id);
     let backend = state.backend.clone();
     blocking(move || backend.session_delete(&id, &sid)).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
@@ -115,6 +120,7 @@ pub async fn resize(
     Json(body): Json<ResizeBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     owned(&state, &user.0, &id).await?;
+    state.activity.touch(&id);
     let backend = state.backend.clone();
     let sid_reply = sid.clone();
     blocking(move || backend.session_resize(&id, &sid, body.rows, body.cols)).await?;
@@ -153,6 +159,7 @@ pub async fn read(
 ) -> ApiResult<Json<ReadResponse>> {
     use base64::Engine;
     owned(&state, &user.0, &id).await?;
+    state.activity.touch(&id);
     let budget = Duration::from_millis(q.budget_ms.clamp(100, 30_000));
     let backend = state.backend.clone();
     let chunk = blocking(move || backend.session_read(&id, &sid, q.from_seq, budget)).await?;
@@ -179,6 +186,7 @@ pub async fn stream(
     ws: WebSocketUpgrade,
 ) -> ApiResult<axum::response::Response> {
     owned(&state, &user.0, &id).await?;
+    state.activity.touch(&id);
     // The session must exist before we upgrade (else the socket dangles).
     {
         let backend = state.backend.clone();

@@ -82,6 +82,7 @@ pub async fn create(
         extra_env: Default::default(),
     };
     let backend = state.backend.clone();
+    let _permit = state.ops.acquire().await;
     let info = blocking(move || backend.create(&spec)).await?;
     // Mirror to the store; on failure unwind the boot (never orphan a VM
     // behind a missing record).
@@ -165,6 +166,7 @@ pub async fn destroy(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     owned(&state, &user.0, &id).await?;
+    let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
     let owned_id = id.clone();
     match blocking(move || backend.destroy(&owned_id)).await {
@@ -209,6 +211,7 @@ async fn set_running(
         + Send
         + 'static,
 ) -> ApiResult<Json<SandboxView>> {
+    let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
     let a = id.to_string();
     blocking(move || op(backend, a)).await?;
@@ -241,6 +244,9 @@ pub async fn exec(
         return Err(ApiError::Invalid("argv must not be empty".to_string()));
     }
     owned(&state, &user.0, &id).await?;
+    // Attempt marks activity (keep idle_secs comfortably above the exec
+    // budget so long runs are never reaped mid-flight).
+    state.activity.touch(&id);
     let backend = state.backend.clone();
     let out = blocking(move || backend.exec(&id, &body.argv)).await?;
     Ok(Json(out))

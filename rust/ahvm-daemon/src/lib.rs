@@ -19,8 +19,10 @@ pub mod files;
 pub mod quotas;
 pub mod routes;
 pub mod sandboxes;
+pub mod scheduler;
 pub mod sessions;
 pub mod snapshots;
+pub mod thermal;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,6 +43,8 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub backend: Arc<dyn Backend>,
     pub quotas: quotas::Registry,
+    pub activity: thermal::ActivityTracker,
+    pub ops: scheduler::OpsLimiter,
 }
 
 /// JSON error body: machine-readable `code`, human `message`.

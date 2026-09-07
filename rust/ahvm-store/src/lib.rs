@@ -233,6 +233,31 @@ impl Store {
         })
     }
 
+    /// All sandboxes across owners, same cursor discipline (for the thermal
+    /// sweep, which is global). No owner filter by design — callers must
+    /// not expose rows across users (the sweep only transitions lifecycle).
+    pub fn list_all_sandboxes(
+        &self,
+        after: Option<(i64, String)>,
+        limit: usize,
+    ) -> Result<Vec<Sandbox>> {
+        self.with_conn(|c| {
+            let (after_ts, after_id) = after.unwrap_or((i64::MAX, String::new()));
+            let mut stmt = c.prepare(
+                "SELECT id, owner_user_id, name, backend, state, thermal,
+                        cpus, memory_mb, ip, created_at, updated_at
+                 FROM sandboxes
+                 WHERE (created_at < ?1 OR (created_at = ?1 AND id < ?2))
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?3",
+            )?;
+            let rows =
+                stmt.query_map(params![after_ts, after_id, limit as i64], Sandbox::from_row)?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Error::Sqlite)
+        })
+    }
+
     pub fn create_snapshot(&self, s: &Snapshot) -> Result<()> {
         self.with_conn(|c| {
             c.execute(

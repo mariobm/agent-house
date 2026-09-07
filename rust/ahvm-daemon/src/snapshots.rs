@@ -74,6 +74,8 @@ pub async fn create(
     let _hold = state
         .quotas
         .reserve_snapshot(&state.store, &me, &snap_name)?;
+    let _permit = state.ops.acquire().await;
+    state.activity.touch(&id);
     let manifest = blocking(move || backend.create_snapshot(&owned_id, &snap_name)).await?;
     let now = unix_now();
     let row = ahvm_store::Snapshot {
@@ -143,6 +145,7 @@ pub async fn restore(
         manifest.compat.vcpus as i64,
         manifest.compat.mem_mib as i64,
     )?;
+    let _permit = state.ops.acquire().await;
     let new_id = body.new_id.clone();
     let snap_cpus = manifest.compat.vcpus as i64;
     let snap_mem = manifest.compat.mem_mib as i64;
