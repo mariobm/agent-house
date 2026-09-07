@@ -54,6 +54,10 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     fn fork(&self, id: &str, new_id: &str) -> Result<SandboxInfo>;
     fn capabilities(&self) -> Capabilities;
 
+    /// Read a registered snapshot's manifest (for `restore`, which takes
+    /// the manifest, not just the id). Unknown ids are NotFound.
+    fn snapshot_manifest(&self, snapshot_id: &str) -> Result<SnapshotManifest>;
+
     // -- files (cf. Go's fileEngine surface) --
     fn file_read(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<FileChunk>;
     fn file_write(&self, id: &str, path: &str, data: &[u8]) -> Result<u64>;

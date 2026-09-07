@@ -239,10 +239,7 @@ mod tests {
         // Header arrived ([len=1]) then disconnect: truncated frame, NOT
         // a clean EOF.
         let mut cut: &[u8] = &[0, 0, 0, 1];
-        assert!(matches!(
-            read_frame(&mut cut),
-            Err(Error::UnexpectedEof)
-        ));
+        assert!(matches!(read_frame(&mut cut), Err(Error::UnexpectedEof)));
         let mut partial: &[u8] = &[0, 0];
         assert!(matches!(
             read_frame(&mut partial),

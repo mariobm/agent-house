@@ -276,6 +276,11 @@ impl Backend for MockBackend {
         BackendKind::Krucible.capabilities()
     }
 
+    fn snapshot_manifest(&self, snapshot_id: &str) -> Result<SnapshotManifest> {
+        SnapshotManifest::read_from(&self.snapshot_dir.join(snapshot_id))
+            .map_err(|_| Error::NotFound(format!("snapshot {snapshot_id}")))
+    }
+
     fn file_read(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<FileChunk> {
         let inner = self.lock();
         Self::live(&inner.sandboxes, id)?;

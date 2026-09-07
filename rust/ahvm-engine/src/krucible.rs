@@ -919,6 +919,17 @@ impl Backend for KrucibleBackend {
         BackendKind::Krucible.capabilities()
     }
 
+    fn snapshot_manifest(&self, snapshot_id: &str) -> Result<SnapshotManifest> {
+        let inner = self.lock();
+        let bundle = inner
+            .snapshots
+            .get(snapshot_id)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("snapshot {snapshot_id}")))?;
+        drop(inner);
+        SnapshotManifest::read_from(&bundle)
+    }
+
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo> {
         validate_id(&spec.name)?;
         // Custom kernels are a real worker feature, but the backend has no

@@ -15,7 +15,7 @@ pub use entities::*;
 pub use events::*;
 pub use schema::init_schema;
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -103,9 +103,16 @@ impl Store {
                    max_volumes_mb=excluded.max_volumes_mb,
                    max_snapshots=excluded.max_snapshots, updated_at=excluded.updated_at",
                 params![
-                    u.id, u.name, u.api_key_hash, u.max_sandboxes, u.max_cpus,
-                    u.max_memory_mb, u.max_volumes_mb, u.max_snapshots,
-                    u.created_at, u.updated_at
+                    u.id,
+                    u.name,
+                    u.api_key_hash,
+                    u.max_sandboxes,
+                    u.max_cpus,
+                    u.max_memory_mb,
+                    u.max_volumes_mb,
+                    u.max_snapshots,
+                    u.created_at,
+                    u.updated_at
                 ],
             )?;
             Ok(())
@@ -123,9 +130,7 @@ impl Store {
                 User::from_row,
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    Error::NotFound(format!("user {id}"))
-                }
+                rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("user {id}")),
                 e => Error::Sqlite(e),
             })
         })
@@ -156,8 +161,17 @@ impl Store {
                     cpus, memory_mb, ip, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                 params![
-                    s.id, s.owner_user_id, s.name, s.backend.as_str(), s.state,
-                    s.thermal, s.cpus, s.memory_mb, s.ip, s.created_at, s.updated_at
+                    s.id,
+                    s.owner_user_id,
+                    s.name,
+                    s.backend.as_str(),
+                    s.state,
+                    s.thermal,
+                    s.cpus,
+                    s.memory_mb,
+                    s.ip,
+                    s.created_at,
+                    s.updated_at
                 ],
             )?;
             Ok(())
@@ -174,9 +188,7 @@ impl Store {
                 Sandbox::from_row,
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    Error::NotFound(format!("sandbox {id}"))
-                }
+                rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("sandbox {id}")),
                 e => Error::Sqlite(e),
             })
         })
@@ -212,8 +224,12 @@ impl Store {
                  ORDER BY created_at DESC, id DESC
                  LIMIT ?4",
             )?;
-            let rows = stmt.query_map(params![owner, after_ts, after_id, limit as i64], Sandbox::from_row)?;
-            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Error::Sqlite)
+            let rows = stmt.query_map(
+                params![owner, after_ts, after_id, limit as i64],
+                Sandbox::from_row,
+            )?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Error::Sqlite)
         })
     }
 
@@ -226,9 +242,17 @@ impl Store {
                     created_at, expires_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                 params![
-                    s.id, s.owner_user_id, s.sandbox_id, s.name, s.kind, s.state,
-                    s.local_bytes, s.remote_state, s.remote_manifest_key,
-                    s.created_at, s.expires_at
+                    s.id,
+                    s.owner_user_id,
+                    s.sandbox_id,
+                    s.name,
+                    s.kind,
+                    s.state,
+                    s.local_bytes,
+                    s.remote_state,
+                    s.remote_manifest_key,
+                    s.created_at,
+                    s.expires_at
                 ],
             )?;
             Ok(())
@@ -246,9 +270,7 @@ impl Store {
                 Snapshot::from_row,
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    Error::NotFound(format!("snapshot {id}"))
-                }
+                rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("snapshot {id}")),
                 e => Error::Sqlite(e),
             })
         })
@@ -276,7 +298,14 @@ impl Store {
                 "INSERT INTO volumes
                    (id, owner_user_id, name, size_mb, attached_to, created_at)
                  VALUES (?1,?2,?3,?4,?5,?6)",
-                params![v.id, v.owner_user_id, v.name, v.size_mb, v.attached_to, v.created_at],
+                params![
+                    v.id,
+                    v.owner_user_id,
+                    v.name,
+                    v.size_mb,
+                    v.attached_to,
+                    v.created_at
+                ],
             )?;
             Ok(())
         })
@@ -291,9 +320,7 @@ impl Store {
                 Volume::from_row,
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    Error::NotFound(format!("volume {id}"))
-                }
+                rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("volume {id}")),
                 e => Error::Sqlite(e),
             })
         })
@@ -306,7 +333,6 @@ impl Store {
     pub fn detach_volume(&self, id: &str, expected_sandbox: &str) -> Result<()> {
         self.with_conn(|c| detach_volume_inner(c, id, expected_sandbox))
     }
-
 
     pub fn delete_volume(&self, id: &str) -> Result<()> {
         self.with_conn(|c| {
@@ -335,7 +361,8 @@ impl Store {
                 "SELECT id, name, source, size_mb, created_at FROM images ORDER BY name ASC",
             )?;
             let rows = stmt.query_map([], Image::from_row)?;
-            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Error::Sqlite)
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Error::Sqlite)
         })
     }
 
@@ -344,7 +371,14 @@ impl Store {
             c.execute(
                 "INSERT INTO tasks (id, kind, state, progress, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6)",
-                params![t.id, t.kind, t.state, t.progress, t.created_at, t.updated_at],
+                params![
+                    t.id,
+                    t.kind,
+                    t.state,
+                    t.progress,
+                    t.created_at,
+                    t.updated_at
+                ],
             )?;
             Ok(())
         })

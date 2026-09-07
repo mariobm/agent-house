@@ -376,11 +376,15 @@ fn serve_session(_r: &mut BufReader<Conn>, w: &mut Conn, req: SessionReq) -> boo
             }
             false
         }
-        SessionReq::Resize { session_id, rows, cols } => {
+        SessionReq::Resize {
+            session_id,
+            rows,
+            cols,
+        } => {
             match mgr.resize(&session_id, rows, cols) {
                 Ok(()) => {
-                    let body =
-                        serde_json::to_vec(&SessionResp::Resized { session_id }).expect("serialize");
+                    let body = serde_json::to_vec(&SessionResp::Resized { session_id })
+                        .expect("serialize");
                     send_frame(w, reply(FrameType::SessionResp, body));
                 }
                 Err(message) => send_frame(w, err_frame(message)),
@@ -390,8 +394,8 @@ fn serve_session(_r: &mut BufReader<Conn>, w: &mut Conn, req: SessionReq) -> boo
         SessionReq::Delete { session_id } => {
             match mgr.delete(&session_id) {
                 Ok(()) => {
-                    let body =
-                        serde_json::to_vec(&SessionResp::Deleted { session_id }).expect("serialize");
+                    let body = serde_json::to_vec(&SessionResp::Deleted { session_id })
+                        .expect("serialize");
                     send_frame(w, reply(FrameType::SessionResp, body));
                 }
                 Err(message) => send_frame(w, err_frame(message)),
