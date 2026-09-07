@@ -36,7 +36,7 @@ pub const MANIFEST_VER: u32 = 2;
 /// Current virtual device-layout version. Bump when the VMM's device set
 /// changes incompatibly; old bundles then fail the gate instead of
 /// resuming into a half-wired VM.
-pub const DEVICE_LAYOUT_VER: u32 = 1;
+pub const DEVICE_LAYOUT_VER: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VmmId {

@@ -765,7 +765,7 @@ fn resume_seq_after_eviction_is_correct() {
     );
     let id = v["session_id"].as_str().unwrap().to_owned();
     // Wait for completion via attach, then re-attach from 0 to test truncated path
-    let (full, truncated_initial, exit) = attach_collect(&mut c, &id, 0);
+    let (_, _, exit) = attach_collect(&mut c, &id, 0);
     assert_eq!(exit, Some(0));
     // Re-attach from 0 on same completed session: should be truncated and seq should be base, not 0
     // Use new connection so we don't interleave with previous attach's streaming
@@ -781,7 +781,6 @@ fn resume_seq_after_eviction_is_correct() {
     assert!(seq > 0, "seq should be actual start, not 0, got {seq}");
     assert!(seq > 30000 && seq < 50000, "seq should be ~37856, got {seq}");
     // Drain remaining chunks on c2 so server can return to idle before delete
-    let mut next_seq = seq + B64.decode(v["data_b64"].as_str().unwrap()).unwrap().len() as u64;
     loop {
         let f = read_frame(&mut c2.r).unwrap();
         assert_eq!(f.msg_type, FrameType::SessionData);
@@ -789,7 +788,6 @@ fn resume_seq_after_eviction_is_correct() {
         if v["eof"].as_bool().unwrap() {
             break;
         }
-        next_seq = v["seq"].as_u64().unwrap() + B64.decode(v["data_b64"].as_str().unwrap()).unwrap().len() as u64;
     }
     // Cleanup on original connection
     let _ = session_req(&mut c, serde_json::json!({ "op": "delete", "session_id": id }));

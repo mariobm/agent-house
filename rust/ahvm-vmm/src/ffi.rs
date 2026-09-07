@@ -49,8 +49,11 @@ pub const NET_FEATURE_HOST_UFO: u32 = 1 << 5;
 // that outlives the call; the driver guarantees this (see Arena).
 
 pub fn init_log(target_fd: i32, level: u32) {
-    // Safe extern in the fork (self-validating): no unsafe block needed.
-    krun_init_log(target_fd, level, 0, 0);
+    // -1 selects the default logger; no raw descriptor ownership is transferred.
+    check(
+        unsafe { krun_init_log(target_fd, level, 0, 0) },
+        "krun_init_log",
+    );
 }
 
 pub fn create_ctx() -> i32 {
@@ -65,7 +68,10 @@ pub fn check(r: i32, what: &'static str) {
 }
 
 pub fn set_vm_config(cid: u32, vcpus: u8, mem_mib: u32) {
-    check(krun_set_vm_config(cid, vcpus, mem_mib), "krun_set_vm_config");
+    check(
+        krun_set_vm_config(cid, vcpus, mem_mib),
+        "krun_set_vm_config",
+    );
 }
 
 pub fn set_kernel(cid: u32, path: *const c_char, format: u32, cmdline: *const c_char) {
@@ -76,7 +82,10 @@ pub fn set_kernel(cid: u32, path: *const c_char, format: u32, cmdline: *const c_
 }
 
 pub fn disable_implicit_init(cid: u32) {
-    check(krun_disable_implicit_init(cid), "krun_disable_implicit_init");
+    check(
+        krun_disable_implicit_init(cid),
+        "krun_disable_implicit_init",
+    );
 }
 
 pub fn set_root_disk(cid: u32, path: *const c_char, qcow2: bool) {

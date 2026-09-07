@@ -1,117 +1,97 @@
-# STATUS — Rust rewrite, engine phase (2026-09-07 ~01:15 CEST)
+# Rust engine status — 2026-09-07
 
-Branch: `rust/engine` (pushed). Main is at PR #8 merge (forge sessions+PTY).
+PR #9: `rust/engine`. Recovery tracking: [issue #11](https://github.com/mariobm/agent-house/issues/11).
 
-## Done
+## KVM recovery findings and fixes
 
-**Merged to main:** scaffold + `ahvm-proto` v2 codec (#4), `ahvm-store` (#5),
-`ahvm-forge` exec/files/auth (#6), store review fixes (#7), forge
-sessions+PTY (#8). 42 tests green, clippy clean, macOS + `ahvm-node-01`.
+The failure was user-visible: a sandbox restored into a fresh worker stopped
+answering exec requests. A successful snapshot write or a
+`cold restore: resumed` log did not prove that the sandbox was usable.
 
-**On `rust/engine` (this branch, pushed):**
-- `ahvm-vmm` worker: native libkrun link (no cgo), spec-driven boot,
-  `create-overlay`. Builds release on server (6.6 MB). Lessons recorded in
-  code: link via `krun = { package = "libkrun" }` re-export (bare extern
-  links nothing); pin `imago =0.2.3` + `vm-memory =0.17.1` (fresh resolve
-  picks an incompatible pair even upstream would break on).
-- `ahvm-engine` core (subagent): `Backend` trait + capabilities, neutral
-  spec/info/thermal types, v2 `SnapshotManifest` + compat gate, worker
-  manager, mock backend. 19 unit tests.
-- Forge vsock transport (subagent): `Conn` enum, `VsockListener`, tests green.
-- **PID1 fix (real product bug):** guest forge `exit(1)` on TCP bind failure
-  killed PID 1 and halted every VM within seconds. Now exits only if BOTH
-  transports fail. Proven: workers stay alive 30+ min.
-- Review round 1 (all fixed): null-env leak → explicit empty env; vsock fds
-  without CLOEXEC → `SOCK_CLOEXEC`/`accept4` (Linux) + fcntl fallback;
-  worker zombies → owning `LiveWorker` (kill+reap, reap-if-exited Drop);
-  manifest collision → engine sidecar is `ahvm-manifest.json` (libkrun owns
-  `manifest.json`; coexistence + missing-sidecar-refused tests).
-- Review round 2 (all fixed): reap-then-signal race → `waitid(P_PID,
-  WEXITED|WNOWAIT)` observe-without-reap + fail-closed `Observed` enum
-  (never signal unreserved); PTY tail loss on WouldBlock → wait-for-readiness
-  in pumps + deterministic unit test; lock-order deadlock (writer-restore vs
-  `delete`) → snapshot-then-act ordering; concurrent-create over-limit →
-  placeholder reservation under map lock.
-- `scripts/rust-guest-rootfs.sh`: reproducible guest image (musl forge as
-  `/init.krun` + pinned BusyBox 1.37.0 static + links). Gotcha recorded in
-  script: `ldd` exits 1 on static binaries, so under `pipefail` ANY pipeline
-  containing ldd reports failure — match on captured text, never on status.
-- `ahvm-engine/tests/kvm_lifecycle.rs` (KVM-gated, skips without
-  `AHVM_KVM_TEST=1`): boot → `/bin/sh -c 'printf hello'` smoke + stderr/exit
-  cases → qcow2 overlay → session RAM marker + fs file → sidecar write →
-  3× kill/restore cycles with compat gate + tamper-negative → zombie checks.
+Two VMM defects combined to hide the cause:
 
-## Proven working live (server)
+- The x86 MSR snapshot allowlist omitted `IA32_XSS`. After restore, the guest
+  faulted in `restore_fpregs_from_fpstate` and eventually panicked. Preserving
+  this supervisor extended-state mask fixes execution on `agent_house`.
+  Restore now also rejects a partial `KVM_SET_MSRS` result.
+- Active console port threads owned queues that the snapshot did not save.
+  Restore did not restart those ports, so kernel diagnostics could stall.
+  Snapshot now stops and joins console workers, collects their queue state,
+  records open ports, and restarts ports after snapshot or restore.
 
-Rust worker boots microVMs; guest forge serves exec/files over bridged
-vsock; smoke asserts pass (`printf hello` → exit 0; exit-3 case; file list).
-Snapshot writes a real bundle (572 MB memory.img + checkpoint.bin + both
-manifests); restore logs `cold restore: resumed from snapshot`.
+The earlier missing-LAPIC theory was incorrect: `VcpuState` already saves and
+restores LAPIC state. The Go test failing before guest readiness was not
+proof of a Go restore failure. Cargo environment was not the restore cause.
 
-## NOT done / blocked
+Checkpoint format and engine device layout are now version **2**. Old
+snapshots are intentionally refused; create new snapshots with this worker.
+The VMM dependency lives in private `mariobm/libkrucible`, pinned by the
+submodule commit. Its upstream remains `sahil-shubham/libkrucible`.
 
-1. **KVM cold restore broken in the VMM fork (proven upstream, 2026-09-07
-   morning).** `kvm_lifecycle` restore cycles gated behind
-   `AHVM_KVM_RESTORE=1` (default: gate proves boot → exec → snapshot only).
-   - Repro (deterministic, cargo-env-independent): manual boot → exec OK →
-     `SNAPSHOT` OK → kill → restore resumes (`cold restore: resumed from
-     snapshot`, vCPUs tick, rng serves) → exec hangs. Fails identically for
-     pristine (zero pre-snapshot traffic) and quiesced (8s post-exec)
-     snapshots. PAUSE/RESUME on a live VM works — the bug is in the
-     snapshot→fresh-process restore path, not vCPU pause/resume.
-   - Host side flawless (trace log): new_reverse → push_op_request → IRQ →
-     guest TX answers OP_RESPONSE (guest kernel alive) → proxy armed →
-     88-byte exec frame pushed to guest RX → IRQ → console TX kick … then
-     silence. Guest never replies; no block I/O attempted. A second
-     connection's handshake is never answered either (105502 log: 1st of
-     ~40 wait_ready polls got TX, rest got push+IRQ only).
-   - Queue save/restore code reviewed OK (`QueueState` replays size/ready/
-     addrs/next_avail/next_used/event_idx/num_added; `VsockState` carries
-     queues+features, no flows). x86 `VmState` replays PIT/clock/PIC/IOAPIC
-     but **no LAPIC** (`KVM_GET/SET_LAPIC` absent) — prime suspect for the
-     guest going IRQ-deaf (level-IRQ stuck-asserted explains "first vector
-     lands, rest don't"; guest→host eventfds keep working, which matches
-     every observation). Needs fork-author confirmation.
-   - Go's `TestKrucibleSnapshotSuite` also fails on this KVM box (never
-     reaches restore: their Create doesn't get agent-ready in 30s — possibly
-     the issue-#3 config-fetch flake or a stale Go worker; inconclusive for
-     restore but confirms the KVM cold tier is unproven upstream).
-   - Next: file the fork issue with the /tmp/man4/rvmm5.log trace, then fix
-     (LAPIC replay?) or wait for upstream; flip the test default when green.
-2. **imago HashMap nondeterminism (real, proven):** `create-overlay` emits
-   different header bytes run-to-run (feature-name table is a `HashMap`,
-   random order — strings like `dirty`/`corrupt` in output). Valid qcow2
-   either way; harmless for boot, POISON for future chunk-dedup (S3 plan).
-   Fix options: upstream report, or post-create normalization. NOT the boot
-   hang (hung instances boot fine manually).
-3. **Issue #3** (Go vsock config-fetch flake): still open by design; the
-   deterministic SIGKILL→relaunch regression test belongs to the KVM gate
-   above — blocked behind (1).
-4. Daemon (`ahvm-daemon`), netd, CLI: not started (Phase 4–6 of
-   `docs/PLAN-rust-rewrite.md`).
+## Regression coverage
 
-## Next session, in order
+`AHVM_KVM_TEST=1` now always tests restore. There is no second restore opt-in.
+Missing KVM or required paths fail an explicitly enabled run.
 
-1. ~~Repro exec-timeout on manual vs test worker~~ DONE (morning): cargo env
-   innocent — restore itself broken (see §1 above). Issue #10's env-hang
-   theory is dead; update/close it pointing at the fork restore bug.
-2. ~~`perf kvm_entry` on restored worker~~ DONE: vCPUs tick (~1k/s), rng +
-   vsock handshake answer — guest kernel alive, userspace/IRQ-deaf.
-3. ~~File fork issue~~ DONE: tracked as **issue #11** (upstream repo has
-   issues disabled). Suspect: x86 VmState lacks LAPIC replay. Attempt LAPIC
-   fix in fork or await upstream; flip `AHVM_KVM_RESTORE` default when green.
-   Full trace preserved at server `/tmp/man4/rvmm5.log` (+ `/tmp/ahvm-kvm-105502/vmm.log`).
-4. Run green KVM gate (boot/exec/snapshot, no flag) → PR `rust/engine` →
-   fresh `rust/daemon` branch.
-5. Report imago HashMap ordering upstream (with det-*.qcow2 repro).
+The lifecycle test covers:
 
-## Hygiene notes (learned the hard way)
+- Native Rust worker boot, shell stdout, stderr and nonzero exit status.
+- Snapshot, resume, SIGKILL and reap, then a fresh worker for each restore.
+- Command execution, console output and a pre-snapshot session RAM marker.
+- Disk rollback: copy the qcow2 overlay while the VM is paused, overwrite
+  the live disk after snapshot, restore a separate copy, drop guest file
+  caches and check the original content.
+- Engine sidecar compatibility and actual worker refusal of an old checkpoint.
 
-- `pkill -f <pattern>` matches its own ssh command line and kills the
-  session (exit 255, no output). Use exact PIDs or `[b]racket` patterns.
-- Tool transport expands `$VAR` in commands (incl. unquoted heredocs).
-  Quote heredoc delimiters; prefer python/printf-built scripts.
-- `git checkout -B` without a preceding `fetch` silently pins stale refs;
-  always fetch first (bit us 3 times tonight).
-- Overlapping background `cargo test` runs poison all observations; run KVM
-  tests strictly one at a time on a clean box.
+**Disk ownership matters:** libkrun's `SNAPSHOT` writes RAM and device/CPU
+state and leaves vCPUs paused. The caller must copy the root overlay at that
+boundary and restore a disposable copy. Reusing the live overlay is not a
+persistent disk snapshot. The base image must remain unchanged.
+
+On `ssh agent_house`, the strengthened test passed **10 cycles with 2 vCPUs**
+and a 2-second delay before each restore (23.96 seconds on the rebuilt image). A single-vCPU
+three-cycle run also passed. The guest image was subsequently rebuilt from
+verified BusyBox source using the checked-in script.
+
+Validation: 64 Rust workspace tests passed, including the enabled KVM gate;
+workspace/all-target Clippy passed with warnings denied. The VMM dependency
+passed 61 device, 27 architecture and 29 VMM tests (one existing ignored),
+and Clippy with `--no-default-features --features blk,net`. Optional GPU,
+SEV/TDX and other host architectures were not validated by this run.
+
+## Run on the server
+
+Prerequisites: `/dev/kvm`, Rust and the native Linux musl target, a C toolchain,
+make, curl, bzip2, binutils, e2fsprogs, and libkrunfw in `/usr/local/lib64`.
+The rootfs builder does not need root or mounts. It verifies BusyBox 1.37.0
+against a fixed SHA-256 on either download mirror and checks both binaries
+for a dynamic loader. It does not install or silently upgrade host packages.
+
+```sh
+cd /root/agent-house
+export PATH="$HOME/.cargo/bin:$PATH"
+scripts/rust-guest-rootfs.sh /tmp/kvm/rust-guest.ext4
+make -C libkrucible FEATURE_FLAGS='-p libkrun --no-default-features --features blk,net'
+cargo build --manifest-path rust/Cargo.toml --release --locked -p ahvm-vmm
+LD_LIBRARY_PATH=/usr/local/lib64 \
+AHVM_KVM_TEST=1 AHVM_KVM_CYCLES=10 AHVM_KVM_VCPUS=2 \
+AHVM_VMM_BIN="$PWD/rust/target/release/ahvm-vmm" \
+AHVM_GUEST_IMAGE=/tmp/kvm/rust-guest.ext4 \
+cargo test --manifest-path rust/Cargo.toml -p ahvm-engine --test kvm_lifecycle -- --nocapture
+```
+
+`AHVM_KVM_RESTORE_DELAY_SECS` optionally adds downtime between cycles.
+`AHVM_KVM_READY_SECS` changes the readiness budget. Logs and bundles remain
+under `/tmp/ahvm-kvm-<test-pid>` for inspection. Run KVM tests serially.
+
+## Scope still remaining
+
+PR #9 provides the worker, engine types, compatibility sidecar, supervision,
+mock backend, and real KVM lifecycle validation. The Rust daemon, netd and
+CLI are still later phases; this does not claim an end-to-end Rust product
+API exists. Multi-host migration and arbitrary host CPU compatibility are
+not validated by these same-host recovery tests.
+
+The imago qcow2 feature-name table has nondeterministic byte ordering. It
+does not break disk correctness; normalization remains future dedup work.
+Issue #3's Go config-fetch path remains separate from the Rust regression.

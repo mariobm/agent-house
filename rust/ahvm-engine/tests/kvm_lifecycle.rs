@@ -11,11 +11,8 @@
 //! - Snapshot bundle gets the engine sidecar (`ahvm-manifest.json`) next to
 //!   libkrun's own `manifest.json`; restore is compat-gated (plus a tampered
 //!   negative case).
-//! - Restore cycles (kill/restore with RAM-marker + fs-file survival) run
-//!   ONLY with `AHVM_KVM_RESTORE=1`: the VMM fork's KVM cold restore is
-//!   broken as of 2026-09-07 (guest deaf to pushed vsock data post-restore;
-//!   see docs/STATUS-engine.md). Without the flag the gate stops after the
-//!   snapshot asserts instead of hanging 10 minutes on a known bug.
+//! - Repeated SIGKILL / fresh-worker restores preserve session memory and
+//!   roll the disk back from an independently copied root delta.
 
 #![cfg(unix)]
 
@@ -42,6 +39,12 @@ fn ready_timeout() -> Duration {
 }
 const VMM_VERSION: &str = "libkrun-2.0.0-dev";
 
+fn test_vcpus() -> u8 {
+    std::env::var("AHVM_KVM_VCPUS")
+        .map(|v| v.parse().expect("AHVM_KVM_VCPUS must be u8"))
+        .unwrap_or(1)
+}
+
 struct Cfg {
     vmm: PathBuf,
     image: PathBuf,
@@ -53,14 +56,19 @@ fn gated() -> Option<Cfg> {
         eprintln!("SKIP kvm_lifecycle: set AHVM_KVM_TEST=1 on a KVM host");
         return None;
     }
-    if !Path::new("/dev/kvm").exists() {
-        eprintln!("SKIP kvm_lifecycle: no /dev/kvm");
-        return None;
-    }
-    let vmm = std::env::var("AHVM_VMM_BIN").ok().map(PathBuf::from)?;
-    let image = std::env::var("AHVM_GUEST_IMAGE").ok().map(PathBuf::from)?;
+    assert!(
+        Path::new("/dev/kvm").exists(),
+        "AHVM_KVM_TEST=1 requires /dev/kvm"
+    );
+    let vmm = PathBuf::from(std::env::var("AHVM_VMM_BIN").expect("AHVM_VMM_BIN required"));
+    let image =
+        PathBuf::from(std::env::var("AHVM_GUEST_IMAGE").expect("AHVM_GUEST_IMAGE required"));
     assert!(vmm.is_file(), "AHVM_VMM_BIN missing: {}", vmm.display());
-    assert!(image.is_file(), "AHVM_GUEST_IMAGE missing: {}", image.display());
+    assert!(
+        image.is_file(),
+        "AHVM_GUEST_IMAGE missing: {}",
+        image.display()
+    );
     let work = std::env::temp_dir().join(format!("ahvm-kvm-{}", std::process::id()));
     std::fs::create_dir_all(work.join("sock")).unwrap();
     Some(Cfg { vmm, image, work })
@@ -72,11 +80,9 @@ fn base_image_bytes(image: &Path) -> u64 {
 
 fn write_spec(path: &Path, image: &Path, sock: &Path, snapshot_dir: Option<&Path>) {
     let mut spec = serde_json::json!({
-        "vcpus": 1,
+        "vcpus": test_vcpus(),
         "mem_mib": 512,
-        // 5 = trace: KVM-gated runs must show exactly how far device/vcpu
-        // setup gets; a silent hang with no libkrun logs is undebuggable.
-        "log_level": 5,
+        "log_level": 3,
         "root_disk": image.to_string_lossy(),
         "root_disk_format": "qcow2",
         "pid1": true,
@@ -106,26 +112,29 @@ impl Guest {
         }
         let spec = cfg.work.join("spec.json");
         write_spec(&spec, image, &sock, snapshot_dir);
-        // Hermetic spawn: the worker inherits NOTHING from this process.
-        // A full cargo-test environment hangs guest boot for undetermined
-        // reasons (see issue: KVM_RUN entered, guest never executes; minimal
-        // env boots in seconds — bisected to the combination, no single var).
-        // Only libkrunfw discovery needs the environment. The production
-        // daemon must do the same (never leak daemon env into workers).
-        let ld_path =
-            std::env::var("LD_LIBRARY_PATH").expect("LD_LIBRARY_PATH for libkrunfw");
+        // Keep worker environment independent of the invoking test runner.
+        let ld_path = std::env::var("LD_LIBRARY_PATH").expect("LD_LIBRARY_PATH for libkrunfw");
         // Worker stderr goes to a log file (NOT null): a dead-on-arrival
         // worker must leave evidence instead of failing silently.
-        let log = std::fs::File::create(cfg.work.join("vmm.log")).unwrap();
+        let log_name = if snapshot_dir.is_some() {
+            "restore.log"
+        } else {
+            "boot.log"
+        };
+        let log = std::fs::File::create(cfg.work.join(log_name)).unwrap();
+        let console = log.try_clone().unwrap();
         let child = Command::new(&cfg.vmm)
             .arg(&spec)
             .env_clear()
-            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .env(
+                "PATH",
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            )
             .env("HOME", "/root")
             .env("LANG", "C.UTF-8")
             .env("LD_LIBRARY_PATH", ld_path)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(console)
             .stderr(log)
             .spawn()
             .expect("spawn ahvm-vmm");
@@ -208,7 +217,14 @@ impl Guest {
             .to_string()
             .into_bytes();
         let mut c = self.conn();
-        write_frame(&mut c, &Frame { msg_type: FrameType::SessionReq, payload: body }).unwrap();
+        write_frame(
+            &mut c,
+            &Frame {
+                msg_type: FrameType::SessionReq,
+                payload: body,
+            },
+        )
+        .unwrap();
         let mut r = BufReader::new(c.try_clone().unwrap());
         let mut out = Vec::new();
         let deadline = Instant::now() + budget;
@@ -224,9 +240,11 @@ impl Guest {
             };
             assert_eq!(f.msg_type, FrameType::SessionData);
             let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap();
-            let chunk =
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, v["data_b64"].as_str().unwrap())
-                    .unwrap();
+            let chunk = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                v["data_b64"].as_str().unwrap(),
+            )
+            .unwrap();
             out.extend_from_slice(&chunk);
             if out.windows(needle.len()).any(|w| w == needle) {
                 return (out, true);
@@ -238,12 +256,12 @@ impl Guest {
     }
 
     fn snapshot(&self, bundle: &Path) {
-        let reply = send_ctl(self.sock.join("k.sock"), &format!("SNAPSHOT {}", bundle.display()))
-            .expect("SNAPSHOT command");
-        assert!(
-            reply.starts_with("OK"),
-            "SNAPSHOT refused: {reply}"
-        );
+        let reply = send_ctl(
+            self.sock.join("k.sock"),
+            &format!("SNAPSHOT {}", bundle.display()),
+        )
+        .expect("SNAPSHOT command");
+        assert!(reply.starts_with("OK"), "SNAPSHOT refused: {reply}");
     }
 
     /// SIGKILL + reap (mirrors LiveWorker discipline without owning it here:
@@ -292,9 +310,8 @@ fn b64(v: &serde_json::Value, k: &str) -> Vec<u8> {
 fn kvm_snapshot_restore_cycle() {
     let Some(cfg) = gated() else { return };
 
-    // qcow2 overlay over the base image: the snapshot bundle freezes THIS
-    // file, so post-restore reads prove disk restore (a raw shared disk
-    // would prove nothing — writes persist regardless of restore).
+    // The caller freezes and copies the disk while SNAPSHOT leaves vCPUs
+    // paused. libkrun's memory checkpoint does not copy the root overlay.
     let overlay = cfg.work.join("root.qcow2");
     let out = Command::new(&cfg.vmm)
         .args([
@@ -322,7 +339,11 @@ fn kvm_snapshot_restore_cycle() {
     assert_eq!(b64(&v, "stderr_b64"), b"oops\n");
 
     // Filesystem state inside the overlay (frozen by the snapshot).
-    let v = g.exec(&["/bin/sh", "-c", "echo FSVAL > /workspace/fs-proof"]);
+    let v = g.exec(&[
+        "/bin/sh",
+        "-c",
+        "echo FSVAL > /workspace/fs-proof; /bin/busybox sync",
+    ]);
     assert_eq!(v["exit_code"], 0);
     // RAM state: session output exists only in guest memory. The session
     // stays alive across ALL cycles (long sleep), so attach with a marker
@@ -344,6 +365,9 @@ fn kvm_snapshot_restore_cycle() {
 
     // ---- snapshot + sidecar ----
     g.snapshot(&bundle);
+    let frozen_root = bundle.join("root.qcow2");
+    let root_bytes = std::fs::copy(&overlay, &frozen_root).unwrap();
+    assert!(root_bytes > 0);
     let manifest = SnapshotManifest::new(
         "kvm-smoke",
         ahvm_engine::Compat {
@@ -354,14 +378,14 @@ fn kvm_snapshot_restore_cycle() {
             },
             kernel_digest: "bundled:libkrunfw.so.5".into(),
             mem_mib: 512,
-            vcpus: 1,
+            vcpus: test_vcpus(),
             device_layout_ver: ahvm_engine::DEVICE_LAYOUT_VER,
         },
         ahvm_engine::Artifacts {
             memory_bytes: std::fs::metadata(bundle.join("memory.img"))
                 .map(|m| m.len())
                 .unwrap_or(0),
-            root_delta_bytes: 0,
+            root_delta_bytes: root_bytes,
         },
     );
     manifest.write_to(&bundle).unwrap();
@@ -377,22 +401,28 @@ fn kvm_snapshot_restore_cycle() {
     let bad = SnapshotManifest::read_from(&cfg.work.join("tampered")).unwrap();
     assert!(bad.check_compat(&host).is_err());
 
-    // Restore cycles need a working KVM cold restore in the VMM fork.
-    // As of 2026-09-07 the fork resumes the guest (vCPUs tick, rng + vsock
-    // handshake answer) but pushed vsock DATA is never consumed by the guest:
-    // pristine and quiesced snapshots fail identically, cargo env is innocent
-    // (manual repro), Go's TestKrucibleSnapshotSuite fails on KVM too.
-    // Opt-in until the fork fix lands: AHVM_KVM_RESTORE=1. Without it the
-    // gate proves boot -> exec -> snapshot and stops (snapshot bundle real).
-    if std::env::var("AHVM_KVM_RESTORE").as_deref() != Ok("1") {
-        eprintln!("SKIP restore cycles: set AHVM_KVM_RESTORE=1 (fork KVM restore bug, see STATUS-engine.md)");
-        g.kill_reap();
-        return;
-    }
+    assert!(send_ctl(g.sock.join("k.sock"), "RESUME")
+        .unwrap()
+        .starts_with("OK"));
+    g.wait_ready();
+    let v = g.exec(&[
+        "/bin/sh",
+        "-c",
+        "echo AFTER > /workspace/fs-proof; /bin/busybox sync",
+    ]);
+    assert_eq!(v["exit_code"], 0);
 
     // ---- repeated kill/restore (old #3 flake shape) ----
-    for cycle in 0..3 {
+    let cycles: usize = std::env::var("AHVM_KVM_CYCLES")
+        .map(|s| s.parse().expect("AHVM_KVM_CYCLES must be a number"))
+        .unwrap_or(3);
+    assert!(cycles >= 3, "run at least three recovery cycles");
+    for cycle in 0..cycles {
         g.kill_reap();
+        std::fs::copy(&frozen_root, &overlay).unwrap();
+        if let Ok(secs) = std::env::var("AHVM_KVM_RESTORE_DELAY_SECS") {
+            std::thread::sleep(Duration::from_secs(secs.parse().unwrap()));
+        }
         // Compat gate runs BEFORE the restore spawn, on the real bundle.
         let back = SnapshotManifest::read_from(&bundle).unwrap();
         back.check_compat(&host)
@@ -400,13 +430,14 @@ fn kvm_snapshot_restore_cycle() {
         g = Guest::boot(&cfg, &overlay, Some(&bundle));
         g.wait_ready();
 
-        let v = g.exec(&["/bin/sh", "-c", "printf hello"]);
+        let v = g.exec(&["/bin/sh", "-c", "echo CONSOLE_OK > /dev/hvc0; printf hello"]);
         assert_eq!(v["exit_code"], 0, "cycle {cycle}: exec dead after restore");
         assert_eq!(b64(&v, "stdout_b64"), b"hello");
 
         // RAM proof: the pre-snapshot session resumes with its output.
         // A fresh boot has no such session and errors here instead.
-        let (out, found) = g.session_drain_until(&sess, 0, b"SNAPMARKER\n", Duration::from_secs(20));
+        let (out, found) =
+            g.session_drain_until(&sess, 0, b"SNAPMARKER\n", Duration::from_secs(20));
         assert!(
             found,
             "cycle {cycle}: RAM marker lost: {:?}",
@@ -414,9 +445,45 @@ fn kvm_snapshot_restore_cycle() {
         );
 
         // Disk proof: file written pre-snapshot is back.
-        let v = g.exec(&["/bin/sh", "-c", "cat /workspace/fs-proof"]);
+        let v = g.exec(&[
+            "/bin/sh",
+            "-c",
+            "echo 3 > /proc/sys/vm/drop_caches; cat /workspace/fs-proof",
+        ]);
         assert_eq!(b64(&v, "stdout_b64"), b"FSVAL\n", "cycle {cycle}: fs lost");
+        let v = g.exec(&[
+            "/bin/sh",
+            "-c",
+            "echo AFTER > /workspace/fs-proof; /bin/busybox sync",
+        ]);
+        assert_eq!(v["exit_code"], 0);
+        eprintln!("PASS recovery cycle {cycle}: exec, session RAM, disk rollback");
     }
 
     g.kill_reap();
+
+    // Exercise the actual worker's refusal, before a vCPU can resume.
+    let mut checkpoint = std::fs::read(bundle.join("checkpoint.bin")).unwrap();
+    checkpoint[8..12].copy_from_slice(&1u32.to_le_bytes());
+    let incompatible = cfg.work.join("old-format");
+    std::fs::create_dir_all(&incompatible).unwrap();
+    std::fs::write(incompatible.join("checkpoint.bin"), checkpoint).unwrap();
+    let mut rejected = Guest::boot(&cfg, &overlay, Some(&incompatible));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = rejected.child.try_wait().unwrap() {
+            assert!(!status.success(), "old checkpoint must fail");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "worker failed to reject old checkpoint"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let log = std::fs::read_to_string(cfg.work.join("restore.log")).unwrap();
+    assert!(
+        log.contains("checkpoint version 1 != 2"),
+        "wrong refusal: {log}"
+    );
 }
