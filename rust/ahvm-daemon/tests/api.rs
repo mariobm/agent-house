@@ -626,3 +626,91 @@ async fn snapshots_restore_as_new() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
+
+#[tokio::test]
+async fn start_enforces_resources_without_double_counting_sandbox() {
+    // Check CPU and memory independently, then starting at the sandbox-count cap.
+    for (max_sb, max_cpu, max_mem) in [(2, 1, 4096), (2, 8, 512), (1, 1, 512)] {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let mut u = user("alice", TOKEN_A);
+        u.max_sandboxes = max_sb;
+        u.max_cpus = max_cpu;
+        u.max_memory_mb = max_mem;
+        store.upsert_user(&u).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "start-quota-{}-{max_sb}-{max_cpu}",
+            std::process::id()
+        ));
+        let app = build_router(AppState {
+            store,
+            backend: Arc::new(MockBackend::new(dir)),
+            quotas: ahvm_daemon::quotas::Registry::new(),
+        });
+        let (status, first) = call(
+            app.clone(),
+            Some(TOKEN_A),
+            "POST",
+            "/v1/sandboxes",
+            Some(serde_json::json!({"name":"first"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let id = first["id"].as_str().unwrap();
+        let start = format!("/v1/sandboxes/{id}/start");
+        let stop = format!("/v1/sandboxes/{id}/stop");
+        assert_eq!(
+            call(app.clone(), Some(TOKEN_A), "POST", &start, None)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(app.clone(), Some(TOKEN_A), "POST", &stop, None)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        if max_sb == 2 {
+            let (status, second) = call(
+                app.clone(),
+                Some(TOKEN_A),
+                "POST",
+                "/v1/sandboxes",
+                Some(serde_json::json!({"name":"second"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+            assert_eq!(
+                call(app.clone(), Some(TOKEN_A), "POST", &start, None)
+                    .await
+                    .0,
+                StatusCode::FORBIDDEN
+            );
+            let get = format!("/v1/sandboxes/{id}");
+            assert_eq!(
+                call(app.clone(), Some(TOKEN_A), "GET", &get, None).await.1["state"],
+                "stopped"
+            );
+            let second_id = second["id"].as_str().unwrap();
+            assert_eq!(
+                call(
+                    app.clone(),
+                    Some(TOKEN_A),
+                    "POST",
+                    &format!("/v1/sandboxes/{second_id}/stop"),
+                    None
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+        }
+        // Rejected starts retain no hold; stopping the other VM makes room.
+        assert_eq!(
+            call(app.clone(), Some(TOKEN_A), "POST", &start, None)
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+}

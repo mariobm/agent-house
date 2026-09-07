@@ -50,10 +50,39 @@ impl Registry {
         cpus: i64,
         mem_mb: i64,
     ) -> ApiResult<SandboxGuard<'_>> {
-        let mut inner = self.inner.lock().expect("quota mutex poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        self.reserve_locked(&mut inner, store, user, id, cpus, mem_mb)
+    }
+
+    /// Reserve the full running footprint of an existing sandbox. Read its
+    /// persisted sizing under the admission lock; replace its committed
+    /// footprint instead of counting the sandbox twice.
+    pub fn reserve_start(
+        &self,
+        store: &ahvm_store::Store,
+        user: &ahvm_store::User,
+        id: &str,
+    ) -> ApiResult<SandboxGuard<'_>> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let row = store.get_sandbox(id)?;
+        if row.owner_user_id != user.id {
+            return Err(ApiError::NotFound(format!("sandbox {id}")));
+        }
+        self.reserve_locked(&mut inner, store, user, id, row.cpus, row.memory_mb)
+    }
+
+    fn reserve_locked(
+        &self,
+        inner: &mut Inner,
+        store: &ahvm_store::Store,
+        user: &ahvm_store::User,
+        id: &str,
+        cpus: i64,
+        mem_mb: i64,
+    ) -> ApiResult<SandboxGuard<'_>> {
         if inner.sandboxes.contains_key(id) {
             return Err(ApiError::Conflict(format!(
-                "sandbox {id} is already being created"
+                "sandbox {id} has admission in progress"
             )));
         }
         // Committed rows: every non-failed sandbox counts against the
@@ -64,6 +93,17 @@ impl Registry {
         let mut cpu_sum = 0i64;
         let mut mem_sum = 0i64;
         for row in &rows {
+            // Holds replace committed footprints, including the brief period
+            // after a store commit but before its operation releases the hold.
+            // The requested sandbox is counted below at its running size.
+            if row.id == id
+                || inner
+                    .sandboxes
+                    .get(&row.id)
+                    .is_some_and(|hold| hold.owner == user.id)
+            {
+                continue;
+            }
             if row.state != "failed" {
                 count += 1;
             }
@@ -116,7 +156,7 @@ impl Registry {
         user: &ahvm_store::User,
         name: &str,
     ) -> ApiResult<SnapshotGuard<'_>> {
-        let mut inner = self.inner.lock().expect("quota mutex poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner
             .snapshots
             .contains(&(user.id.clone(), name.to_string()))
@@ -146,7 +186,7 @@ impl Registry {
     }
 }
 
-/// Released on drop (including panic paths, best-effort via try_lock).
+/// Released on drop, waiting for concurrent admission and recovering poison.
 #[derive(Debug)]
 pub struct SandboxGuard<'a> {
     registry: &'a Registry,
@@ -155,13 +195,16 @@ pub struct SandboxGuard<'a> {
 
 impl Drop for SandboxGuard<'_> {
     fn drop(&mut self) {
-        if let Ok(mut inner) = self.registry.inner.try_lock() {
-            inner.sandboxes.remove(&self.id);
-        }
+        self.registry
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sandboxes
+            .remove(&self.id);
     }
 }
 
-/// Released on drop (including panic paths, best-effort via try_lock).
+/// Released on drop, waiting for concurrent admission and recovering poison.
 #[derive(Debug)]
 pub struct SnapshotGuard<'a> {
     registry: &'a Registry,
@@ -171,11 +214,12 @@ pub struct SnapshotGuard<'a> {
 
 impl Drop for SnapshotGuard<'_> {
     fn drop(&mut self) {
-        if let Ok(mut inner) = self.registry.inner.try_lock() {
-            inner
-                .snapshots
-                .remove(&(self.owner.clone(), self.name.clone()));
-        }
+        self.registry
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshots
+            .remove(&(self.owner.clone(), self.name.clone()));
     }
 }
 
@@ -276,5 +320,153 @@ mod tests {
             ),
             "in-flight hold counts against the snapshot quota"
         );
+    }
+    #[test]
+    fn contended_drops_wait_and_release_both_holds() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let store = ahvm_store::Store::open_in_memory().unwrap();
+        let reg = Registry::new();
+        let u = user("u", 1, 1, 512, 1);
+        let sandbox = reg.reserve_sandbox(&store, &u, "vm", 1, 512).unwrap();
+        let snapshot = reg.reserve_snapshot(&store, &u, "snap").unwrap();
+        std::thread::scope(|scope| {
+            let lock = reg.inner.lock().unwrap();
+            let (started_tx, started_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let thread = scope.spawn(move || {
+                started_tx.send(()).unwrap();
+                drop(sandbox);
+                drop(snapshot);
+                done_tx.send(()).unwrap();
+            });
+            started_rx.recv().unwrap();
+            let waited = matches!(
+                done_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            );
+            drop(lock);
+            thread.join().unwrap();
+            assert!(waited, "cleanup must wait for admission, not skip it");
+        });
+        assert!(reg.reserve_sandbox(&store, &u, "vm", 1, 512).is_ok());
+        assert!(reg.reserve_snapshot(&store, &u, "snap").is_ok());
+    }
+
+    #[test]
+    fn poisoned_registry_does_not_strand_holds() {
+        let store = ahvm_store::Store::open_in_memory().unwrap();
+        let reg = Registry::new();
+        let u = user("u", 1, 1, 512, 1);
+        let sandbox = reg.reserve_sandbox(&store, &u, "vm", 1, 512).unwrap();
+        let snapshot = reg.reserve_snapshot(&store, &u, "snap").unwrap();
+        assert!(std::panic::catch_unwind(|| {
+            let _lock = reg.inner.lock().unwrap();
+            panic!("admission unwound");
+        })
+        .is_err());
+        drop(sandbox);
+        drop(snapshot);
+        assert!(reg.reserve_sandbox(&store, &u, "vm", 1, 512).is_ok());
+        assert!(reg.reserve_snapshot(&store, &u, "snap").is_ok());
+    }
+
+    #[test]
+    fn start_holds_replace_rows_and_compete_with_creates() {
+        let store = ahvm_store::Store::open_in_memory().unwrap();
+        let reg = Registry::new();
+        let u = user("u", 3, 1, 512, 1);
+        store.upsert_user(&u).unwrap();
+        store
+            .create_sandbox(&sandbox_row("u", "a", "stopped", 1, 512))
+            .unwrap();
+        store
+            .create_sandbox(&sandbox_row("u", "b", "stopped", 1, 512))
+            .unwrap();
+        let a = reg.reserve_start(&store, &u, "a").unwrap();
+        assert!(matches!(
+            reg.reserve_start(&store, &u, "b"),
+            Err(ApiError::Forbidden(_))
+        ));
+        assert!(matches!(
+            reg.reserve_sandbox(&store, &u, "c", 1, 512),
+            Err(ApiError::Forbidden(_))
+        ));
+        assert!(matches!(
+            reg.reserve_start(&store, &u, "a"),
+            Err(ApiError::Conflict(_))
+        ));
+        drop(a);
+        assert!(
+            reg.reserve_start(&store, &u, "b").is_ok(),
+            "failed operation releases capacity"
+        );
+        store.set_sandbox_state("a", "running", "hot", 1).unwrap();
+        // Starting an already running sandbox is idempotent at full capacity.
+        let a = reg.reserve_start(&store, &u, "a").unwrap();
+        // Even before the guard drops, the committed row is not counted twice.
+        let roomy = user("u", 3, 2, 1024, 1);
+        assert!(reg.reserve_start(&store, &roomy, "b").is_ok());
+        drop(a);
+    }
+    #[test]
+    fn concurrent_starts_and_create_share_one_resource_budget() {
+        let store = ahvm_store::Store::open_in_memory().unwrap();
+        let reg = Registry::new();
+        let u = user("u", 3, 1, 512, 1);
+        store.upsert_user(&u).unwrap();
+        for id in ["a", "b"] {
+            store
+                .create_sandbox(&sandbox_row("u", id, "stopped", 1, 512))
+                .unwrap();
+        }
+        let barrier = std::sync::Barrier::new(3);
+        let winners = std::thread::scope(|scope| {
+            let threads: Vec<_> = ["a", "b", "new"]
+                .into_iter()
+                .map(|id| {
+                    let (reg, store, u, barrier) = (&reg, &store, &u, &barrier);
+                    scope.spawn(move || {
+                        let hold = if id == "new" {
+                            reg.reserve_sandbox(store, u, id, 1, 512)
+                        } else {
+                            reg.reserve_start(store, u, id)
+                        };
+                        // Keep the winner's hold until all contenders attempted admission.
+                        barrier.wait();
+                        match hold {
+                            Ok(_) => true,
+                            Err(ApiError::Forbidden(_)) => false,
+                            other => panic!("unexpected admission: {other:?}"),
+                        }
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|t| usize::from(t.join().unwrap()))
+                .sum::<usize>()
+        });
+        assert_eq!(winners, 1);
+    }
+    #[test]
+    fn foreign_name_collision_does_not_hide_committed_usage() {
+        let store = ahvm_store::Store::open_in_memory().unwrap();
+        let reg = Registry::new();
+        let alice = user("alice", 2, 1, 512, 1);
+        let bob = user("bob", 2, 1, 512, 1);
+        store.upsert_user(&alice).unwrap();
+        store
+            .create_sandbox(&sandbox_row("alice", "shared-name", "running", 1, 512))
+            .unwrap();
+        // The backend will reject Bob's duplicate name; until then its hold
+        // must not replace Alice's committed row in her resource accounting.
+        let _bob = reg
+            .reserve_sandbox(&store, &bob, "shared-name", 1, 512)
+            .unwrap();
+        assert!(matches!(
+            reg.reserve_sandbox(&store, &alice, "other", 1, 512),
+            Err(ApiError::Forbidden(_))
+        ));
     }
 }

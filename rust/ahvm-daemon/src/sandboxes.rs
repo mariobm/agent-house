@@ -186,6 +186,10 @@ pub async fn start(
     Path(id): Path<String>,
 ) -> ApiResult<Json<SandboxView>> {
     owned(&state, &user.0, &id).await?;
+    let me = state.store.get_user(&user.0)?;
+    // Keep admission through the backend transition and its store mirror.
+    // Stopped/failed boxes regain resource usage; running boxes are counted once.
+    let _hold = state.quotas.reserve_start(&state.store, &me, &id)?;
     set_running(&state, &id, |backend, owned_id| backend.start(&owned_id)).await
 }
 
