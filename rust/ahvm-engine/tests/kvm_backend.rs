@@ -160,11 +160,43 @@ fn kvm_backend_lifecycle_and_recovery() {
         String::from_utf8_lossy(&chunk.data)
     );
     assert!(chunk.eof, "quick session should EOF");
+    assert!(!chunk.truncated);
+    assert_eq!(chunk.next_seq as usize, chunk.data.len());
     let list = be.session_list("be-3").unwrap();
     assert!(list.iter().any(|s| s.id == sid));
     be.session_kill("be-3", &sid).unwrap();
     be.session_delete("be-3", &sid).unwrap();
     assert!(be.session_list("be-3").unwrap().iter().all(|s| s.id != sid));
+
+    // Idle attach hygiene (review P1): repeated short-budget reads must
+    // not accumulate guest threads — each forge attach self-closes.
+    let threads = || -> usize {
+        let out = be
+            .exec("be-3", &sh("grep Threads /proc/1/status"))
+            .unwrap()
+            .stdout;
+        out.split_whitespace()
+            .nth(1)
+            .and_then(|n| n.parse().ok())
+            .expect("Threads line")
+    };
+    let idle = be
+        .session_create("be-3", &sh("sleep 120"), false)
+        .unwrap();
+    let before = threads();
+    for _ in 0..12 {
+        let c = be
+            .session_read("be-3", &idle, 0, Duration::from_secs(1))
+            .unwrap();
+        assert!(!c.eof);
+    }
+    let after = threads();
+    assert!(
+        after <= before + 1,
+        "guest threads leaked: {before} -> {after}"
+    );
+    be.session_kill("be-3", &idle).unwrap();
+    be.session_delete("be-3", &idle).unwrap();
 
     // ---- supervisor restart: drop the backend (workers survive:
     // LiveWorker Drop never kills a running child), reopen, adopt ----
