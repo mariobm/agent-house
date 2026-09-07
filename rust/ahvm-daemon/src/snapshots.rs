@@ -77,7 +77,10 @@ pub async fn create(
     let _permit = state.ops.acquire().await;
     state.activity.touch(&id);
     // Guard across the guest-paused snapshot (minutes on big RAM).
-    let _flight = state.activity.begin(&id);
+    let _flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let manifest = blocking(move || backend.create_snapshot(&owned_id, &snap_name)).await?;
     let now = unix_now();
     let row = ahvm_store::Snapshot {

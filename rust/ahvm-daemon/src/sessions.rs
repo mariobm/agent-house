@@ -39,6 +39,10 @@ pub async fn create(
     }
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
+    let _flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let backend = state.backend.clone();
     let session_id = blocking(move || backend.session_create(&id, &body.argv, body.pty)).await?;
     Ok(Json(CreateResponse { session_id }))
@@ -74,6 +78,10 @@ pub async fn input(
     use base64::Engine;
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
+    let _flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let data = base64::engine::general_purpose::STANDARD
         .decode(&body.data_b64)
         .map_err(|e| ApiError::Invalid(format!("data_b64 is not base64: {e}")))?;
@@ -161,7 +169,10 @@ pub async fn read(
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
     // Guard across the drain: budgets reach 30s, past any small idle window.
-    let _flight = state.activity.begin(&id);
+    let _flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let budget = Duration::from_millis(q.budget_ms.clamp(100, 30_000));
     let backend = state.backend.clone();
     let chunk = blocking(move || backend.session_read(&id, &sid, q.from_seq, budget)).await?;

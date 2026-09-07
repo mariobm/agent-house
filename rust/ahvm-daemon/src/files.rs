@@ -37,6 +37,10 @@ pub async fn read(
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
     state.activity.touch(&id);
+    let _flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let backend = state.backend.clone();
     let chunk = blocking(move || backend.file_read(&id, &q.path, q.offset, q.limit)).await?;
     Ok(Json(ReadResponse {
@@ -67,6 +71,10 @@ pub async fn write(
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
     state.activity.touch(&id);
+    let _flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let data = base64_decode(&body.data_b64)?;
     let backend = state.backend.clone();
     let bytes = blocking(move || backend.file_write(&id, &body.path, &data)).await?;
@@ -97,6 +105,10 @@ pub async fn list(
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
     state.activity.touch(&id);
+    let _flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let backend = state.backend.clone();
     let listing = blocking(move || backend.file_list(&id, &q.path, q.offset, q.limit)).await?;
     Ok(Json(ListResponse {

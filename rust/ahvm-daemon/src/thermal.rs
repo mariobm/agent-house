@@ -8,7 +8,7 @@
 //! before any activity is observed.
 
 use crate::{state_str, thermal_str, unix_now, AppState};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -23,6 +23,9 @@ pub struct ActivityTracker {
 struct TrackerInner {
     last: HashMap<String, Instant>,
     inflight: HashMap<String, usize>,
+    /// Ids with a committed stop: no new guest work admits until the
+    /// transition finishes (see [`ActivityTracker::begin_stop`]).
+    stopping: HashSet<String>,
 }
 
 impl ActivityTracker {
@@ -49,6 +52,7 @@ impl ActivityTracker {
         if let Ok(mut inner) = self.inner.lock() {
             inner.last.remove(id);
             inner.inflight.remove(id);
+            inner.stopping.remove(id);
         }
     }
 
@@ -56,18 +60,37 @@ impl ActivityTracker {
         self.inner.lock().ok()?.last.get(id).copied()
     }
 
-    /// Mark a guest operation in flight. The sweep skips (and refreshes)
-    /// guarded ids, so a command longer than the idle budget is never
-    /// reaped mid-flight. Drop ends the guard AND touches: completion
-    /// counts as activity. Guards hold no locks across awaits.
-    pub fn begin(&self, id: &str) -> InFlight<'_> {
-        if let Ok(mut inner) = self.inner.lock() {
-            *inner.inflight.entry(id.to_string()).or_insert(0) += 1;
+    /// Mark a guest operation in flight. Returns `None` when a stop has
+    /// already committed for `id` — the caller must refuse (409), never
+    /// race into a dying worker. Drop ends the guard AND touches:
+    /// completion counts as activity. Guards hold no locks across awaits.
+    pub fn begin(&self, id: &str) -> Option<InFlight<'_>> {
+        let mut inner = self.inner.lock().ok()?;
+        if inner.stopping.contains(id) {
+            return None;
         }
-        InFlight {
+        *inner.inflight.entry(id.to_string()).or_insert(0) += 1;
+        Some(InFlight {
             tracker: self,
             id: id.to_string(),
+        })
+    }
+
+    /// Commit a stop for `id`: no new guest work admits afterwards, and
+    /// in-flight work is guaranteed absent (the caller checked). Returns
+    /// `None` when work is in flight or a stop already committed — skip
+    /// the row and retry next sweep. Single-mutex atomicity with [`begin`]
+    /// is what closes the recheck-to-stop window: no timestamp check can.
+    pub fn begin_stop(&self, id: &str) -> Option<StopGuard<'_>> {
+        let mut inner = self.inner.lock().ok()?;
+        if inner.stopping.contains(id) || inner.inflight.get(id).copied().unwrap_or(0) > 0 {
+            return None;
         }
+        inner.stopping.insert(id.to_string());
+        Some(StopGuard {
+            tracker: self,
+            id: id.to_string(),
+        })
     }
 
     /// True while any guarded operation runs for `id`.
@@ -98,6 +121,22 @@ impl Drop for InFlight<'_> {
                 }
             }
             inner.last.insert(self.id.clone(), Instant::now());
+        }
+    }
+}
+
+/// Committed-stop guard from [`ActivityTracker::begin_stop`]. Drop clears
+/// the flag WITHOUT touching: a stopped box must not look active.
+#[derive(Debug)]
+pub struct StopGuard<'a> {
+    tracker: &'a ActivityTracker,
+    id: String,
+}
+
+impl Drop for StopGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut inner) = self.tracker.inner.lock() {
+            inner.stopping.remove(&self.id);
         }
     }
 }
@@ -151,8 +190,12 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
             // Lifecycle serialization: routes take this same id lock around
             // their backend op + store mirror, so a sampled state can never
             // overwrite a newer commit (or vice versa). Lock order
-            // everywhere: lifecycle → permit → backend.
-            let _lc = state.lifecycle.lock(&row.id).await;
+            // everywhere: lifecycle → permit → backend. Non-blocking: one
+            // long operation must not stall reconciliation of later rows.
+            let Some(_lc) = state.lifecycle.try_lock(&row.id) else {
+                stats.deferred += 1;
+                continue;
+            };
             // Backend truth first (blocking pool; NotFound handled below).
             let backend = state.backend.clone();
             let id = row.id.clone();
@@ -192,12 +235,6 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
             if live.state != ahvm_engine::State::Running {
                 continue;
             }
-            if state.activity.in_flight(&row.id) {
-                // Actively serving (long exec, open stream): refresh
-                // instead of reap. Completion touches on guard drop.
-                state.activity.touch_at(&row.id, now);
-                continue;
-            }
             let last = match state.activity.last(&row.id) {
                 Some(t) => t,
                 None => {
@@ -218,11 +255,17 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
                 // Recheck after admission: activity may have refreshed while
                 // the row waited (or while a permit was unavailable).
                 let fresh = state.activity.last(&row.id);
-                if state.activity.in_flight(&row.id)
-                    || fresh.is_some_and(|t| now.duration_since(t).as_secs() <= cfg.idle_secs)
-                {
+                if fresh.is_some_and(|t| now.duration_since(t).as_secs() <= cfg.idle_secs) {
                     continue;
                 }
+                // Atomic stop commit: no new guest work admits from here
+                // until the transition finishes, and in-flight work is
+                // guaranteed absent. A timestamp recheck alone cannot close
+                // the recheck-to-stop window; this single-mutex commit can.
+                let Some(_stop) = state.activity.begin_stop(&row.id) else {
+                    stats.deferred += 1;
+                    continue;
+                };
                 let backend = state.backend.clone();
                 let id = row.id.clone();
                 let stopped = tokio::task::spawn_blocking(move || backend.stop(&id)).await;
@@ -263,6 +306,25 @@ mod tests {
     use super::*;
     use ahvm_engine::{Backend, MockBackend, SandboxInfo, State};
     use std::time::Duration;
+
+    #[test]
+    fn admission_and_stop_commit_exclude_each_other() {
+        let t = ActivityTracker::new();
+        // Op first: stop refuses while guarded.
+        let _g = t.begin("a").expect("first admission");
+        assert!(t.begin_stop("a").is_none());
+        drop(_g);
+        // Released: stop commits, new ops refuse with 409-driving None.
+        let _s = t.begin_stop("a").expect("stop commits");
+        assert!(t.begin("a").is_none());
+        // A second stop refuses while one is committed.
+        assert!(t.begin_stop("a").is_none());
+        drop(_s);
+        // After release, admission works again.
+        assert!(t.begin("a").is_some());
+        // Unknown ids admit freely.
+        assert!(t.begin("fresh").is_some());
+    }
 
     fn state() -> AppState {
         let store = Arc::new(ahvm_store::Store::open_in_memory().unwrap());

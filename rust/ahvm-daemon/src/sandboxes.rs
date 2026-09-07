@@ -265,7 +265,10 @@ pub async fn exec(
     // budget so long runs are never reaped mid-flight). In-flight guard
     // holds across the call so the sweep skips instead of racing it.
     state.activity.touch(&id);
-    let _flight = state.activity.begin(&id);
+    let _flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let backend = state.backend.clone();
     let out = blocking(move || backend.exec(&id, &body.argv)).await?;
     Ok(Json(out))

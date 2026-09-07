@@ -65,6 +65,20 @@ impl LifecycleLocks {
         };
         entry.lock_owned().await
     }
+
+    /// Non-blocking take for the sweep: one long lifecycle transition
+    /// must not stall reconciliation of later rows (mirrors the permit
+    /// handling).
+    pub fn try_lock(&self, id: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let entry = {
+            let mut inner = self.inner.lock().expect("lifecycle mutex poisoned");
+            inner
+                .entry(id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        entry.try_lock_owned().ok()
+    }
 }
 
 #[cfg(test)]
