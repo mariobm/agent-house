@@ -98,6 +98,14 @@ impl Cleanup {
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            // Test failed: keep workers AND files for post-mortem (probe
+            // the corpse via the sockets under <dir>/sandboxes/*/sock,
+            // read vmm.log + specs + bundles). Stale runs accumulate;
+            // reruns use fresh pid-namespaced dirs, never these.
+            eprintln!("acceptance artifacts kept at {}", self.dir.display());
+            return;
+        }
         if let (Some(be), Some(st)) = (self.backend.take(), self.store.take()) {
             for id in &self.ids {
                 let _ = be.destroy(id);
@@ -416,7 +424,9 @@ fn cleanup_guard_runs_on_panic() {
     }));
     assert!(result.is_err());
     assert!(
-        !dir.exists(),
-        "guard must remove the temp dir even on panic"
+        dir.exists(),
+        "guard must KEEP artifacts (not clean) on panic"
     );
+    // Tidy up after asserting (real failures keep theirs on the KVM host).
+    let _ = std::fs::remove_dir_all(&dir);
 }
