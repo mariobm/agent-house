@@ -16,8 +16,8 @@
 //!   newline-terminated command in, one line out, then close (`PAUSE` /
 //!   `RESUME` / `STATUS` / `SNAPSHOT <dir>`).
 //!
-//! Everything here is std-only so it compiles and tests on macOS without
-//! KVM or any VMM dependency.
+//! Linux adopted-worker signalling uses rustix pidfds. Owned supervision
+//! still compiles and tests on macOS without KVM or any VMM dependency.
 
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
@@ -42,7 +42,7 @@ const MAX_CTL_LINE: usize = 64 * 1024;
 /// boot) captured at spawn. After a supervisor restart, pids may have been
 /// reused by unrelated processes: adoption must verify identity, never
 /// trust the pid alone. `None` means unknown (legacy records, non-Linux);
-/// callers fall back to plain liveness there.
+/// adoption must refuse live records with an unknown identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worker {
     pub id: String,
@@ -302,27 +302,41 @@ fn is_zombie(pid_str: &str) -> bool {
         })
 }
 
-/// SIGTERM an adopted pid (recovery path — no owned handle to wait on).
-/// Prefer [`LiveWorker::terminate`] for supervised workers: this cannot reap,
-/// so callers must poll [`is_alive`] until it goes false. Refuses pid 0.
-pub fn terminate_adopted(pid: u32) -> crate::Result<()> {
-    if pid == 0 {
-        return Err(crate::Error::Control(
-            "refusing to signal pid 0".to_string(),
-        ));
+/// Signal an adopted worker through a stable process handle, never a bare PID.
+/// Unknown identities and platforms without pidfds fail closed.
+pub fn terminate_adopted(worker: &Worker) -> crate::Result<()> {
+    let expected = worker.starttime.ok_or_else(|| {
+        crate::Error::InvalidState("cannot signal adopted worker without process identity".into())
+    })?;
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::process::{pidfd_open, pidfd_send_signal, Pid, PidfdFlags, Signal};
+        let raw = i32::try_from(worker.pid).ok();
+        let pid = raw
+            .and_then(Pid::from_raw)
+            .ok_or_else(|| crate::Error::InvalidState("invalid worker pid".into()))?;
+        let fd = match pidfd_open(pid, PidfdFlags::empty()) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::SRCH) => return Ok(()),
+            Err(e) => return Err(std::io::Error::from(e).into()),
+        };
+        // Verify AFTER opening: a replacement captured by pidfd_open must not
+        // be signalled. If this process exits after verification, the fd still
+        // refers to it, so PID recycling cannot redirect the signal.
+        if process_starttime(worker.pid) != Some(expected) {
+            return Ok(());
+        }
+        match pidfd_send_signal(&fd, Signal::TERM) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+            Err(e) => Err(std::io::Error::from(e).into()),
+        }
     }
-    let status = Command::new("/bin/kill")
-        .arg(pid.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(crate::Error::Control(format!(
-            "kill {pid} failed with status {status}"
-        )))
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = expected;
+        Err(crate::Error::InvalidState(
+            "safe adopted-worker signalling requires Linux pidfds".into(),
+        ))
     }
 }
 
@@ -395,7 +409,10 @@ mod tests {
         assert_eq!(Worker::load(&state).unwrap(), worker.record);
 
         worker.terminate().unwrap();
-        assert!(!is_alive(worker.pid()), "sleep should be dead after terminate");
+        assert!(
+            !is_alive(worker.pid()),
+            "sleep should be dead after terminate"
+        );
         // Idempotent: second terminate is Ok, try_reap finds nothing.
         worker.terminate().unwrap();
         assert!(worker.try_reap().unwrap().is_none());
@@ -446,7 +463,14 @@ mod tests {
 
     #[test]
     fn terminate_adopted_refuses_pid_zero() {
-        assert!(terminate_adopted(0).is_err());
+        let w = Worker {
+            id: "invalid".into(),
+            pid: 0,
+            sock_dir: PathBuf::new(),
+            state_path: PathBuf::new(),
+            starttime: Some(1),
+        };
+        assert!(terminate_adopted(&w).is_err());
     }
 
     #[test]
@@ -497,5 +521,60 @@ mod tests {
         assert!(send_ctl(&missing, "STATUS").is_err());
         assert!(send_ctl(&missing, "").is_err());
         assert!(send_ctl(&missing, "A\nB").is_err());
+    }
+    #[test]
+    fn adopted_signal_refuses_unknown_identity() {
+        let w = Worker {
+            id: "unknown".into(),
+            pid: std::process::id(),
+            sock_dir: PathBuf::new(),
+            state_path: PathBuf::new(),
+            starttime: None,
+        };
+        assert!(matches!(
+            terminate_adopted(&w),
+            Err(crate::Error::InvalidState(_))
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn adopted_signal_checks_identity_and_terminates_matching_process() {
+        let mut child = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let actual = process_starttime(child.id()).unwrap();
+        let mut w = Worker {
+            id: "adopted".into(),
+            pid: child.id(),
+            sock_dir: PathBuf::new(),
+            state_path: PathBuf::new(),
+            starttime: Some(actual + 1),
+        };
+        terminate_adopted(&w).unwrap();
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "mismatched process must survive"
+        );
+        w.starttime = Some(actual);
+        terminate_adopted(&w).unwrap();
+        assert!(!child.wait().unwrap().success());
+        terminate_adopted(&w).unwrap(); // already gone is idempotent
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pidfd_cannot_signal_after_original_process_is_reaped() {
+        use rustix::process::{pidfd_open, pidfd_send_signal, Pid, PidfdFlags, Signal};
+        let mut child = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let fd = pidfd_open(
+            Pid::from_raw(child.id() as i32).unwrap(),
+            PidfdFlags::empty(),
+        )
+        .unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(
+            pidfd_send_signal(&fd, Signal::TERM),
+            Err(rustix::io::Errno::SRCH)
+        );
     }
 }

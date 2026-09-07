@@ -122,3 +122,21 @@ green since (backend 18s incl. 16s slow-exec, lifecycle 1.5s).
 The imago qcow2 feature-name table has nondeterministic byte ordering. It
 does not break disk correctness; normalization remains future dedup work.
 Issue #3's Go config-fetch path remains separate from the Rust regression.
+
+PR #12 follow-up hardening: reservations now have a dedicated mutex, so
+completion cannot leak a reservation when the sandbox map is contended.
+Snapshot publication flushes artifacts and directory entries; reopening
+recovers `bundle.old` when a crash interrupted the two-rename publish,
+then discards the uncommitted generation. Registry copies are flushed
+before publication too.
+
+Adopted-worker signalling on Linux now opens a pidfd, verifies the recorded
+starttime after opening it, and sends SIGTERM through that handle. PID reuse
+between verification and signalling cannot redirect the signal. Kernels
+without pidfd support return an error; there is no numeric-PID fallback.
+Live records without a starttime refuse adoption with InvalidState rather
+than being marked dead (which could start a duplicate VM). This includes
+legacy records and current macOS records. Stop these workers through the
+supervisor that owns them before upgrading/reopening; do not delete their
+records while they are alive. Owned-worker supervision remains supported
+on macOS; safe adoption there needs a separate platform implementation.

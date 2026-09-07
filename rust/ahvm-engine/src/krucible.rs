@@ -38,9 +38,9 @@ use ahvm_proto::{read_frame, write_frame, Frame, FrameType};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    host_caps, is_alive, process_starttime, send_ctl, spawn_worker_cfg, terminate_adopted,
-    Backend, BackendKind, Capabilities, Error, ExecResult, LiveWorker, Result, SandboxInfo,
-    SandboxSpec, SnapshotManifest, SpawnConfig, State, Thermal, Worker, MAX_EXEC_OUTPUT,
+    host_caps, is_alive, process_starttime, send_ctl, spawn_worker_cfg, terminate_adopted, Backend,
+    BackendKind, Capabilities, Error, ExecResult, LiveWorker, Result, SandboxInfo, SandboxSpec,
+    SnapshotManifest, SpawnConfig, State, Thermal, Worker, MAX_EXEC_OUTPUT,
 };
 
 /// VMM identity stamped into snapshot sidecars (must match the worker's
@@ -80,12 +80,7 @@ pub struct KrucibleConfig {
 }
 
 impl KrucibleConfig {
-    pub fn new(
-        vmm_bin: PathBuf,
-        base_image: PathBuf,
-        data_dir: PathBuf,
-        lib_path: String,
-    ) -> Self {
+    pub fn new(vmm_bin: PathBuf, base_image: PathBuf, data_dir: PathBuf, lib_path: String) -> Self {
         Self {
             vmm_bin,
             base_image,
@@ -132,7 +127,6 @@ enum WorkerHandle {
 }
 
 impl WorkerHandle {
-
     /// True while the worker process exists and is not a zombie.
     /// Reaps an owned child that already exited (no zombie left behind).
     /// Adopted pids additionally require identity verification: a reused
@@ -149,9 +143,7 @@ impl WorkerHandle {
     }
 
     /// Stop and clean up. Owned: SIGKILL + reap (no zombie, idempotent).
-    /// Adopted: verify identity, SIGTERM, then bounded pid poll with
-    /// reuse checks — a pid that changed hands mid-kill is left alone:
-    /// our goal (no worker for this sandbox) is already achieved.
+    /// Adopted: pin and verify identity before SIGTERM, then poll for exit.
     fn terminate(&mut self) -> Result<()> {
         match self {
             WorkerHandle::Owned(w) => w.terminate().map_err(Error::Io),
@@ -160,7 +152,7 @@ impl WorkerHandle {
                     // Already gone, or the pid belongs to someone else now.
                     return Ok(());
                 }
-                terminate_adopted(w.pid)?;
+                terminate_adopted(w)?;
                 let deadline = Instant::now() + Duration::from_secs(5);
                 loop {
                     if !is_alive(w.pid) {
@@ -196,31 +188,11 @@ struct Inner {
     /// snapshot_id -> bundle dir (rebuilt from `<data_dir>/snapshots/`).
     snapshots: HashMap<String, PathBuf>,
     next_ip_octet: u8,
-    /// Sandbox ids with a mutating operation in flight (create / restore /
-    /// start / stop / destroy / fork / snapshot). A second operation on the
-    /// same id fails fast with Conflict instead of racing on overlays,
-    /// sockets, and records. Cross-sandbox operations still run concurrently.
-    busy: HashSet<String>,
-}
-
-impl Inner {
-    fn try_reserve(&mut self, id: &str) -> Result<()> {
-        if self.busy.contains(id) {
-            return Err(Error::Conflict(format!(
-                "sandbox {id}: operation already in progress"
-            )));
-        }
-        self.busy.insert(id.to_string());
-        Ok(())
-    }
-
-    fn release(&mut self, id: &str) {
-        self.busy.remove(id);
-    }
 }
 
 /// Holds one sandbox's reservation until the operation completes.
-/// Drop releases even on panic paths (via `try_lock`: never block in Drop).
+/// A dedicated reservation lock avoids re-locking the sandbox map in Drop.
+/// Poison recovery ensures unwinding still releases the reservation.
 struct OpGuard<'a> {
     be: &'a KrucibleBackend,
     id: String,
@@ -228,7 +200,12 @@ struct OpGuard<'a> {
 
 impl<'a> OpGuard<'a> {
     fn take(be: &'a KrucibleBackend, id: &str) -> Result<Self> {
-        be.lock().try_reserve(id)?;
+        let mut busy = be.reservations.lock().unwrap_or_else(|e| e.into_inner());
+        if !busy.insert(id.to_string()) {
+            return Err(Error::Conflict(format!(
+                "sandbox {id}: operation already in progress"
+            )));
+        }
         Ok(Self {
             be,
             id: id.to_string(),
@@ -238,19 +215,21 @@ impl<'a> OpGuard<'a> {
 
 impl Drop for OpGuard<'_> {
     fn drop(&mut self) {
-        if let Ok(mut inner) = self.be.inner.try_lock() {
-            inner.release(&self.id);
-        }
+        self.be
+            .reservations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
     }
 }
 
 /// Process identity for adoption: a recorded starttime must match the live
-/// pid, defeating PID reuse. Legacy records (`None`) fall back to plain
-/// liveness — documented, and only pre-identity records take that path.
+/// pid. Unknown identities cannot be adopted; signalling additionally pins
+/// the process with a pidfd before verifying identity.
 fn verified(w: &Worker) -> bool {
     match w.starttime {
         Some(t) => process_starttime(w.pid) == Some(t),
-        None => true,
+        None => false,
     }
 }
 
@@ -261,6 +240,7 @@ fn verified(w: &Worker) -> bool {
 pub struct KrucibleBackend {
     cfg: KrucibleConfig,
     inner: Mutex<Inner>,
+    reservations: Mutex<HashSet<String>>,
 }
 
 impl KrucibleBackend {
@@ -269,17 +249,12 @@ impl KrucibleBackend {
     pub fn open(cfg: KrucibleConfig) -> Result<Self> {
         cfg.validate()?;
         std::fs::create_dir_all(&cfg.data_dir)?;
-        // Crash hygiene: a failed snapshot publish or registry copy may
-        // leave `<name>.tmp` / `bundle.new` / `bundle.old` behind. The live
-        // bundle is only ever swapped by rename, so these are always safe
-        // to drop — and dropping them keeps restores from ever seeing a
-        // half-written generation.
+        // Recover interrupted publication before deleting uncommitted debris.
         sweep_debris(&cfg.data_dir)?;
         let mut inner = Inner {
             sandboxes: HashMap::new(),
             snapshots: HashMap::new(),
             next_ip_octet: 2,
-            busy: HashSet::new(),
         };
         // Snapshot registry first (restores reference it).
         let snaps = cfg.data_dir.join("snapshots");
@@ -323,9 +298,12 @@ impl KrucibleBackend {
             let worker = match Worker::load(dir.join("state.json")) {
                 // Identity-verified adoption only: a live pid with a
                 // mismatched starttime belongs to someone else (PID reuse).
-                Ok(w) if is_alive(w.pid) && verified(&w) => {
-                    Some(WorkerHandle::Adopted(w))
+                Ok(w) if is_alive(w.pid) && w.starttime.is_none() => {
+                    return Err(Error::InvalidState(format!(
+                        "sandbox {id}: live worker has no verifiable process identity; refusing adoption"
+                    )));
                 }
+                Ok(w) if is_alive(w.pid) && verified(&w) => Some(WorkerHandle::Adopted(w)),
                 _ => None,
             };
             let mut info = record.info.clone();
@@ -347,6 +325,7 @@ impl KrucibleBackend {
         Ok(Self {
             cfg,
             inner: Mutex::new(inner),
+            reservations: Mutex::new(HashSet::new()),
         })
     }
 
@@ -355,7 +334,11 @@ impl KrucibleBackend {
     }
 
     fn host_caps(&self) -> crate::HostCaps {
-        host_caps(KRUCIBLE_VMM_NAME, KRUCIBLE_VMM_VERSION, KRUCIBLE_KERNEL_DIGEST)
+        host_caps(
+            KRUCIBLE_VMM_NAME,
+            KRUCIBLE_VMM_VERSION,
+            KRUCIBLE_KERNEL_DIGEST,
+        )
     }
 }
 
@@ -401,8 +384,7 @@ fn connect_rpc(sock: &Path, budget: Duration) -> Result<UnixStream> {
         match UnixStream::connect(sock) {
             Ok(c) => {
                 c.set_read_timeout(Some(RPC_TIMEOUT)).map_err(Error::Io)?;
-                c.set_write_timeout(Some(RPC_TIMEOUT))
-                    .map_err(Error::Io)?;
+                c.set_write_timeout(Some(RPC_TIMEOUT)).map_err(Error::Io)?;
                 return Ok(c);
             }
             Err(e) => {
@@ -427,8 +409,14 @@ fn rpc_exec(sock: &Path, argv: &[String], exec_timeout: Duration) -> Result<Exec
     // The reply may legitimately take the whole execution budget.
     c.set_read_timeout(Some(exec_timeout)).map_err(Error::Io)?;
     let body = serde_json::json!({ "argv": argv }).to_string().into_bytes();
-    write_frame(&mut c, &Frame { msg_type: FrameType::ExecReq, payload: body })
-        .map_err(|e| Error::Control(format!("exec write: {e}")))?;
+    write_frame(
+        &mut c,
+        &Frame {
+            msg_type: FrameType::ExecReq,
+            payload: body,
+        },
+    )
+    .map_err(|e| Error::Control(format!("exec write: {e}")))?;
     let mut r = BufReader::new(c.try_clone().map_err(Error::Io)?);
     let f = read_frame(&mut r).map_err(|e| Error::Control(format!("exec read: {e}")))?;
     if f.msg_type != FrameType::ExecResp {
@@ -437,15 +425,14 @@ fn rpc_exec(sock: &Path, argv: &[String], exec_timeout: Duration) -> Result<Exec
             f.msg_type
         )));
     }
-    let v: serde_json::Value =
-        serde_json::from_slice(&f.payload).map_err(|e| Error::Control(format!("exec JSON: {e}")))?;
+    let v: serde_json::Value = serde_json::from_slice(&f.payload)
+        .map_err(|e| Error::Control(format!("exec JSON: {e}")))?;
     let decode = |k: &str| -> Result<String> {
-        let s = v[k].as_str().ok_or_else(|| Error::Control(format!("exec reply lacks {k}")))?;
-        let bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            s,
-        )
-        .map_err(|e| Error::Control(format!("exec {k} not base64: {e}")))?;
+        let s = v[k]
+            .as_str()
+            .ok_or_else(|| Error::Control(format!("exec reply lacks {k}")))?;
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s)
+            .map_err(|e| Error::Control(format!("exec {k} not base64: {e}")))?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     };
     let exit_code = v["exit_code"]
@@ -549,8 +536,7 @@ impl KrucibleBackend {
         });
         // Omit (never null): an explicit null is a parse error for workers.
         if let Some(bundle) = snapshot_dir {
-            js["snapshot_dir"] =
-                serde_json::Value::String(bundle.to_string_lossy().into_owned());
+            js["snapshot_dir"] = serde_json::Value::String(bundle.to_string_lossy().into_owned());
         }
         let path = dir.join("spec.json");
         std::fs::write(&path, serde_json::to_vec_pretty(&js)?)?;
@@ -730,20 +716,25 @@ impl KrucibleBackend {
         if reg.exists() {
             return Err(Error::Conflict(format!("snapshot {snapshot_id} exists")));
         }
-        let tmp = self.cfg.data_dir.join("snapshots").join(format!("{snapshot_id}.tmp"));
+        let tmp = self
+            .cfg
+            .data_dir
+            .join("snapshots")
+            .join(format!("{snapshot_id}.tmp"));
         let _ = std::fs::remove_dir_all(&tmp);
         let published = (|| -> Result<SnapshotManifest> {
             copy_dir(&bundle, &tmp)?;
+            sync_tree(&tmp)?;
             std::fs::rename(&tmp, &reg)?;
+            sync_dir(reg.parent().expect("snapshot registry"))?;
+            sync_dir(&self.cfg.data_dir)?;
             SnapshotManifest::read_from(&reg)
         })();
         if published.is_err() {
             let _ = std::fs::remove_dir_all(&tmp);
         }
         let manifest = published?;
-        self.lock()
-            .snapshots
-            .insert(snapshot_id.to_string(), reg);
+        self.lock().snapshots.insert(snapshot_id.to_string(), reg);
         Ok(manifest)
     }
 
@@ -960,8 +951,15 @@ impl Backend for KrucibleBackend {
         // that died behind a cached Running state reboots below instead
         // of reporting a success that is not true.
         enum Plan {
-            Restore { dir: PathBuf, spec: SandboxSpec, bundle: PathBuf },
-            Fresh { dir: PathBuf, spec: SandboxSpec },
+            Restore {
+                dir: PathBuf,
+                spec: SandboxSpec,
+                bundle: PathBuf,
+            },
+            Fresh {
+                dir: PathBuf,
+                spec: SandboxSpec,
+            },
         }
         let (plan, failed) = {
             let mut inner = self.lock();
@@ -1067,9 +1065,11 @@ impl Backend for KrucibleBackend {
         // the bundle + frozen root on disk ARE the stopped sandbox.
         let record = {
             let inner = self.lock();
-            inner.sandboxes.get(id).map(|r| r.record.clone()).ok_or_else(|| {
-                Error::NotFound(format!("sandbox {id}"))
-            })?
+            inner
+                .sandboxes
+                .get(id)
+                .map(|r| r.record.clone())
+                .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?
         };
         self.snapshot_live(&dir, &record, &format!("stop-{id}"))?;
         let worker = {
@@ -1207,7 +1207,7 @@ impl Backend for KrucibleBackend {
 /// Remove crash debris from a previous failed snapshot publish or
 /// registry copy: `<name>.tmp` registry dirs, per-sandbox `bundle.new`,
 /// `bundle.old`, and `sandbox.json.tmp`. Never touches live bundles or
-/// records (publish swaps by rename, so debris is always unreferenced).
+/// records. An interrupted swap restores `bundle.old` before cleanup.
 fn sweep_debris(data_dir: &Path) -> Result<()> {
     let snaps = data_dir.join("snapshots");
     if snaps.is_dir() {
@@ -1228,7 +1228,8 @@ fn sweep_debris(data_dir: &Path) -> Result<()> {
         if !entry.file_type()?.is_dir() || entry.file_name() == "snapshots" {
             continue;
         }
-        for junk in ["bundle.new", "bundle.old", "sandbox.json.tmp"] {
+        recover_bundle(&entry.path().join("bundle"))?;
+        for junk in ["bundle.new", "sandbox.json.tmp"] {
             let p = entry.path().join(junk);
             if p.is_dir() {
                 let _ = std::fs::remove_dir_all(&p);
@@ -1240,28 +1241,64 @@ fn sweep_debris(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Atomically publish a freshly-written bundle generation: rename the
-/// previous bundle aside (if any), move the new generation into place,
-/// then drop the old one. A crash before the second rename leaves the
-/// previous recovery point intact; a crash between renames leaves NO
-/// bundle (restore treats that as absent, never as torn).
+/// Recover the last committed generation if publication stopped between renames.
+/// Sync the recovered name before discarding either generation.
+fn recover_bundle(bundle: &Path) -> Result<()> {
+    let old = bundle.with_extension("old");
+    if old.exists() {
+        if !bundle.exists() {
+            std::fs::rename(&old, bundle)?;
+        }
+        sync_dir(bundle.parent().expect("bundle parent"))?;
+        if old.exists() {
+            std::fs::remove_dir_all(old)?;
+        }
+    }
+    Ok(())
+}
+
+fn sync_dir(dir: &Path) -> Result<()> {
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
+/// Flush every artifact and directory before publishing its generation.
+fn sync_tree(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            sync_tree(&entry.path())?;
+        } else {
+            std::fs::File::open(entry.path())?.sync_all()?;
+        }
+    }
+    sync_dir(dir)
+}
+
+/// Publish a durable generation. Startup recovers `bundle.old` if interrupted
+/// between renames; the old generation is removed only after the new name is durable.
 fn publish_bundle(new_dir: &Path, bundle: &Path) -> Result<()> {
-    let mut old_name = bundle.as_os_str().to_owned();
-    old_name.push(".old");
-    let old_dir = PathBuf::from(old_name);
-    let _ = std::fs::remove_dir_all(&old_dir);
+    recover_bundle(bundle)?;
+    sync_tree(new_dir)?;
+    let parent = bundle.parent().expect("bundle parent");
+    let old_dir = bundle.with_extension("old");
     if bundle.exists() {
         std::fs::rename(bundle, &old_dir)?;
-    }
-    let published = std::fs::rename(new_dir, bundle);
-    if published.is_err() {
-        // Best effort: put the previous generation back.
-        if old_dir.exists() && !bundle.exists() {
-            let _ = std::fs::rename(&old_dir, bundle);
+        if let Err(e) = sync_dir(parent) {
+            // Restore the visible recovery point even on an fsync failure.
+            recover_bundle(bundle)?;
+            return Err(e);
         }
-        published?;
     }
-    let _ = std::fs::remove_dir_all(&old_dir);
+    if let Err(e) = std::fs::rename(new_dir, bundle) {
+        recover_bundle(bundle)?;
+        return Err(e.into());
+    }
+    sync_dir(parent)?;
+    if old_dir.exists() {
+        std::fs::remove_dir_all(old_dir)?;
+        sync_dir(parent)?;
+    }
     Ok(())
 }
 
@@ -1360,10 +1397,7 @@ mod tests {
             kernel_image: None,
             extra_env: HashMap::new(),
         };
-        assert!(matches!(
-            be.create(&spec),
-            Err(Error::InvalidState(_))
-        ));
+        assert!(matches!(be.create(&spec), Err(Error::InvalidState(_))));
         assert!(matches!(be.status("nope"), Err(Error::NotFound(_))));
         assert!(matches!(be.destroy("nope"), Err(Error::NotFound(_))));
         assert!(matches!(
@@ -1381,10 +1415,7 @@ mod tests {
         // Custom kernels are explicitly rejected (no silent fallback).
         let mut kspec = spec_named("kexec");
         kspec.kernel_image = Some("/tmp/kvm/custom-kernel".to_string());
-        assert!(matches!(
-            be.create(&kspec),
-            Err(Error::InvalidState(_))
-        ));
+        assert!(matches!(be.create(&kspec), Err(Error::InvalidState(_))));
         // Registry miss (not compat) when the snapshot id is unknown.
         let snap = SnapshotManifest::new(
             "ghost",
@@ -1475,12 +1506,25 @@ mod tests {
             pid: std::process::id(),
             sock_dir: reused.clone(),
             state_path: reused.join("state.json"),
-            starttime: Some(crate::process_starttime(std::process::id()).unwrap_or(0).wrapping_add(1_000_000)),
+            starttime: Some(
+                crate::process_starttime(std::process::id())
+                    .unwrap_or(0)
+                    .wrapping_add(1_000_000),
+            ),
         };
         worker.persist().unwrap();
 
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(matches!(
+                KrucibleBackend::open(cfg(&dir)),
+                Err(Error::InvalidState(_))
+            ));
+            std::fs::remove_file(live.join("state.json")).unwrap();
+        }
         let be = KrucibleBackend::open(cfg(&dir)).unwrap();
         assert_eq!(be.status("dead-vm").unwrap().state, State::Failed);
+        #[cfg(target_os = "linux")]
         assert_eq!(be.status("live-vm").unwrap().state, State::Running);
         assert_eq!(
             be.status("reused-vm").unwrap().state,
@@ -1490,7 +1534,7 @@ mod tests {
         // Destroying the adopted live record must NOT signal our own pid:
         // remove its state.json first so destroy takes the no-worker path.
         // (Adopted terminate sends SIGTERM; never point it at yourself.)
-        std::fs::remove_file(live.join("state.json")).unwrap();
+        let _ = std::fs::remove_file(live.join("state.json"));
         let be = KrucibleBackend::open(cfg(&dir)).unwrap();
         be.destroy("live-vm").unwrap();
         assert!(matches!(be.status("live-vm"), Err(Error::NotFound(_))));
@@ -1498,10 +1542,7 @@ mod tests {
         // The reused-pid record has no adopted worker (identity mismatch),
         // so destroy only removes files — our own pid is never signalled.
         be.destroy("reused-vm").unwrap();
-        assert!(matches!(
-            be.status("reused-vm"),
-            Err(Error::NotFound(_))
-        ));
+        assert!(matches!(be.status("reused-vm"), Err(Error::NotFound(_))));
     }
 
     #[test]
@@ -1522,5 +1563,97 @@ mod tests {
         assert_eq!(std::fs::read(bundle.join("v")).unwrap(), b"two");
         assert!(!dir.join("bundle.old").exists());
         assert!(!gen2.exists(), "generation consumed by rename");
+    }
+    #[test]
+    fn reservation_released_while_map_is_locked() {
+        let dir = crate::test_scratch("reservation-map");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        let guard = OpGuard::take(&be, "vm").unwrap();
+        assert!(matches!(OpGuard::take(&be, "vm"), Err(Error::Conflict(_))));
+        let _map = be.lock();
+        drop(guard);
+        assert!(OpGuard::take(&be, "vm").is_ok());
+    }
+
+    #[test]
+    fn reservation_released_on_unwind() {
+        let dir = crate::test_scratch("reservation-unwind");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        let result = std::panic::catch_unwind(|| {
+            let _guard = OpGuard::take(&be, "vm").unwrap();
+            panic!("operation failed");
+        });
+        assert!(result.is_err());
+        assert!(OpGuard::take(&be, "vm").is_ok());
+    }
+
+    #[test]
+    fn reopen_recovers_each_publication_crash_boundary() {
+        // Before first rename, between renames, after second rename.
+        for stage in 0..3 {
+            let dir = crate::test_scratch(&format!("publish-crash-{stage}"));
+            std::fs::write(dir.join("vmm"), "x").unwrap();
+            std::fs::write(dir.join("base.ext4"), "x").unwrap();
+            let vm = dir.join("data/vm");
+            std::fs::create_dir_all(vm.join("bundle")).unwrap();
+            std::fs::create_dir_all(vm.join("bundle.new")).unwrap();
+            std::fs::write(vm.join("bundle/v"), "previous").unwrap();
+            std::fs::write(vm.join("bundle.new/v"), "next").unwrap();
+            if stage >= 1 {
+                std::fs::rename(vm.join("bundle"), vm.join("bundle.old")).unwrap();
+            }
+            if stage >= 2 {
+                std::fs::rename(vm.join("bundle.new"), vm.join("bundle")).unwrap();
+            }
+            for _ in 0..2 {
+                let _be = KrucibleBackend::open(cfg(&dir)).unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(vm.join("bundle/v")).unwrap(),
+                    if stage == 2 { "next" } else { "previous" }
+                );
+                assert!(!vm.join("bundle.old").exists());
+                assert!(!vm.join("bundle.new").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn failed_publish_preserves_previous_bundle() {
+        let dir = crate::test_scratch("publish-failure");
+        let bundle = dir.join("bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(bundle.join("v"), "previous").unwrap();
+        assert!(publish_bundle(&dir.join("missing"), &bundle).is_err());
+        assert_eq!(
+            std::fs::read_to_string(bundle.join("v")).unwrap(),
+            "previous"
+        );
+    }
+
+    #[test]
+    fn unknown_live_identity_refuses_adoption() {
+        let dir = crate::test_scratch("unknown-identity");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        write_record(&dir, "vm", State::Running);
+        let vm = dir.join("data/vm");
+        Worker {
+            id: "vm".into(),
+            pid: std::process::id(),
+            sock_dir: vm.clone(),
+            state_path: vm.join("state.json"),
+            starttime: None,
+        }
+        .persist()
+        .unwrap();
+        assert!(matches!(
+            KrucibleBackend::open(cfg(&dir)),
+            Err(Error::InvalidState(_))
+        ));
+        assert!(vm.join("state.json").exists());
     }
 }
