@@ -343,7 +343,6 @@ async fn concurrent_creates_enforce_quota() {
     // second sees the committed row; overlapped, it sees the hold.
     use std::sync::Arc;
     use tokio::sync::Barrier;
-    let app = app();
     let store = ahvm_store::Store::open_in_memory().unwrap();
     store
         .upsert_user(&ahvm_store::User {
