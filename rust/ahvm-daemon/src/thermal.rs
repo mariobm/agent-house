@@ -16,7 +16,13 @@ use std::time::{Duration, Instant};
 /// Rebuilt from zero on restart (first-seen rule covers the gap).
 #[derive(Debug, Clone, Default)]
 pub struct ActivityTracker {
-    inner: Arc<Mutex<HashMap<String, Instant>>>,
+    inner: Arc<Mutex<TrackerInner>>,
+}
+
+#[derive(Debug, Default)]
+struct TrackerInner {
+    last: HashMap<String, Instant>,
+    inflight: HashMap<String, usize>,
 }
 
 impl ActivityTracker {
@@ -33,7 +39,7 @@ impl ActivityTracker {
     /// backdating in tests, or seeding from persisted timestamps later).
     pub fn touch_at(&self, id: &str, at: Instant) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.insert(id.to_string(), at);
+            inner.last.insert(id.to_string(), at);
         }
     }
 
@@ -41,12 +47,58 @@ impl ActivityTracker {
     /// starts fresh under the first-seen rule.
     pub fn remove(&self, id: &str) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.remove(id);
+            inner.last.remove(id);
+            inner.inflight.remove(id);
         }
     }
 
     pub fn last(&self, id: &str) -> Option<Instant> {
-        self.inner.lock().ok()?.get(id).copied()
+        self.inner.lock().ok()?.last.get(id).copied()
+    }
+
+    /// Mark a guest operation in flight. The sweep skips (and refreshes)
+    /// guarded ids, so a command longer than the idle budget is never
+    /// reaped mid-flight. Drop ends the guard AND touches: completion
+    /// counts as activity. Guards hold no locks across awaits.
+    pub fn begin(&self, id: &str) -> InFlight<'_> {
+        if let Ok(mut inner) = self.inner.lock() {
+            *inner.inflight.entry(id.to_string()).or_insert(0) += 1;
+        }
+        InFlight {
+            tracker: self,
+            id: id.to_string(),
+        }
+    }
+
+    /// True while any guarded operation runs for `id`.
+    pub fn in_flight(&self, id: &str) -> bool {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.inflight.get(id).copied())
+            .unwrap_or(0)
+            > 0
+    }
+}
+
+/// In-flight operation guard from [`ActivityTracker::begin`].
+#[derive(Debug)]
+pub struct InFlight<'a> {
+    tracker: &'a ActivityTracker,
+    id: String,
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut inner) = self.tracker.inner.lock() {
+            if let Some(n) = inner.inflight.get_mut(&self.id) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    inner.inflight.remove(&self.id);
+                }
+            }
+            inner.last.insert(self.id.clone(), Instant::now());
+        }
     }
 }
 
@@ -72,6 +124,8 @@ pub struct SweepStats {
     pub checked: usize,
     pub stopped: usize,
     pub reconciled: usize,
+    /// Idle rows skipped because all op permits were busy (retried next sweep).
+    pub deferred: usize,
 }
 
 /// One sweep pass: page all sandbox rows, reconcile each with backend
@@ -94,6 +148,11 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
         after = rows.last().map(|r| (r.created_at, r.id.clone()));
         for row in rows {
             stats.checked += 1;
+            // Lifecycle serialization: routes take this same id lock around
+            // their backend op + store mirror, so a sampled state can never
+            // overwrite a newer commit (or vice versa). Lock order
+            // everywhere: lifecycle → permit → backend.
+            let _lc = state.lifecycle.lock(&row.id).await;
             // Backend truth first (blocking pool; NotFound handled below).
             let backend = state.backend.clone();
             let id = row.id.clone();
@@ -133,6 +192,12 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
             if live.state != ahvm_engine::State::Running {
                 continue;
             }
+            if state.activity.in_flight(&row.id) {
+                // Actively serving (long exec, open stream): refresh
+                // instead of reap. Completion touches on guard drop.
+                state.activity.touch_at(&row.id, now);
+                continue;
+            }
             let last = match state.activity.last(&row.id) {
                 Some(t) => t,
                 None => {
@@ -143,6 +208,21 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
                 }
             };
             if now.duration_since(last).as_secs() > cfg.idle_secs {
+                // Share the op bound with foreground work: stopping snapshots.
+                // Non-blocking take — a busy scheduler defers this row to the
+                // next sweep instead of head-of-line blocking the whole pass.
+                let Some(_permit) = state.ops.try_acquire() else {
+                    stats.deferred += 1;
+                    continue;
+                };
+                // Recheck after admission: activity may have refreshed while
+                // the row waited (or while a permit was unavailable).
+                let fresh = state.activity.last(&row.id);
+                if state.activity.in_flight(&row.id)
+                    || fresh.is_some_and(|t| now.duration_since(t).as_secs() <= cfg.idle_secs)
+                {
+                    continue;
+                }
                 let backend = state.backend.clone();
                 let id = row.id.clone();
                 let stopped = tokio::task::spawn_blocking(move || backend.stop(&id)).await;
@@ -181,7 +261,7 @@ pub async fn run(state: AppState, cfg: ThermalConfig) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ahvm_engine::{Backend, MockBackend, State};
+    use ahvm_engine::{Backend, MockBackend, SandboxInfo, State};
     use std::time::Duration;
 
     fn state() -> AppState {
@@ -195,6 +275,7 @@ mod tests {
             quotas: crate::quotas::Registry::new(),
             activity: ActivityTracker::new(),
             ops: crate::scheduler::OpsLimiter::new(4),
+            lifecycle: crate::scheduler::LifecycleLocks::new(),
         }
     }
 
@@ -313,5 +394,257 @@ mod tests {
         let stats = sweep_once(&st, ThermalConfig::default(), Instant::now()).await;
         assert_eq!(stats.reconciled, 1);
         assert_eq!(st.store.get_sandbox(&id).unwrap().state, "running");
+    }
+
+    /// Scripted backend: `status` parks until released, then reports the
+    /// programmed state. Lets the test force the exact interleaving of the
+    /// reported race (sweep samples stale, foreground start commits).
+    struct GateBackend {
+        entered: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        stops: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl std::fmt::Debug for GateBackend {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("GateBackend").finish_non_exhaustive()
+        }
+    }
+
+    impl GateBackend {
+        fn new() -> (
+            Self,
+            std::sync::mpsc::Receiver<()>,
+            std::sync::mpsc::Sender<()>,
+        ) {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            (
+                Self {
+                    entered: std::sync::Mutex::new(Some(entered_tx)),
+                    release: std::sync::Mutex::new(release_rx),
+                    stops: std::sync::Mutex::new(Vec::new()),
+                },
+                entered_rx,
+                release_tx,
+            )
+        }
+    }
+
+    fn stopped_info(id: &str) -> SandboxInfo {
+        SandboxInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            state: State::Stopped,
+            thermal: ahvm_engine::Thermal::Cold,
+            ip: String::new(),
+        }
+    }
+
+    impl ahvm_engine::Backend for GateBackend {
+        fn capabilities(&self) -> ahvm_engine::Capabilities {
+            ahvm_engine::BackendKind::Krucible.capabilities()
+        }
+        fn create(&self, _spec: &ahvm_engine::SandboxSpec) -> ahvm_engine::Result<SandboxInfo> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn destroy(&self, _id: &str) -> ahvm_engine::Result<()> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn start(&self, _id: &str) -> ahvm_engine::Result<()> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn stop(&self, id: &str) -> ahvm_engine::Result<()> {
+            self.stops.lock().unwrap().push(id.to_string());
+            Ok(())
+        }
+        fn status(&self, id: &str) -> ahvm_engine::Result<SandboxInfo> {
+            // Park until the driver releases, then report stale Stopped:
+            // without lifecycle serialization the sweep writes this over
+            // a newer Running commit.
+            if let Some(tx) = self.entered.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            let _ = self.release.lock().unwrap().recv();
+            Ok(stopped_info(id))
+        }
+        fn list(&self) -> ahvm_engine::Result<Vec<SandboxInfo>> {
+            Ok(vec![])
+        }
+        fn exec(
+            &self,
+            _id: &str,
+            _argv: &[String],
+        ) -> ahvm_engine::Result<ahvm_engine::ExecResult> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn create_snapshot(
+            &self,
+            _id: &str,
+            _snapshot_id: &str,
+        ) -> ahvm_engine::Result<ahvm_engine::SnapshotManifest> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn restore(
+            &self,
+            _snapshot: &ahvm_engine::SnapshotManifest,
+            _new_id: &str,
+        ) -> ahvm_engine::Result<SandboxInfo> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn fork(&self, _id: &str, _new_id: &str) -> ahvm_engine::Result<SandboxInfo> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn snapshot_manifest(
+            &self,
+            snapshot_id: &str,
+        ) -> ahvm_engine::Result<ahvm_engine::SnapshotManifest> {
+            Err(ahvm_engine::Error::NotFound(format!(
+                "snapshot {snapshot_id}"
+            )))
+        }
+        fn file_read(
+            &self,
+            _id: &str,
+            _path: &str,
+            _offset: u64,
+            _limit: u64,
+        ) -> ahvm_engine::Result<ahvm_engine::FileChunk> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn file_write(&self, _id: &str, _path: &str, _data: &[u8]) -> ahvm_engine::Result<u64> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn file_list(
+            &self,
+            _id: &str,
+            _path: &str,
+            _offset: u64,
+            _limit: u64,
+        ) -> ahvm_engine::Result<ahvm_engine::DirListing> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn session_create(
+            &self,
+            _id: &str,
+            _argv: &[String],
+            _pty: bool,
+        ) -> ahvm_engine::Result<String> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn session_read(
+            &self,
+            _id: &str,
+            _session_id: &str,
+            _from_seq: u64,
+            _budget: Duration,
+        ) -> ahvm_engine::Result<ahvm_engine::SessionChunk> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn session_input(
+            &self,
+            _id: &str,
+            _session_id: &str,
+            _data: &[u8],
+        ) -> ahvm_engine::Result<u64> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn session_kill(&self, _id: &str, _session_id: &str) -> ahvm_engine::Result<()> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn session_delete(&self, _id: &str, _session_id: &str) -> ahvm_engine::Result<()> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn session_list(&self, _id: &str) -> ahvm_engine::Result<Vec<ahvm_engine::SessionInfo>> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+        fn session_resize(
+            &self,
+            _id: &str,
+            _session_id: &str,
+            _rows: u16,
+            _cols: u16,
+        ) -> ahvm_engine::Result<()> {
+            Err(ahvm_engine::Error::NotFound("gate".into()))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sweep_cannot_overwrite_newer_lifecycle_commit() {
+        // Exact repro of the reported race: the sweep samples Stopped while
+        // a foreground start commits Running. The per-id lock must serialize
+        // the two commits; whoever holds it first wins the race to write,
+        // and the start's write lands last. Without the sweep-side lock the
+        // foreground write slips through first and the assertion fails.
+        let store = Arc::new(ahvm_store::Store::open_in_memory().unwrap());
+        owner(&store);
+        store
+            .create_sandbox(&row("race", "running", "hot"))
+            .unwrap();
+        let (gate, entered, release) = GateBackend::new();
+        let lifecycle = crate::scheduler::LifecycleLocks::new();
+        let mk_state = |backend: Arc<dyn Backend>| AppState {
+            store: store.clone(),
+            backend,
+            quotas: crate::quotas::Registry::new(),
+            activity: ActivityTracker::new(),
+            ops: crate::scheduler::OpsLimiter::new(4),
+            lifecycle: lifecycle.clone(),
+        };
+        let gate = Arc::new(gate);
+        let sweep_state = mk_state(gate);
+        let sweep = tokio::spawn(async move {
+            sweep_once(
+                &sweep_state,
+                ThermalConfig {
+                    idle_secs: 3600,
+                    sweep_secs: 60,
+                },
+                Instant::now(),
+            )
+            .await
+        });
+        // Wait until the sweep is parked inside status() holding the id lock.
+        entered.recv().unwrap();
+        // Foreground start through the same lock (mirrors set_running):
+        // it must NOT complete while the sweep holds the lock.
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let fg_store = store.clone();
+        let fg_lifecycle = lifecycle.clone();
+        tokio::spawn(async move {
+            let _lc = fg_lifecycle.lock("race").await;
+            fg_store
+                .set_sandbox_state("race", "running", "warm", 1)
+                .unwrap();
+            let _ = done_tx.send(());
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), done_rx)
+                .await
+                .is_err(),
+            "foreground commit slipped past the sweep's lock"
+        );
+        // Release the sweep: it writes its stale Stopped, drops the lock,
+        // then the foreground write lands last. Final state must be Running.
+        release.send(()).unwrap();
+        let stats = sweep.await.unwrap();
+        assert_eq!(stats.checked, 1);
+        // The foreground write must complete promptly once unblocked.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let row = store.get_sandbox("race").unwrap();
+                if row.state == "running" && row.thermal == "warm" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("foreground commit never landed");
+        assert_eq!(
+            store.get_sandbox("race").unwrap().state,
+            "running",
+            "stale sweep sample overwrote the newer start commit"
+        );
     }
 }

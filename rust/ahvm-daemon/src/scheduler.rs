@@ -3,7 +3,8 @@
 //! session drains) bypass it. No nesting: mutating routes hold at most one
 //! permit, so the bound cannot deadlock.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Debug, Clone)]
@@ -26,9 +27,43 @@ impl OpsLimiter {
             .expect("ops semaphore closed")
     }
 
+    /// Non-blocking take for the thermal sweep: a busy scheduler defers
+    /// the row to the next sweep instead of stalling the whole pass.
+    pub fn try_acquire(&self) -> Option<OwnedSemaphorePermit> {
+        self.sem.clone().try_acquire_owned().ok()
+    }
+
     #[cfg(test)]
     pub fn available(&self) -> usize {
         self.sem.available_permits()
+    }
+}
+
+/// Per-sandbox lifecycle serialization: routes and the thermal sweep take
+/// the same id's lock around their read-modify-write sequences (backend op
+/// plus store mirror), so a sampled state can never overwrite a newer
+/// commit. One global order prevents deadlocks: lifecycle, then permit,
+/// then backend. Locks are never nested across ids (fork will order
+/// multiple ids lexicographically when it needs two).
+#[derive(Debug, Clone, Default)]
+pub struct LifecycleLocks {
+    inner: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+impl LifecycleLocks {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn lock(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let entry = {
+            let mut inner = self.inner.lock().expect("lifecycle mutex poisoned");
+            inner
+                .entry(id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        entry.lock_owned().await
     }
 }
 

@@ -76,6 +76,8 @@ pub async fn create(
         .reserve_snapshot(&state.store, &me, &snap_name)?;
     let _permit = state.ops.acquire().await;
     state.activity.touch(&id);
+    // Guard across the guest-paused snapshot (minutes on big RAM).
+    let _flight = state.activity.begin(&id);
     let manifest = blocking(move || backend.create_snapshot(&owned_id, &snap_name)).await?;
     let now = unix_now();
     let row = ahvm_store::Snapshot {
@@ -128,6 +130,9 @@ pub async fn restore(
     Json(body): Json<RestoreBody>,
 ) -> ApiResult<impl IntoResponse> {
     owned_snapshot(&state, &user.0, &snapshot_id)?;
+    // Lifecycle first (see scheduler::LifecycleLocks): the restore (quota
+    // → boot → record) is one critical section for the new id.
+    let _lc = state.lifecycle.lock(&body.new_id).await;
     let backend = state.backend.clone();
     let manifest = blocking({
         let backend = backend.clone();

@@ -160,6 +160,8 @@ pub async fn read(
     use base64::Engine;
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
+    // Guard across the drain: budgets reach 30s, past any small idle window.
+    let _flight = state.activity.begin(&id);
     let budget = Duration::from_millis(q.budget_ms.clamp(100, 30_000));
     let backend = state.backend.clone();
     let chunk = blocking(move || backend.session_read(&id, &sid, q.from_seq, budget)).await?;
@@ -230,6 +232,9 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
                 _ => break 'outer,
             };
             if let Some(data) = data {
+                // Input counts as activity (but never guards: an open idle
+                // socket must not pin its VM forever).
+                state.activity.touch(&id);
                 let backend = state.backend.clone();
                 let (id, sid) = (id.clone(), sid.clone());
                 let _ =
@@ -239,6 +244,7 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
         }
         // Blocking output drain (up to the budget), then forward.
         let backend = state.backend.clone();
+        let touch_id = id.clone();
         let (id, sid) = (id.clone(), sid.clone());
         let chunk =
             tokio::task::spawn_blocking(move || backend.session_read(&id, &sid, seq, budget)).await;
@@ -248,6 +254,9 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
         };
         seq = chunk.next_seq;
         if !chunk.data.is_empty() || chunk.eof {
+            // Output counts as activity; empty idle drains deliberately do
+            // not, so a forgotten-open terminal still goes cold.
+            state.activity.touch(&touch_id);
             use base64::Engine;
             let frame = serde_json::json!({
                 "data_b64": base64::engine::general_purpose::STANDARD.encode(&chunk.data),

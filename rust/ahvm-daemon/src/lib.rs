@@ -45,6 +45,7 @@ pub struct AppState {
     pub quotas: quotas::Registry,
     pub activity: thermal::ActivityTracker,
     pub ops: scheduler::OpsLimiter,
+    pub lifecycle: scheduler::LifecycleLocks,
 }
 
 /// JSON error body: machine-readable `code`, human `message`.

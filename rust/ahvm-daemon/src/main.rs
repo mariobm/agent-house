@@ -107,6 +107,7 @@ async fn main() {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(4),
         ),
+        lifecycle: ahvm_daemon::scheduler::LifecycleLocks::new(),
     };
     // Thermal sweep (idle stop + reconcile) runs for the daemon lifetime.
     // Shutdown is process exit: activity rebuilds, records persist per-op.

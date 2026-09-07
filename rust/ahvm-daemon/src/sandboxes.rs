@@ -61,6 +61,9 @@ pub async fn create(
     if body.name.is_empty() || body.name.len() > 64 {
         return Err(ApiError::Invalid("name must be 1..=64 chars".to_string()));
     }
+    // Lifecycle serialization first (see scheduler::LifecycleLocks): the
+    // whole create (quota → boot → record) is one critical section per id.
+    let _lc = state.lifecycle.lock(&body.name).await;
     // Atomic quota gate: committed rows plus in-flight holds, checked
     // and reserved under one lock (see quotas.rs). The hold lives until
     // the store record commits below, so concurrent creators serialize.
@@ -150,6 +153,7 @@ pub async fn get(
     Extension(user): Extension<UserId>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<SandboxView>> {
+    let _lc = state.lifecycle.lock(&id).await;
     let row = owned(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     let owned_id = id.clone();
@@ -168,6 +172,7 @@ pub async fn destroy(
     Extension(user): Extension<UserId>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    let _lc = state.lifecycle.lock(&id).await;
     owned(&state, &user.0, &id).await?;
     let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
@@ -215,6 +220,9 @@ async fn set_running(
         + Send
         + 'static,
 ) -> ApiResult<Json<SandboxView>> {
+    // Lifecycle first (see scheduler::LifecycleLocks), then the op permit:
+    // same order as the sweep, so neither can deadlock the other.
+    let _lc = state.lifecycle.lock(id).await;
     let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
     let a = id.to_string();
@@ -254,8 +262,10 @@ pub async fn exec(
     }
     owned(&state, &user.0, &id).await?;
     // Attempt marks activity (keep idle_secs comfortably above the exec
-    // budget so long runs are never reaped mid-flight).
+    // budget so long runs are never reaped mid-flight). In-flight guard
+    // holds across the call so the sweep skips instead of racing it.
     state.activity.touch(&id);
+    let _flight = state.activity.begin(&id);
     let backend = state.backend.clone();
     let out = blocking(move || backend.exec(&id, &body.argv)).await?;
     Ok(Json(out))
