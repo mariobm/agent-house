@@ -42,7 +42,10 @@ pub use snapshot::{
     host_caps, Artifacts, Compat, HostCaps, SnapshotManifest, VmmId, DEVICE_LAYOUT_VER,
     MANIFEST_VER, SIDECAR_NAME,
 };
-pub use spec::{BackendKind, ExecResult, SandboxInfo, SandboxSpec, State, Thermal};
+pub use spec::{
+    BackendKind, DirEntry, DirListing, ExecResult, FileChunk, SandboxInfo, SandboxSpec,
+    SessionChunk, SessionInfo, State, Thermal,
+};
 pub use worker::{
     is_alive, process_starttime, send_ctl, spawn_worker, spawn_worker_cfg, terminate_adopted,
     LiveWorker, SpawnConfig, Worker,

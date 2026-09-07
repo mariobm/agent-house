@@ -213,7 +213,10 @@ fn run(spec: VmSpec) {
     }
 
     // Host-dialed bridges (listen=true) to guest 1024/1025.
-    for (port, uds) in [(1024u32, &spec.vsock_control_uds), (1025, &spec.vsock_forward_uds)] {
+    for (port, uds) in [
+        (1024u32, &spec.vsock_control_uds),
+        (1025, &spec.vsock_forward_uds),
+    ] {
         if uds.is_empty() {
             continue;
         }
@@ -241,8 +244,11 @@ fn run(spec: VmSpec) {
         // NEVER pass a null envp: libkrun interprets NULL as "copy the
         // worker's environment" (daemon credentials, host config). An empty
         // spec.env means an explicitly EMPTY guest environment ([NULL]).
-        let env_cs: Vec<CString> =
-            spec.env.iter().map(|e| CString::new(e.as_str()).unwrap()).collect();
+        let env_cs: Vec<CString> = spec
+            .env
+            .iter()
+            .map(|e| CString::new(e.as_str()).unwrap())
+            .collect();
         let mut ptrs: Vec<*const c_char> = env_cs.iter().map(|c| c.as_ptr()).collect();
         ptrs.push(std::ptr::null());
         krun::set_exec(cid, exec, &ptrs);

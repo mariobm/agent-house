@@ -260,10 +260,7 @@ mod tests {
                 libc::AF_VSOCK as u16
             );
         }
-        assert_eq!(
-            u32::from_ne_bytes(raw[4..8].try_into().unwrap()),
-            1024
-        );
+        assert_eq!(u32::from_ne_bytes(raw[4..8].try_into().unwrap()), 1024);
         assert_eq!(
             u32::from_ne_bytes(raw[8..12].try_into().unwrap()),
             libc::VMADDR_CID_ANY

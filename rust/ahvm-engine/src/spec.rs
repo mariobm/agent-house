@@ -117,6 +117,51 @@ pub struct ExecResult {
     pub truncated: bool,
 }
 
+/// One file-read chunk (cf. forge `FileResp::Read`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileChunk {
+    pub data: Vec<u8>,
+    pub eof: bool,
+}
+
+/// One directory entry (cf. forge `DirEntry`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// A directory page (cf. forge `FileResp::List`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirListing {
+    pub entries: Vec<DirEntry>,
+    pub next_offset: Option<u64>,
+}
+
+/// Session facts (cf. forge `SessionInfo`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub id: String,
+    pub argv: Vec<String>,
+    pub running: bool,
+    pub started_at: i64,
+}
+
+/// Drained session output (cf. forge `SessionData`). `exit_code` is set
+/// once the session process has exited. `next_seq` is the authoritative
+/// resume cursor (frame `seq` + bytes, never client-side byte counting:
+/// scrollback eviction makes byte counting wrong). `truncated` means output
+/// between the requested `from_seq` and the returned data was evicted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionChunk {
+    pub data: Vec<u8>,
+    pub eof: bool,
+    pub exit_code: Option<i32>,
+    pub next_seq: u64,
+    pub truncated: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

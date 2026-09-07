@@ -129,6 +129,13 @@ pub enum SessionReq {
         session_id: String,
         #[serde(default)]
         from_seq: u64,
+        /// Idle bound in milliseconds: the server closes the attach when
+        /// this long passes with no output and no EOF. Without it an idle
+        /// attach holds a guest thread forever (each client reconnect that
+        /// times out instead of closing cleanly leaks one). `None` keeps
+        /// the legacy unbounded wait for short-lived clients.
+        #[serde(default)]
+        timeout_ms: Option<u64>,
     },
     Input {
         session_id: String,
@@ -376,11 +383,15 @@ fn serve_session(_r: &mut BufReader<Conn>, w: &mut Conn, req: SessionReq) -> boo
             }
             false
         }
-        SessionReq::Resize { session_id, rows, cols } => {
+        SessionReq::Resize {
+            session_id,
+            rows,
+            cols,
+        } => {
             match mgr.resize(&session_id, rows, cols) {
                 Ok(()) => {
-                    let body =
-                        serde_json::to_vec(&SessionResp::Resized { session_id }).expect("serialize");
+                    let body = serde_json::to_vec(&SessionResp::Resized { session_id })
+                        .expect("serialize");
                     send_frame(w, reply(FrameType::SessionResp, body));
                 }
                 Err(message) => send_frame(w, err_frame(message)),
@@ -390,8 +401,8 @@ fn serve_session(_r: &mut BufReader<Conn>, w: &mut Conn, req: SessionReq) -> boo
         SessionReq::Delete { session_id } => {
             match mgr.delete(&session_id) {
                 Ok(()) => {
-                    let body =
-                        serde_json::to_vec(&SessionResp::Deleted { session_id }).expect("serialize");
+                    let body = serde_json::to_vec(&SessionResp::Deleted { session_id })
+                        .expect("serialize");
                     send_frame(w, reply(FrameType::SessionResp, body));
                 }
                 Err(message) => send_frame(w, err_frame(message)),
@@ -409,11 +420,13 @@ fn serve_session(_r: &mut BufReader<Conn>, w: &mut Conn, req: SessionReq) -> boo
         SessionReq::Attach {
             session_id,
             from_seq,
+            timeout_ms,
         } => {
             let Some(s) = mgr.get(&session_id) else {
                 send_frame(w, err_frame(format!("no such session: {session_id}")));
                 return false;
             };
+            let started = std::time::Instant::now();
             let mut sent = from_seq;
             loop {
                 let (chunk, next, exit, truncated) = s.read_from(sent);
@@ -421,6 +434,14 @@ fn serve_session(_r: &mut BufReader<Conn>, w: &mut Conn, req: SessionReq) -> boo
                 // EOF only when process exited AND pumps drained AND ring drained
                 let eof = exit.is_some() && drained && s.pumps_done();
                 if chunk.is_empty() && !eof {
+                    // Bounded idle wait: an attach with no output and no EOF
+                    // would otherwise hold this guest thread forever — every
+                    // client that disconnects instead of draining leaks one.
+                    if timeout_ms
+                        .is_some_and(|ms| started.elapsed() > std::time::Duration::from_millis(ms))
+                    {
+                        return true; // close; the client re-attaches
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(20));
                     continue;
                 }

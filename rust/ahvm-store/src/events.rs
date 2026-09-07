@@ -34,14 +34,16 @@ impl Store {
         payload: &serde_json::Value,
         now: i64,
     ) -> Result<i64> {
-        self.with_conn(|c| {
-            super::record_event_inner(c, r#type, user_id, sandbox_id, payload, now)
-        })
+        self.with_conn(|c| super::record_event_inner(c, r#type, user_id, sandbox_id, payload, now))
     }
 
     /// Oldest-first page after a cursor. `limit == 0` means a sane default.
     pub fn query_events(&self, f: &EventFilter) -> Result<Vec<Event>> {
-        let limit = if f.limit == 0 { 100 } else { f.limit.min(500) as i64 };
+        let limit = if f.limit == 0 {
+            100
+        } else {
+            f.limit.min(500) as i64
+        };
         self.with_conn(|c| {
             let mut stmt = c.prepare(
                 "SELECT seq, type, user_id, sandbox_id, payload, created_at

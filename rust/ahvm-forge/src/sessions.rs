@@ -68,16 +68,22 @@ fn open_ptmx() -> Result<(std::fs::File, String), String> {
         return Err(format!("posix_openpt: {}", std::io::Error::last_os_error()));
     }
     if unsafe { libc::grantpt(fd) } != 0 {
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
         return Err(format!("grantpt: {}", std::io::Error::last_os_error()));
     }
     if unsafe { libc::unlockpt(fd) } != 0 {
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
         return Err(format!("unlockpt: {}", std::io::Error::last_os_error()));
     }
     let cstr_ptr = unsafe { libc::ptsname(fd) };
     if cstr_ptr.is_null() {
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
         return Err(format!("ptsname: {}", std::io::Error::last_os_error()));
     }
     let cstr = unsafe { std::ffi::CStr::from_ptr(cstr_ptr) };
@@ -110,7 +116,10 @@ impl SessionManager {
             id: id.clone(),
             argv: argv.clone(),
             started_at: unix_now(),
-            lifecycle: Mutex::new(Lifecycle { pgid: None, exit: None }),
+            lifecycle: Mutex::new(Lifecycle {
+                pgid: None,
+                exit: None,
+            }),
             ring: Mutex::new(Ring::default()),
             stdin: Mutex::new(None),
             master: Mutex::new(None),
@@ -194,23 +203,34 @@ impl SessionManager {
             id: id.clone(),
             argv,
             started_at: unix_now(),
-            lifecycle: Mutex::new(Lifecycle { pgid: Some(child.id() as i32), exit: None }),
+            lifecycle: Mutex::new(Lifecycle {
+                pgid: Some(child.id() as i32),
+                exit: None,
+            }),
             ring: Mutex::new(Ring::default()),
             stdin: Mutex::new(child.stdin.take()),
             master: Mutex::new(None),
             is_pty: false,
             active_pumps: active_pumps.clone(),
         });
-        let pump = |pipe: Option<Box<dyn Read + Send>>, session: Arc<Session>, counter: Arc<AtomicUsize>| {
+        let pump = |pipe: Option<Box<dyn Read + Send>>,
+                    session: Arc<Session>,
+                    counter: Arc<AtomicUsize>| {
             std::thread::spawn(move || pump_stream(pipe, &session, &counter))
         };
         pump(
-            child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+            child
+                .stdout
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
             session.clone(),
             active_pumps.clone(),
         );
         pump(
-            child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
             session.clone(),
             active_pumps.clone(),
         );
@@ -287,7 +307,10 @@ impl SessionManager {
             id: id.clone(),
             argv,
             started_at: unix_now(),
-            lifecycle: Mutex::new(Lifecycle { pgid: Some(child.id() as i32), exit: None }),
+            lifecycle: Mutex::new(Lifecycle {
+                pgid: Some(child.id() as i32),
+                exit: None,
+            }),
             ring: Mutex::new(Ring::default()),
             stdin: Mutex::new(None),
             master: Mutex::new(Some(master_file)),
@@ -366,7 +389,9 @@ impl SessionManager {
     }
 
     pub fn resize(&self, id: &str, rows: u16, cols: u16) -> Result<(), String> {
-        let s = self.get(id).ok_or_else(|| format!("no such session: {id}"))?;
+        let s = self
+            .get(id)
+            .ok_or_else(|| format!("no such session: {id}"))?;
         if !s.is_pty {
             return Err("not a pty session".into());
         }
@@ -380,7 +405,10 @@ impl SessionManager {
         };
         let ret = unsafe { libc::ioctl(file.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
         if ret != 0 {
-            return Err(format!("ioctl TIOCSWINSZ: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "ioctl TIOCSWINSZ: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         Ok(())
     }
@@ -454,7 +482,9 @@ impl Session {
             let fd = file.as_raw_fd();
             let orig_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
             if orig_flags >= 0 {
-                unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK); }
+                unsafe {
+                    libc::fcntl(fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK);
+                }
             }
             let mut written = 0;
             let start = std::time::Instant::now();
@@ -470,7 +500,11 @@ impl Session {
                     break;
                 }
                 let n = unsafe {
-                    libc::write(fd, data[written..].as_ptr() as *const _, data.len() - written)
+                    libc::write(
+                        fd,
+                        data[written..].as_ptr() as *const _,
+                        data.len() - written,
+                    )
                 };
                 if n < 0 {
                     let err = std::io::Error::last_os_error();
@@ -488,7 +522,9 @@ impl Session {
                 }
             }
             if orig_flags >= 0 {
-                unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags); }
+                unsafe {
+                    libc::fcntl(fd, libc::F_SETFL, orig_flags);
+                }
             }
             // Snapshot liveness BEFORE taking the I/O lock: acquiring
             // lifecycle while holding master/stdin inverts delete()'s order
@@ -514,7 +550,9 @@ impl Session {
             let fd = stdin.as_raw_fd();
             let orig_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
             if orig_flags >= 0 {
-                unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK); }
+                unsafe {
+                    libc::fcntl(fd, libc::F_SETFL, orig_flags | libc::O_NONBLOCK);
+                }
             }
             let mut written = 0;
             let start = std::time::Instant::now();
@@ -530,7 +568,11 @@ impl Session {
                     break;
                 }
                 let n = unsafe {
-                    libc::write(fd, data[written..].as_ptr() as *const _, data.len() - written)
+                    libc::write(
+                        fd,
+                        data[written..].as_ptr() as *const _,
+                        data.len() - written,
+                    )
                 };
                 if n < 0 {
                     let err = std::io::Error::last_os_error();
@@ -548,7 +590,9 @@ impl Session {
                 }
             }
             if orig_flags >= 0 {
-                unsafe { libc::fcntl(fd, libc::F_SETFL, orig_flags); }
+                unsafe {
+                    libc::fcntl(fd, libc::F_SETFL, orig_flags);
+                }
             }
             // Same no-nesting rule as the pty branch above.
             let alive = self.lifecycle.lock().unwrap().exit.is_none();
@@ -737,7 +781,10 @@ mod tests {
             id: "test".into(),
             argv: vec![],
             started_at: 0,
-            lifecycle: Mutex::new(Lifecycle { pgid: None, exit: None }),
+            lifecycle: Mutex::new(Lifecycle {
+                pgid: None,
+                exit: None,
+            }),
             ring: Mutex::new(Ring::default()),
             stdin: Mutex::new(None),
             master: Mutex::new(None),

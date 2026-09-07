@@ -134,6 +134,75 @@ fn kvm_backend_lifecycle_and_recovery() {
     let r = be.exec("be-3", &sh("printf forked")).unwrap();
     assert_eq!(r.stdout, "forked");
 
+    // ---- files + sessions through the backend ----
+    assert_eq!(
+        be.file_write("be-3", "/workspace/be-proof", b"FILEVAL")
+            .unwrap(),
+        7
+    );
+    let c = be.file_read("be-3", "/workspace/be-proof", 0, 100).unwrap();
+    assert_eq!(c.data, b"FILEVAL");
+    assert!(c.eof);
+    let l = be.file_list("be-3", "/workspace", 0, 100).unwrap();
+    assert!(l.entries.iter().any(|e| e.name == "be-proof" && !e.is_dir));
+    let sid = be
+        .session_create("be-3", &sh("echo SESSMARKER"), false)
+        .unwrap();
+    let chunk = be
+        .session_read("be-3", &sid, 0, Duration::from_secs(20))
+        .unwrap();
+    assert!(
+        chunk
+            .data
+            .windows(b"SESSMARKER\n".len())
+            .any(|w| w == b"SESSMARKER\n"),
+        "no marker: {:?}",
+        String::from_utf8_lossy(&chunk.data)
+    );
+    assert!(chunk.eof, "quick session should EOF");
+    assert!(!chunk.truncated);
+    assert_eq!(chunk.next_seq as usize, chunk.data.len());
+    let list = be.session_list("be-3").unwrap();
+    assert!(list.iter().any(|s| s.id == sid));
+    // Kill on an already-exited session is a guest error, not a silent
+    // no-op — delete it directly.
+    assert!(be.session_kill("be-3", &sid).is_err());
+    be.session_delete("be-3", &sid).unwrap();
+    assert!(be.session_list("be-3").unwrap().iter().all(|s| s.id != sid));
+
+    // Idle attach hygiene (review P1): repeated short-budget reads must
+    // not accumulate guest threads — each forge attach self-closes.
+    // The guest image ships without /proc mounted; mount it (idempotent,
+    // one exec) so the Threads counter is readable.
+    let threads = || -> usize {
+        let out = be
+            .exec(
+                "be-3",
+                &sh("mkdir -p /proc; mount -t proc proc /proc 2>/dev/null; grep Threads /proc/1/status"),
+            )
+            .unwrap()
+            .stdout;
+        out.split_whitespace()
+            .nth(1)
+            .and_then(|n| n.parse().ok())
+            .expect("Threads line")
+    };
+    let idle = be.session_create("be-3", &sh("sleep 120"), false).unwrap();
+    let before = threads();
+    for _ in 0..12 {
+        let c = be
+            .session_read("be-3", &idle, 0, Duration::from_secs(1))
+            .unwrap();
+        assert!(!c.eof);
+    }
+    let after = threads();
+    assert!(
+        after <= before + 1,
+        "guest threads leaked: {before} -> {after}"
+    );
+    be.session_kill("be-3", &idle).unwrap();
+    be.session_delete("be-3", &idle).unwrap();
+
     // ---- supervisor restart: drop the backend (workers survive:
     // LiveWorker Drop never kills a running child), reopen, adopt ----
     let data = {
