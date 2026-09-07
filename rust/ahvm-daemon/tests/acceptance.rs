@@ -35,6 +35,8 @@ struct Ctx {
 }
 
 fn open(dir: &PathBuf) -> Ctx {
+    // Store::open creates the file, not its parents (same rule as main).
+    std::fs::create_dir_all(dir).expect("data dir");
     let store = Arc::new(ahvm_store::Store::open(dir.join("daemon.db")).expect("open store"));
     store
         .upsert_user(&ahvm_store::User {
