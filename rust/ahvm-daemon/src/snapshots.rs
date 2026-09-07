@@ -74,6 +74,13 @@ pub async fn create(
     let _hold = state
         .quotas
         .reserve_snapshot(&state.store, &me, &snap_name)?;
+    let _permit = state.ops.acquire().await;
+    state.activity.touch(&id);
+    // Guard across the guest-paused snapshot (minutes on big RAM).
+    let _flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let manifest = blocking(move || backend.create_snapshot(&owned_id, &snap_name)).await?;
     let now = unix_now();
     let row = ahvm_store::Snapshot {
@@ -126,6 +133,9 @@ pub async fn restore(
     Json(body): Json<RestoreBody>,
 ) -> ApiResult<impl IntoResponse> {
     owned_snapshot(&state, &user.0, &snapshot_id)?;
+    // Lifecycle first (see scheduler::LifecycleLocks): the restore (quota
+    // → boot → record) is one critical section for the new id.
+    let _lc = state.lifecycle.lock(&body.new_id).await;
     let backend = state.backend.clone();
     let manifest = blocking({
         let backend = backend.clone();
@@ -143,6 +153,7 @@ pub async fn restore(
         manifest.compat.vcpus as i64,
         manifest.compat.mem_mib as i64,
     )?;
+    let _permit = state.ops.acquire().await;
     let new_id = body.new_id.clone();
     let snap_cpus = manifest.compat.vcpus as i64;
     let snap_mem = manifest.compat.mem_mib as i64;
@@ -168,6 +179,7 @@ pub async fn restore(
         let _ = blocking(move || backend.destroy(&id)).await;
         return Err(e.into());
     }
+    state.activity.touch(&info.id);
     Ok((
         StatusCode::CREATED,
         Json(crate::SandboxView::new(&sandbox_row, &info)),

@@ -76,6 +76,9 @@ fn app() -> axum::Router {
         store,
         backend,
         quotas: ahvm_daemon::quotas::Registry::new(),
+        activity: ahvm_daemon::thermal::ActivityTracker::new(),
+        ops: ahvm_daemon::scheduler::OpsLimiter::new(4),
+        lifecycle: ahvm_daemon::scheduler::LifecycleLocks::new(),
     })
 }
 
@@ -365,6 +368,9 @@ async fn concurrent_creates_enforce_quota() {
         store: Arc::new(store),
         backend,
         quotas: ahvm_daemon::quotas::Registry::new(),
+        activity: ahvm_daemon::thermal::ActivityTracker::new(),
+        ops: ahvm_daemon::scheduler::OpsLimiter::new(4),
+        lifecycle: ahvm_daemon::scheduler::LifecycleLocks::new(),
     });
     let barrier = Arc::new(Barrier::new(2));
     let mk = |name: &'static str| {
@@ -645,6 +651,9 @@ async fn start_enforces_resources_without_double_counting_sandbox() {
             store,
             backend: Arc::new(MockBackend::new(dir)),
             quotas: ahvm_daemon::quotas::Registry::new(),
+            activity: ahvm_daemon::thermal::ActivityTracker::new(),
+            ops: ahvm_daemon::scheduler::OpsLimiter::new(4),
+            lifecycle: ahvm_daemon::scheduler::LifecycleLocks::new(),
         });
         let (status, first) = call(
             app.clone(),

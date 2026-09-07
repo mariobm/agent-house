@@ -61,6 +61,9 @@ pub async fn create(
     if body.name.is_empty() || body.name.len() > 64 {
         return Err(ApiError::Invalid("name must be 1..=64 chars".to_string()));
     }
+    // Lifecycle serialization first (see scheduler::LifecycleLocks): the
+    // whole create (quota → boot → record) is one critical section per id.
+    let _lc = state.lifecycle.lock(&body.name).await;
     // Atomic quota gate: committed rows plus in-flight holds, checked
     // and reserved under one lock (see quotas.rs). The hold lives until
     // the store record commits below, so concurrent creators serialize.
@@ -82,6 +85,7 @@ pub async fn create(
         extra_env: Default::default(),
     };
     let backend = state.backend.clone();
+    let _permit = state.ops.acquire().await;
     let info = blocking(move || backend.create(&spec)).await?;
     // Mirror to the store; on failure unwind the boot (never orphan a VM
     // behind a missing record).
@@ -105,6 +109,9 @@ pub async fn create(
         let _ = blocking(move || backend.destroy(&id)).await;
         return Err(e.into());
     }
+    // A newborn VM is definitionally active; without this a start/create
+    // followed by silence would be reaped on stale first-seen timestamps.
+    state.activity.touch(&info.id);
     Ok((StatusCode::CREATED, Json(SandboxView::new(&row, &info))))
 }
 
@@ -146,6 +153,7 @@ pub async fn get(
     Extension(user): Extension<UserId>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<SandboxView>> {
+    let _lc = state.lifecycle.lock(&id).await;
     let row = owned(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     let owned_id = id.clone();
@@ -164,7 +172,9 @@ pub async fn destroy(
     Extension(user): Extension<UserId>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    let _lc = state.lifecycle.lock(&id).await;
     owned(&state, &user.0, &id).await?;
+    let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
     let owned_id = id.clone();
     match blocking(move || backend.destroy(&owned_id)).await {
@@ -173,6 +183,7 @@ pub async fn destroy(
         Ok(()) | Err(ApiError::NotFound(_)) => {}
         Err(e) => return Err(e),
     }
+    state.activity.remove(&id);
     match state.store.delete_sandbox(&id) {
         Ok(()) | Err(ahvm_store::Error::NotFound(_)) => {}
         Err(e) => return Err(e.into()),
@@ -209,6 +220,10 @@ async fn set_running(
         + Send
         + 'static,
 ) -> ApiResult<Json<SandboxView>> {
+    // Lifecycle first (see scheduler::LifecycleLocks), then the op permit:
+    // same order as the sweep, so neither can deadlock the other.
+    let _lc = state.lifecycle.lock(id).await;
+    let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
     let a = id.to_string();
     blocking(move || op(backend, a)).await?;
@@ -221,6 +236,11 @@ async fn set_running(
         &thermal_str(&live.thermal),
         unix_now(),
     )?;
+    if live.state == ahvm_engine::State::Running {
+        // A (re)started VM is active now; without this a start followed by
+        // silence would be reaped on its stale pre-stop timestamp.
+        state.activity.touch(&live.id);
+    }
     // Re-fetch the row for stable identity fields.
     let row = state.store.get_sandbox(&live.id)?;
     Ok(Json(SandboxView::new(&row, &live)))
@@ -241,6 +261,14 @@ pub async fn exec(
         return Err(ApiError::Invalid("argv must not be empty".to_string()));
     }
     owned(&state, &user.0, &id).await?;
+    // Attempt marks activity (keep idle_secs comfortably above the exec
+    // budget so long runs are never reaped mid-flight). In-flight guard
+    // holds across the call so the sweep skips instead of racing it.
+    state.activity.touch(&id);
+    let _flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let backend = state.backend.clone();
     let out = blocking(move || backend.exec(&id, &body.argv)).await?;
     Ok(Json(out))

@@ -87,6 +87,26 @@ fn sandbox_lifecycle_and_cursor_pages() {
 }
 
 #[test]
+fn list_all_sandboxes_spans_owners() {
+    let s = Store::open_in_memory().unwrap();
+    s.upsert_user(&user("u1", 1)).unwrap();
+    s.upsert_user(&user("u2", 1)).unwrap();
+    s.create_sandbox(&sandbox("s1", "u1", 10)).unwrap();
+    s.create_sandbox(&sandbox("s2", "u2", 20)).unwrap();
+    let all = s.list_all_sandboxes(None, 10).unwrap();
+    assert_eq!(
+        all.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+        ["s2", "s1"]
+    );
+    let cursor = (all[0].created_at, all[0].id.clone());
+    let rest = s.list_all_sandboxes(Some(cursor), 10).unwrap();
+    assert_eq!(
+        rest.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+        ["s1"]
+    );
+}
+
+#[test]
 fn snapshot_remote_lifecycle() {
     let s = Store::open_in_memory().unwrap();
     s.upsert_user(&user("u1", 1)).unwrap();
