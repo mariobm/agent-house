@@ -164,7 +164,9 @@ fn kvm_backend_lifecycle_and_recovery() {
     assert_eq!(chunk.next_seq as usize, chunk.data.len());
     let list = be.session_list("be-3").unwrap();
     assert!(list.iter().any(|s| s.id == sid));
-    be.session_kill("be-3", &sid).unwrap();
+    // Kill on an already-exited session is a guest error, not a silent
+    // no-op — delete it directly.
+    assert!(be.session_kill("be-3", &sid).is_err());
     be.session_delete("be-3", &sid).unwrap();
     assert!(be.session_list("be-3").unwrap().iter().all(|s| s.id != sid));
 
@@ -180,9 +182,7 @@ fn kvm_backend_lifecycle_and_recovery() {
             .and_then(|n| n.parse().ok())
             .expect("Threads line")
     };
-    let idle = be
-        .session_create("be-3", &sh("sleep 120"), false)
-        .unwrap();
+    let idle = be.session_create("be-3", &sh("sleep 120"), false).unwrap();
     let before = threads();
     for _ in 0..12 {
         let c = be

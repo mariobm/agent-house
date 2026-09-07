@@ -485,6 +485,8 @@ async fn sessions_flow_over_rest() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(listed.as_array().unwrap().len(), 1);
+    // Kill on the already-exited echo session is a 422 (guest error
+    // semantics: kill targets running sessions; delete removes records).
     let (status, _) = call(
         app.clone(),
         Some(TOKEN_A),
@@ -493,7 +495,7 @@ async fn sessions_flow_over_rest() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let (status, _) = call(
         app,
         Some(TOKEN_A),

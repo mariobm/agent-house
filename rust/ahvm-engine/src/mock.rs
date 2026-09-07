@@ -423,6 +423,13 @@ impl Backend for MockBackend {
             .sessions
             .get_mut(&(id.to_string(), session_id.to_string()))
             .ok_or_else(|| Error::NotFound(format!("session {session_id}")))?;
+        if !sess.running {
+            // Mirrors forge: killing an exited session is an error, not a
+            // silent no-op (callers delete instead).
+            return Err(Error::InvalidState(format!(
+                "session {session_id} already completed"
+            )));
+        }
         sess.running = false;
         Ok(())
     }
@@ -614,7 +621,13 @@ mod tests {
         assert_eq!(list[0].id, sid);
         assert!(!list[0].running);
         be.session_resize(&info.id, &sid, 24, 80).unwrap();
-        be.session_kill(&info.id, &sid).unwrap();
+        assert!(
+            matches!(
+                be.session_kill(&info.id, &sid),
+                Err(Error::InvalidState(_))
+            ),
+            "kill on an exited session errors (forge parity)"
+        );
         assert!(matches!(
             be.session_input(&info.id, &sid, b"x"),
             Err(Error::InvalidState(_))
