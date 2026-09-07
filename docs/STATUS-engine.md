@@ -87,10 +87,22 @@ under `/tmp/ahvm-kvm-<test-pid>` for inspection. Run KVM tests serially.
 ## Scope still remaining
 
 PR #9 provides the worker, engine types, compatibility sidecar, supervision,
-mock backend, and real KVM lifecycle validation. The Rust daemon, netd and
-CLI are still later phases; this does not claim an end-to-end Rust product
-API exists. Multi-host migration and arbitrary host CPU compatibility are
-not validated by these same-host recovery tests.
+mock backend, and real KVM lifecycle validation. Branch `rust/engine-backend`
+adds the missing Phase 3 piece: a real krucible `Backend`
+(`rust/ahvm-engine/src/krucible.rs`) — create/exec/stop/start, online
+snapshot + frozen-overlay registry, compat-gated restore/fork, hermetic
+worker spawn, and crash recovery by pid adoption (`open` re-adopts live
+`state.json` pids; dead ones surface `Failed`). Gated by
+`tests/kvm_backend.rs`: full trait flow plus drop-and-reopen adoption and
+adopted destroy, green on KVM in ~2s. Daemon, netd and CLI are still later
+phases; thermal manager/scheduler ride with the daemon (agreed order:
+backend → daemon API → thermal/scheduler → acceptance test; Phases 5/6
+separate; Go retired only after Rust passes conformance).
+
+Submodule note: main pins libkrucible `87f1dfa`, a tree-identical re-commit
+of `e9dcedc` (VMM PR #1). Hosts whose deploy key cannot fetch the fork can
+keep building from `e9dcedc` with zero functional difference; run
+`git submodule update` where network allows to clear the dirty flag.
 
 The imago qcow2 feature-name table has nondeterministic byte ordering. It
 does not break disk correctness; normalization remains future dedup work.
