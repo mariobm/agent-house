@@ -1,0 +1,27 @@
+name: Checkout pinned libkrucible
+description: Fetch the private VMM repository at the superproject's exact gitlink.
+inputs:
+  ssh-key:
+    description: Read-only deploy key for mariobm/libkrucible
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Read pinned commit
+      id: pin
+      shell: bash
+      env:
+        DEPLOY_KEY: ${{ inputs.ssh-key }}
+      run: |
+        if [[ -z "$DEPLOY_KEY" ]]; then
+          echo '::error::Configure the LIBKRUCIBLE_SSH_KEY repository secret with a read-only deploy key for mariobm/libkrucible.'
+          exit 1
+        fi
+        echo "sha=$(git rev-parse HEAD:libkrucible)" >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        repository: mariobm/libkrucible
+        ref: ${{ steps.pin.outputs.sha }}
+        path: libkrucible
+        ssh-key: ${{ inputs.ssh-key }}
+        persist-credentials: false
