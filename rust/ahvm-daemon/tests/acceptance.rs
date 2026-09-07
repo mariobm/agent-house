@@ -36,6 +36,15 @@ struct Ctx {
     store: Arc<ahvm_store::Store>,
 }
 
+fn config(dir: &std::path::Path) -> KrucibleConfig {
+    KrucibleConfig::new(
+        PathBuf::from(std::env::var("AHVM_VMM_BIN").unwrap()),
+        PathBuf::from(std::env::var("AHVM_GUEST_IMAGE").unwrap()),
+        dir.join("sandboxes"),
+        std::env::var("LD_LIBRARY_PATH").unwrap(),
+    )
+}
+
 fn open(dir: &PathBuf) -> Ctx {
     // Store::open creates the file, not its parents (same rule as main).
     std::fs::create_dir_all(dir).expect("data dir");
@@ -54,15 +63,8 @@ fn open(dir: &PathBuf) -> Ctx {
             updated_at: 1,
         })
         .unwrap();
-    let backend: Arc<dyn ahvm_engine::Backend> = Arc::new(
-        KrucibleBackend::open(KrucibleConfig::new(
-            PathBuf::from(std::env::var("AHVM_VMM_BIN").unwrap()),
-            PathBuf::from(std::env::var("AHVM_GUEST_IMAGE").unwrap()),
-            dir.join("sandboxes"),
-            std::env::var("LD_LIBRARY_PATH").unwrap(),
-        ))
-        .unwrap(),
-    );
+    let backend: Arc<dyn ahvm_engine::Backend> =
+        Arc::new(KrucibleBackend::open(config(dir)).unwrap());
     let app = build_router(AppState {
         store: store.clone(),
         backend: backend.clone(),
@@ -83,6 +85,7 @@ fn open(dir: &PathBuf) -> Ctx {
 /// explicit cleanup section, and dropping the backend deliberately
 /// preserves running workers — so do it explicitly here).
 struct Cleanup {
+    reopen: Option<KrucibleConfig>,
     backend: Option<Arc<dyn ahvm_engine::Backend>>,
     store: Option<Arc<ahvm_store::Store>>,
     dir: PathBuf,
@@ -90,6 +93,11 @@ struct Cleanup {
 }
 
 impl Cleanup {
+    fn release(&mut self) {
+        self.backend = None;
+        self.store = None;
+    }
+
     fn adopt(&mut self, ctx: &Ctx) {
         self.backend = Some(ctx.backend.clone());
         self.store = Some(ctx.store.clone());
@@ -98,19 +106,39 @@ impl Cleanup {
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        if std::thread::panicking() {
-            // Test failed: keep workers AND files for post-mortem (probe
-            // the corpse via the sockets under <dir>/sandboxes/*/sock,
-            // read vmm.log + specs + bundles). Stale runs accumulate;
-            // reruns use fresh pid-namespaced dirs, never these.
-            eprintln!("acceptance artifacts kept at {}", self.dir.display());
-            return;
-        }
-        if let (Some(be), Some(st)) = (self.backend.take(), self.store.take()) {
-            for id in &self.ids {
-                let _ = be.destroy(id);
-                let _ = st.delete_sandbox(id);
+        // Re-adopt if reopening panicked after the old context was released.
+        let backend = self.backend.take().or_else(|| {
+            let cfg = self.reopen.take()?;
+            match KrucibleBackend::open(cfg) {
+                Ok(be) => Some(Arc::new(be) as Arc<dyn ahvm_engine::Backend>),
+                Err(err) => {
+                    eprintln!("acceptance cleanup could not reopen backend: {err}");
+                    None
+                }
             }
+        });
+        let Some(be) = backend else {
+            eprintln!(
+                "acceptance cleanup unavailable; records kept at {}",
+                self.dir.display()
+            );
+            return;
+        };
+        let mut failed = false;
+        for id in &self.ids {
+            match be.destroy(id) {
+                Ok(()) | Err(ahvm_engine::Error::NotFound(_)) => {}
+                Err(err) => {
+                    eprintln!("acceptance cleanup failed for {id}: {err}");
+                    failed = true;
+                }
+            }
+        }
+        drop(be);
+        self.store = None;
+        if failed {
+            // Keep identity records so failed termination can be retried.
+            return;
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
@@ -186,6 +214,7 @@ async fn acceptance_crash_recovery_and_restart() {
     );
     let dir: PathBuf = std::env::temp_dir().join(format!("ahvm-accept-{}", std::process::id()));
     let mut cleanup = Cleanup {
+        reopen: Some(config(&dir)),
         backend: None,
         store: None,
         dir: dir.clone(),
@@ -195,9 +224,13 @@ async fn acceptance_crash_recovery_and_restart() {
     let mut pre_restart = Vec::new();
     // Marker session id, needed again post-restart (RAM continuity proof).
     let marker_sid: String;
+    let old_backend;
+    let old_store;
     {
         let ctx = open(&dir);
         cleanup.adopt(&ctx);
+        old_backend = Arc::downgrade(&ctx.backend);
+        old_store = Arc::downgrade(&ctx.store);
         let app = || ctx.app.clone();
 
         // ---- create + exec + files + session marker ----
@@ -347,6 +380,12 @@ async fn acceptance_crash_recovery_and_restart() {
     } // end phase 1: ctx and its request closure drop here (workers survive)
 
     // ---- daemon restart: reopen against the same dirs, adopt workers ----
+    cleanup.release();
+    assert!(
+        old_backend.upgrade().is_none(),
+        "old backend still retained"
+    );
+    assert!(old_store.upgrade().is_none(), "old store still retained");
     let ctx = open(&dir);
     cleanup.adopt(&ctx);
     let app = || ctx.app.clone();
@@ -413,20 +452,31 @@ fn cleanup_guard_runs_on_panic() {
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     let backend: Arc<dyn ahvm_engine::Backend> = Arc::new(MockBackend::new(dir.join("snaps")));
     let store = Arc::new(ahvm_store::Store::open_in_memory().unwrap());
+    let sandbox = backend
+        .create(&ahvm_engine::SandboxSpec {
+            name: "cleanup-proof".into(),
+            cpus: 1,
+            memory_mb: 128,
+            backend: ahvm_engine::BackendKind::Krucible,
+            root_image: None,
+            kernel_image: None,
+            extra_env: Default::default(),
+        })
+        .unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _guard = Cleanup {
-            backend: Some(backend),
+            reopen: None,
+            backend: Some(backend.clone()),
             store: Some(store),
             dir: dir.clone(),
-            ids: vec!["ghost".to_string()],
+            ids: vec![sandbox.id.clone()],
         };
         panic!("boom");
     }));
     assert!(result.is_err());
     assert!(
-        dir.exists(),
-        "guard must KEEP artifacts (not clean) on panic"
+        backend.list().unwrap().is_empty(),
+        "worker survived panic cleanup"
     );
-    // Tidy up after asserting (real failures keep theirs on the KVM host).
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!dir.exists(), "guard must remove artifacts on panic");
 }
