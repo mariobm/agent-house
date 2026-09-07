@@ -7,6 +7,7 @@ members = [
     "ahvm-netd",
     "ahvm-daemon",
     "ahvm-cli",
+    "ahvm-vmm",
 ]
 resolver = "2"
 

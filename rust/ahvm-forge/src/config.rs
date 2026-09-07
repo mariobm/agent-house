@@ -10,6 +10,9 @@ pub struct Config {
     pub exec_timeout_secs: u64,
     /// Jail root for file operations; `..` escapes are rejected.
     pub root: std::path::PathBuf,
+    /// AF_VSOCK listen port (guest CID_ANY). 0 disables; otherwise forge
+    /// serves vsock IN ADDITION to TCP.
+    pub vsock_port: u32,
 }
 
 impl Config {
@@ -27,6 +30,29 @@ impl Config {
             root: get("AHVM_FORGE_ROOT")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| "/".into()),
+            vsock_port: get("AHVM_FORGE_VSOCK_PORT")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1024),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vsock_port_parsing() {
+        // Only this test in the binary touches this var, so no cross-test
+        // env race; restore the default on the way out for hygiene.
+        std::env::remove_var("AHVM_FORGE_VSOCK_PORT");
+        assert_eq!(Config::from_env().vsock_port, 1024);
+        std::env::set_var("AHVM_FORGE_VSOCK_PORT", "0");
+        assert_eq!(Config::from_env().vsock_port, 0);
+        std::env::set_var("AHVM_FORGE_VSOCK_PORT", "2048");
+        assert_eq!(Config::from_env().vsock_port, 2048);
+        std::env::set_var("AHVM_FORGE_VSOCK_PORT", "not-a-port");
+        assert_eq!(Config::from_env().vsock_port, 1024);
+        std::env::remove_var("AHVM_FORGE_VSOCK_PORT");
     }
 }
