@@ -28,6 +28,18 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Readiness budget, overridable for slow hosts:
+/// `AHVM_KVM_READY_SECS=600 cargo test ...`. The default suits fast iron;
+/// shared/loaded CI workers need more. Always prefer fixing slowness over
+/// raising this — a rising budget here once caught a real boot hang.
+fn ready_timeout() -> Duration {
+    std::env::var("AHVM_KVM_READY_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(READY_TIMEOUT)
+}
 const VMM_VERSION: &str = "libkrun-2.0.0-dev";
 
 struct Cfg {
@@ -121,7 +133,7 @@ impl Guest {
     }
 
     fn conn(&self) -> UnixStream {
-        let deadline = Instant::now() + READY_TIMEOUT;
+        let deadline = Instant::now() + ready_timeout();
         loop {
             match UnixStream::connect(self.sock.join("c.sock")) {
                 Ok(c) => {
@@ -155,7 +167,7 @@ impl Guest {
 
     /// Poll `true` until the agent answers or the budget runs out.
     fn wait_ready(&self) {
-        let deadline = Instant::now() + READY_TIMEOUT;
+        let deadline = Instant::now() + ready_timeout();
         loop {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.exec(&["/bin/true"])
@@ -163,7 +175,7 @@ impl Guest {
                 Ok(v) if v["exit_code"] == 0 => return,
                 _ => {
                     if Instant::now() > deadline {
-                        panic!("agent not ready within {READY_TIMEOUT:?}");
+                        panic!("agent not ready within {:?}", ready_timeout());
                     }
                     std::thread::sleep(Duration::from_millis(500));
                 }
