@@ -149,12 +149,17 @@ pub struct SessionInfo {
 }
 
 /// Drained session output (cf. forge `SessionData`). `exit_code` is set
-/// once the session process has exited.
+/// once the session process has exited. `next_seq` is the authoritative
+/// resume cursor (frame `seq` + bytes, never client-side byte counting:
+/// scrollback eviction makes byte counting wrong). `truncated` means output
+/// between the requested `from_seq` and the returned data was evicted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionChunk {
     pub data: Vec<u8>,
     pub eof: bool,
     pub exit_code: Option<i32>,
+    pub next_seq: u64,
+    pub truncated: bool,
 }
 
 #[cfg(test)]

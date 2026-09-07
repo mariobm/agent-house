@@ -16,6 +16,7 @@
 
 pub mod auth;
 pub mod files;
+pub mod quotas;
 pub mod routes;
 pub mod sandboxes;
 pub mod sessions;
@@ -34,11 +35,12 @@ use axum::{
 };
 use serde::Serialize;
 
-/// Shared handler state (both halves `Send + Sync`, cheap to clone).
+/// Shared handler state (all halves `Send + Sync`, cheap to clone).
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
     pub backend: Arc<dyn Backend>,
+    pub quotas: quotas::Registry,
 }
 
 /// JSON error body: machine-readable `code`, human `message`.

@@ -43,8 +43,40 @@ fn app() -> axum::Router {
     let store = Arc::new(Store::open_in_memory().unwrap());
     store.upsert_user(&user("alice", TOKEN_A)).unwrap();
     store.upsert_user(&user("bob", TOKEN_B)).unwrap();
+    store
+        .upsert_user(&ahvm_store::User {
+            id: "carol".to_string(),
+            name: "carol".to_string(),
+            api_key_hash: hash("carol-token"),
+            max_sandboxes: 1,
+            max_cpus: 32,
+            max_memory_mb: 65536,
+            max_volumes_mb: 0,
+            max_snapshots: 0,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .unwrap();
+    store
+        .upsert_user(&ahvm_store::User {
+            id: "dave".to_string(),
+            name: "dave".to_string(),
+            api_key_hash: hash("dave-token"),
+            max_sandboxes: 8,
+            max_cpus: 8,
+            max_memory_mb: 768,
+            max_volumes_mb: 0,
+            max_snapshots: 0,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .unwrap();
     let backend: Arc<dyn ahvm_engine::Backend> = Arc::new(MockBackend::new(dir.join("snapshots")));
-    build_router(AppState { store, backend })
+    build_router(AppState {
+        store,
+        backend,
+        quotas: ahvm_daemon::quotas::Registry::new(),
+    })
 }
 
 async fn call(
@@ -233,6 +265,75 @@ async fn list_paginates_with_cursors() {
     let (status, bob) = call(app, Some(TOKEN_B), "GET", "/v1/sandboxes", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(bob["sandboxes"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn quotas_reject_over_limit_creates() {
+    let app = app();
+    // Carol holds exactly one sandbox, generously sized; snapshots barred.
+    let (status, only) = call(
+        app.clone(),
+        Some("carol-token"),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({ "name": "only", "cpus": 1, "memory_mb": 512 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // Backend-assigned ids are canonical in URLs (the mock generates them;
+    // krucible honors the name — the daemon never assumes either).
+    let only_id = only["id"].as_str().unwrap().to_string();
+    // Second sandbox: count quota.
+    let (status, body) = call(
+        app.clone(),
+        Some("carol-token"),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({ "name": "extra" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "forbidden");
+    // Snapshots: zero allowed.
+    let (status, _) = call(
+        app.clone(),
+        Some("carol-token"),
+        "POST",
+        &format!("/v1/sandboxes/{only_id}/snapshots"),
+        Some(serde_json::json!({ "name": "s" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Dave is CPU/RAM bound instead: one small box fits, a bigger one does not.
+    let (status, _) = call(
+        app.clone(),
+        Some("dave-token"),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({ "name": "small", "cpus": 1, "memory_mb": 512 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    for (name, body) in [
+        (
+            "cpu",
+            serde_json::json!({ "name": "big-cpu", "cpus": 8, "memory_mb": 128 }),
+        ),
+        (
+            "mem",
+            serde_json::json!({ "name": "big-mem", "cpus": 1, "memory_mb": 1024 }),
+        ),
+    ] {
+        let (status, _) = call(
+            app.clone(),
+            Some("dave-token"),
+            "POST",
+            "/v1/sandboxes",
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{name} quota");
+    }
 }
 
 #[tokio::test]

@@ -395,6 +395,9 @@ impl Backend for MockBackend {
             data: sess.output[start..].to_vec(),
             eof: true,
             exit_code: Some(0),
+            // No eviction in the mock: the stream total is authoritative.
+            next_seq: sess.output.len() as u64,
+            truncated: false,
         })
     }
 

@@ -138,6 +138,11 @@ pub struct ReadResponse {
     pub data_b64: String,
     pub eof: bool,
     pub exit_code: Option<i32>,
+    /// Authoritative resume cursor for the next read (frame seq + bytes,
+    /// never client-side byte counting).
+    pub next_seq: u64,
+    /// True when scrollback evicted output before the returned data.
+    pub truncated: bool,
 }
 
 pub async fn read(
@@ -155,6 +160,8 @@ pub async fn read(
         data_b64: base64::engine::general_purpose::STANDARD.encode(&chunk.data),
         eof: chunk.eof,
         exit_code: chunk.exit_code,
+        next_seq: chunk.next_seq,
+        truncated: chunk.truncated,
     }))
 }
 
@@ -201,6 +208,15 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
                         base64::engine::general_purpose::STANDARD.decode(&b).ok()
                     }),
                 Some(Ok(Message::Binary(b))) => Some(b.to_vec()),
+                // Control frames are protocol, not data: answer pings so
+                // idle terminals are not timed out by intermediaries.
+                Some(Ok(Message::Ping(p))) => {
+                    if tx.send(Message::Pong(p)).await.is_err() {
+                        break 'outer;
+                    }
+                    None
+                }
+                Some(Ok(Message::Pong(_))) => None,
                 // Client close, error, or end of stream: detach (the guest
                 // session itself survives; attach is just a view).
                 _ => break 'outer,
@@ -222,13 +238,15 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
             Ok(Ok(c)) => c,
             _ => break,
         };
-        seq += chunk.data.len() as u64;
+        seq = chunk.next_seq;
         if !chunk.data.is_empty() || chunk.eof {
             use base64::Engine;
             let frame = serde_json::json!({
                 "data_b64": base64::engine::general_purpose::STANDARD.encode(&chunk.data),
                 "eof": chunk.eof,
                 "exit_code": chunk.exit_code,
+                "next_seq": chunk.next_seq,
+                "truncated": chunk.truncated,
             });
             if tx
                 .send(Message::Text(frame.to_string().into()))

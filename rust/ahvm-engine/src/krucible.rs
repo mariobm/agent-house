@@ -1325,8 +1325,13 @@ impl Backend for KrucibleBackend {
         let sock = forge_sock(&dir);
         let mut c = connect_rpc(&sock, CONNECT_BUDGET)?;
         c.set_read_timeout(Some(budget)).map_err(Error::Io)?;
-        let body =
-            serde_json::json!({ "op": "attach", "session_id": session_id, "from_seq": from_seq });
+        // Bound the guest side slightly below our own budget so the forge
+        // attach always closes first: otherwise every idle poll would leak
+        // a guest thread holding a dead connection (see Attach timeout_ms).
+        let guest_ms = budget
+            .saturating_sub(Duration::from_millis(500))
+            .as_millis() as u64;
+        let body = serde_json::json!({ "op": "attach", "session_id": session_id, "from_seq": from_seq, "timeout_ms": guest_ms });
         let payload = serde_json::to_vec(&body)?;
         write_frame(
             &mut c,
@@ -1338,9 +1343,14 @@ impl Backend for KrucibleBackend {
         .map_err(|e| Error::Control(format!("session attach write: {e}")))?;
         // Drain SessionData frames until EOF or the budget (read timeout)
         // runs out; a timeout returns whatever arrived (eof: false).
+        // Resume cursors come from the frames (seq + bytes), never from
+        // client-side byte counting: scrollback eviction makes counting
+        // wrong and silently duplicated.
         let mut r = BufReader::new(c.try_clone().map_err(Error::Io)?);
         let mut out = Vec::new();
         let mut exit_code = None;
+        let mut next_seq = from_seq;
+        let mut truncated = false;
         let deadline = Instant::now() + budget;
         loop {
             if Instant::now() > deadline {
@@ -1348,6 +1358,8 @@ impl Backend for KrucibleBackend {
                     data: out,
                     eof: false,
                     exit_code,
+                    next_seq,
+                    truncated,
                 });
             }
             let f = match read_frame(&mut r) {
@@ -1357,6 +1369,8 @@ impl Backend for KrucibleBackend {
                         data: out,
                         eof: false,
                         exit_code,
+                        next_seq,
+                        truncated,
                     })
                 }
             };
@@ -1376,13 +1390,24 @@ impl Backend for KrucibleBackend {
             }
             let v: serde_json::Value = serde_json::from_slice(&f.payload)
                 .map_err(|e| Error::Control(format!("session data JSON: {e}")))?;
-            out.extend_from_slice(&forge_b64(&v, "data_b64")?);
+            let bytes = forge_b64(&v, "data_b64")?;
+            let seq = v["seq"].as_u64().unwrap_or(next_seq);
+            if seq > next_seq {
+                truncated = true;
+            }
+            if v["truncated"].as_bool().unwrap_or(false) {
+                truncated = true;
+            }
+            next_seq = seq.saturating_add(bytes.len() as u64);
+            out.extend_from_slice(&bytes);
             exit_code = v["exit_code"].as_i64().map(|c| c as i32).or(exit_code);
             if v["eof"].as_bool().unwrap_or(false) {
                 return Ok(SessionChunk {
                     data: out,
                     eof: true,
                     exit_code,
+                    next_seq,
+                    truncated,
                 });
             }
         }

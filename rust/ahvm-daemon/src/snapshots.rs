@@ -69,6 +69,11 @@ pub async fn create(
     let backend = state.backend.clone();
     let owned_id = id.clone();
     let snap_name = body.name.clone();
+    // Quota first: same atomic gate as sandboxes (count + in-flight).
+    let me = state.store.get_user(&user.0)?;
+    let _hold = state
+        .quotas
+        .reserve_snapshot(&state.store, &me, &snap_name)?;
     let manifest = blocking(move || backend.create_snapshot(&owned_id, &snap_name)).await?;
     let now = unix_now();
     let row = ahvm_store::Snapshot {
@@ -128,6 +133,16 @@ pub async fn restore(
         move || backend.snapshot_manifest(&snapshot_id)
     })
     .await?;
+    // Restore consumes sandbox quota like a create (it boots a new VM):
+    // reserve with the stored manifest's sizing before touching the backend.
+    let me = state.store.get_user(&user.0)?;
+    let _hold = state.quotas.reserve_sandbox(
+        &state.store,
+        &me,
+        &body.new_id,
+        manifest.compat.vcpus as i64,
+        manifest.compat.mem_mib as i64,
+    )?;
     let new_id = body.new_id.clone();
     let snap_cpus = manifest.compat.vcpus as i64;
     let snap_mem = manifest.compat.mem_mib as i64;

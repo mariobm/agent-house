@@ -61,18 +61,17 @@ pub async fn create(
     if body.name.is_empty() || body.name.len() > 64 {
         return Err(ApiError::Invalid("name must be 1..=64 chars".to_string()));
     }
-    // Quota: count the owner's sandboxes (store is the record of intent).
+    // Atomic quota gate: committed rows plus in-flight holds, checked
+    // and reserved under one lock (see quotas.rs). The hold lives until
+    // the store record commits below, so concurrent creators serialize.
     let me = state.store.get_user(&user.0)?;
-    let owned_count = state
-        .store
-        .list_sandboxes(&user.0, None, me.max_sandboxes as usize + 1)?
-        .len();
-    if owned_count as i64 >= me.max_sandboxes {
-        return Err(ApiError::Forbidden(format!(
-            "sandbox quota exceeded (max {})",
-            me.max_sandboxes
-        )));
-    }
+    let _hold = state.quotas.reserve_sandbox(
+        &state.store,
+        &me,
+        &body.name,
+        body.cpus as i64,
+        body.memory_mb as i64,
+    )?;
     let spec = ahvm_engine::SandboxSpec {
         name: body.name.clone(),
         cpus: body.cpus,

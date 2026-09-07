@@ -292,6 +292,18 @@ impl Store {
         })
     }
 
+    /// Snapshots an owner holds (for quota checks).
+    pub fn count_snapshots(&self, owner: &str) -> Result<i64> {
+        self.with_conn(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM snapshots WHERE owner_user_id = ?1",
+                params![owner],
+                |r| r.get(0),
+            )
+            .map_err(Error::Sqlite)
+        })
+    }
+
     pub fn create_volume(&self, v: &Volume) -> Result<()> {
         self.with_conn(|c| {
             c.execute(
