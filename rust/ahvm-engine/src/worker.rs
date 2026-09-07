@@ -86,13 +86,60 @@ pub fn spawn_worker(
     spec_arg: impl AsRef<Path>,
     state_path: impl AsRef<Path>,
 ) -> std::io::Result<LiveWorker> {
-    let state_path = state_path.as_ref().to_path_buf();
-    let mut child = Command::new(vmm_binary)
-        .arg(spec_arg.as_ref())
+    spawn_worker_cfg(&SpawnConfig {
+        vmm_binary: vmm_binary.as_ref(),
+        spec_arg: spec_arg.as_ref(),
+        state_path: state_path.as_ref(),
+        hermetic: false,
+        env: &[],
+        stderr_log: None,
+    })
+}
+
+/// How to spawn a worker. [`spawn_worker`] is the plain form (inherited
+/// environment, stdio nulled); the krucible backend uses the hermetic form
+/// so daemon credentials and host config never leak into workers.
+#[derive(Debug)]
+pub struct SpawnConfig<'a> {
+    pub vmm_binary: &'a OsStr,
+    pub spec_arg: &'a Path,
+    pub state_path: &'a Path,
+    /// Clear the environment and set only `env` (plus nothing else).
+    pub hermetic: bool,
+    /// `KEY=VALUE` entries (the whole environment when hermetic).
+    /// Malformed entries (no `=`) are ignored.
+    pub env: &'a [String],
+    /// Redirect worker stderr here instead of null. A dead-on-arrival
+    /// worker must leave evidence instead of failing silently.
+    pub stderr_log: Option<&'a Path>,
+}
+/// [`spawn_worker`] with environment and stderr control. The krucible
+/// backend uses the hermetic form so daemon credentials and host config
+/// never leak into workers (see [`SpawnConfig`]). Record discipline is
+/// identical: persist `state.json` or kill+reap before returning Err.
+pub fn spawn_worker_cfg(cfg: &SpawnConfig) -> std::io::Result<LiveWorker> {
+    let state_path = cfg.state_path.to_path_buf();
+    let mut cmd = Command::new(cfg.vmm_binary);
+    cmd.arg(cfg.spec_arg)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stdout(Stdio::null());
+    if cfg.hermetic {
+        cmd.env_clear();
+        for kv in cfg.env {
+            if let Some((k, v)) = kv.split_once('=') {
+                cmd.env(k, v);
+            }
+        }
+    }
+    match cfg.stderr_log {
+        Some(log) => {
+            cmd.stderr(fs::File::create(log)?);
+        }
+        None => {
+            cmd.stderr(Stdio::null());
+        }
+    }
+    let mut child = cmd.spawn()?;
     let pid = child.id();
     let sock_dir = state_path
         .parent()

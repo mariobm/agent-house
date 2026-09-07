@@ -24,22 +24,29 @@
 //! * [`worker`]: per-sandbox worker supervision ([`LiveWorker`] owns the
 //!   child handle and reaps it; [`is_alive`]/[`terminate_adopted`] cover
 //!   adopted pids after supervisor restart).
+//! * [`krucible`]: the real krucible [`Backend`] (one libkrun worker per
+//!   sandbox, cold snapshot/restore, crash recovery by pid adoption).
 //! * [`mock`]: in-memory [`Backend`] for unit tests.
 
 mod backend;
+mod krucible;
 mod mock;
 mod snapshot;
 mod spec;
 mod worker;
 
 pub use backend::{Backend, Capabilities};
+pub use krucible::{KrucibleBackend, KrucibleConfig};
 pub use mock::{MockBackend, MAX_EXEC_OUTPUT, MOCK_KERNEL_DIGEST};
 pub use snapshot::{
     host_caps, Artifacts, Compat, HostCaps, SnapshotManifest, VmmId, DEVICE_LAYOUT_VER,
     MANIFEST_VER, SIDECAR_NAME,
 };
 pub use spec::{BackendKind, ExecResult, SandboxInfo, SandboxSpec, State, Thermal};
-pub use worker::{is_alive, send_ctl, spawn_worker, terminate_adopted, LiveWorker, Worker};
+pub use worker::{
+    is_alive, send_ctl, spawn_worker, spawn_worker_cfg, terminate_adopted, LiveWorker,
+    SpawnConfig, Worker,
+};
 
 /// Engine-wide error. Mirrors the `ahvm-store` style: typed variants for
 /// expected domain failures (`NotFound`, `Conflict`, `InvalidState`,
