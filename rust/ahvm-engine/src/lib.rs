@@ -44,8 +44,8 @@ pub use snapshot::{
 };
 pub use spec::{BackendKind, ExecResult, SandboxInfo, SandboxSpec, State, Thermal};
 pub use worker::{
-    is_alive, send_ctl, spawn_worker, spawn_worker_cfg, terminate_adopted, LiveWorker,
-    SpawnConfig, Worker,
+    is_alive, process_starttime, send_ctl, spawn_worker, spawn_worker_cfg, terminate_adopted,
+    LiveWorker, SpawnConfig, Worker,
 };
 
 /// Engine-wide error. Mirrors the `ahvm-store` style: typed variants for

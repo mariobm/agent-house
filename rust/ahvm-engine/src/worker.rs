@@ -37,12 +37,20 @@ const MAX_CTL_LINE: usize = 64 * 1024;
 /// Supervised worker record. `id` is the sandbox id (the name of the
 /// sandbox dir holding `state.json`); `sock_dir` is that dir, which also
 /// hosts the worker's control socket.
+///
+/// `starttime` is the process start time (Linux `/proc` clock ticks since
+/// boot) captured at spawn. After a supervisor restart, pids may have been
+/// reused by unrelated processes: adoption must verify identity, never
+/// trust the pid alone. `None` means unknown (legacy records, non-Linux);
+/// callers fall back to plain liveness there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worker {
     pub id: String,
     pub pid: u32,
     pub sock_dir: PathBuf,
     pub state_path: PathBuf,
+    #[serde(default)]
+    pub starttime: Option<u64>,
 }
 
 impl Worker {
@@ -154,6 +162,7 @@ pub fn spawn_worker_cfg(cfg: &SpawnConfig) -> std::io::Result<LiveWorker> {
         pid,
         sock_dir,
         state_path,
+        starttime: process_starttime(pid),
     };
     if let Err(e) = worker.persist() {
         // Record unwritten: no future owner can find this child. Kill and
@@ -235,6 +244,29 @@ fn write_state_file(path: &Path, worker: &Worker) -> std::io::Result<()> {
     fs::write(&tmp, raw)?;
     fs::rename(&tmp, path)?;
     Ok(())
+}
+
+/// Process start time for pid-identity checks (see [`Worker::starttime`]).
+/// Linux: field 22 of `/proc/<pid>/stat` (clock ticks since boot). `None`
+/// when the pid does not exist (or the platform has no `/proc`).
+/// NEVER use this alone for liveness (a live pid may be someone else);
+/// pair it with the recorded value.
+pub fn process_starttime(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // `pid (comm) rest...` — comm may contain spaces and parens, so
+        // split after the LAST ')'.
+        let rest = stat.rsplit(')').next()?;
+        // Fields after comm: state(1) ppid(2) ... starttime(22) is the
+        // 20th whitespace field here (22 minus pid and comm).
+        rest.split_whitespace().nth(19)?.parse().ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
 }
 
 /// True when `pid` names a live process: `kill(pid, 0)` succeeds *and* the
@@ -392,6 +424,20 @@ mod tests {
     }
 
     #[test]
+    fn process_starttime_roundtrips_on_self() {
+        // Our own pid is alive by definition; its starttime must be
+        // stable across reads (Linux) or uniformly unknown elsewhere.
+        let me = std::process::id();
+        let t1 = process_starttime(me);
+        let t2 = process_starttime(me);
+        assert_eq!(t1, t2);
+        #[cfg(target_os = "linux")]
+        assert!(t1.is_some(), "own pid must have a starttime on Linux");
+        // A pid that cannot exist has no starttime on any platform.
+        assert_eq!(process_starttime(999_999_999), None);
+    }
+
+    #[test]
     fn is_alive_edge_cases() {
         assert!(!is_alive(0));
         assert!(!is_alive(999_999_999));
@@ -412,6 +458,7 @@ mod tests {
             pid: 1234,
             sock_dir: dir.join("sb-9"),
             state_path: state.clone(),
+            starttime: None,
         };
         worker.persist().unwrap();
         assert_eq!(Worker::load(&state).unwrap(), worker);

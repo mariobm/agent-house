@@ -57,6 +57,13 @@ fn sh(cmd: &str) -> Vec<String> {
     ]
 }
 
+// SAFETY: kill(pid, SIGKILL) performs no action on the caller; used to
+// simulate worker death behind the backend's back.
+#[allow(unsafe_code)]
+fn sigkill(pid: i32) {
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+}
+
 #[test]
 fn kvm_backend_lifecycle_and_recovery() {
     let Some(be) = gated() else { return };
@@ -69,6 +76,24 @@ fn kvm_backend_lifecycle_and_recovery() {
     assert_eq!(r.exit_code, 0);
     assert_eq!(r.stdout, "hello");
     assert!(!r.truncated);
+
+    // Slow exec: a valid reply arriving after the old 15s readiness
+    // timeout must be waited out, not abandoned (forge allows 300s).
+    let r = be
+        .exec(&info.id, &sh("sleep 16; printf slow"))
+        .unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert_eq!(r.stdout, "slow");
+
+    // Worker death behind the backend's back: start() must reboot,
+    // not trust the cached Running state.
+    let data = std::env::temp_dir().join(format!("ahvm-kvm-be-{}", std::process::id()));
+    let state_raw = std::fs::read(data.join("be-1").join("state.json")).unwrap();
+    let state: serde_json::Value = serde_json::from_slice(&state_raw).unwrap();
+    sigkill(state["pid"].as_u64().unwrap() as i32);
+    be.start(&info.id).unwrap();
+    let r = be.exec(&info.id, &sh("printf rebooted")).unwrap();
+    assert_eq!(r.stdout, "rebooted");
 
     // ---- stop: exec refuses, state goes Cold ----
     be.stop(&info.id).unwrap();
