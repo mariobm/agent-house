@@ -82,12 +82,13 @@ impl Sandbox {
             id: r.get(0)?,
             owner_user_id: r.get(1)?,
             name: r.get(2)?,
-            backend: Backend::parse(&backend)
-                .ok_or_else(|| rusqlite::Error::FromSqlConversionFailure(
+            backend: Backend::parse(&backend).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
                     3,
                     rusqlite::types::Type::Text,
                     format!("unknown backend {backend:?}").into(),
-                ))?,
+                )
+            })?,
             state: r.get(4)?,
             thermal: r.get(5)?,
             cpus: r.get(6)?,

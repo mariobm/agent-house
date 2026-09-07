@@ -53,19 +53,25 @@ fn user_crud_and_key_lookup() {
 fn sandbox_lifecycle_and_cursor_pages() {
     let s = Store::open_in_memory().unwrap();
     s.upsert_user(&user("u1", 1)).unwrap();
-    for (i, ts) in [( "s1", 10), ("s2", 20), ("s3", 30)] {
+    for (i, ts) in [("s1", 10), ("s2", 20), ("s3", 30)] {
         s.create_sandbox(&sandbox(i, "u1", ts)).unwrap();
     }
     s.set_sandbox_state("s1", "stopped", "cold", 40).unwrap();
     let got = s.get_sandbox("s1").unwrap();
-    assert_eq!((got.state.as_str(), got.thermal.as_str()), ("stopped", "cold"));
+    assert_eq!(
+        (got.state.as_str(), got.thermal.as_str()),
+        ("stopped", "cold")
+    );
     assert!(matches!(
         s.set_sandbox_state("nope", "stopped", "cold", 40),
         Err(Error::NotFound(_))
     ));
 
     let p1 = s.list_sandboxes("u1", None, 2).unwrap();
-    assert_eq!(p1.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), ["s3", "s2"]);
+    assert_eq!(
+        p1.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+        ["s3", "s2"]
+    );
     let cursor = (p1[1].created_at, p1[1].id.clone());
     let p2 = s.list_sandboxes("u1", Some(cursor), 2).unwrap();
     assert_eq!(p2.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), ["s1"]);
@@ -99,10 +105,14 @@ fn snapshot_remote_lifecycle() {
         expires_at: None,
     };
     s.create_snapshot(&snap).unwrap();
-    s.set_snapshot_remote("snap1", "backed", Some("snapshots/u1/snap1.json")).unwrap();
+    s.set_snapshot_remote("snap1", "backed", Some("snapshots/u1/snap1.json"))
+        .unwrap();
     let got = s.get_snapshot("snap1").unwrap();
     assert_eq!(got.remote_state, "backed");
-    assert_eq!(got.remote_manifest_key.as_deref(), Some("snapshots/u1/snap1.json"));
+    assert_eq!(
+        got.remote_manifest_key.as_deref(),
+        Some("snapshots/u1/snap1.json")
+    );
     s.delete_snapshot("snap1").unwrap();
     assert!(matches!(s.get_snapshot("snap1"), Err(Error::NotFound(_))));
 }
@@ -124,21 +134,42 @@ fn volume_attach_cycle() {
     s.create_volume(&vol).unwrap();
     // Attach, idempotent re-attach to the same sandbox, detach.
     s.attach_volume("v1", "s1").unwrap();
-    assert_eq!(s.get_volume("v1").unwrap().attached_to.as_deref(), Some("s1"));
+    assert_eq!(
+        s.get_volume("v1").unwrap().attached_to.as_deref(),
+        Some("s1")
+    );
     s.attach_volume("v1", "s1").unwrap();
     s.detach_volume("v1", "s1").unwrap();
     assert_eq!(s.get_volume("v1").unwrap().attached_to, None);
     // Detaching when free, or from the wrong sandbox, is a Conflict —
     // never a silent no-op that drops someone else's claim.
-    assert!(matches!(s.detach_volume("v1", "s1"), Err(Error::Conflict(_))));
+    assert!(matches!(
+        s.detach_volume("v1", "s1"),
+        Err(Error::Conflict(_))
+    ));
     s.attach_volume("v1", "s1").unwrap();
-    assert!(matches!(s.detach_volume("v1", "s2"), Err(Error::Conflict(_))));
-    assert_eq!(s.get_volume("v1").unwrap().attached_to.as_deref(), Some("s1"));
+    assert!(matches!(
+        s.detach_volume("v1", "s2"),
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        s.get_volume("v1").unwrap().attached_to.as_deref(),
+        Some("s1")
+    );
     // Stealing an attached volume fails instead of forgetting s1.
-    assert!(matches!(s.attach_volume("v1", "s2"), Err(Error::Conflict(_))));
-    assert_eq!(s.get_volume("v1").unwrap().attached_to.as_deref(), Some("s1"));
+    assert!(matches!(
+        s.attach_volume("v1", "s2"),
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        s.get_volume("v1").unwrap().attached_to.as_deref(),
+        Some("s1")
+    );
     // Unknown volume is NotFound, not Conflict.
-    assert!(matches!(s.attach_volume("nope", "s1"), Err(Error::NotFound(_))));
+    assert!(matches!(
+        s.attach_volume("nope", "s1"),
+        Err(Error::NotFound(_))
+    ));
     s.delete_volume("v1").unwrap();
 }
 
@@ -155,7 +186,10 @@ fn transaction_commits_state_plus_event_atomically() {
         .unwrap();
     assert_eq!(s.get_sandbox("s1").unwrap().state, "stopped");
     let evts = s
-        .query_events(&EventFilter { after_seq: seq - 1, ..Default::default() })
+        .query_events(&EventFilter {
+            after_seq: seq - 1,
+            ..Default::default()
+        })
         .unwrap();
     assert_eq!(evts.len(), 1);
     assert_eq!(evts[0].r#type, "sandbox.stopped");
@@ -207,9 +241,14 @@ fn images_and_tasks() {
 #[test]
 fn event_bus_cursors_and_filters() {
     let s = Store::open_in_memory().unwrap();
-    let q1 = s.record_event("sandbox.created", "u1", "s1", &json!({"a": 1}), 10).unwrap();
-    let q2 = s.record_event("sandbox.stopped", "u1", "s1", &json!({}), 11).unwrap();
-    s.record_event("volume.created", "u1", "", &json!({}), 12).unwrap();
+    let q1 = s
+        .record_event("sandbox.created", "u1", "s1", &json!({"a": 1}), 10)
+        .unwrap();
+    let q2 = s
+        .record_event("sandbox.stopped", "u1", "s1", &json!({}), 11)
+        .unwrap();
+    s.record_event("volume.created", "u1", "", &json!({}), 12)
+        .unwrap();
     assert!(q2 > q1);
 
     let all = s.query_events(&EventFilter::default()).unwrap();
