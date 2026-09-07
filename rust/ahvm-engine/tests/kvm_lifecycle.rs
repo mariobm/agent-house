@@ -394,7 +394,6 @@ fn kvm_snapshot_restore_cycle() {
     assert!(bundle.join("ahvm-manifest.json").is_file(), "no sidecar");
 
     // Negative: tampered sidecar must refuse (gate is real, not decorative).
-    // Local-only: runs whether or not restore cycles are enabled below.
     let mut tampered = SnapshotManifest::read_from(&bundle).unwrap();
     tampered.compat.arch = "riscv64".into();
     tampered.write_to(&cfg.work.join("tampered")).unwrap();
