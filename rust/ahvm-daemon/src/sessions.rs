@@ -243,6 +243,23 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
                 _ => break 'outer,
             };
             if let Some(data) = data {
+                // Input admits per operation, never per connection: a
+                // stopping box refuses with a reported error instead of
+                // silently dropping, and idle sockets still go cold. The
+                // guard lives across the call below (not moved into it).
+                let Some(_guard) = state.activity.begin(&id) else {
+                    let frame = serde_json::json!({
+                        "error": "sandbox is stopping; input rejected",
+                    });
+                    if tx
+                        .send(Message::Text(frame.to_string().into()))
+                        .await
+                        .is_err()
+                    {
+                        break 'outer;
+                    }
+                    continue;
+                };
                 // Input counts as activity (but never guards: an open idle
                 // socket must not pin its VM forever).
                 state.activity.touch(&id);

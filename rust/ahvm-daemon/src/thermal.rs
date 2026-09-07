@@ -76,21 +76,36 @@ impl ActivityTracker {
         })
     }
 
-    /// Commit a stop for `id`: no new guest work admits afterwards, and
-    /// in-flight work is guaranteed absent (the caller checked). Returns
-    /// `None` when work is in flight or a stop already committed — skip
-    /// the row and retry next sweep. Single-mutex atomicity with [`begin`]
-    /// is what closes the recheck-to-stop window: no timestamp check can.
-    pub fn begin_stop(&self, id: &str) -> Option<StopGuard<'_>> {
+    /// Atomic idle-gated stop commit: the idle-timestamp check, the
+    /// in-flight check, and the stopping commit happen under one lock
+    /// acquisition. A short operation that begins and finishes between a
+    /// stale idle read and this call still refreshes `last`, so the commit
+    /// refuses — checking the timestamp outside (e.g. in the sweep's
+    /// prefilter) can only skip work early, never wrongly commit.
+    /// Missing entries refuse: without evidence of idleness, don't stop.
+    pub fn begin_stop_if_idle(
+        &self,
+        id: &str,
+        now: Instant,
+        idle_secs: u64,
+    ) -> Option<StopGuard<'_>> {
         let mut inner = self.inner.lock().ok()?;
         if inner.stopping.contains(id) || inner.inflight.get(id).copied().unwrap_or(0) > 0 {
             return None;
         }
-        inner.stopping.insert(id.to_string());
-        Some(StopGuard {
-            tracker: self,
-            id: id.to_string(),
-        })
+        match inner.last.get(id) {
+            Some(&t) if now.duration_since(t).as_secs() <= idle_secs => None,
+            Some(_) => {
+                inner.stopping.insert(id.to_string());
+                Some(StopGuard {
+                    tracker: self,
+                    id: id.to_string(),
+                })
+            }
+            // No activity record at all: refuse (the sweep records
+            // first-sight separately and skips).
+            None => None,
+        }
     }
 
     /// True while any guarded operation runs for `id`.
@@ -253,16 +268,20 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
                     continue;
                 };
                 // Recheck after admission: activity may have refreshed while
-                // the row waited (or while a permit was unavailable).
+                // the row waited (or while a permit was unavailable). This
+                // is only a fast path to skip the commit attempt; the
+                // commit itself rechecks atomically below.
                 let fresh = state.activity.last(&row.id);
                 if fresh.is_some_and(|t| now.duration_since(t).as_secs() <= cfg.idle_secs) {
                     continue;
                 }
-                // Atomic stop commit: no new guest work admits from here
-                // until the transition finishes, and in-flight work is
-                // guaranteed absent. A timestamp recheck alone cannot close
-                // the recheck-to-stop window; this single-mutex commit can.
-                let Some(_stop) = state.activity.begin_stop(&row.id) else {
+                // Atomic stop commit (idle timestamp + in-flight + flag in
+                // one acquisition): a short op that ran to completion after
+                // the stale read above still blocks the commit here.
+                let Some(_stop) = state
+                    .activity
+                    .begin_stop_if_idle(&row.id, now, cfg.idle_secs)
+                else {
                     stats.deferred += 1;
                     continue;
                 };
@@ -312,18 +331,35 @@ mod tests {
         let t = ActivityTracker::new();
         // Op first: stop refuses while guarded.
         let _g = t.begin("a").expect("first admission");
-        assert!(t.begin_stop("a").is_none());
+        assert!(t.begin_stop_if_idle("a", Instant::now(), 0).is_none());
         drop(_g);
         // Released: stop commits, new ops refuse with 409-driving None.
-        let _s = t.begin_stop("a").expect("stop commits");
+        // Idle gate passes (no record yet is refused; touch old first).
+        t.touch_at("a", Instant::now() - std::time::Duration::from_secs(100));
+        let _s = t
+            .begin_stop_if_idle("a", Instant::now(), 10)
+            .expect("stop commits");
         assert!(t.begin("a").is_none());
         // A second stop refuses while one is committed.
-        assert!(t.begin_stop("a").is_none());
+        assert!(t.begin_stop_if_idle("a", Instant::now(), 10).is_none());
         drop(_s);
         // After release, admission works again.
         assert!(t.begin("a").is_some());
-        // Unknown ids admit freely.
+        // Unknown ids admit freely (ops) but never stop-commit (no evidence).
         assert!(t.begin("fresh").is_some());
+        assert!(t.begin_stop_if_idle("fresh", Instant::now(), 0).is_none());
+    }
+
+    #[test]
+    fn fresh_activity_inside_the_window_refuses_commit() {
+        // The reported race: an operation that begins and finishes between
+        // a stale idle read and the commit must still block the commit.
+        let t = ActivityTracker::new();
+        let now = Instant::now();
+        t.touch_at("a", now - std::time::Duration::from_secs(100));
+        // ...meanwhile a short op runs to completion, refreshing activity.
+        t.touch_at("a", now);
+        assert!(t.begin_stop_if_idle("a", now, 10).is_none());
     }
 
     fn state() -> AppState {
