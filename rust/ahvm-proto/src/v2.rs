@@ -27,6 +27,8 @@ pub enum FrameType {
     SessionReq = 0x8,
     SessionResp = 0x9,
     SessionData = 0xA,
+    ForwardReq = 0xB,
+    ForwardResp = 0xC,
 }
 
 impl FrameType {
@@ -43,6 +45,8 @@ impl FrameType {
             0x8 => Some(Self::SessionReq),
             0x9 => Some(Self::SessionResp),
             0xA => Some(Self::SessionData),
+            0xB => Some(Self::ForwardReq),
+            0xC => Some(Self::ForwardResp),
             _ => None,
         }
     }

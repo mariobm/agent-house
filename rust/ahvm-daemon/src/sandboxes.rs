@@ -67,6 +67,7 @@ pub async fn create(
     // Atomic quota gate: committed rows plus in-flight holds, checked
     // and reserved under one lock (see quotas.rs). The hold lives until
     // the store record commits below, so concurrent creators serialize.
+    crate::routes::reserved_owner(&state, &user.0, &body.name)?;
     let me = state.store.get_user(&user.0)?;
     let _hold = state.quotas.reserve_sandbox(
         &state.store,

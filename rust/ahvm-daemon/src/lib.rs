@@ -16,6 +16,7 @@
 
 pub mod auth;
 pub mod files;
+pub mod previews;
 pub mod quotas;
 pub mod routes;
 pub mod sandboxes;
@@ -40,6 +41,8 @@ use serde::Serialize;
 /// Shared handler state (all halves `Send + Sync`, cheap to clone).
 #[derive(Debug, Clone)]
 pub struct AppState {
+    /// Host-reserved sandbox ids: only this user may create/restore that id.
+    pub private_owners: Arc<std::collections::BTreeMap<String, String>>,
     pub store: Arc<Store>,
     pub backend: Arc<dyn Backend>,
     pub quotas: quotas::Registry,
@@ -198,6 +201,15 @@ pub fn build_router(state: AppState) -> Router {
     use axum::middleware;
 
     let authed = Router::new()
+        .route("/v1/sandboxes/{id}/previews", get(previews::list))
+        .route(
+            "/v1/sandboxes/{id}/previews/{port}/access",
+            axum::routing::post(previews::access),
+        )
+        .route(
+            "/v1/sandboxes/{id}/previews/{port}",
+            axum::routing::put(previews::enable).delete(previews::disable),
+        )
         .route(
             "/v1/sandboxes",
             get(sandboxes::list).post(sandboxes::create),

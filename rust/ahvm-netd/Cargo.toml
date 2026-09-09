@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ahvm-proto = { path = "../ahvm-proto" }
 smoltcp = { version = "=0.14.0", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-udp"] }
 nix = { version = "=0.30.1", default-features = false, features = ["poll", "net"] }
 serde = { version = "1", features = ["derive"] }

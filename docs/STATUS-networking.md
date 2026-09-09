@@ -37,7 +37,8 @@ and IP must match the configured link identity. Socket directories are mode
 0700 and net sockets mode 0600.
 
 TCP admission rejects private, special-use, metadata, shared-address and all
-current host-interface IPv4 addresses. Host addresses are enumerated at each new
+current host-interface IPv4 addresses unless an exact host-authorized TCP grant
+matches the sandbox and endpoint. Host addresses are enumerated at each new
 connection admission, not on every data packet. UDP is limited to DNS forwarding
 through the configured resolver; replies must match the transaction ID, opcode,
 and single question (case-insensitive name, type and class). Malformed or
@@ -49,8 +50,8 @@ resolver, so guest resolvers can retry truncated UDP responses over TCP. This is
 client-driven fallback: the gateway preserves the DNS truncation bit and proxies
 TCP framing unchanged. It also permits direct TCP DNS queries. DNS TCP connections
 share the existing 64-flow/dial limits and TCP timeouts. The exception allows no
-other gateway port or arbitrary private destination. Other UDP and IPv6 are dropped. There is no
-private-access exception or inter-project routing API in this slice.
+other gateway port or arbitrary private destination. Other UDP and IPv6 are dropped. Private-access exceptions and authenticated previews are described in
+[network access](NETWORK-ACCESS.md). There is no implicit inter-project routing.
 
 The engine starts netd before the VMM, persists its PID/starttime separately in
 `net-state.json`, and checks it every 250 ms. Linux /proc identity checks avoid
@@ -131,9 +132,11 @@ cargo clippy --manifest-path rust/Cargo.toml --locked \
 Plain cargo tests explicitly skip KVM gates; only the separately enabled live
 runs count as KVM validation. GitHub-hosted CI is not relied on for these results.
 
+Preview ports and exact owner-bound private TCP grants are implemented in the
+[network access slice](NETWORK-ACCESS.md); broader project routing is not implicit.
+
 ## Remaining Phase 5 work
 
-- Deliberately exposed preview ports and explicit project/private access policy.
 - A decision on broader UDP/IPv6 support.
 - Complete checksum/segmentation-offload qualification. This integration retains
   the spike's receive-checksum handling for the stripped virtio stream; the live
@@ -141,5 +144,5 @@ runs count as KVM validation. GitHub-hosted CI is not relied on for these result
 - Sustained multi-guest load, coverage-guided fuzzing and focused security review
   before enabling networking for untrusted guests. The bounded-connect fix is
   useful hardening, not a completed adversarial-traffic qualification.
-- Upload optimization remains deferred. This slice does not claim new throughput
+- Upload optimization remains deferred until after Phase 5. This slice does not claim new throughput
   parity or ship CLI/systemd packaging and cutover.

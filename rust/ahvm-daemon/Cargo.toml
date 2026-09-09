@@ -8,6 +8,10 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+
 ahvm-engine = { path = "../ahvm-engine" }
 ahvm-store = { path = "../ahvm-store" }
 axum = { version = "0.8.9", features = ["ws", "macros"] }

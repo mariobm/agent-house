@@ -10,6 +10,9 @@
 //! AHVM_LIB          LD_LIBRARY_PATH value for workers (default: inherited)
 //! AHVM_NETD_BIN     optional managed Rust gateway binary (Linux)
 //! AHVM_DNS_RESOLVER required IPv4 resolver when netd is enabled
+//! AHVM_PREVIEW_LISTEN optional separate HTTP preview bind address
+//! AHVM_PREVIEW_DOMAIN dedicated domain for per-port preview hosts
+//! AHVM_PRIVATE_ACCESS_FILE optional owner-bound exact TCP grant JSON
 //! AHVM_ADMIN_TOKEN  bootstrap admin token (created once when missing)
 //! ```
 
@@ -66,8 +69,48 @@ async fn main() {
         sandbox_dir,
         lib_path,
     );
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Grant {
+        owner_user_id: String,
+        destinations: Vec<std::net::SocketAddrV4>,
+    }
+    let grants: std::collections::BTreeMap<String, Grant> =
+        std::env::var_os("AHVM_PRIVATE_ACCESS_FILE")
+            .map(|path| {
+                let bytes = std::fs::read(path).expect("read private-access policy");
+                serde_json::from_slice(&bytes).expect("parse private-access policy")
+            })
+            .unwrap_or_default();
+    for (id, grant) in &grants {
+        assert!(
+            !grant.owner_user_id.is_empty(),
+            "private grant owner is required"
+        );
+        match store.get_sandbox(id) {
+            Ok(row) => assert_eq!(
+                row.owner_user_id, grant.owner_user_id,
+                "private grant owner mismatch for {id}"
+            ),
+            Err(ahvm_store::Error::NotFound(_)) => {}
+            Err(e) => panic!("private grant ownership: {e}"),
+        }
+    }
+    if !grants.is_empty() && std::env::var_os("AHVM_NETD_BIN").is_none() {
+        panic!("private grants require managed networking");
+    }
+    let private_owners = Arc::new(
+        grants
+            .iter()
+            .map(|(id, g)| (id.clone(), g.owner_user_id.clone()))
+            .collect(),
+    );
     if let Some(bin) = std::env::var_os("AHVM_NETD_BIN") {
         backend_cfg.network = Some(ahvm_engine::NetworkConfig {
+            private_access: grants
+                .into_iter()
+                .map(|(id, g)| (id, g.destinations))
+                .collect(),
             netd_bin: PathBuf::from(bin),
             resolver: required("AHVM_DNS_RESOLVER").parse().unwrap_or_else(|e| {
                 eprintln!("ahvm-daemon: invalid DNS resolver: {e}");
@@ -108,6 +151,7 @@ async fn main() {
     }
 
     let state = ahvm_daemon::AppState {
+        private_owners,
         store: Arc::new(store),
         backend: Arc::new(backend),
         quotas: ahvm_daemon::quotas::Registry::new(),
@@ -140,6 +184,20 @@ async fn main() {
             eprintln!("ahvm-daemon: bad AHVM_LISTEN: {e}");
             std::process::exit(1);
         });
+    if let Ok(preview_addr) = std::env::var("AHVM_PREVIEW_LISTEN") {
+        let domain = required("AHVM_PREVIEW_DOMAIN");
+        let listener = tokio::net::TcpListener::bind(&preview_addr)
+            .await
+            .expect("bind preview listener");
+        let app =
+            ahvm_daemon::previews::router(state.clone(), &domain).expect("invalid preview domain");
+        eprintln!("ahvm-daemon: preview listener {preview_addr}, domain {domain}");
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, app).await {
+                eprintln!("preview listener: {e}");
+            }
+        });
+    }
     eprintln!("ahvm-daemon: listening on {addr}");
     axum::serve(
         tokio::net::TcpListener::bind(addr)

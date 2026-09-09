@@ -41,6 +41,75 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Store {
+    pub fn preview_generation(&self, id: &str, port: u16) -> Result<Option<Vec<u8>>> {
+        self.with_conn(|c| {
+            use rusqlite::OptionalExtension;
+            Ok(c.query_row(
+                "SELECT generation FROM preview_ports WHERE sandbox_id=?1 AND port=?2",
+                params![id, port],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+    }
+    pub fn preview_token(&self, id: &str, port: u16, hash: &str, expires: i64) -> Result<()> {
+        self.with_conn(|c| {
+            if c.execute("UPDATE preview_ports SET token_hash=?3,token_expires=?4 WHERE sandbox_id=?1 AND port=?2",params![id,port,hash,expires])?==0 {
+                return Err(Error::NotFound("preview port".into()));
+            }
+            Ok(())
+        })
+    }
+    pub fn check_preview_token(
+        &self,
+        id: &str,
+        port: u16,
+        hash: &str,
+        now: i64,
+    ) -> Result<Option<i64>> {
+        self.with_conn(|c| {
+            use rusqlite::OptionalExtension;
+            Ok(c.query_row("SELECT token_expires FROM preview_ports WHERE sandbox_id=?1 AND port=?2 AND token_hash=?3 AND token_expires>?4",params![id,port,hash,now], |r| r.get(0)).optional()?)
+        })
+    }
+    pub fn preview_ports(&self, id: &str) -> Result<Vec<u16>> {
+        self.with_conn(|c| {
+            let mut stmt =
+                c.prepare("SELECT port FROM preview_ports WHERE sandbox_id=?1 ORDER BY port")?;
+            let rows = stmt.query_map([id], |r| r.get(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<u16>>>()?)
+        })
+    }
+    pub fn set_preview_port(&self, id: &str, port: u16, enabled: bool) -> Result<()> {
+        self.with_conn(|c| {
+            if enabled {
+                let count: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM preview_ports WHERE sandbox_id=?1",
+                    [id],
+                    |r| r.get(0),
+                )?;
+                let exists: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM preview_ports WHERE sandbox_id=?1 AND port=?2)",
+                    params![id, port],
+                    |r| r.get(0),
+                )?;
+                if count >= 16 && !exists {
+                    return Err(Error::Conflict("preview port limit reached".into()));
+                }
+                c.execute(
+                    "INSERT OR IGNORE INTO preview_ports(sandbox_id,port) VALUES (?1,?2)",
+                    params![id, port],
+                )?;
+            } else {
+                c.execute(
+                    "DELETE FROM preview_ports WHERE sandbox_id=?1 AND port=?2",
+                    params![id, port],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
         Self::from_conn(conn)

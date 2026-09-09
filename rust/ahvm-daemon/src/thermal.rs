@@ -22,7 +22,8 @@ pub struct ActivityTracker {
 #[derive(Debug, Default)]
 struct TrackerInner {
     last: HashMap<String, Instant>,
-    inflight: HashMap<String, usize>,
+    inflight: HashMap<String, (u64, usize)>,
+    next_generation: u64,
     /// Ids with a committed stop: no new guest work admits until the
     /// transition finishes (see [`ActivityTracker::begin_stop`]).
     stopping: HashSet<String>,
@@ -64,15 +65,19 @@ impl ActivityTracker {
     /// already committed for `id` — the caller must refuse (409), never
     /// race into a dying worker. Drop ends the guard AND touches:
     /// completion counts as activity. Guards hold no locks across awaits.
-    pub fn begin(&self, id: &str) -> Option<InFlight<'_>> {
+    pub fn begin(&self, id: &str) -> Option<InFlight> {
         let mut inner = self.inner.lock().ok()?;
         if inner.stopping.contains(id) {
             return None;
         }
-        *inner.inflight.entry(id.to_string()).or_insert(0) += 1;
+        inner.next_generation = inner.next_generation.wrapping_add(1);
+        let next = inner.next_generation;
+        let (generation, count) = inner.inflight.entry(id.to_string()).or_insert((next, 0));
+        *count += 1;
         Some(InFlight {
-            tracker: self,
+            tracker: self.clone(),
             id: id.to_string(),
+            generation: *generation,
         })
     }
 
@@ -90,7 +95,9 @@ impl ActivityTracker {
         idle_secs: u64,
     ) -> Option<StopGuard<'_>> {
         let mut inner = self.inner.lock().ok()?;
-        if inner.stopping.contains(id) || inner.inflight.get(id).copied().unwrap_or(0) > 0 {
+        if inner.stopping.contains(id)
+            || inner.inflight.get(id).map(|(_, count)| *count).unwrap_or(0) > 0
+        {
             return None;
         }
         match inner.last.get(id) {
@@ -113,7 +120,7 @@ impl ActivityTracker {
         self.inner
             .lock()
             .ok()
-            .and_then(|inner| inner.inflight.get(id).copied())
+            .and_then(|inner| inner.inflight.get(id).map(|(_, count)| *count))
             .unwrap_or(0)
             > 0
     }
@@ -121,19 +128,25 @@ impl ActivityTracker {
 
 /// In-flight operation guard from [`ActivityTracker::begin`].
 #[derive(Debug)]
-pub struct InFlight<'a> {
-    tracker: &'a ActivityTracker,
+pub struct InFlight {
+    tracker: ActivityTracker,
     id: String,
+    generation: u64,
 }
 
-impl Drop for InFlight<'_> {
+impl Drop for InFlight {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.tracker.inner.lock() {
-            if let Some(n) = inner.inflight.get_mut(&self.id) {
+            if let Some((generation, n)) = inner.inflight.get_mut(&self.id) {
+                if *generation != self.generation {
+                    return;
+                }
                 *n = n.saturating_sub(1);
                 if *n == 0 {
                     inner.inflight.remove(&self.id);
                 }
+            } else {
+                return;
             }
             inner.last.insert(self.id.clone(), Instant::now());
         }
@@ -368,6 +381,7 @@ mod tests {
             std::env::temp_dir().join(format!("thermal-{}", std::process::id())),
         ));
         AppState {
+            private_owners: Default::default(),
             store,
             backend,
             quotas: crate::quotas::Registry::new(),
@@ -682,6 +696,7 @@ mod tests {
         let (gate, entered, release) = GateBackend::new();
         let lifecycle = crate::scheduler::LifecycleLocks::new();
         let mk_state = |backend: Arc<dyn Backend>| AppState {
+            private_owners: Default::default(),
             store: store.clone(),
             backend,
             quotas: crate::quotas::Registry::new(),
@@ -745,4 +760,17 @@ mod tests {
             "stale sweep sample overwrote the newer start commit"
         );
     }
+}
+
+#[test]
+fn stale_stream_completion_does_not_touch_recreated_sandbox() {
+    let tracker = ActivityTracker::new();
+    let old = tracker.begin("id").unwrap();
+    tracker.remove("id");
+    let new = tracker.begin("id").unwrap();
+    drop(old);
+    assert!(tracker.in_flight("id"));
+    assert!(tracker.last("id").is_none());
+    drop(new);
+    assert!(!tracker.in_flight("id"));
 }

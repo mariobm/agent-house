@@ -9,6 +9,7 @@ mod agent;
 mod config;
 mod exec;
 mod files;
+mod forward;
 mod sessions;
 mod transport;
 
