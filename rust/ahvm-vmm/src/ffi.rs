@@ -41,8 +41,8 @@ pub const NET_FEATURE_CSUM: u32 = 1 << 0;
 pub const NET_FEATURE_GUEST_CSUM: u32 = 1 << 1;
 pub const NET_FEATURE_GUEST_TSO4: u32 = 1 << 7;
 pub const NET_FEATURE_GUEST_UFO: u32 = 1 << 10;
-pub const NET_FEATURE_HOST_TSO4: u32 = 1 << 4;
-pub const NET_FEATURE_HOST_UFO: u32 = 1 << 5;
+pub const NET_FEATURE_HOST_TSO4: u32 = 1 << 11;
+pub const NET_FEATURE_HOST_UFO: u32 = 1 << 14;
 
 // Safe wrappers: each centralizes one FFI call so the driver (main.rs)
 // contains zero unsafe code. Pointer args must borrow from a CString arena
