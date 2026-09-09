@@ -1,0 +1,44 @@
+{
+  "date": "2026-09-09",
+  "host": "agent_house (Linux x86_64/KVM)",
+  "source_base": "e0e3604",
+  "libkrucible": "43d0dd3",
+  "network_scope": "isolated per-sandbox Rust gateways, opt-in Linux integration",
+  "resolver": "host systemd-resolved stub",
+  "checks": {
+    "targeted_crate_tests": "pass; KVM tests separately enabled below",
+    "clippy_all_targets": "pass with warnings denied for netd/engine/daemon",
+    "kvm_network": {
+      "result": "pass",
+      "seconds": 10.48,
+      "coverage": [
+        "two simultaneous guests",
+        "HTTPS and DNS",
+        "three netd SIGKILL/restarts with peer PID unchanged",
+        "guest-local positive listener inaccessible from peer",
+        "reachable host listener blocked",
+        "snapshot restore-as-new",
+        "stop/start",
+        "VM SIGKILL recovery",
+        "daemon object adoption",
+        "netd restart after adoption",
+        "destroy and cleanup"
+      ]
+    },
+    "http_acceptance": {
+      "result": "pass",
+      "seconds": 31.16
+    },
+    "daemon_binary_http_smoke": {
+      "create_exec_https": "pass",
+      "destroy": "pass"
+    }
+  },
+  "limitations": [
+    "not Phase 5 security exit",
+    "no preview or private-access API",
+    "no new upload performance claim",
+    "no full offload/UDP/IPv6 qualification",
+    "no persistent host service installed"
+  ]
+}

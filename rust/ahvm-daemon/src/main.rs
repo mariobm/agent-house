@@ -8,6 +8,8 @@
 //! AHVM_VMM_BIN      release ahvm-vmm (required)
 //! AHVM_BASE_IMAGE   backing guest ext4 (required)
 //! AHVM_LIB          LD_LIBRARY_PATH value for workers (default: inherited)
+//! AHVM_NETD_BIN     optional managed Rust gateway binary (Linux)
+//! AHVM_DNS_RESOLVER required IPv4 resolver when netd is enabled
 //! AHVM_ADMIN_TOKEN  bootstrap admin token (created once when missing)
 //! ```
 
@@ -58,13 +60,22 @@ async fn main() {
     let lib_path = std::env::var("AHVM_LIB")
         .or_else(|_| std::env::var("LD_LIBRARY_PATH"))
         .unwrap_or_default();
-    let backend = ahvm_engine::KrucibleBackend::open(ahvm_engine::KrucibleConfig::new(
+    let mut backend_cfg = ahvm_engine::KrucibleConfig::new(
         PathBuf::from(required("AHVM_VMM_BIN")),
         PathBuf::from(required("AHVM_BASE_IMAGE")),
         sandbox_dir,
         lib_path,
-    ))
-    .unwrap_or_else(|e| {
+    );
+    if let Some(bin) = std::env::var_os("AHVM_NETD_BIN") {
+        backend_cfg.network = Some(ahvm_engine::NetworkConfig {
+            netd_bin: PathBuf::from(bin),
+            resolver: required("AHVM_DNS_RESOLVER").parse().unwrap_or_else(|e| {
+                eprintln!("ahvm-daemon: invalid DNS resolver: {e}");
+                std::process::exit(1);
+            }),
+        });
+    }
+    let backend = ahvm_engine::KrucibleBackend::open(backend_cfg).unwrap_or_else(|e| {
         eprintln!("ahvm-daemon: open backend: {e}");
         std::process::exit(1);
     });
