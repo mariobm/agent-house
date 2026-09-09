@@ -116,23 +116,33 @@ fn broken(e: &io::Error) -> bool {
 pub(crate) fn serve(
     stream: UnixStream,
     resolver: Ipv4Addr,
+    private_access: &[std::net::SocketAddrV4],
     connecting: Arc<AtomicUsize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    serve_with_io(stream, resolver, connecting, crate::host_ips, || {
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.connect((resolver, 53))?;
-        socket.set_nonblocking(true)?;
-        Ok(socket)
-    })
+    serve_with_io(
+        stream,
+        resolver,
+        private_access,
+        connecting,
+        crate::host_ips,
+        || {
+            let socket = UdpSocket::bind("0.0.0.0:0")?;
+            socket.connect((resolver, 53))?;
+            socket.set_nonblocking(true)?;
+            Ok(socket)
+        },
+    )
 }
 
 fn serve_with_io(
     mut stream: UnixStream,
     resolver: Ipv4Addr,
+    private_access: &[std::net::SocketAddrV4],
     connecting: Arc<AtomicUsize>,
     mut host_ips: impl FnMut() -> io::Result<Vec<Ipv4Addr>>,
     mut open_dns: impl FnMut() -> io::Result<UdpSocket>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let private_access: std::collections::HashSet<_> = private_access.iter().copied().collect();
     stream.set_nonblocking(true)?;
     let (mut completion_read, completion_write) = UnixStream::pair()?;
     completion_read.set_nonblocking(true)?;
@@ -258,7 +268,9 @@ fn serve_with_io(
                                 continue;
                             }
                             let dns_tcp = dest == GW && tcp.dst_port() == 53;
-                            if !dns_tcp && !public(dest, &[]) {
+                            let granted = private_access
+                                .contains(&std::net::SocketAddrV4::new(dest, tcp.dst_port()));
+                            if !dns_tcp && !granted && !public(dest, &[]) {
                                 continue;
                             }
                             let key = Key {
@@ -272,7 +284,7 @@ fn serve_with_io(
                                 && flows.len() < MAX_FLOWS
                             {
                                 // Fail closed for this SYN without interrupting existing flows.
-                                if !dns_tcp {
+                                if !dns_tcp && !granted {
                                     let Ok(host) = host_ips() else {
                                         continue;
                                     };
@@ -586,6 +598,7 @@ fn query_setup_and_host_lookup_failures_preserve_guest_link() {
         let result = serve_with_io(
             gateway,
             Ipv4Addr::LOCALHOST,
+            &[],
             Arc::new(AtomicUsize::new(0)),
             || {
                 host_calls += 1;

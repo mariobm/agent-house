@@ -67,6 +67,7 @@ fn isolated_gateways_recover_without_disturbing_peers() {
         std::env::var("LD_LIBRARY_PATH").unwrap(),
     );
     cfg.network = Some(NetworkConfig {
+        private_access: Default::default(),
         netd_bin: std::env::var("AHVM_NETD_BIN").unwrap().into(),
         resolver: std::env::var("AHVM_DNS_RESOLVER").unwrap().parse().unwrap(),
     });
@@ -267,6 +268,7 @@ fn dns_rejects_wrong_replies_and_retries_truncation_over_tcp() {
         std::env::var("LD_LIBRARY_PATH").unwrap(),
     );
     cfg.network = Some(NetworkConfig {
+        private_access: Default::default(),
         netd_bin: std::env::var("AHVM_NETD_BIN").unwrap().into(),
         resolver,
     });

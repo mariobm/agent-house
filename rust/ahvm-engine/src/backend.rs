@@ -52,6 +52,12 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     fn create_snapshot(&self, id: &str, snapshot_id: &str) -> Result<SnapshotManifest>;
     fn restore(&self, snapshot: &SnapshotManifest, new_id: &str) -> Result<SandboxInfo>;
     fn fork(&self, id: &str, new_id: &str) -> Result<SandboxInfo>;
+    /// Open one raw connection to a loopback-only guest TCP service.
+    fn preview_connect(&self, _id: &str, _port: u16) -> Result<std::os::unix::net::UnixStream> {
+        Err(crate::Error::InvalidState(
+            "preview transport unavailable".into(),
+        ))
+    }
     fn capabilities(&self) -> Capabilities;
 
     /// Read a registered snapshot's manifest (for `restore`, which takes

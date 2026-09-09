@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 pub struct NetworkConfig {
     pub netd_bin: PathBuf,
     pub resolver: Ipv4Addr,
+    /// Host-owned exact TCP destination grants, keyed by sandbox id.
+    pub private_access: std::collections::BTreeMap<String, Vec<std::net::SocketAddrV4>>,
 }
 
 #[derive(Debug)]
@@ -110,6 +112,18 @@ impl Networks {
                 "DNS resolver must be a unicast IPv4 address".into(),
             ));
         }
+        if cfg.private_access.len() > 4096
+            || cfg.private_access.iter().any(|(id, rules)| {
+                id.is_empty()
+                    || id.contains('/')
+                    || rules.len() > 64
+                    || rules
+                        .iter()
+                        .any(|endpoint| !ahvm_proto::valid_private_endpoint(*endpoint))
+            })
+        {
+            return Err(Error::InvalidState("invalid private-access policy".into()));
+        }
         if !cfg.netd_bin.is_file() {
             return Err(Error::InvalidState("network binary missing".into()));
         }
@@ -183,6 +197,17 @@ impl Networks {
             Ok(w) if alive(&w) => {
                 let saved: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(dir.join("net.json"))?)?;
+                let saved_rules: Vec<std::net::SocketAddrV4> = serde_json::from_value(
+                    saved
+                        .get("private_access")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!([])),
+                )?;
+                if saved_rules != rules_for(&core.cfg, dir) {
+                    return Err(Error::InvalidState(
+                        "stop VMs before changing private access".into(),
+                    ));
+                }
                 if saved["resolver"].as_str() != Some(core.cfg.resolver.to_string().as_str()) {
                     return Err(Error::InvalidState(
                         "stop VMs before changing their DNS resolver".into(),
@@ -241,6 +266,14 @@ impl Networks {
     }
 }
 
+fn rules_for(cfg: &NetworkConfig, dir: &Path) -> Vec<std::net::SocketAddrV4> {
+    dir.file_name()
+        .and_then(|s| s.to_str())
+        .and_then(|id| cfg.private_access.get(id))
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn launch(cfg: &NetworkConfig, dir: &Path) -> Result<WorkerHandle> {
     let sock = dir.join("sock");
     std::fs::create_dir_all(&sock)?;
@@ -255,7 +288,7 @@ fn launch(cfg: &NetworkConfig, dir: &Path) -> Result<WorkerHandle> {
     std::fs::write(
         &spec,
         serde_json::to_vec(&serde_json::json!({
-            "socket": socket, "resolver": cfg.resolver,
+            "socket": socket, "resolver": cfg.resolver, "private_access": rules_for(cfg, dir),
         }))?,
     )?;
     let mut worker = spawn_worker_cfg(&SpawnConfig {
@@ -294,6 +327,7 @@ mod tests {
         (
             dir,
             NetworkConfig {
+                private_access: Default::default(),
                 netd_bin: bin,
                 resolver: Ipv4Addr::LOCALHOST,
             },
