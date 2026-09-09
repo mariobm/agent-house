@@ -1,7 +1,8 @@
 # Phase 5 networking spike
 
-Status: real-guest TCP/DNS, controlled isolation, and performance probes complete;
-cold-restore and netd-restart recovery fail (2026-09-09).
+Status: spike complete, including repaired Rust cold-restore/netd-restart
+recovery. The first managed smoltcp integration and remaining Phase 5 scope are
+in [STATUS-networking.md](../../docs/STATUS-networking.md).
 This is a single-disposable-guest experiment, not production netd or a completed
 networking/security acceptance gate.
 
@@ -116,7 +117,7 @@ resolver. Host connects have a five-second deadline and TCP inactivity expires
 after 120 seconds. IPv6 and fragmented IPv4 are unsupported and dropped.
 The initial one-millisecond sleep was replaced with socket-readiness polling.
 Controlled isolation, resource, performance, and recovery results are in
-[QUALIFICATION.md](QUALIFICATION.md); recovery remains failing.
+[QUALIFICATION.md](QUALIFICATION.md), including the passing Rust recovery update.
 
 Basic ingress MAC/IP pinning and public-destination filtering are present; pass
 ALL host IPv4 addresses in the last argument. There is no multi-guest control

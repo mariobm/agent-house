@@ -117,6 +117,7 @@ redesigned better. No migration shims, no legacy readers.
   and zero-Go cutover exits below.
 - **Exit:** agreed workloads and isolation tests pass on `agent_house`, measured
   performance is acceptable, and operational limitations are documented.
+- Managed Rust integration and remaining scope: [`STATUS-networking.md`](STATUS-networking.md).
 - Spike progress and reproducible probes: [`../experiments/net-spike/README.md`](../experiments/net-spike/README.md).
 
 ### Phase 6 — CLI + packaging (2–3 wks)

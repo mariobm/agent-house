@@ -37,12 +37,22 @@ struct Ctx {
 }
 
 fn config(dir: &std::path::Path) -> KrucibleConfig {
-    KrucibleConfig::new(
+    let mut cfg = KrucibleConfig::new(
         PathBuf::from(std::env::var("AHVM_VMM_BIN").unwrap()),
         PathBuf::from(std::env::var("AHVM_GUEST_IMAGE").unwrap()),
         dir.join("sandboxes"),
         std::env::var("LD_LIBRARY_PATH").unwrap(),
-    )
+    );
+    if let Ok(bin) = std::env::var("AHVM_NETD_BIN") {
+        cfg.network = Some(ahvm_engine::NetworkConfig {
+            netd_bin: bin.into(),
+            resolver: std::env::var("AHVM_DNS_RESOLVER")
+                .expect("resolver required with netd")
+                .parse()
+                .unwrap(),
+        });
+    }
+    cfg
 }
 
 fn open(dir: &PathBuf) -> Ctx {
@@ -269,6 +279,13 @@ async fn acceptance_crash_recovery_and_restart() {
         .await;
         assert_eq!(status, StatusCode::OK);
         marker_sid = sess["session_id"].as_str().unwrap().to_string();
+
+        if std::env::var_os("AHVM_NETD_BIN").is_some() {
+            let (status, reply) = call(app(), "POST", "/v1/sandboxes/acc1/exec",
+                Some(serde_json::json!({"argv":["/bin/sh", "-ec", "curl -4 -fsS --max-time 15 https://example.com/ -o /tmp/http-network; test -s /tmp/http-network"]}))).await;
+            assert_eq!(status, StatusCode::OK, "{reply}");
+            assert_eq!(reply["exit_code"], 0, "{reply}");
+        }
 
         // ---- stop + start (bundle restore) ----
         assert_eq!(

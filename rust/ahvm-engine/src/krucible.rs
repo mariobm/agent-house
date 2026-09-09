@@ -78,6 +78,8 @@ pub struct KrucibleConfig {
     /// (default 300s): readiness polling uses `ready_timeout` with short
     /// per-attempt RPCs, but a started exec waits up to this long.
     pub exec_timeout: Duration,
+    /// Opt-in isolated outbound TCP/DNS.
+    pub network: Option<crate::NetworkConfig>,
 }
 
 impl KrucibleConfig {
@@ -89,6 +91,7 @@ impl KrucibleConfig {
             lib_path,
             ready_timeout: DEFAULT_READY_TIMEOUT,
             exec_timeout: DEFAULT_EXEC_TIMEOUT,
+            network: None,
         }
     }
 
@@ -122,7 +125,7 @@ struct SandboxRecord {
 /// A supervised worker handle: owned (we spawned it, we reap it) or
 /// adopted (supervisor restarted; pid polling only, no wait).
 #[derive(Debug)]
-enum WorkerHandle {
+pub(crate) enum WorkerHandle {
     Owned(LiveWorker),
     Adopted(Worker),
 }
@@ -132,7 +135,7 @@ impl WorkerHandle {
     /// Reaps an owned child that already exited (no zombie left behind).
     /// Adopted pids additionally require identity verification: a reused
     /// pid is NOT our worker, however live it looks.
-    fn alive(&mut self) -> bool {
+    pub(crate) fn alive(&mut self) -> bool {
         match self {
             WorkerHandle::Owned(w) => match w.try_reap() {
                 Ok(Some(_)) => false,
@@ -145,7 +148,7 @@ impl WorkerHandle {
 
     /// Stop and clean up. Owned: SIGKILL + reap (no zombie, idempotent).
     /// Adopted: pin and verify identity before SIGTERM, then poll for exit.
-    fn terminate(&mut self) -> Result<()> {
+    pub(crate) fn terminate(&mut self) -> Result<()> {
         match self {
             WorkerHandle::Owned(w) => w.terminate().map_err(Error::Io),
             WorkerHandle::Adopted(w) => {
@@ -239,6 +242,7 @@ fn verified(w: &Worker) -> bool {
 /// reinsert discipline so long worker waits never hold the lock.
 #[derive(Debug)]
 pub struct KrucibleBackend {
+    networks: Option<crate::network::Networks>,
     cfg: KrucibleConfig,
     inner: Mutex<Inner>,
     reservations: Mutex<HashSet<String>>,
@@ -289,6 +293,9 @@ impl KrucibleBackend {
         for dir in dirs {
             let record_path = dir.join("sandbox.json");
             if !record_path.is_file() {
+                if dir.join("net.json").exists() {
+                    crate::network::cleanup_orphan(&dir)?;
+                }
                 continue;
             }
             let raw = std::fs::read(&record_path)?;
@@ -307,6 +314,20 @@ impl KrucibleBackend {
                 Ok(w) if is_alive(w.pid) && verified(&w) => Some(WorkerHandle::Adopted(w)),
                 _ => None,
             };
+            if cfg.network.is_none() && dir.join("net.json").exists() {
+                if worker.is_some() {
+                    let saved: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(dir.join("spec.json"))?)?;
+                    if saved["net_uds"].as_str().is_some_and(|s| !s.is_empty()) {
+                        return Err(Error::InvalidState(
+                            "networked live VMs require network configuration on daemon restart"
+                                .into(),
+                        ));
+                    }
+                } else {
+                    crate::network::cleanup_orphan(&dir)?;
+                }
+            }
             let mut info = record.info.clone();
             if worker.is_some() {
                 info.state = State::Running;
@@ -323,7 +344,35 @@ impl KrucibleBackend {
                 },
             );
         }
+        let networks = cfg
+            .network
+            .clone()
+            .map(crate::network::Networks::new)
+            .transpose()?;
+        if let Some(networks) = &networks {
+            for rec in inner.sandboxes.values() {
+                if let Some(WorkerHandle::Adopted(vm)) = &rec.worker {
+                    let spec: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(rec.dir.join("spec.json"))?)?;
+                    if spec
+                        .get("net_uds")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .is_empty()
+                    {
+                        return Err(Error::InvalidState(
+                            "stop existing VMs before enabling networking".into(),
+                        ));
+                    }
+                    networks.prepare(&rec.dir)?;
+                    networks.attach(&rec.dir, vm.clone());
+                } else {
+                    networks.remove(&rec.dir)?;
+                }
+            }
+        }
         Ok(Self {
+            networks,
             cfg,
             inner: Mutex::new(inner),
             reservations: Mutex::new(HashSet::new()),
@@ -563,6 +612,10 @@ impl KrucibleBackend {
             "control_socket_uds": control_sock(dir).to_string_lossy(),
             "env": spec.extra_env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
         });
+        if self.networks.is_some() {
+            js["net_uds"] = sock.join("net.sock").to_string_lossy().into();
+            js["net_mac"] = "02:00:00:00:00:02".into();
+        }
         // Omit (never null): an explicit null is a parse error for workers.
         if let Some(bundle) = snapshot_dir {
             js["snapshot_dir"] = serde_json::Value::String(bundle.to_string_lossy().into_owned());
@@ -591,7 +644,10 @@ impl KrucibleBackend {
             "LANG=C.UTF-8".to_string(),
             format!("LD_LIBRARY_PATH={}", self.cfg.lib_path),
         ];
-        spawn_worker_cfg(&SpawnConfig {
+        if let Some(net) = &self.networks {
+            net.prepare(dir)?;
+        }
+        let result = spawn_worker_cfg(&SpawnConfig {
             vmm_binary: self.cfg.vmm_bin.as_os_str(),
             spec_arg: &spec_path,
             state_path: &dir.join("state.json"),
@@ -599,7 +655,35 @@ impl KrucibleBackend {
             env: &env,
             stderr_log: Some(&dir.join("vmm.log")),
         })
-        .map_err(Error::Io)
+        .map_err(Error::Io);
+        match &result {
+            Ok(w) => {
+                if let Some(net) = &self.networks {
+                    net.attach(dir, w.record.clone());
+                }
+            }
+            Err(_) => {
+                if let Some(net) = &self.networks {
+                    let _ = net.remove(dir);
+                }
+            }
+        }
+        result
+    }
+
+    fn ready(&self, dir: &Path) -> Result<()> {
+        wait_ready(&forge_sock(dir), self.cfg.ready_timeout)?;
+        if self.networks.is_some() {
+            let argv = vec!["/bin/sh".into(), "-ec".into(),
+                "ip link set lo up; ip link set eth0 up; ip addr replace 100.64.0.2/24 dev eth0; ip route replace default via 100.64.0.1; printf 'nameserver 100.64.0.1\\n' > /etc/resolv.conf".into()];
+            let r = rpc_exec(&forge_sock(dir), &argv, Duration::from_secs(15))?;
+            if r.exit_code != 0 {
+                return Err(Error::Control(
+                    "guest network setup failed (requires ip and /bin/sh)".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Online snapshot: PAUSE, SNAPSHOT into a fresh generation dir,
@@ -710,7 +794,7 @@ impl KrucibleBackend {
         back.check_compat(&self.host_caps())?;
         std::fs::copy(bundle.join("root.qcow2"), dir.join("root.qcow2"))?;
         let worker = self.boot_worker(dir, &dir.join("root.qcow2"), spec, Some(bundle))?;
-        if let Err(e) = wait_ready(&forge_sock(dir), self.cfg.ready_timeout) {
+        if let Err(e) = self.ready(dir) {
             let mut w = worker;
             let _ = w.terminate();
             return Err(e);
@@ -832,7 +916,7 @@ impl KrucibleBackend {
         let boot = (|| -> Result<LiveWorker> {
             std::fs::copy(bundle.join("root.qcow2"), dir.join("root.qcow2"))?;
             let worker = self.boot_worker(&dir, &dir.join("root.qcow2"), &spec, Some(&bundle))?;
-            if let Err(e) = wait_ready(&forge_sock(&dir), self.cfg.ready_timeout) {
+            if let Err(e) = self.ready(&dir) {
                 let mut w = worker;
                 let _ = w.terminate();
                 return Err(e);
@@ -847,7 +931,11 @@ impl KrucibleBackend {
                     name: new_id.to_string(),
                     state: State::Running,
                     thermal: Thermal::Warm,
-                    ip: format!("10.42.0.{octet}"),
+                    ip: if self.networks.is_some() {
+                        "100.64.0.2".into()
+                    } else {
+                        format!("10.42.0.{octet}")
+                    },
                 };
                 let record = SandboxRecord {
                     spec,
@@ -870,6 +958,9 @@ impl KrucibleBackend {
                 Ok(info)
             }
             Err(e) => {
+                if let Some(net) = &self.networks {
+                    let _ = net.remove(&dir);
+                }
                 let _ = std::fs::remove_dir_all(&dir);
                 Err(e)
             }
@@ -967,7 +1058,7 @@ impl Backend for KrucibleBackend {
         let boot = (|| -> Result<LiveWorker> {
             self.create_overlay(&dir.join("root.qcow2"), &backing)?;
             let worker = self.boot_worker(&dir, &dir.join("root.qcow2"), spec, None)?;
-            if let Err(e) = wait_ready(&forge_sock(&dir), self.cfg.ready_timeout) {
+            if let Err(e) = self.ready(&dir) {
                 let mut w = worker;
                 let _ = w.terminate();
                 return Err(e);
@@ -982,7 +1073,11 @@ impl Backend for KrucibleBackend {
                     name: spec.name.clone(),
                     state: State::Running,
                     thermal: Thermal::Hot,
-                    ip: format!("10.42.0.{octet}"),
+                    ip: if self.networks.is_some() {
+                        "100.64.0.2".into()
+                    } else {
+                        format!("10.42.0.{octet}")
+                    },
                 };
                 let record = SandboxRecord {
                     spec: spec.clone(),
@@ -1005,6 +1100,9 @@ impl Backend for KrucibleBackend {
                 Ok(info)
             }
             Err(e) => {
+                if let Some(net) = &self.networks {
+                    let _ = net.remove(&dir);
+                }
                 let _ = std::fs::remove_dir_all(&dir);
                 Err(e)
             }
@@ -1023,6 +1121,9 @@ impl Backend for KrucibleBackend {
         }?;
         if let Some(mut handle) = rec.worker {
             handle.terminate()?;
+        }
+        if let Some(net) = &self.networks {
+            net.remove(&rec.dir)?;
         }
         std::fs::remove_dir_all(&rec.dir)?;
         Ok(())
@@ -1116,7 +1217,7 @@ impl Backend for KrucibleBackend {
             }
             Plan::Fresh { dir, spec } => {
                 let worker = self.boot_worker(&dir, &dir.join("root.qcow2"), &spec, None)?;
-                if let Err(e) = wait_ready(&forge_sock(&dir), self.cfg.ready_timeout) {
+                if let Err(e) = self.ready(&dir) {
                     let mut w = worker;
                     let _ = w.terminate();
                     return Err(e);
@@ -1173,6 +1274,9 @@ impl Backend for KrucibleBackend {
         };
         if let Some(mut handle) = worker {
             handle.terminate()?;
+        }
+        if let Some(net) = &self.networks {
+            net.remove(&dir)?;
         }
         let _ = std::fs::remove_file(dir.join("state.json"));
         let mut inner = self.lock();
@@ -1655,6 +1759,7 @@ mod tests {
             lib_path: "/tmp/kvm".to_string(),
             ready_timeout: Duration::from_secs(1),
             exec_timeout: Duration::from_secs(1),
+            network: None,
         }
     }
 

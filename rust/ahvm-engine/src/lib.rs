@@ -31,6 +31,8 @@
 mod backend;
 mod krucible;
 mod mock;
+mod network;
+pub use network::NetworkConfig;
 mod snapshot;
 mod spec;
 mod worker;
