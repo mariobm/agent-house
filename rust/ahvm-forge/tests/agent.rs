@@ -974,3 +974,53 @@ fn rapid_create_input_delete_leaves_no_strays() {
     }
     assert_no_stray("sleep 47");
 }
+
+#[test]
+fn forward_preserves_pipelined_bytes_and_half_close() {
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, TcpListener};
+    let agent = Agent::spawn("secret");
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = target.local_addr().unwrap().port();
+    let service = std::thread::spawn(move || {
+        let (mut s, _) = target.accept().unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut received = Vec::new();
+        s.read_to_end(&mut received).unwrap();
+        assert_eq!(received, b"pipelined-request");
+        s.write_all(b"streamed-response").unwrap();
+    });
+    let mut c = agent.connect();
+    auth(&mut c, "secret");
+    let mut bytes = Vec::new();
+    write_frame(
+        &mut bytes,
+        &Frame {
+            msg_type: FrameType::ForwardReq,
+            payload: serde_json::to_vec(&serde_json::json!({"port":port})).unwrap(),
+        },
+    )
+    .unwrap();
+    bytes.extend_from_slice(b"pipelined-request");
+    c.w.write_all(&bytes).unwrap();
+    c.w.shutdown(Shutdown::Write).unwrap();
+    assert_eq!(
+        read_frame(&mut c.r).unwrap().msg_type,
+        FrameType::ForwardResp
+    );
+    let mut out = Vec::new();
+    c.r.read_to_end(&mut out).unwrap();
+    assert_eq!(out, b"streamed-response");
+    service.join().unwrap();
+    let mut bad = agent.connect();
+    auth(&mut bad, "secret");
+    write_frame(
+        &mut bad.w,
+        &Frame {
+            msg_type: FrameType::ForwardReq,
+            payload: br#"{"port":0}"#.to_vec(),
+        },
+    )
+    .unwrap();
+    assert!(expect_error(&mut bad).contains("invalid port"));
+}

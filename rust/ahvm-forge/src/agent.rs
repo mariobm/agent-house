@@ -25,6 +25,28 @@ impl From<TcpStream> for Conn {
 }
 
 impl Conn {
+    pub fn timeout(&self, timeout: std::time::Duration) -> io::Result<()> {
+        match self {
+            Self::Tcp(s) => {
+                s.set_read_timeout(Some(timeout))?;
+                s.set_write_timeout(Some(std::time::Duration::from_secs(30)))
+            }
+            Self::Vsock(s) => {
+                s.set_read_timeout(Some(timeout))?;
+                s.set_write_timeout(Some(std::time::Duration::from_secs(30)))
+            }
+        }
+    }
+    pub fn shutdown(&self, how: std::net::Shutdown) {
+        match self {
+            Self::Tcp(s) => {
+                let _ = s.shutdown(how);
+            }
+            Self::Vsock(s) => {
+                let _ = s.shutdown(how);
+            }
+        }
+    }
     pub fn try_clone(&self) -> io::Result<Self> {
         match self {
             Self::Tcp(s) => s.try_clone().map(Self::Tcp),
@@ -246,6 +268,10 @@ pub fn handle(stream: Conn, cfg: &Config) {
         // the frame budget becomes an explicit error frame — the connection
         // stays usable, unlike a failed write that just drops it.
         let (msg_type, body): (FrameType, Vec<u8>) = match frame.msg_type {
+            FrameType::ForwardReq => {
+                crate::forward::serve(r, w, &frame.payload);
+                return;
+            }
             FrameType::ExecReq => match parse::<ExecReq>(&frame.payload) {
                 Ok(req) => {
                     let out = crate::exec::run(&req, cfg);

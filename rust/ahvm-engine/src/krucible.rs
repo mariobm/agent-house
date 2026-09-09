@@ -1335,6 +1335,34 @@ impl Backend for KrucibleBackend {
         ids.iter().map(|id| self.status(id)).collect()
     }
 
+    fn preview_connect(&self, id: &str, port: u16) -> Result<UnixStream> {
+        if port == 0 || self.cfg.network.is_none() {
+            return Err(Error::InvalidState(
+                "previews require managed networking and a nonzero port".into(),
+            ));
+        }
+        let dir = self.live_dir(id)?;
+        let mut c = connect_rpc(&forge_sock(&dir), Duration::from_secs(5))?;
+        c.set_read_timeout(Some(Duration::from_secs(6)))?;
+        c.set_write_timeout(Some(Duration::from_secs(6)))?;
+        write_frame(
+            &mut c,
+            &Frame {
+                msg_type: FrameType::ForwardReq,
+                payload: serde_json::to_vec(&serde_json::json!({"port": port}))?,
+            },
+        )
+        .map_err(|e| Error::Control(e.to_string()))?;
+        // Read precisely one frame, without buffering service bytes after it.
+        let response = read_frame(&mut c).map_err(|e| Error::Control(e.to_string()))?;
+        if response.msg_type != FrameType::ForwardResp {
+            return Err(Error::Control("guest preview connection refused".into()));
+        }
+        c.set_read_timeout(None)?;
+        c.set_write_timeout(None)?;
+        Ok(c)
+    }
+
     fn exec(&self, id: &str, argv: &[String]) -> Result<ExecResult> {
         let dir = self.live_dir(id)?;
         rpc_exec(&forge_sock(&dir), argv, self.cfg.exec_timeout)
