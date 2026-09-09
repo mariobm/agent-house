@@ -32,7 +32,8 @@
     "networked_http_acceptance": {
       "tests_passed": 2,
       "seconds": 31.39
-    }
+    },
+    "failure_cleanup": "pass on Linux: pidfd pins child, wrong starttime refuses signal, matching child terminated"
   },
   "limits": [
     "Fresh image with current Rust forge is required for previews",

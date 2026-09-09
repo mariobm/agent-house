@@ -50,6 +50,20 @@ while True:
 '''
 
 
+def terminate_record(worker):
+    """Pin the process before identity checking; never signal a recycled PID."""
+    pid = worker['pid']
+    fd = os.pidfd_open(pid)
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        if int(stat[19]) != worker.get('starttime'):
+            return False
+        signal.pidfd_send_signal(fd, signal.SIGTERM)
+        return True
+    finally:
+        os.close(fd)
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0))
@@ -234,9 +248,7 @@ def run():
         # Verified fallback cleanup if startup/restart itself failed.
         for record in (root/'data'/'sandboxes').glob('*/**/*state.json'):
             try:
-                w=json.loads(record.read_text()); pid=w['pid']
-                stat=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
-                if int(stat[19])==w.get('starttime'): os.kill(pid,signal.SIGTERM)
+                terminate_record(json.loads(record.read_text()))
             except (OSError,ValueError,KeyError): pass
         stop.set();thread.join(timeout=3);listener.close();forbidden.close();log.close()
 
