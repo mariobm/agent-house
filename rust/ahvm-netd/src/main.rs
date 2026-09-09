@@ -1,4 +1,5 @@
 //! One sandbox's outbound TCP/DNS gateway. Policy is supplied by the host.
+mod dns;
 mod gateway;
 
 use nix::poll::{poll, PollFd, PollFlags};
