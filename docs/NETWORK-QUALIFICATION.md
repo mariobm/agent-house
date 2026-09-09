@@ -1,10 +1,9 @@
 # Phase 5 bounded networking qualification
 
 This qualifies the current Rust TCP/DNS gateway, authenticated previews and exact
-private TCP grants on `agent_house`. The baseline uses **two 1-vCPU, 256 MiB
-guests**; a follow-up also passed with **two 1-vCPU, 4 GiB guests**. Both runs
-keep at most two sandboxes alive. Restore-as-new first destroys the peer; KVM
-tests run serially.
+private TCP grants on `agent_house` with **two 1-vCPU, 4 GiB guests**.
+At most two sandboxes are alive: restore-as-new first destroys the peer, and
+KVM tests run serially.
 It changes no host firewall, resolver, production daemon or production state.
 Upload optimization remains deferred. General UDP and IPv6 remain unsupported.
 
@@ -47,48 +46,29 @@ Upload optimization remains deferred. General UDP and IPv6 remain unsupported.
 
 ## Evidence and limits
 
-See [machine-readable results](results/network-qualification-linux.json).
-The bounded load gate passes in 63.46 seconds: 2,259 successful preview requests
-at 2/8/16 concurrent clients, 208 outbound requests, two stalled readers, an
-intact 32 MiB response, three gateway kills/recoveries with a stable peer gateway,
-and the existing access/revocation/restore/adoption/cleanup checks.
+The gate passed in **80.86 seconds**, testing production code `d88b182` with
+fork `39626f9`:
 
-Peak sampled RSS was 15,260 KiB for the daemon, 11,372 KiB for the busy gateway,
-95,068 KiB for its VMM and 53,924 KiB for the peer VMM. Forge thread count was 7
-before and after churn; busy-VMM descriptors went from 82 to 73 after cleanup.
-Descriptors transiently reached 1,023 during churn because the fork defers
-closed-proxy reclamation for five seconds. Packaging must account for that peak
-when setting descriptor limits. Sampling is every 200 ms, not a hard resource
-ceiling; requested guest RAM is not the VMM's entire host-memory footprint.
+- Each guest touched and verified **3 GiB RAM**, held simultaneously for about
+  five seconds. Sampled VMM peak RSS was about 3.2 GiB each.
+- **2,269 preview requests** at 2/8/16 concurrent clients, 208 outbound requests,
+  two stalled readers, and a byte-verified **32 MiB response** passed.
+- Three gateway kills recovered in **1.27 / 2.21 / 4.30 seconds**, with the peer
+  gateway stable. Isolation, preview auth/revocation, stop/start, snapshot/restore
+  as new, and daemon adoption passed.
+- Forge threads stayed at **7**; busy-VMM descriptors settled from **72 to 73**.
+  The transient descriptor peak was **1,023** due to five-second deferred proxy
+  cleanup; packaging must allow for that peak.
+- Preview p95 latency was **4.87 / 92.69 / 224.19 ms** at 2/8/16 clients.
+- Snapshots used disk-backed `/var/tmp`. Swap use was zero after the run, and all
+  test processes and disposable files were cleaned up.
 
-Preview p95 latency was 4.96 / 92.89 / 231.96 ms at 2 / 8 / 16 clients. The guest
-fixture uses Python on one vCPU and each client sleeps 25 ms between requests.
-These are repeatable functional-load observations, not a production throughput
-comparison or a claim that the deferred upload slowdown has been resolved.
-
-### Two 4 GiB guests
-
-The [larger-memory follow-up](results/network-qualification-4g-linux.json) passed
-in **80.86 seconds**, using the same production code (`d88b182`, fork `39626f9`).
-Each guest allocated, touched and verified **3 GiB**, with both allocations held
-simultaneously for 5.04 seconds. Each VMM's sampled peak RSS was about 3.2 GiB.
-The allocations were released before networking load and lifecycle checks; this
-is a brief memory-use check, not a sustained combined memory/network stress test.
-
-The same bounded gate then completed 2,269 preview requests at 2/8/16 concurrent
-clients, 208 outbound requests, two stalled readers and an intact 32 MiB response.
-Three gateway recoveries took 1.27 / 2.21 / 4.30 seconds with the peer stable.
-Private-access isolation, preview auth/revocation, stop/start, snapshot/restore
-as new, daemon adoption and cleanup all passed. Forge threads stayed at 7;
-busy-VMM descriptors settled from 72 to 73, with the same transient peak of 1,023.
-Preview p95 was 4.87 / 92.69 / 224.19 ms; this short run does not establish a
-performance improvement over the baseline or resolve upload optimization.
-
-Larger snapshots used disk-backed `/var/tmp`, avoiding the host's RAM-backed
-`/tmp`. Swap use was zero after the run, all test processes were gone, and the
-disposable directory was removed. The result includes source pins and the exact
-[test-only patch](results/network-qualification-4g.patch) used for this variant;
-the default gate remains at 256 MiB per guest.
+The memory allocations were released before networking load. This is a bounded
+smoke test, not sustained combined memory/network stress. The Python fixture
+uses one vCPU and 25 ms pauses between requests; these latency observations are
+not a production throughput benchmark or evidence that upload optimization is
+resolved. Resource sampling ran every 200 ms, so peaks are observations rather
+than hard limits.
 
 ### Other validation
 
@@ -142,12 +122,12 @@ AHVM_NETWORK_QUALIFY=1 python3 scripts/test-network-access.py
 python3 scripts/test-netd-protocol.py /absolute/path/to/ahvm-netd
 ```
 
-To repeat the 4 GiB variant, apply
-`docs/results/network-qualification-4g.patch` in a disposable checkout of the
-recorded source commit, then run the same qualification command. Set
-`AHVM_ACCESS_TEST_DIR` to a fresh disk-backed directory and provide enough host
-RAM for two 4 GiB guests plus host overhead. The patch includes the simultaneous
-3 GiB-per-guest allocation check and corrects the reported total guest memory.
+The checked-in access gate defaults to 256 MiB per guest. The documented run
+used a disposable copy with `memory_mb` set to 4096 for both guests and a brief
+parallel Python allocation check (3 GiB per guest, touching and verifying every
+4 KiB page, held for five seconds). To repeat it, make those test-only changes
+and use a fresh disk-backed `AHVM_ACCESS_TEST_DIR` with sufficient host RAM for
+two 4 GiB guests plus overhead.
 
 Run `kvm_network` and daemon acceptance **one after another** with
 `--test-threads=1`; running both binaries concurrently would exceed two guests.
