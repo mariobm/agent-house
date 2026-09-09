@@ -113,9 +113,23 @@ fn broken(e: &io::Error) -> bool {
 }
 
 pub(crate) fn serve(
-    mut stream: UnixStream,
+    stream: UnixStream,
     resolver: Ipv4Addr,
     connecting: Arc<AtomicUsize>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    serve_with_io(stream, connecting, crate::host_ips, || {
+        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        socket.connect((resolver, 53))?;
+        socket.set_nonblocking(true)?;
+        Ok(socket)
+    })
+}
+
+fn serve_with_io(
+    mut stream: UnixStream,
+    connecting: Arc<AtomicUsize>,
+    mut host_ips: impl FnMut() -> io::Result<Vec<Ipv4Addr>>,
+    mut open_dns: impl FnMut() -> io::Result<UdpSocket>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     stream.set_nonblocking(true)?;
     let (mut completion_read, completion_write) = UnixStream::pair()?;
@@ -254,7 +268,11 @@ pub(crate) fn serve(
                                 && !flows.contains_key(&key)
                                 && flows.len() < MAX_FLOWS
                             {
-                                if !public(dest, &crate::host_ips()?) {
+                                // Fail closed for this SYN without interrupting existing flows.
+                                let Ok(host) = host_ips() else {
+                                    continue;
+                                };
+                                if !public(dest, &host) {
                                     continue;
                                 }
                                 if connecting
@@ -364,8 +382,13 @@ pub(crate) fn serve(
                         sock.close();
                     }
                     Ok(n) => {
-                        sock.send_slice(&buf[..n]).unwrap();
-                        flow.last = Instant::now();
+                        // The host bytes have already been consumed: a short enqueue
+                        // cannot be retried safely, so abort only this flow.
+                        if sock.send_slice(&buf[..n]) == Ok(n) {
+                            flow.last = Instant::now();
+                        } else {
+                            sock.abort();
+                        }
                     }
                     Err(e) if broken(&e) => sock.abort(),
                     Err(_) => {}
@@ -404,9 +427,10 @@ pub(crate) fn serve(
             if n < 12 || dns.len() >= 64 {
                 continue;
             }
-            let s = UdpSocket::bind("0.0.0.0:0")?;
-            s.connect((resolver, 53))?;
-            s.set_nonblocking(true)?;
+            // Resource/setup failures belong to this query, not the guest link.
+            let Ok(s) = open_dns() else {
+                continue;
+            };
             if s.send(&buf[..n]).is_ok() {
                 dns.push(Dns {
                     socket: s,
@@ -509,4 +533,82 @@ fn destination_policy_rejects_private_special_and_host_addresses() {
         assert!(!public(s.parse().unwrap(), &host), "{s}");
     }
     assert!(public("1.1.1.1".parse().unwrap(), &host));
+}
+
+#[test]
+fn query_setup_and_host_lookup_failures_preserve_guest_link() {
+    // Drive real guest frames through the forwarding loop. Inject failures without
+    // exhausting the test process's file descriptors or changing host interfaces.
+    fn frame(protocol: u8, dest: [u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut packet = vec![0u8; 14 + 20 + payload.len()];
+        packet[..6].copy_from_slice(&[2, 0, 0, 0, 0, 1]);
+        packet[6..12].copy_from_slice(&MAC);
+        packet[12..14].copy_from_slice(&[8, 0]);
+        let ip = &mut packet[14..34];
+        ip[0] = 0x45;
+        ip[2..4].copy_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
+        ip[8] = 64;
+        ip[9] = protocol;
+        ip[12..16].copy_from_slice(&GUEST.octets());
+        ip[16..20].copy_from_slice(&dest);
+        let mut ip = Ipv4Packet::new_unchecked(ip);
+        ip.fill_checksum();
+        packet[34..].copy_from_slice(payload);
+        let mut framed = (packet.len() as u32).to_be_bytes().to_vec();
+        framed.extend(packet);
+        framed
+    }
+
+    let resolver = UdpSocket::bind("127.0.0.1:0").unwrap();
+    resolver
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let resolver_addr = resolver.local_addr().unwrap();
+    let (mut guest, gateway) = UnixStream::pair().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut host_calls = 0;
+        let mut dns_calls = 0;
+        let result = serve_with_io(
+            gateway,
+            Arc::new(AtomicUsize::new(0)),
+            || {
+                host_calls += 1;
+                Err(io::Error::other("injected interface lookup failure"))
+            },
+            || {
+                dns_calls += 1;
+                // Repeated setup failures must still allow a later query to succeed.
+                if dns_calls <= 3 {
+                    return Err(io::Error::other("injected DNS socket setup failure"));
+                }
+                let socket = UdpSocket::bind("127.0.0.1:0")?;
+                socket.connect(resolver_addr)?;
+                socket.set_nonblocking(true)?;
+                Ok(socket)
+            },
+        );
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(host_calls, 1);
+        assert_eq!(dns_calls, 4);
+    });
+    let mut syn = [0u8; 20];
+    syn[..2].copy_from_slice(&40000u16.to_be_bytes());
+    syn[2..4].copy_from_slice(&443u16.to_be_bytes());
+    syn[12] = 0x50;
+    syn[13] = 2;
+    guest.write_all(&frame(6, [1, 1, 1, 1], &syn)).unwrap();
+    let mut query = [0u8; 20];
+    query[..2].copy_from_slice(&40001u16.to_be_bytes());
+    query[2..4].copy_from_slice(&53u16.to_be_bytes());
+    query[4..6].copy_from_slice(&20u16.to_be_bytes());
+    for id in 1u16..=4 {
+        query[8..10].copy_from_slice(&id.to_be_bytes());
+        guest.write_all(&frame(17, GW.octets(), &query)).unwrap();
+    }
+    let mut response = [0u8; 64];
+    let received = resolver.recv(&mut response);
+    drop(guest);
+    server.join().unwrap();
+    assert_eq!(received.unwrap(), 12);
+    assert_eq!(&response[..2], &4u16.to_be_bytes());
 }
