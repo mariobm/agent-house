@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import socketserver
+import struct
 import subprocess
 import threading
 import time
@@ -36,6 +38,23 @@ class HTTP(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Length','2')
         self.end_headers()
         self.wfile.write(b'OK' if ok else b'NO')
+
+
+class DNS(socketserver.BaseRequestHandler):
+    def handle(self):
+        query, sock = self.request
+        # Controlled resolver: one uncompressed question for recovery.test.
+        name = b'\x08recovery\x04test\x00'
+        end = 12 + len(name)
+        if len(query) < end + 4 or query[12:end].lower() != name:
+            return
+        question = query[12:end + 4]
+        qtype, qclass = struct.unpack('!HH', query[end:end + 4])
+        answer = b''
+        if qtype == 1 and qclass == 1:
+            answer = b'\xc0\x0c' + struct.pack('!HHIH', 1, 1, 0, 4) + socket.inet_aton('11.0.0.1')
+        header = query[:2] + struct.pack('!HHHHH', 0x8180, 1, bool(answer), 0, 0)
+        sock.sendto(header + question + answer, self.client_address)
 
 
 def stats(pid):
@@ -100,6 +119,12 @@ def qualification_failed(summary):
         for name in ['setup','benchmark','post-load-health','after-pause','after-cold-restore',
                      'before-netd-restart','after-netd-restart']:
             if result.get(name,{}).get('exit_code') != 0: return True
+        for check in result.get('recovery-cycles', []):
+            if check.get('exit_code') != 0: return True
+        if len(result.get('recovery-cycles', [])) != 6: return True
+        for kind in ['header', 'body']:
+            if result.get(f'after-partial-{kind}', {}).get('exit_code') != 0: return True
+            if not result.get(f'partial-{kind}-snapshot', '').startswith('OK'): return True
         try:
             bench=json.loads(result['benchmark']['stdout'])
             if any('error' in bench.get(name,{'error':'missing'}) for name in ['latency','download','upload','churn']):
@@ -120,6 +145,8 @@ def main():
     setup_namespace()
     server=http.server.ThreadingHTTPServer(('11.0.0.1',18080),HTTP)
     threading.Thread(target=server.serve_forever,daemon=True).start()
+    dns=socketserver.UDPServer(('127.0.0.1',53),DNS)
+    threading.Thread(target=dns.serve_forever,daemon=True).start()
     summary={}
     try:
         for candidate in args.order.split(','):
@@ -165,7 +192,8 @@ def main():
                     entry[label]={'error':repr(e)}; return False
             probe='curl -4 -fsS --connect-timeout 2 --max-time 3 http://11.0.0.1:18080/ | grep -qx probe-ok'
             # pipefail ensures a failed curl cannot be hidden by the assertion.
-            probe='set -o pipefail; '+probe
+            probe='set -o pipefail; '+probe + ' && curl -4 -fsS --connect-timeout 2 --max-time 3 http://recovery.test:18080/ | grep -qx probe-ok'
+            configure='ip link set eth0 up; ip addr add 100.64.0.2/24 dev eth0; ip route add default via 100.64.0.1; printf "nameserver 100.64.0.1\\n" > /etc/resolv.conf; '
             try:
                 shutil.copyfile(args.image,work/'guest.ext4')
                 spec=dict(vcpus=1,mem_mib=512,log_level=3,root_disk=str(work/'guest.ext4'),root_disk_format='raw',
@@ -173,7 +201,7 @@ def main():
                           vsock_control_uds=str(work/'c.sock'),vsock_forward_uds=str(work/'f.sock'),
                           control_socket_uds=str(work/'k.sock'),env=[])
                 network=netd(); vm=boot(spec)
-                if not check('setup','mount -t proc proc /proc; mount -t sysfs sysfs /sys; mount -t devtmpfs devtmpfs /dev; ip link set lo up; ip link set eth0 up; ip addr add 100.64.0.2/24 dev eth0; ip route add default via 100.64.0.1; '+probe):
+                if not check('setup','mount -t proc proc /proc; mount -t sysfs sysfs /sys; mount -t devtmpfs devtmpfs /dev; ip link set lo up; '+configure+probe):
                     raise RuntimeError('setup failed')
                 before=stats(network.pid); time.sleep(2); after=stats(network.pid)
                 entry['idle']=dict(cpu_seconds=after['cpu_seconds']-before['cpu_seconds'],window_seconds=2,**{k:v for k,v in after.items() if k!='cpu_seconds'})
@@ -205,19 +233,52 @@ def main():
                             if p!=network and p.poll() is None: stop(p)
                         spec.pop('snapshot_dir')
                         stop(network); network=netd(); vm=boot(spec)
-                        check('reboot-after-restore-failure','ip link set eth0 up; ip addr add 100.64.0.2/24 dev eth0; ip route add default via 100.64.0.1; '+probe)
+                        check('reboot-after-restore-failure',configure+probe)
                 else:
                     entry['resume-after-snapshot-error']=ctl(work/'k.sock','RESUME')
                 # Isolate netd restart from any earlier cold-restore failure.
                 stop(vm); stop(network)
                 spec.pop('snapshot_dir',None)
                 network=netd(); vm=boot(spec)
-                if not check('before-netd-restart','ip link set eth0 up; ip addr add 100.64.0.2/24 dev eth0; ip route add default via 100.64.0.1; '+probe):
+                if not check('before-netd-restart',configure+probe):
                     raise RuntimeError('fresh boot before netd restart failed')
                 # SIGKILL exactly our child. Fresh netd, same running VM.
                 if network.poll() is None: network.kill(); network.wait()
                 network=netd()
                 check('after-netd-restart',probe)
+                entry['recovery-cycles']=[]
+                for cycle in range(3):
+                    # Snapshot the current generation, then restore in a fresh process.
+                    if not check(f'sync-{cycle}', 'sync'): raise RuntimeError('sync failed')
+                    bundle=work/f'cycle-{cycle}'
+                    reply=ctl(work/'k.sock',f'SNAPSHOT {bundle}')
+                    if not reply.startswith('OK'): raise RuntimeError(reply)
+                    stop(vm); stop(network)
+                    network=netd()
+                    spec['snapshot_dir']=str(bundle)
+                    vm=boot(spec)
+                    label=f'cold-restore-{cycle}'
+                    check(label,probe); entry['recovery-cycles'].append(entry[label])
+                    # Leave the backend absent long enough to exercise failed reconnects.
+                    network.kill(); network.wait(); time.sleep(.3)
+                    network=netd()
+                    label=f'netd-restart-{cycle}'
+                    check(label,probe); entry['recovery-cycles'].append(entry[label])
+                for kind, fragment in [('header', b'\x00\x00'), ('body', struct.pack('!I', 60) + b'ab')]:
+                    network.kill(); network.wait()
+                    (work/'net.sock').unlink(missing_ok=True)
+                    with socket.socket(socket.AF_UNIX) as listener:
+                        listener.settimeout(3)
+                        listener.bind(str(work/'net.sock')); listener.listen(1)
+                        peer, _ = listener.accept()
+                        with peer:
+                            peer.sendall(fragment)
+                            # Give the receiver an opportunity to enter the partial-frame path.
+                            time.sleep(.1)
+                            entry[f'partial-{kind}-snapshot']=ctl(work/'k.sock',f'SNAPSHOT {work / ("partial-" + kind)}')
+                            entry[f'partial-{kind}-resume']=ctl(work/'k.sock','RESUME')
+                    network=netd()
+                    check(f'after-partial-{kind}',probe)
             except Exception as e:
                 entry['harness_error']=repr(e)
             finally:
@@ -227,6 +288,7 @@ def main():
                 print(json.dumps({candidate:entry}),flush=True)
     finally:
         server.shutdown(); server.server_close()
+        dns.shutdown(); dns.server_close()
     if qualification_failed(summary):
         raise SystemExit(1)
 

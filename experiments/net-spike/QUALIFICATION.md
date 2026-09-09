@@ -2,7 +2,9 @@
 
 Decision: continue evaluating smoltcp, but keep PR #16 draft. The initial
 performance problem was the prototype's fixed sleep, not an established stack
-limitation. Two shared VMM recovery failures block this phase's exit.
+limitation. The two shared VMM recovery failures below have now been fixed
+and requalified on the Rust path; see the recovery update at the end. Broader
+networking qualification remains unfinished.
 
 ## Setup and scope
 
@@ -124,3 +126,51 @@ and a defined backend-disconnect/reconnect lifecycle (or an explicitly stable
 transport broker). Rerun fresh TCP and DNS after cold restore and netd restart.
 Existing TCP sessions may break, per the agreed product scope; recovery of new
 connections must not be waived. No fork changes are included in this spike.
+
+
+## Rust recovery update
+
+[Recovery results](results/qualification-rust-recovery.json) were collected on
+agent_house with the changed VMM fork and the same Rust prototype. The historical
+failed reports above remain as baseline evidence; Go recovery was not rerun.
+
+Virtio-net now quiesces its worker and captures negotiated features, MAC, and both
+queue cursors. A fresh worker restores that state. Both device managers reject a
+checkpoint missing network state rather than silently restoring a broken NIC.
+Existing checkpoints with networking must be recreated. Snapshots without a net
+device remain compatible with this check.
+
+The UnixstreamPath backend reconnects after a disconnect, retrying every 100 ms
+while disconnected. There is no periodic reconnect polling on a healthy link.
+Partial Ethernet headers/bodies now return to the event loop instead of blocking
+snapshot quiescing; EOF and invalid frame lengths fail promptly. This is limited
+to reconnectable Unix-stream paths. FD-only, datagram and TAP backends are not
+qualified for cold restore by this change.
+
+The final gate passes:
+
+- Initial cold restore and an independent netd SIGKILL/restart, followed by three
+  additional snapshot/restore → netd SIGKILL/restart cycles. Every recovery check
+  requires direct TCP and a fresh DNS lookup followed by HTTP through that name.
+- A replacement backend that stalls after two header bytes, then one that stalls
+  partway through a frame body: snapshot completes, resume succeeds, replacement
+  Rust netd restores TCP and DNS. The control request has a 15-second deadline.
+- The existing integrity-checked transfer/churn gate. This run measured 0.316 ms
+  median small-request latency, 320 MiB/s downloads and 714 MiB/s uploads.
+  Upload optimization is deferred.
+
+The DNS fixture resolves only recovery.test to the controlled upstream in the
+private namespace. An early fixture rejected Curl's additional DNS records and
+was corrected before collecting the final passing report.
+
+Recovery establishes new connections. Netd does not persist host TCP streams or
+in-flight DNS requests: applications must retry connections interrupted by its
+restart or a cold restore. This is not transparent migration of established TCP.
+
+Validation: 65 device tests on Linux; four new network regression tests also pass
+on macOS; targeted net+blk device Clippy passes with warnings denied on Linux and macOS;
+Rust formatting, the Linux production VMM build, and Make restricted to the
+libkrun package with net+blk and INIT_BLOB=0 pass. The full fork workspace
+Make/Clippy matrix is blocked by missing libclang and GPU epoxy dependencies on
+the server; all-target device Clippy also finds an existing byte-char-slices lint
+in legacy/x86_64/serial.rs. Those broad checks are not claimed green.
