@@ -1,6 +1,7 @@
 //! One sandbox's outbound TCP/DNS gateway. Policy is supplied by the host.
 mod dns;
 mod gateway;
+mod wire;
 
 use nix::poll::{poll, PollFd, PollFlags};
 use serde::Deserialize;
@@ -14,6 +15,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    ethernet_contract: u32,
     socket: PathBuf,
     resolver: Ipv4Addr,
     #[serde(default)]
@@ -35,6 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("usage: ahvm-netd CONFIG.json")?;
     let cfg: Config = serde_json::from_slice(&std::fs::read(path)?)?;
+    if cfg.ethernet_contract != 1 {
+        return Err("unsupported Ethernet contract".into());
+    }
     if cfg.resolver.is_unspecified() || cfg.resolver.is_multicast() || cfg.resolver.is_broadcast() {
         return Err("resolver must be a unicast IPv4 address".into());
     }
