@@ -1,4 +1,5 @@
 //! Single trusted disposable guest only. Feasibility prototype, not production netd.
+use nix::poll::{poll, PollFd, PollFlags};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Checksum, Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::{tcp, udp};
@@ -11,9 +12,12 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream, UdpSocket};
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixListener;
+use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const GW: Ipv4Address = Ipv4Address::new(100, 64, 0, 1);
@@ -116,6 +120,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let (mut stream, _) = listener.accept()?;
     stream.set_nonblocking(true)?;
+    let (mut completion_read, completion_write) = UnixStream::pair()?;
+    completion_read.set_nonblocking(true)?;
+    completion_write.set_nonblocking(true)?;
+    let completion_write = Arc::new(completion_write);
     let mut link = Link {
         rx: VecDeque::new(),
         tx: Queue::default(),
@@ -144,6 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut frame_started = None;
     loop {
         let mut buf = [0; 16384];
+        while completion_read.read(&mut buf).is_ok_and(|n| n > 0) {}
         for _ in 0..16 {
             if incoming.len() >= MAX_FRAME + 4 {
                 break;
@@ -231,6 +240,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Ok(v) => v,
                                 Err(_) => continue,
                             };
+                            if tcp.src_port() == 0
+                                || tcp.dst_port() == 0
+                                || (tcp.syn() && (tcp.fin() || tcp.rst()))
+                            {
+                                continue;
+                            }
                             let key = Key {
                                 dst: dest,
                                 port: tcp.dst_port(),
@@ -246,9 +261,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     tcp::SocketBuffer::new(vec![0; BUFSIZE]),
                                 );
                                 sock.set_timeout(Some(smoltcp::time::Duration::from_secs(120)));
-                                sock.listen((ip.dst_addr(), tcp.dst_port())).unwrap();
+                                if sock.listen((ip.dst_addr(), tcp.dst_port())).is_err() {
+                                    continue;
+                                }
                                 let handle = sockets.add(sock);
                                 let (tx, rx) = mpsc::sync_channel(1);
+                                let completion = completion_write.clone();
                                 std::thread::spawn(move || {
                                     let result = TcpStream::connect_timeout(
                                         &SocketAddr::from((key.dst, key.port)),
@@ -259,6 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         Ok(s)
                                     });
                                     let _ = tx.send(result);
+                                    let _ = (&*completion).write(&[1]);
                                 });
                                 flows.insert(
                                     key,
@@ -413,7 +432,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         drop(queue);
-        std::thread::sleep(Duration::from_millis(1));
+        // Wait for useful IO or the next stack timer; never poll writable idle sockets.
+        let mut flags = PollFlags::POLLIN;
+        if !link.tx.borrow().is_empty() {
+            flags |= PollFlags::POLLOUT;
+        }
+        let mut pending = vec![
+            PollFd::new(stream.as_fd(), flags),
+            PollFd::new(completion_read.as_fd(), PollFlags::POLLIN),
+        ];
+        for flow in flows.values() {
+            if let Some(host) = &flow.host {
+                let socket = sockets.get::<tcp::Socket>(flow.handle);
+                let mut flags = PollFlags::empty();
+                if socket.can_send() && !flow.read_eof {
+                    flags |= PollFlags::POLLIN;
+                }
+                if socket.can_recv() {
+                    flags |= PollFlags::POLLOUT;
+                }
+                if !flags.is_empty() {
+                    pending.push(PollFd::new(host.as_fd(), flags));
+                }
+            }
+        }
+        for query in &dns {
+            pending.push(PollFd::new(query.socket.as_fd(), PollFlags::POLLIN));
+        }
+        let now = NetInstant::from_millis(epoch.elapsed().as_millis() as i64);
+        let timeout = iface
+            .poll_delay(now, &sockets)
+            .map(|d| d.total_millis().min(100) as u16)
+            .unwrap_or(100);
+        let buffered_frame = incoming.len() >= 4
+            && incoming.len() >= 4 + u32::from_be_bytes(incoming[..4].try_into().unwrap()) as usize;
+        let timeout = if buffered_frame || !link.rx.is_empty() {
+            0
+        } else {
+            timeout
+        };
+        match poll(&mut pending, timeout) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+            Err(e) => return Err(e.into()),
+        }
     }
 }
 

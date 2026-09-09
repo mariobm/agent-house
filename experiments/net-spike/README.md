@@ -1,6 +1,7 @@
 # Phase 5 networking spike
 
-Status: initial real-guest TCP/DNS milestone passed on Linux, 2026-09-09.
+Status: real-guest TCP/DNS, controlled isolation, and performance probes complete;
+cold-restore and netd-restart recovery fail (2026-09-09).
 This is a single-disposable-guest experiment, not production netd or a completed
 networking/security acceptance gate.
 
@@ -89,8 +90,8 @@ The five in-memory probes do not boot a guest. The live harness below does.
 4. Test isolation (including identity spoofing), resource exhaustion, reconnect
    after restore/restart, and cleanup. Use controlled local upstream servers for
    reproducible load; public internet workloads are functionality checks.
-5. Measure throughput, p50/p95 latency, CPU, RSS, connection counts, and behavior
-   under churn. Agree thresholds and record a decision: continue Rust, change
+5. Initial controlled measurements are recorded in [QUALIFICATION.md](QUALIFICATION.md).
+   Broader throughput, latency, CPU, RSS, connection-count, and churn coverage remains. Agree thresholds and record a decision: continue Rust, change
    approach, or use the Go sidecar. Fuzzing/security review precede untrusted use.
 
 No custom TCP implementation is planned. No final networking architecture has
@@ -113,8 +114,9 @@ feature-mask bug is fixed outside the experiment.
 and forwards up to 64 concurrent UDP DNS requests to an explicitly configured
 resolver. Host connects have a five-second deadline and TCP inactivity expires
 after 120 seconds. IPv6 and fragmented IPv4 are unsupported and dropped.
-A one-millisecond polling loop is deliberately provisional; CPU/throughput
-measurements and an event-driven replacement remain part of the spike.
+The initial one-millisecond sleep was replaced with socket-readiness polling.
+Controlled isolation, resource, performance, and recovery results are in
+[QUALIFICATION.md](QUALIFICATION.md); recovery remains failing.
 
 Basic ingress MAC/IP pinning and public-destination filtering are present; pass
 ALL host IPv4 addresses in the last argument. There is no multi-guest control
