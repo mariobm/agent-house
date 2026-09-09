@@ -45,6 +45,7 @@ fn config(dir: &std::path::Path) -> KrucibleConfig {
     );
     if let Ok(bin) = std::env::var("AHVM_NETD_BIN") {
         cfg.network = Some(ahvm_engine::NetworkConfig {
+            private_access: Default::default(),
             netd_bin: bin.into(),
             resolver: std::env::var("AHVM_DNS_RESOLVER")
                 .expect("resolver required with netd")
@@ -76,6 +77,7 @@ fn open(dir: &PathBuf) -> Ctx {
     let backend: Arc<dyn ahvm_engine::Backend> =
         Arc::new(KrucibleBackend::open(config(dir)).unwrap());
     let app = build_router(AppState {
+        private_owners: Default::default(),
         store: store.clone(),
         backend: backend.clone(),
         quotas: ahvm_daemon::quotas::Registry::new(),

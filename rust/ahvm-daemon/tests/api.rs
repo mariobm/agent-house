@@ -73,6 +73,10 @@ fn app() -> axum::Router {
         .unwrap();
     let backend: Arc<dyn ahvm_engine::Backend> = Arc::new(MockBackend::new(dir.join("snapshots")));
     build_router(AppState {
+        private_owners: Arc::new(std::collections::BTreeMap::from([(
+            "host-granted".into(),
+            "alice".into(),
+        )])),
         store,
         backend,
         quotas: ahvm_daemon::quotas::Registry::new(),
@@ -365,6 +369,7 @@ async fn concurrent_creates_enforce_quota() {
     let dir = std::env::temp_dir().join(format!("ahvm-daemon-race-{}", std::process::id()));
     let backend: Arc<dyn ahvm_engine::Backend> = Arc::new(MockBackend::new(dir.join("snapshots")));
     let app = build_router(AppState {
+        private_owners: Default::default(),
         store: Arc::new(store),
         backend,
         quotas: ahvm_daemon::quotas::Registry::new(),
@@ -648,6 +653,7 @@ async fn start_enforces_resources_without_double_counting_sandbox() {
             std::process::id()
         ));
         let app = build_router(AppState {
+            private_owners: Default::default(),
             store,
             backend: Arc::new(MockBackend::new(dir)),
             quotas: ahvm_daemon::quotas::Registry::new(),
@@ -722,4 +728,182 @@ async fn start_enforces_resources_without_double_counting_sandbox() {
             StatusCode::OK
         );
     }
+}
+
+#[tokio::test]
+async fn preview_registration_requires_ownership_and_is_bounded() {
+    let router = app();
+    let (status, sb) = call(
+        router.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"preview","cpus":1,"memory_mb":128})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = sb["id"].as_str().unwrap();
+    let base = format!("/v1/sandboxes/{id}/previews");
+    for (token, status) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(TOKEN_B), StatusCode::NOT_FOUND),
+    ] {
+        assert_eq!(
+            call(router.clone(), token, "PUT", &format!("{base}/8080"), None)
+                .await
+                .0,
+            status
+        );
+    }
+    assert_eq!(
+        call(
+            router.clone(),
+            Some(TOKEN_A),
+            "PUT",
+            &format!("{base}/0"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    for port in 8000..8016 {
+        assert_eq!(
+            call(
+                router.clone(),
+                Some(TOKEN_A),
+                "PUT",
+                &format!("{base}/{port}"),
+                None
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    assert_eq!(
+        call(
+            router.clone(),
+            Some(TOKEN_A),
+            "PUT",
+            &format!("{base}/8000"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        call(
+            router.clone(),
+            Some(TOKEN_A),
+            "PUT",
+            &format!("{base}/9000"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let (_, ports) = call(router.clone(), Some(TOKEN_A), "GET", &base, None).await;
+    assert_eq!(ports.as_array().unwrap().len(), 16);
+    assert_eq!(ports[0]["host_label"], format!("{}--8000", hex::encode(id)));
+    assert_eq!(
+        call(
+            router.clone(),
+            Some(TOKEN_A),
+            "DELETE",
+            &format!("{base}/8000"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        call(
+            router.clone(),
+            Some(TOKEN_A),
+            "DELETE",
+            &format!("/v1/sandboxes/{id}"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
+async fn private_policy_names_cannot_be_claimed_by_another_owner() {
+    let router = app();
+    let body = serde_json::json!({"name":"host-granted","cpus":1,"memory_mb":128});
+    for _ in 0..2 {
+        assert_eq!(
+            call(
+                router.clone(),
+                Some(TOKEN_B),
+                "POST",
+                "/v1/sandboxes",
+                Some(body.clone())
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, created) = call(
+            router.clone(),
+            Some(TOKEN_A),
+            "POST",
+            "/v1/sandboxes",
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(
+            call(
+                router.clone(),
+                Some(TOKEN_A),
+                "DELETE",
+                &format!("/v1/sandboxes/{}", created["id"].as_str().unwrap()),
+                None
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    let (status, created) = call(
+        router.clone(),
+        Some(TOKEN_B),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"bob-source","cpus":1,"memory_mb":128})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, snapshot) = call(
+        router.clone(),
+        Some(TOKEN_B),
+        "POST",
+        &format!(
+            "/v1/sandboxes/{}/snapshots",
+            created["id"].as_str().unwrap()
+        ),
+        Some(serde_json::json!({"name":"owner-test"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        call(
+            router,
+            Some(TOKEN_B),
+            "POST",
+            &format!("/v1/snapshots/{}/restore", snapshot["id"].as_str().unwrap()),
+            Some(serde_json::json!({"new_id":"host-granted"}))
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
 }

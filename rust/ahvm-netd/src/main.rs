@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 struct Config {
     socket: PathBuf,
     resolver: Ipv4Addr,
+    #[serde(default)]
+    private_access: Vec<std::net::SocketAddrV4>,
 }
 
 fn host_ips() -> std::io::Result<Vec<Ipv4Addr>> {
@@ -35,6 +37,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg: Config = serde_json::from_slice(&std::fs::read(path)?)?;
     if cfg.resolver.is_unspecified() || cfg.resolver.is_multicast() || cfg.resolver.is_broadcast() {
         return Err("resolver must be a unicast IPv4 address".into());
+    }
+    if cfg.private_access.len() > 64
+        || cfg
+            .private_access
+            .iter()
+            .any(|r| !ahvm_proto::valid_private_endpoint(*r))
+    {
+        return Err("invalid private-access policy".into());
     }
     // Only the supervisor may remove an old socket after verifying its owner died.
     let listener = UnixListener::bind(&cfg.socket)?;
@@ -56,7 +66,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         match listener.accept().map(|(stream, _)| stream) {
             Ok(stream) => {
-                if let Err(e) = gateway::serve(stream, cfg.resolver, connecting.clone()) {
+                if let Err(e) = gateway::serve(
+                    stream,
+                    cfg.resolver,
+                    &cfg.private_access,
+                    connecting.clone(),
+                ) {
                     eprintln!("netd: guest link closed: {e}");
                 }
                 waiting_since = Instant::now();

@@ -30,6 +30,14 @@ CREATE TABLE IF NOT EXISTS sandboxes (
 );
 CREATE INDEX IF NOT EXISTS idx_sandboxes_owner
     ON sandboxes(owner_user_id, created_at DESC, id DESC);
+CREATE TABLE IF NOT EXISTS preview_ports (
+    sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+    port INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),
+    generation BLOB NOT NULL DEFAULT (randomblob(16)),
+    token_hash TEXT,
+    token_expires INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (sandbox_id, port)
+);
 CREATE TABLE IF NOT EXISTS snapshots (
     id                  TEXT PRIMARY KEY,
     owner_user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

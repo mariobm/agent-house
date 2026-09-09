@@ -135,6 +135,7 @@ pub async fn restore(
     owned_snapshot(&state, &user.0, &snapshot_id)?;
     // Lifecycle first (see scheduler::LifecycleLocks): the restore (quota
     // → boot → record) is one critical section for the new id.
+    crate::routes::reserved_owner(&state, &user.0, &body.new_id)?;
     let _lc = state.lifecycle.lock(&body.new_id).await;
     let backend = state.backend.clone();
     let manifest = blocking({
