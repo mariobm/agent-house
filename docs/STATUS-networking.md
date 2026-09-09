@@ -39,13 +39,27 @@ and IP must match the configured link identity. Socket directories are mode
 TCP admission rejects private, special-use, metadata, shared-address and all
 current host-interface IPv4 addresses. Host addresses are enumerated at each new
 connection admission, not on every data packet. UDP is limited to DNS forwarding
-through the configured resolver; other UDP and IPv6 are dropped. There is no
+through the configured resolver; replies must match the transaction ID, opcode,
+and single question (case-insensitive name, type and class). Malformed or
+mismatched replies are ignored within the original five-second query deadline.
+The connected UDP socket also pins the resolver's source address and port.
+
+TCP to the guest gateway on port 53 is forwarded only to that same configured
+resolver, so guest resolvers can retry truncated UDP responses over TCP. This is
+client-driven fallback: the gateway preserves the DNS truncation bit and proxies
+TCP framing unchanged. It also permits direct TCP DNS queries. DNS TCP connections
+share the existing 64-flow/dial limits and TCP timeouts. The exception allows no
+other gateway port or arbitrary private destination. Other UDP and IPv6 are dropped. There is no
 private-access exception or inter-project routing API in this slice.
 
 The engine starts netd before the VMM, persists its PID/starttime separately in
 `net-state.json`, and checks it every 250 ms. Linux /proc identity checks avoid
-shell-process polling in the recurring monitor. Dead gateways restart with a
-one-second retry backoff and reconnect through the repaired VMM socket backend.
+shell-process polling in the recurring monitor. Dead gateways reconnect through the repaired VMM socket backend. Repeated
+failures use retry delays of 1, 2, 4, 8, 16, 32, then at most 60 seconds. The
+backoff resets only after 30 seconds of observed worker uptime; socket creation
+alone does not reset a crash loop. Recovery keeps retrying at the capped rate.
+Supervisor logs identify the sandbox, failure, retry delay, and successful
+restart; worker details remain in that sandbox's netd.log.
 Another sandbox's running gateway is unaffected. Daemon restart adopts matching
 identities; adopted signalling uses the existing pidfd path. Stop/destroy and
 failed boots clean up associated gateways. Gateways with no connected VMM exit
@@ -63,6 +77,12 @@ budgets remain bounded. Established TCP streams are not preserved through netd
 loss or cold restore; applications must reconnect.
 
 ## Validation on agent_house
+
+[Hardening results](results/networking-hardening-linux.json): UDP reply matching,
+TCP DNS fallback and capped restart backoff pass the expanded two-test KVM gate
+in 16.83 seconds. The final DNS isolation test with a positive host-listener
+control passes in 0.83 seconds; network-enabled HTTP acceptance passes in 31.26
+seconds. These are functional checks, not throughput benchmarks.
 
 [Recorded results](results/networking-integration-linux.json): the dedicated
 KVM gate passes in 10.48 seconds, and the network-enabled HTTP acceptance gate
@@ -87,6 +107,13 @@ cargo test --manifest-path rust/Cargo.toml --locked -p ahvm-engine \
   --test kvm_network -- --nocapture
 ```
 
+The same KVM test binary includes a controlled DNS fixture on a disposable Linux
+loopback address, port 53 (requires permission to bind that port). It sends wrong
+transaction-ID and wrong-question replies before a valid truncated reply. The
+guest must ignore the wrong replies, retry via TCP, and receive the complete
+answer. The test also checks that another gateway port remains unavailable.
+No host resolver configuration is changed.
+
 The HTTP acceptance gate also accepts AHVM_NETD_BIN and AHVM_DNS_RESOLVER, and
 adds a guest HTTPS request through the real API before its existing lifecycle,
 file rollback, session continuity, and adoption checks. It still requires
@@ -107,7 +134,7 @@ runs count as KVM validation. GitHub-hosted CI is not relied on for these result
 ## Remaining Phase 5 work
 
 - Deliberately exposed preview ports and explicit project/private access policy.
-- DNS-over-TCP fallback and a decision on broader UDP/IPv6 support.
+- A decision on broader UDP/IPv6 support.
 - Complete checksum/segmentation-offload qualification. This integration retains
   the spike's receive-checksum handling for the stripped virtio stream; the live
   TCP test is not proof of every offload combination.

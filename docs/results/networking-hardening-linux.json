@@ -1,0 +1,40 @@
+{
+  "base_commit": "2b96f97acf5658153b5fb16c0010ea1b5911c5b7",
+  "libkrucible_commit": "43d0dd3adf72713a47148e229346aa9c44fc3e44",
+  "host": "agent_house",
+  "scope": "DNS UDP response matching, client-driven DNS TCP fallback, capped restart backoff",
+  "checks": {
+    "local_targeted_tests": "pass (netd, engine, daemon; KVM gates disabled)",
+    "linux_targeted_tests": "pass (netd, engine, daemon; KVM gates disabled)",
+    "local_clippy": "pass, all targets, -D warnings",
+    "linux_clippy": "pass, all targets, -D warnings",
+    "format": "pass",
+    "kvm_network": {
+      "passed": 2,
+      "seconds": 16.83,
+      "covers": [
+        "HTTPS and UDP DNS",
+        "wrong DNS ID/question rejected before valid TC response",
+        "guest TCP retry and complete reply",
+        "gateway restarts with 1/2/4 second delays and peer stability",
+        "host/peer isolation",
+        "snapshot restore, stop/start, VM crash recovery, adoption, cleanup"
+      ]
+    },
+    "final_dns_gate": {
+      "passed": 1,
+      "seconds": 0.83,
+      "adds": "positive host listener on resolver port 54, inaccessible through guest gateway"
+    },
+    "networked_http_acceptance": {
+      "passed": 2,
+      "seconds": 31.26
+    }
+  },
+  "limits": [
+    "No production deployment or host resolver/firewall changes",
+    "TCP DNS is a bounded transparent proxy to the configured resolver; UDP replies are matched by ID/opcode/question",
+    "Untrusted-traffic qualification, load/fuzz/offload testing remain pending",
+    "Preview ports, explicit private access and upload optimization are separate work"
+  ]
+}

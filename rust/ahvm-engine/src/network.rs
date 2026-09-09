@@ -19,6 +19,29 @@ struct Entry {
     worker: Option<WorkerHandle>,
     vm: Option<Worker>,
     retry: Instant,
+    backoff: RestartBackoff,
+    running_since: Instant,
+}
+
+#[derive(Debug, Default)]
+struct RestartBackoff {
+    failures: u32,
+}
+
+impl RestartBackoff {
+    fn failed(&mut self) -> Duration {
+        let delay = Duration::from_secs(1u64 << self.failures.min(6));
+        self.failures = self.failures.saturating_add(1);
+        delay.min(Duration::from_secs(60))
+    }
+
+    fn healthy(&mut self, uptime: Duration) {
+        // Merely creating the socket is not recovery: rapid crash loops keep
+        // their backoff until the replacement has remained alive for a while.
+        if uptime >= Duration::from_secs(30) {
+            self.failures = 0;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -110,13 +133,34 @@ impl Networks {
                         return false;
                     }
                     if entry.worker.as_mut().is_some_and(worker_alive) {
+                        entry.backoff.healthy(entry.running_since.elapsed());
                         return true;
                     }
+                    if entry.worker.take().is_some() {
+                        let delay = entry.backoff.failed();
+                        entry.retry = Instant::now() + delay;
+                        eprintln!(
+                            "netd: worker exited for {}; retry in {}s; see netd.log",
+                            dir.display(),
+                            delay.as_secs()
+                        );
+                    }
                     if Instant::now() >= entry.retry {
-                        entry.retry = Instant::now() + Duration::from_secs(1);
                         match launch(&cfg, dir) {
-                            Ok(w) => entry.worker = Some(w),
-                            Err(e) => eprintln!("netd: restart {}: {e}", dir.display()),
+                            Ok(w) => {
+                                entry.worker = Some(w);
+                                entry.running_since = Instant::now();
+                                eprintln!("netd: restarted {}", dir.display());
+                            }
+                            Err(e) => {
+                                let delay = entry.backoff.failed();
+                                entry.retry = Instant::now() + delay;
+                                eprintln!(
+                                    "netd: restart {} failed: {e}; retry in {}s",
+                                    dir.display(),
+                                    delay.as_secs()
+                                );
+                            }
                         }
                     }
                     true
@@ -161,6 +205,8 @@ impl Networks {
                 worker: Some(worker),
                 vm: None,
                 retry: Instant::now(),
+                backoff: RestartBackoff::default(),
+                running_since: Instant::now(),
             },
         );
         Ok(())
@@ -309,4 +355,15 @@ mod tests {
         drop(networks);
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn restart_backoff_caps_and_requires_stable_recovery() {
+    let mut backoff = RestartBackoff::default();
+    for seconds in [1, 2, 4, 8, 16, 32, 60, 60] {
+        assert_eq!(backoff.failed(), Duration::from_secs(seconds));
+        backoff.healthy(Duration::from_secs(29));
+    }
+    backoff.healthy(Duration::from_secs(30));
+    assert_eq!(backoff.failed(), Duration::from_secs(1));
 }
