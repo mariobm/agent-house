@@ -186,6 +186,18 @@ pub struct LiveWorker {
 }
 
 impl LiveWorker {
+    pub(crate) fn owns_child(&self) -> bool {
+        self.child.is_some()
+    }
+
+    pub(crate) fn reap_in_background(mut self) {
+        if let Some(mut child) = self.child.take() {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
+
     pub fn id(&self) -> &str {
         &self.record.id
     }
