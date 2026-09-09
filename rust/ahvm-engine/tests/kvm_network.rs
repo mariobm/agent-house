@@ -185,3 +185,144 @@ while True:
     }
     eprintln!("PASS: TCP/DNS, 3 isolated restarts, host/peer isolation, snapshot restore, stop/start, VM crash, adoption, restart after adoption, cleanup");
 }
+
+#[test]
+fn dns_rejects_wrong_replies_and_retries_truncation_over_tcp() {
+    use std::io::{Read, Write};
+    use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+    if std::env::var("AHVM_KVM_NETWORK_TEST").as_deref() != Ok("1") {
+        eprintln!("SKIP DNS gate: requires AHVM_KVM_NETWORK_TEST=1");
+        return;
+    }
+    // A disposable resolver fixture on Linux's loopback /8. Port 53 is required
+    // by the product contract; never replace or reconfigure the host resolver.
+    let pid = std::process::id();
+    let resolver = Ipv4Addr::new(127, 77, (pid >> 8) as u8, pid as u8);
+    let udp = UdpSocket::bind((resolver, 53)).unwrap();
+    let tcp = TcpListener::bind((resolver, 53)).unwrap();
+    let forbidden = TcpListener::bind((resolver, 54)).unwrap();
+    let control = std::net::TcpStream::connect((resolver, 54)).unwrap();
+    forbidden.accept().unwrap();
+    drop(control);
+    forbidden.set_nonblocking(true).unwrap();
+    udp.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    tcp.set_nonblocking(true).unwrap();
+    let fixture = std::thread::spawn(move || {
+        let mut buf = [0; 512];
+        let (n, peer) = udp.recv_from(&mut buf).unwrap();
+        let query = &buf[..n];
+        let mut reply = query.to_vec();
+        reply[2] |= 0x82; // QR + TC: force the client onto TCP.
+        let mut wrong_id = reply.clone();
+        wrong_id[0] ^= 1;
+        udp.send_to(&wrong_id, peer).unwrap();
+        let mut wrong_question = reply.clone();
+        wrong_question[13] ^= 1;
+        udp.send_to(&wrong_question, peer).unwrap();
+        udp.send_to(&reply, peer).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match tcp.accept() {
+                Ok((s, _)) => break s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "no TCP retry after truncated DNS"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("DNS TCP fixture: {e}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut length = [0; 2];
+        stream.read_exact(&mut length).unwrap();
+        let mut request = vec![0; u16::from_be_bytes(length) as usize];
+        stream.read_exact(&mut request).unwrap();
+        assert_eq!(request, query);
+        reply[2] &= !2;
+        reply[7] = 1; // One A answer, compressed owner name.
+        reply
+            .extend_from_slice(b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x01\x00\x04\xc0\x00\x02\x7b");
+        stream
+            .write_all(&(reply.len() as u16).to_be_bytes())
+            .unwrap();
+        stream.write_all(&reply[..7]).unwrap();
+        stream.write_all(&reply[7..]).unwrap();
+    });
+    let dir = PathBuf::from(format!(
+        "{}-dns",
+        std::env::var("AHVM_NETWORK_TEST_DIR").unwrap()
+    ));
+    assert!(!dir.exists(), "requires a fresh disposable directory");
+    let mut cfg = KrucibleConfig::new(
+        std::env::var("AHVM_VMM_BIN").unwrap().into(),
+        std::env::var("AHVM_GUEST_IMAGE").unwrap().into(),
+        dir.clone(),
+        std::env::var("LD_LIBRARY_PATH").unwrap(),
+    );
+    cfg.network = Some(NetworkConfig {
+        netd_bin: std::env::var("AHVM_NETD_BIN").unwrap().into(),
+        resolver,
+    });
+    let gate = Gate {
+        backend: Some(KrucibleBackend::open(cfg).unwrap()),
+        dir,
+    };
+    let be = gate.backend.as_ref().unwrap();
+    be.create(&SandboxSpec {
+        name: "a".into(),
+        cpus: 1,
+        memory_mb: 256,
+        backend: BackendKind::Krucible,
+        root_image: None,
+        kernel_image: None,
+        extra_env: Default::default(),
+    })
+    .unwrap();
+    exec(
+        be,
+        "a",
+        r#"python3 - <<'PY'
+import socket, struct
+query = b'\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x04test\x00\x00\x01\x00\x01'
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+    s.settimeout(5)
+    s.sendto(query, ('100.64.0.1', 53))
+    reply = s.recv(512)
+    assert reply[:2] == query[:2] and reply[12:] == query[12:], reply
+    assert reply[2] & 2, reply
+with socket.create_connection(('100.64.0.1', 53), timeout=5) as s:
+    def exact(n):
+        data = b''
+        while len(data) < n:
+            chunk = s.recv(n - len(data))
+            assert chunk, 'unexpected DNS EOF'
+            data += chunk
+        return data
+    wire = struct.pack('!H', len(query)) + query
+    s.sendall(wire[:1])
+    s.sendall(wire[1:])
+    reply = exact(struct.unpack('!H', exact(2))[0])
+    assert reply[:2] == query[:2] and not reply[2] & 2, reply
+    assert reply[-4:] == bytes([192, 0, 2, 123]), reply
+# The DNS exception must not permit arbitrary gateway ports.
+try:
+    s = socket.create_connection(('100.64.0.1', 54), timeout=0.5)
+except OSError:
+    pass
+else:
+    s.close()
+    raise AssertionError('unexpected gateway access')
+print('DNS-FALLBACK-OK')
+PY"#,
+    );
+    fixture.join().unwrap();
+    assert!(matches!(forbidden.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+    be.destroy("a").unwrap();
+}

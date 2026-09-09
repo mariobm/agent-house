@@ -107,6 +107,7 @@ struct Dns {
     socket: UdpSocket,
     client: IpEndpoint,
     started: Instant,
+    question: crate::dns::Question,
 }
 fn broken(e: &io::Error) -> bool {
     e.kind() != io::ErrorKind::WouldBlock
@@ -117,7 +118,7 @@ pub(crate) fn serve(
     resolver: Ipv4Addr,
     connecting: Arc<AtomicUsize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    serve_with_io(stream, connecting, crate::host_ips, || {
+    serve_with_io(stream, resolver, connecting, crate::host_ips, || {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
         socket.connect((resolver, 53))?;
         socket.set_nonblocking(true)?;
@@ -127,6 +128,7 @@ pub(crate) fn serve(
 
 fn serve_with_io(
     mut stream: UnixStream,
+    resolver: Ipv4Addr,
     connecting: Arc<AtomicUsize>,
     mut host_ips: impl FnMut() -> io::Result<Vec<Ipv4Addr>>,
     mut open_dns: impl FnMut() -> io::Result<UdpSocket>,
@@ -245,9 +247,6 @@ fn serve_with_io(
                     let dest = Ipv4Addr::from(ip.dst_addr().octets());
                     match ip.next_header() {
                         IpProtocol::Tcp => {
-                            if !public(dest, &[]) {
-                                continue;
-                            }
                             let tcp = match TcpPacket::new_checked(ip.payload()) {
                                 Ok(v) => v,
                                 Err(_) => continue,
@@ -256,6 +255,10 @@ fn serve_with_io(
                                 || tcp.dst_port() == 0
                                 || (tcp.syn() && (tcp.fin() || tcp.rst()))
                             {
+                                continue;
+                            }
+                            let dns_tcp = dest == GW && tcp.dst_port() == 53;
+                            if !dns_tcp && !public(dest, &[]) {
                                 continue;
                             }
                             let key = Key {
@@ -269,11 +272,13 @@ fn serve_with_io(
                                 && flows.len() < MAX_FLOWS
                             {
                                 // Fail closed for this SYN without interrupting existing flows.
-                                let Ok(host) = host_ips() else {
-                                    continue;
-                                };
-                                if !public(dest, &host) {
-                                    continue;
+                                if !dns_tcp {
+                                    let Ok(host) = host_ips() else {
+                                        continue;
+                                    };
+                                    if !public(dest, &host) {
+                                        continue;
+                                    }
                                 }
                                 if connecting
                                     .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
@@ -295,10 +300,11 @@ fn serve_with_io(
                                 let handle = sockets.add(sock);
                                 let (tx, rx) = mpsc::sync_channel(1);
                                 let completion = completion_write.clone();
+                                let target = if dns_tcp { resolver } else { key.dst };
                                 std::thread::spawn(move || {
                                     let _permit = permit;
                                     let result = TcpStream::connect_timeout(
-                                        &SocketAddr::from((key.dst, key.port)),
+                                        &SocketAddr::from((target, key.port)),
                                         Duration::from_secs(5),
                                     )
                                     .and_then(|s| {
@@ -427,6 +433,9 @@ fn serve_with_io(
             if n < 12 || dns.len() >= 64 {
                 continue;
             }
+            let Some(question) = crate::dns::Question::query(&buf[..n]) else {
+                continue;
+            };
             // Resource/setup failures belong to this query, not the guest link.
             let Ok(s) = open_dns() else {
                 continue;
@@ -436,16 +445,22 @@ fn serve_with_io(
                     socket: s,
                     client: meta.endpoint,
                     started: Instant::now(),
+                    question,
                 });
             }
         }
-        dns.retain(|query| match query.socket.recv(&mut buf) {
-            Ok(n) => {
-                let _ = ds.send_slice(&buf[..n], query.client);
-                false
+        dns.retain(|query| {
+            if query.started.elapsed() >= Duration::from_secs(5) {
+                return false;
             }
-            Err(e) if !broken(&e) => query.started.elapsed() < Duration::from_secs(5),
-            Err(_) => false,
+            match query.socket.recv(&mut buf) {
+                Ok(n) if query.question.matches(&buf[..n]) => {
+                    let _ = ds.send_slice(&buf[..n], query.client);
+                    false
+                }
+                Ok(_) => true, // Ignore unsolicited/mismatched replies within the same budget.
+                Err(e) => !broken(&e),
+            }
         });
         iface.poll(now, &mut link, &mut sockets);
         let mut queue = link.tx.borrow_mut();
@@ -570,6 +585,7 @@ fn query_setup_and_host_lookup_failures_preserve_guest_link() {
         let mut dns_calls = 0;
         let result = serve_with_io(
             gateway,
+            Ipv4Addr::LOCALHOST,
             Arc::new(AtomicUsize::new(0)),
             || {
                 host_calls += 1;
@@ -597,10 +613,14 @@ fn query_setup_and_host_lookup_failures_preserve_guest_link() {
     syn[12] = 0x50;
     syn[13] = 2;
     guest.write_all(&frame(6, [1, 1, 1, 1], &syn)).unwrap();
-    let mut query = [0u8; 20];
+    let mut query = [0u8; 25];
     query[..2].copy_from_slice(&40001u16.to_be_bytes());
     query[2..4].copy_from_slice(&53u16.to_be_bytes());
-    query[4..6].copy_from_slice(&20u16.to_be_bytes());
+    query[4..6].copy_from_slice(&25u16.to_be_bytes());
+    query[13] = 1; // One root-name A/IN question.
+    query[23] = 0;
+    query[22] = 1;
+    query[24] = 1;
     for id in 1u16..=4 {
         query[8..10].copy_from_slice(&id.to_be_bytes());
         guest.write_all(&frame(17, GW.octets(), &query)).unwrap();
@@ -609,6 +629,6 @@ fn query_setup_and_host_lookup_failures_preserve_guest_link() {
     let received = resolver.recv(&mut response);
     drop(guest);
     server.join().unwrap();
-    assert_eq!(received.unwrap(), 12);
+    assert_eq!(received.unwrap(), 17);
     assert_eq!(&response[..2], &4u16.to_be_bytes());
 }
