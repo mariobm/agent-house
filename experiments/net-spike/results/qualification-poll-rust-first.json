@@ -1,0 +1,122 @@
+{
+  "rust": {
+    "setup": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "mount: mounting devtmpfs on /dev failed: Resource busy\n"
+    },
+    "idle": {
+      "cpu_seconds": 0.0,
+      "window_seconds": 2,
+      "rss_kib": 3024,
+      "hwm_kib": 3024,
+      "fds": 7,
+      "threads": 1
+    },
+    "benchmark": {
+      "exit_code": 0,
+      "stdout": "{\"latency\": {\"seconds\": [0.002940644000000159, 0.0007730920000001973, 0.0003770830000000558, 0.0005490879999996423, 0.00043489799999996137, 0.00035782100000014694, 0.0003374640000002316, 0.0003868419999997208, 0.00035037000000004426, 0.0003744479999996386, 0.00030302599999965096, 0.0003453079999999886, 0.0003016059999998433, 0.0002855900000002798, 0.0003140649999999745, 0.0003393330000003303, 0.0002758499999999664, 0.0002814959999999367, 0.0003112899999999641, 0.0002495569999996228], \"median_seconds\": 0.00034232050000015946, \"p95_seconds\": 0.0007730920000001973}, \"download\": {\"seconds\": [0.028906059000000095, 0.023512967000000273, 0.024120554000000016], \"median_seconds\": 0.024120554000000016, \"p95_seconds\": 0.028906059000000095, \"mib_per_second\": 331.66734064234157}, \"upload\": {\"seconds\": [0.01180292500000002, 0.011024788999999924, 0.011063615999999943], \"median_seconds\": 0.011063615999999943, \"p95_seconds\": 0.01180292500000002, \"mib_per_second\": 723.0908954179214}, \"churn\": {\"requests\": 100, \"concurrency\": 4, \"seconds\": 0.02627234300000003}}\n",
+      "stderr": ""
+    },
+    "loaded": {
+      "cpu_seconds": 0.05,
+      "rss_kib": 3364,
+      "hwm_kib": 3608,
+      "fds": 7,
+      "threads": 1
+    },
+    "post-load-health": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "pause": "OK paused",
+    "resume": "OK running",
+    "after-pause": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "sync": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "snapshot": "OK snapshotted /tmp/ahvm-net-qualification.YthK44/run3/rust/snapshot (572653568 bytes, paused)",
+    "after-cold-restore": {
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "curl: (28) Connection timed out after 2002 milliseconds\n"
+    },
+    "before-netd-restart": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "after-netd-restart": {
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "curl: (28) Connection timed out after 2002 milliseconds\n"
+    }
+  },
+  "go": {
+    "setup": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "mount: mounting devtmpfs on /dev failed: Resource busy\n"
+    },
+    "idle": {
+      "cpu_seconds": 0.0,
+      "window_seconds": 2,
+      "rss_kib": 10540,
+      "hwm_kib": 10540,
+      "fds": 8,
+      "threads": 8
+    },
+    "benchmark": {
+      "exit_code": 0,
+      "stdout": "{\"latency\": {\"seconds\": [0.0027510699999999666, 0.0006446929999999185, 0.0004834670000000152, 0.0004748650000001575, 0.0004119150000003735, 0.00039981900000007897, 0.00038257699999988404, 0.0003563550000000859, 0.0003840749999999282, 0.00038655800000020335, 0.0003786660000000275, 0.0003496560000000315, 0.0003699570000001984, 0.000336561000000124, 0.00032731300000010677, 0.0003614160000000588, 0.00039377099999970966, 0.0003523630000001887, 0.00038398399999994837, 0.00036363299999964127], \"median_seconds\": 0.0003832804999999162, \"p95_seconds\": 0.0006446929999999185}, \"download\": {\"seconds\": [0.033215010000000156, 0.031322497999999754, 0.031195025000000154], \"median_seconds\": 0.031322497999999754, \"p95_seconds\": 0.033215010000000156, \"mib_per_second\": 255.40747101332923}, \"upload\": {\"seconds\": [0.0060896609999998574, 0.005526224000000024, 0.005625218000000043], \"median_seconds\": 0.005625218000000043, \"p95_seconds\": 0.0060896609999998574, \"mib_per_second\": 1422.1671053459509}, \"churn\": {\"requests\": 100, \"concurrency\": 4, \"seconds\": 0.03222070599999993}}\n",
+      "stderr": ""
+    },
+    "loaded": {
+      "cpu_seconds": 0.22,
+      "rss_kib": 15588,
+      "hwm_kib": 20232,
+      "fds": 8,
+      "threads": 16
+    },
+    "post-load-health": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "pause": "OK paused",
+    "resume": "OK running",
+    "after-pause": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "sync": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "snapshot": "OK snapshotted /tmp/ahvm-net-qualification.YthK44/run3/go/snapshot (572653568 bytes, paused)",
+    "after-cold-restore": {
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "curl: (28) Connection timed out after 2002 milliseconds\n"
+    },
+    "before-netd-restart": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "after-netd-restart": {
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "curl: (28) Connection timed out after 2002 milliseconds\n"
+    }
+  }
+}

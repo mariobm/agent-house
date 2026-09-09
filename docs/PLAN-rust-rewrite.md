@@ -93,14 +93,31 @@ redesigned better. No migration shims, no legacy readers.
 - **Exit:** conformance suite green on Rust daemon + Rust engine; Go daemon
   retired from CI (kept as reference for one release).
 
-### Phase 5 — `ahvm-netd` (4–8 wks, highest risk)
-- Replace gVisor with an smoltcp-based (or lean custom) gateway. Requires
-  adversarial-traffic fuzzing + a security review pass before it fronts
-  untrusted guests. Decision point up front: smoltcp vs minimal custom NAT —
-  spike both in week 1, pick by test results, not taste.
-- Escape hatch if it slips: ship Rust everything with the Go netd as a
-  sidecar temporarily (documented exception, tracked issue, time-boxed).
-- **Exit:** gateway KVM suite + fuzz green; perf within 2x of gVisor baseline.
+### Phase 5 — Practical sandbox networking (`ahvm-netd`)
+- Build the simplest reliable networking layer for agents running code in VMs.
+  Go netd is a measured baseline, not a compatibility specification. Keep useful
+  capabilities and document intentional changes.
+- Start with a one-week spike: evaluate an existing Rust stack (starting with
+  smoltcp) against Go netd. Do not implement a custom TCP stack. Deliver a
+  prototype, measurements, limitations, and an implementation recommendation.
+- Initial target: outbound TCP and DNS; default isolation from host/private/
+  metadata destinations and other sandboxes; explicit access exceptions,
+  project connections, and deliberately exposed preview ports. Broader UDP
+  support is a scope decision based on workloads, not an implicit promise.
+- Exercise repository cloning, dependency installation, HTTPS API calls, and a
+  preview on `agent_house`. Measure throughput, latency, CPU, memory, and
+  connection churn; set acceptance thresholds from measurements before choosing
+  a design. Test bounded resource use, unauthorized access, and malformed traffic.
+- New connections must work after VM stop/start, snapshot restore, and netd
+  restart. Existing connections may break; applications must reconnect.
+- Fuzzing and a focused security review are required before deployment for
+  untrusted guests. Feasibility probes alone do not establish isolation.
+- Escape hatch: integrate Go netd with the Rust daemon as a temporary sidecar,
+  with a tracked replacement task. This explicitly defers the Rust-only packaging
+  and zero-Go cutover exits below.
+- **Exit:** agreed workloads and isolation tests pass on `agent_house`, measured
+  performance is acceptable, and operational limitations are documented.
+- Spike progress and reproducible probes: [`../experiments/net-spike/README.md`](../experiments/net-spike/README.md).
 
 ### Phase 6 — CLI + packaging (2–3 wks)
 - clap CLI: same workflows must work (conformance), output and flags free to
@@ -115,8 +132,8 @@ redesigned better. No migration shims, no legacy readers.
 ## 4. Risks (stated plainly)
 
 1. **netd has no Rust gVisor.** smoltcp is the candidate, not the answer. This
-   is the schedule killer if underestimated — hence the isolated phase,
-   the spike-first decision, and the sidecar escape hatch.
+   needs a measured feasibility decision before implementation; keep the
+   existing Go service as an integration fallback.
 2. **Snapshot/restore correctness during the port** (rory-class incidents).
    Mitigated by bidirectional compat tests, never by optimism.
 3. **Async Rust velocity.** tokio+axum is productive but the team thinks in

@@ -1,0 +1,79 @@
+[
+  {
+    "case": "allowed-control",
+    "upstream_reached": true,
+    "process_alive": true,
+    "passed": true
+  },
+  {
+    "case": "host",
+    "upstream_reached": false,
+    "process_alive": true,
+    "passed": true
+  },
+  {
+    "case": "loopback",
+    "upstream_reached": false,
+    "process_alive": true,
+    "passed": true
+  },
+  {
+    "case": "private",
+    "upstream_reached": false,
+    "process_alive": true,
+    "passed": true
+  },
+  {
+    "case": "metadata",
+    "upstream_reached": false,
+    "process_alive": true,
+    "passed": true
+  },
+  {
+    "case": "other-sandbox",
+    "upstream_reached": false,
+    "process_alive": true,
+    "passed": true
+  },
+  {
+    "case": "spoofed-ip",
+    "upstream_reached": false,
+    "process_alive": true,
+    "passed": true
+  },
+  {
+    "case": "spoofed-mac",
+    "upstream_reached": false,
+    "process_alive": true,
+    "passed": true
+  },
+  {
+    "case": "fragmented",
+    "upstream_reached": false,
+    "process_alive": true,
+    "passed": true
+  },
+  {
+    "case": "zero-destination-port",
+    "upstream_reached": false,
+    "process_alive": false,
+    "passed": false
+  },
+  {
+    "case": "zero-source-port",
+    "upstream_reached": true,
+    "process_alive": true,
+    "passed": false
+  },
+  {
+    "case": "syn-fin",
+    "upstream_reached": true,
+    "process_alive": true,
+    "passed": false
+  },
+  {
+    "case": "malformed-corpus",
+    "process_alive": true,
+    "passed": true
+  }
+]
