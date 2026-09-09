@@ -21,6 +21,10 @@ AHVM (Agent House Virtual Machine) is a fork of
   across cold restore and reconnect UnixstreamPath backends after netd restarts.
   Both failures reproduced with Rust and Go; Rust recovery now passes the
   repeated TCP/DNS gate in `experiments/net-spike/QUALIFICATION.md`.
+- Preview backpressure exception (Phase 5 qualification): a slow HTTP reader
+  reproducibly blocked the shared vsock transport and unrelated VM RPCs. The
+  Unix proxy now buffers partial nonblocking writes within a 256 KiB credit
+  window. See `docs/NETWORK-QUALIFICATION.md` for failure and recovery evidence.
 - Build differentiation above the engine: durability (S3 offload of `bundle/`),
   multi-host routing, identity, quotas, observability, packaging.
 - Research context: `MICROVM_PLATFORM_RESEARCH.md`, `AWS_MICROVM_PLATFORM_PLAN.md`.

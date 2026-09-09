@@ -1,0 +1,166 @@
+{
+  "result": "pass",
+  "seconds": 63.46,
+  "qualification": {
+    "max_sandboxes": 2,
+    "guest_memory_mib": 512,
+    "connection_ramp": [
+      {
+        "connections": 2,
+        "requests": 348,
+        "p50_ms": 3.41,
+        "p95_ms": 4.96,
+        "max_ms": 19.45
+      },
+      {
+        "connections": 8,
+        "requests": 958,
+        "p50_ms": 3.92,
+        "p95_ms": 92.89,
+        "max_ms": 143.65
+      },
+      {
+        "connections": 16,
+        "requests": 953,
+        "p50_ms": 36.23,
+        "p95_ms": 231.96,
+        "max_ms": 326.47
+      }
+    ],
+    "forge_threads_before_churn": 7,
+    "offloads": "Features for eth0:\nrx-checksumming: on [fixed]\ntx-checksumming: off\n\ttx-checksum-ipv4: off [fixed]\n\ttx-checksum-ip-generic: off [fixed]\n\ttx-checksum-ipv6: off [fixed]\n\ttx-checksum-fcoe-crc: off [fixed]\n\ttx-checksum-sctp: off [fixed]\nscatter-gather: off\n\ttx-scatter-gather: off [fixed]\n\ttx-scatter-gather-fraglist: off [fixed]\ntcp-segmentation-offload: off\n\ttx-tcp-segmentation: off [fixed]\n\ttx-tcp-ecn-segmentation: off [fixed]\n\ttx-tcp-mangleid-segmentation: off [fixed]\n\ttx-tcp6-segmentation: off [fixed]\ngeneric-segmentation-offload: off [requested on]\ngeneric-receive-offload: on\nlarge-receive-offload: off [fixed]\nrx-vlan-offload: off [fixed]\ntx-vlan-offload: off [fixed]\nntuple-filters: off [fixed]\nreceive-hashing: off [fixed]\nhighdma: on [fixed]\nrx-vlan-filter: off [fixed]\nvlan-challenged: off [fixed]\ntx-gso-robust: off [fixed]\ntx-fcoe-segmentation: off [fixed]\ntx-gre-segmentation: off [fixed]\ntx-gre-csum-segmentation: off [fixed]\ntx-ipxip4-segmentation: off [fixed]\ntx-ipxip6-segmentation: off [fixed]\ntx-udp_tnl-segmentation: off [fixed]\ntx-udp_tnl-csum-segmentation: off [fixed]\ntx-gso-partial: off [fixed]\ntx-tunnel-remcsum-segmentation: off [fixed]\ntx-sctp-segmentation: off [fixed]\ntx-esp-segmentation: off [fixed]\ntx-udp-segmentation: off [fixed]\ntx-gso-list: off [fixed]\ntx-nocache-copy: off\nloopback: off [fixed]\nrx-fcs: off [fixed]\nrx-all: off [fixed]\ntx-vlan-stag-hw-insert: off [fixed]\nrx-vlan-stag-hw-parse: off [fixed]\nrx-vlan-stag-filter: off [fixed]\nl2-fwd-offload: off [fixed]\nhw-tc-offload: off [fixed]\nesp-hw-offload: off [fixed]\nesp-tx-csum-hw-offload: off [fixed]\nrx-udp_tunnel-port-offload: off [fixed]\ntls-hw-tx-offload: off [fixed]\ntls-hw-rx-offload: off [fixed]\nrx-gro-hw: off [fixed]\ntls-hw-record: off [fixed]\nrx-gro-list: off\nmacsec-hw-offload: off [fixed]\nrx-udp-gro-forwarding: off\nhsr-tag-ins-offload: off [fixed]\nhsr-tag-rm-offload: off [fixed]\nhsr-fwd-offload: off [fixed]\nhsr-dup-offload: off [fixed]\n",
+    "outbound_requests": 208,
+    "slow_readers": 2,
+    "verified_preview_bytes": 33554432,
+    "gateway_recovery_seconds": [
+      1.23,
+      2.26,
+      4.29
+    ],
+    "forge_threads_after_churn": 7,
+    "vmm_fds_before_churn": 82,
+    "vmm_fds_after_churn": 73,
+    "peak_process_resources": {
+      "daemon": {
+        "VmRSS": 15260,
+        "Threads": 30,
+        "fds": 47,
+        "cpu_percent_one_core": 24.5
+      },
+      "access-b/state.json": {
+        "VmRSS": 53924,
+        "Threads": 10,
+        "fds": 118,
+        "cpu_percent_one_core": 5.0
+      },
+      "access-b/net-state.json": {
+        "VmRSS": 2900,
+        "Threads": 1,
+        "fds": 7,
+        "cpu_percent_one_core": 4.9
+      },
+      "access-a/state.json": {
+        "VmRSS": 95068,
+        "Threads": 10,
+        "fds": 1023,
+        "cpu_percent_one_core": 173.5
+      },
+      "access-a/net-state.json": {
+        "VmRSS": 11372,
+        "Threads": 1,
+        "fds": 71,
+        "cpu_percent_one_core": 14.8
+      }
+    }
+  },
+  "checks": [
+    "private allow/peer deny with positive listener",
+    "exact private port boundary",
+    "restore-as-new inherits no grants",
+    "preview registration/auth",
+    "credential stripping",
+    "scoped browser cookie and cross-origin denial",
+    "streaming",
+    "WebSocket echo/revoke",
+    "stop/start",
+    "daemon adoption",
+    "policy-change refusal",
+    "cleanup"
+  ],
+  "environment": {
+    "host": "agent_house",
+    "arch": "x86_64",
+    "hypervisor": "KVM",
+    "fork_commit": "39626f9",
+    "base_commit": "ab0bc20",
+    "max_live_guests": 2,
+    "cpus_per_guest": 1,
+    "memory_mib_per_guest": 256,
+    "production_state_changed": false
+  },
+  "fuzz": {
+    "dns": {
+      "runs": 13498186,
+      "seconds": 61,
+      "rss_limit_mib": 512,
+      "workers": 1,
+      "result": "pass",
+      "sanitizer": "address"
+    },
+    "ingress": {
+      "runs": 64535300,
+      "seconds": 61,
+      "rss_limit_mib": 512,
+      "workers": 1,
+      "result": "pass",
+      "sanitizer": "address"
+    }
+  },
+  "kvm_network": {
+    "seconds": 17.37,
+    "result": "pass"
+  },
+  "http_acceptance": {
+    "seconds": 31.04,
+    "result": "pass"
+  },
+  "oversized_dns": {
+    "seconds": 0.83,
+    "result": "pass"
+  },
+  "protocol": {
+    "result": "pass",
+    "checks": [
+      "malformed frame lengths",
+      "partial-frame timeout",
+      "bad TCP checksum denied before dial",
+      "spoofed MAC denied",
+      "fragments denied",
+      "valid SYN positive control",
+      "gateway survives link churn"
+    ],
+    "vm_count": 0
+  },
+  "checks_status": {
+    "linux_selected_crates_tests": "pass",
+    "linux_selected_crates_clippy": "pass",
+    "macos_selected_crates_tests": "pass",
+    "macos_selected_crates_clippy": "pass",
+    "fork_device_tests": {
+      "passed": 66,
+      "failed": 0
+    },
+    "fork_device_clippy": "pass",
+    "fork_default_clippy": "pass",
+    "fork_make_blk_net": "pass",
+    "fork_amd_sev_tdx_clippy": "pre-existing failure: persist.rs RNG feature gating",
+    "fork_gpu_input_clippy": "pre-existing failure: input/worker.rs redundant formatting borrow",
+    "github_actions": "not relied on"
+  },
+  "limits": [
+    "Bounded functional load, not a throughput comparison or exhaustive audit",
+    "Fuzzing covers DNS/ingress parser; smoltcp checksum bypass in fuzz builds is covered by normal-build tests",
+    "Old layout-2 snapshots cannot be restored; use fresh sandboxes",
+    "Upload optimization remains deferred"
+  ]
+}
