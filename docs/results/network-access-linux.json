@@ -1,0 +1,46 @@
+{
+  "base_commit": "5eab0c5473e583406ef395f3252aa0b93e390890",
+  "libkrucible_commit": "43d0dd3adf72713a47148e229346aa9c44fc3e44",
+  "host": "agent_house",
+  "scope": "Authenticated per-origin previews, guest loopback tunnels, owner-bound exact TCP grants",
+  "checks": {
+    "local_tests": "pass: daemon, forge, proto, store, engine, netd (KVM disabled)",
+    "linux_tests": "pass: daemon, forge, proto, store, engine, netd (KVM disabled)",
+    "local_and_linux_clippy": "pass: all targets, -D warnings",
+    "format": "pass",
+    "network_access_gate": {
+      "seconds": 7.0,
+      "result": "pass",
+      "checks": [
+        "private allow and peer deny with positive host listener",
+        "exact port boundary",
+        "restore-as-new receives no preview or private grant",
+        "preview registration and owner authentication",
+        "browser token/cookie scope and cross-origin refusal",
+        "API/preview credential stripping",
+        "streaming and WebSocket echo",
+        "revocation survives immediate re-enable",
+        "stop/start and daemon adoption",
+        "changed live policy refuses adoption",
+        "cleanup"
+      ]
+    },
+    "kvm_network_gate": {
+      "tests_passed": 2,
+      "seconds": 17.2
+    },
+    "networked_http_acceptance": {
+      "tests_passed": 2,
+      "seconds": 31.39
+    }
+  },
+  "limits": [
+    "Fresh image with current Rust forge is required for previews",
+    "No production deployment or host firewall/resolver changes",
+    "HTTP/1 previews; no arbitrary CONNECT or anonymous sharing",
+    "Five-minute connection lifetime, thirty-second guest idle timeout",
+    "Private policy reload requires stopping affected sandboxes",
+    "Untrusted-traffic security/load/fuzz/offload qualification remains pending",
+    "Upload optimization deferred until after Phase 5"
+  ]
+}
