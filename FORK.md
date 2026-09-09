@@ -17,6 +17,10 @@ AHVM (Agent House Virtual Machine) is a fork of
   preserves IA32_XSS and active console queues during cold recovery. The
   original pin deterministically broke restored guest execution on KVM.
   See `docs/STATUS-engine.md` for the reproducer and validation.
+- Networking recovery exception (Phase 5): preserve virtio-net queues/features
+  across cold restore and reconnect UnixstreamPath backends after netd restarts.
+  Both failures reproduced with Rust and Go; Rust recovery now passes the
+  repeated TCP/DNS gate in `experiments/net-spike/QUALIFICATION.md`.
 - Build differentiation above the engine: durability (S3 offload of `bundle/`),
   multi-host routing, identity, quotas, observability, packaging.
 - Research context: `MICROVM_PLATFORM_RESEARCH.md`, `AWS_MICROVM_PLATFORM_PLAN.md`.
