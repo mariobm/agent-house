@@ -172,5 +172,8 @@ on macOS; targeted net+blk device Clippy passes with warnings denied on Linux an
 Rust formatting, the Linux production VMM build, and Make restricted to the
 libkrun package with net+blk and INIT_BLOB=0 pass. The full fork workspace
 Make/Clippy matrix is blocked by missing libclang and GPU epoxy dependencies on
-the server; all-target device Clippy also finds an existing byte-char-slices lint
-in legacy/x86_64/serial.rs. Those broad checks are not claimed green.
+the server. Those broad checks are not claimed green. A subsequent CI lint
+cleanup removes the redundant ARM mask cast, converts byte-array constants to
+byte strings, uses fixed-size array chunks in DHCP, and removes unnecessary
+mutable references in RTC tests. Targeted device all-target, init and graphics
+Clippy now pass locally; the CI warning policy remains unchanged.
