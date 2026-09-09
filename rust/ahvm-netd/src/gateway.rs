@@ -1,13 +1,10 @@
 //! Bounded TCP and DNS forwarding for one host-authorized guest link.
 use nix::poll::{poll, PollFd, PollFlags};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
-use smoltcp::phy::{Checksum, Device, DeviceCapabilities, Medium, RxToken, TxToken};
+use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::{tcp, udp};
 use smoltcp::time::Instant as NetInstant;
-use smoltcp::wire::{
-    EthernetAddress, EthernetFrame, EthernetProtocol, IpCidr, IpEndpoint, IpProtocol, Ipv4Address,
-    Ipv4Packet, TcpPacket,
-};
+use smoltcp::wire::{EthernetAddress, IpCidr, IpEndpoint, IpProtocol, TcpPacket};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
@@ -22,9 +19,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-const GW: Ipv4Address = Ipv4Address::new(100, 64, 0, 1);
-const GUEST: Ipv4Address = Ipv4Address::new(100, 64, 0, 2);
-const MAC: [u8; 6] = [2, 0, 0, 0, 0, 2];
+use crate::wire::{self, Packet, GW};
 const MAX_FRAME: usize = 128 * 1024;
 const MAX_FLOWS: usize = 64;
 const BUFSIZE: usize = 64 * 1024;
@@ -65,9 +60,6 @@ impl Device for Link {
         let mut c = DeviceCapabilities::default();
         c.medium = Medium::Ethernet;
         c.max_transmission_unit = 1514;
-        // Experimental compatibility with stripped virtio checksum metadata.
-        c.checksum.tcp = Checksum::Tx;
-        c.checksum.udp = Checksum::Tx;
         c
     }
 }
@@ -210,50 +202,9 @@ fn serve_with_io(
             } else {
                 Some(Instant::now())
             };
-            let eth = match EthernetFrame::new_checked(&frame) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if debug {
-                eprintln!(
-                    "rx {:?} {} bytes src {}",
-                    eth.ethertype(),
-                    frame.len(),
-                    eth.src_addr()
-                );
-            }
-            if eth.src_addr().0 != MAC {
-                continue;
-            }
-            match eth.ethertype() {
-                EthernetProtocol::Arp => {
-                    // Pin both sender addresses; no learning from guest-claimed identity.
-                    let p = eth.payload();
-                    if p.len() < 28 || p[8..14] != MAC || p[14..18] != GUEST.octets() {
-                        continue;
-                    }
-                }
-                EthernetProtocol::Ipv4 => {
-                    let ip = match Ipv4Packet::new_checked(eth.payload()) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    if debug {
-                        eprintln!(
-                            "ip {} -> {} {:?} checksum {}",
-                            ip.src_addr(),
-                            ip.dst_addr(),
-                            ip.next_header(),
-                            ip.verify_checksum()
-                        );
-                    }
-                    if ip.src_addr() != GUEST
-                        || !ip.verify_checksum()
-                        || ip.more_frags()
-                        || ip.frag_offset() != 0
-                    {
-                        continue;
-                    }
+            match wire::validate(&frame) {
+                Some(Packet::Arp) => {}
+                Some(Packet::Ipv4(ip)) => {
                     let dest = Ipv4Addr::from(ip.dst_addr().octets());
                     match ip.next_header() {
                         IpProtocol::Tcp => {
@@ -278,6 +229,28 @@ fn serve_with_io(
                                 port: tcp.dst_port(),
                                 source: tcp.src_port(),
                             };
+                            // TIME_WAIT has no application data left. Under pressure,
+                            // retire the oldest completed connection after its final
+                            // ACK was queued by the previous interface poll. The
+                            // guest link is an ordered, reliable Unix stream; never
+                            // evict an established/half-closed flow to admit a SYN.
+                            if tcp.syn()
+                                && !tcp.ack()
+                                && !flows.contains_key(&key)
+                                && flows.len() >= MAX_FLOWS
+                            {
+                                let retired = flows
+                                    .iter()
+                                    .filter(|(_, f)| {
+                                        sockets.get::<tcp::Socket>(f.handle).state()
+                                            == tcp::State::TimeWait
+                                    })
+                                    .min_by_key(|(_, f)| f.last)
+                                    .map(|(key, _)| *key);
+                                if let Some(retired) = retired.and_then(|k| flows.remove(&k)) {
+                                    sockets.remove(retired.handle);
+                                }
+                            }
                             if tcp.syn()
                                 && !tcp.ack()
                                 && !flows.contains_key(&key)
@@ -343,7 +316,7 @@ fn serve_with_io(
                         _ => continue,
                     }
                 }
-                _ => continue,
+                None => continue,
             }
             link.rx.push_back(frame);
             // Consume each SYN before admitting another listener on the same endpoint.
@@ -467,7 +440,13 @@ fn serve_with_io(
             }
             match query.socket.recv(&mut buf) {
                 Ok(n) if query.question.matches(&buf[..n]) => {
-                    let _ = ds.send_slice(&buf[..n], query.client);
+                    if n > 1232 {
+                        if let Some(reply) = query.question.truncated_reply(&buf[..n]) {
+                            let _ = ds.send_slice(&reply, query.client);
+                        }
+                    } else {
+                        let _ = ds.send_slice(&buf[..n], query.client);
+                    }
                     false
                 }
                 Ok(_) => true, // Ignore unsolicited/mismatched replies within the same budget.
@@ -567,20 +546,7 @@ fn query_setup_and_host_lookup_failures_preserve_guest_link() {
     // Drive real guest frames through the forwarding loop. Inject failures without
     // exhausting the test process's file descriptors or changing host interfaces.
     fn frame(protocol: u8, dest: [u8; 4], payload: &[u8]) -> Vec<u8> {
-        let mut packet = vec![0u8; 14 + 20 + payload.len()];
-        packet[..6].copy_from_slice(&[2, 0, 0, 0, 0, 1]);
-        packet[6..12].copy_from_slice(&MAC);
-        packet[12..14].copy_from_slice(&[8, 0]);
-        let ip = &mut packet[14..34];
-        ip[0] = 0x45;
-        ip[2..4].copy_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
-        ip[8] = 64;
-        ip[9] = protocol;
-        ip[12..16].copy_from_slice(&GUEST.octets());
-        ip[16..20].copy_from_slice(&dest);
-        let mut ip = Ipv4Packet::new_unchecked(ip);
-        ip.fill_checksum();
-        packet[34..].copy_from_slice(payload);
+        let packet = crate::wire::tests::frame(protocol, dest, payload);
         let mut framed = (packet.len() as u32).to_be_bytes().to_vec();
         framed.extend(packet);
         framed

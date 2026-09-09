@@ -60,6 +60,19 @@ async fn set(
 }
 #[derive(Clone)]
 struct Domain(String, bool);
+impl Domain {
+    fn cookie_name(&self) -> &'static str {
+        if self.1 {
+            "__Host-ahvm_preview"
+        } else {
+            "ahvm_preview"
+        }
+    }
+}
+fn preview_cookie(pair: &str) -> bool {
+    pair.split_once('=')
+        .is_some_and(|(name, _)| matches!(name.trim(), "ahvm_preview" | "__Host-ahvm_preview"))
+}
 pub fn router(state: AppState, domain: &str) -> ApiResult<Router> {
     if domain.is_empty()
         || domain.len() > 100
@@ -75,6 +88,7 @@ pub fn router(state: AppState, domain: &str) -> ApiResult<Router> {
     {
         return Err(ApiError::Invalid("invalid preview domain".into()));
     }
+    let domain = domain.to_ascii_lowercase();
     Ok(Router::new()
         .fallback(proxy)
         .layer(Extension(Domain(
@@ -201,7 +215,7 @@ async fn proxy(
     {
         let clean = cookies
             .split(';')
-            .filter(|c| !c.trim().starts_with("ahvm_preview="))
+            .filter(|c| !preview_cookie(c))
             .collect::<Vec<_>>()
             .join(";");
         request.headers_mut().remove(header::COOKIE);
@@ -257,7 +271,7 @@ async fn proxy(
         .iter()
         .filter(|v| {
             v.to_str()
-                .is_ok_and(|s| !s.trim_start().starts_with("ahvm_preview="))
+                .is_ok_and(|s| !preview_cookie(s.split(';').next().unwrap_or("")))
         })
         .cloned()
         .collect();
@@ -409,8 +423,12 @@ async fn authorize(
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
-            s.split(';')
-                .find_map(|p| p.trim().strip_prefix("ahvm_preview="))
+            s.split(';').find_map(|p| {
+                p.trim()
+                    .split_once('=')
+                    .filter(|(name, _)| *name == domain.cookie_name())
+                    .map(|(_, value)| value)
+            })
         })
         .map(str::to_owned);
     let token = query_token
@@ -436,7 +454,7 @@ async fn authorize(
             .join("&");
         let mut location = request.uri().path().to_owned();
         // Avoid a scheme-relative redirect from an attacker-controlled path.
-        if location.starts_with("//") {
+        if location.starts_with("//") || location.contains('\\') {
             location = "/".into();
         }
         if !query.is_empty() {
@@ -453,7 +471,8 @@ async fn authorize(
         response.headers_mut().insert(
             header::SET_COOKIE,
             HeaderValue::from_str(&format!(
-                "ahvm_preview={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
+                "{}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
+                domain.cookie_name(),
                 expires - crate::unix_now(),
                 if domain.1 { "; Secure" } else { "" }
             ))
@@ -569,7 +588,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(response.headers()[header::LOCATION], "/page?x=1");
         let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
-        assert!(cookie.contains("HttpOnly") && cookie.contains("Secure"));
+        assert!(
+            cookie.starts_with("__Host-ahvm_preview=")
+                && cookie.contains("HttpOnly")
+                && cookie.contains("Secure")
+        );
         for (host, origin, expected) in [
             ("6964--8081.preview.example", None, StatusCode::UNAUTHORIZED),
             (
@@ -581,7 +604,7 @@ mod tests {
             let mut builder = Request::builder()
                 .uri("/")
                 .header(header::HOST, host)
-                .header(header::COOKIE, format!("ahvm_preview={token}"));
+                .header(header::COOKIE, format!("__Host-ahvm_preview={token}"));
             if let Some(origin) = origin {
                 builder = builder.header(header::ORIGIN, origin);
             }
@@ -594,6 +617,21 @@ mod tests {
                 expected
             );
         }
+        // Browsers normalize a backslash to slash in special-scheme URLs.
+        // /\evil.example must not become a scheme-relative redirect.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/\\evil.example/?ahvm_token={token}"))
+                    .header(header::HOST, "6964--8080.preview.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()[header::LOCATION], "/");
         state
             .store
             .preview_token("id", 8080, &token_hash(&token), crate::unix_now() - 1)
@@ -603,7 +641,7 @@ mod tests {
                 Request::builder()
                     .uri("/")
                     .header(header::HOST, "6964--8080.preview.example")
-                    .header(header::COOKIE, format!("ahvm_preview={token}"))
+                    .header(header::COOKIE, format!("__Host-ahvm_preview={token}"))
                     .body(Body::empty())
                     .unwrap(),
             )

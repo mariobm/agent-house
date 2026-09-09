@@ -185,6 +185,17 @@ impl Networks {
 
     pub(crate) fn prepare(&self, dir: &Path) -> Result<()> {
         let mut core = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // Even when netd is dead, do not attach a new checksum-validating gateway
+        // to an old live VMM which negotiated checksum/GSO offloads.
+        if Worker::load(dir.join("state.json")).is_ok_and(|w| alive(&w)) {
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(dir.join("net.json"))?)?;
+            if saved["ethernet_contract"].as_u64() != Some(1) {
+                return Err(Error::InvalidState(
+                    "recreate legacy networked VMs before upgrading Ethernet contract".into(),
+                ));
+            }
+        }
         // Replacing the association is serialized with the monitor: a previous
         // dead VM must not remove the new VM's network process during boot.
         if let Some(entry) = core.entries.get_mut(dir) {
@@ -288,7 +299,7 @@ fn launch(cfg: &NetworkConfig, dir: &Path) -> Result<WorkerHandle> {
     std::fs::write(
         &spec,
         serde_json::to_vec(&serde_json::json!({
-            "socket": socket, "resolver": cfg.resolver, "private_access": rules_for(cfg, dir),
+            "ethernet_contract": 1, "socket": socket, "resolver": cfg.resolver, "private_access": rules_for(cfg, dir),
         }))?,
     )?;
     let mut worker = spawn_worker_cfg(&SpawnConfig {
@@ -319,8 +330,8 @@ fn launch(cfg: &NetworkConfig, dir: &Path) -> Result<WorkerHandle> {
 mod tests {
     use super::*;
     use crate::process_starttime;
-    fn fixture() -> (PathBuf, NetworkConfig) {
-        let dir = crate::test_scratch("managed-net");
+    fn fixture(label: &str) -> (PathBuf, NetworkConfig) {
+        let dir = crate::test_scratch(label);
         let bin = dir.join("fake-netd");
         std::fs::write(&bin, "#!/usr/bin/python3\nimport json,socket,sys,time\nc=json.load(open(sys.argv[1])); s=socket.socket(socket.AF_UNIX); s.bind(c['socket']); s.listen()\nwhile True: time.sleep(1)\n").unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -341,8 +352,28 @@ mod tests {
         }
     }
     #[test]
+    fn refuses_legacy_live_vm_even_when_gateway_is_missing() {
+        let (dir, cfg) = fixture("legacy-net");
+        let vm = Worker {
+            id: "legacy".into(),
+            pid: std::process::id(),
+            starttime: process_starttime(std::process::id()),
+            sock_dir: dir.clone(),
+            state_path: dir.join("state.json"),
+        };
+        std::fs::write(dir.join("state.json"), serde_json::to_vec(&vm).unwrap()).unwrap();
+        std::fs::write(dir.join("net.json"), b"{}").unwrap();
+        let networks = Networks::new(cfg).unwrap();
+        assert!(
+            matches!(networks.prepare(&dir), Err(Error::InvalidState(s)) if s.contains("legacy"))
+        );
+        assert!(!dir.join("net-state.json").exists());
+        drop(networks);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn restart_adoption_and_reaping_preserve_process_identity() {
-        let (root, cfg) = fixture();
+        let (root, cfg) = fixture("managed-net");
         let dir = root.join("sandbox");
         let networks = Networks::new(cfg.clone()).unwrap();
         networks.prepare(&dir).unwrap();

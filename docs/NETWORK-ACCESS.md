@@ -122,3 +122,8 @@ firewall configuration. Treat plain cargo tests as unit/API checks, not KVM proo
 in 7.00 seconds, the existing KVM network gate in 17.20 seconds and network-enabled
 HTTP acceptance in 31.39 seconds. Local and server crate tests, Clippy and formatting
 pass. These are functional checks, not throughput benchmarks.
+
+The follow-up [qualification](NETWORK-QUALIFICATION.md) caps the gate at two guests,
+adds load/slow-reader checks, and hardens HTTPS credentials to use the
+`__Host-ahvm_preview` cookie. Old HTTPS grants need their access link reopened.
+The `ahvm_preview` development cookie is used only for localhost domains.

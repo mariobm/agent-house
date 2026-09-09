@@ -145,8 +145,7 @@ while True:
         );
     }
     let snapshot = be.snapshot("a", "net-copy").unwrap();
-    be.restore(&snapshot, "copy").unwrap();
-    network(be, "copy");
+
     be.stop("a").unwrap();
     assert!(!a.exists());
     be.start("a").unwrap();
@@ -164,12 +163,15 @@ while True:
     assert_eq!(Worker::load(&b).unwrap().pid, before.pid);
     network(be, "a");
     network(be, "b");
+    // Keep the live-guest budget at two throughout restore-as-new.
+    be.destroy("b").unwrap();
+    be.restore(&snapshot, "copy").unwrap();
     network(be, "copy");
     let dead = Worker::load(&a).unwrap();
     kill(&dead);
     eventually(|| Worker::load(&a).is_ok_and(|w| w.pid != dead.pid));
     network(be, "a");
-    let net_pids: Vec<_> = ["a", "b", "copy"]
+    let net_pids: Vec<_> = ["a", "copy"]
         .iter()
         .map(|id| {
             Worker::load(gate.dir.join(id).join("net-state.json"))
@@ -177,7 +179,7 @@ while True:
                 .pid
         })
         .collect();
-    for id in ["a", "b", "copy"] {
+    for id in ["a", "copy"] {
         be.destroy(id).unwrap();
     }
     assert!(be.list().unwrap().is_empty());
@@ -220,7 +222,15 @@ fn dns_rejects_wrong_replies_and_retries_truncation_over_tcp() {
         let mut wrong_question = reply.clone();
         wrong_question[13] ^= 1;
         udp.send_to(&wrong_question, peer).unwrap();
-        udp.send_to(&reply, peer).unwrap();
+        // A valid oversized UDP reply without TC must be reduced by netd to a
+        // small TC response. Otherwise the Ethernet MTU silently drops it.
+        let mut oversized = reply.clone();
+        oversized[2] &= !2;
+        oversized[11] = 1;
+        // EDNS OPT with a 1600-byte padding option.
+        oversized.extend_from_slice(&[0, 0, 41, 16, 0, 0, 0, 0, 0, 6, 68, 0, 12, 6, 64]);
+        oversized.resize(oversized.len() + 1600, 0);
+        udp.send_to(&oversized, peer).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut stream = loop {
             match tcp.accept() {

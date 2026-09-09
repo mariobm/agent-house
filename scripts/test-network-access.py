@@ -36,6 +36,9 @@ def serve(c):
     if not h:break
     n=h[1]&127;mask=f.read(4);data=f.read(n);data=bytes(v^mask[i%4] for i,v in enumerate(data))
     c.sendall(bytes([0x81,n])+data)
+  elif path=='/bulk':
+   c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 33554432\r\n\r\n')
+   for _ in range(512):c.sendall(b'x'*65536)
   elif path=='/stream':
    c.sendall(b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nA\r\n');time.sleep(1)
    c.sendall(b'1\r\nB\r\n0\r\n\r\n')
@@ -50,7 +53,7 @@ while True:
 '''
 
 
-def terminate_record(worker):
+def terminate_record(worker, sig=signal.SIGTERM):
     """Pin the process before identity checking; never signal a recycled PID."""
     pid = worker['pid']
     fd = os.pidfd_open(pid)
@@ -58,7 +61,7 @@ def terminate_record(worker):
         stat = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
         if int(stat[19]) != worker.get('starttime'):
             return False
-        signal.pidfd_send_signal(fd, signal.SIGTERM)
+        signal.pidfd_send_signal(fd, sig)
         return True
     finally:
         os.close(fd)
@@ -89,6 +92,15 @@ def run():
     with socket.create_connection(forbidden.getsockname(), timeout=2):
         control, _ = forbidden.accept(); control.close()
     stop = threading.Event()
+    host_slots = threading.BoundedSemaphore(16)
+    def reply(c):
+        try:
+            with c:
+                c.settimeout(2)
+                c.recv(4096)
+                c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nPRIVATE-OK')
+        except OSError: pass
+        finally: host_slots.release()
     def host_service():
         listener.settimeout(0.2)
         while not stop.is_set():
@@ -96,13 +108,9 @@ def run():
                 c, _ = listener.accept()
             except TimeoutError:
                 continue
-            with c:
-                c.settimeout(2)
-                try:
-                    c.recv(4096)
-                    c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nPRIVATE-OK')
-                except OSError:
-                    pass
+            if host_slots.acquire(blocking=False):
+                threading.Thread(target=reply, args=(c,), daemon=True).start()
+            else: c.close()
     thread = threading.Thread(target=host_service)
     thread.start()
     policy = root/'policy.json'
@@ -161,6 +169,7 @@ def run():
             chunk=s.recv(6-len(received));assert chunk,received;received+=chunk
         assert received==b'\x81\x04echo',received
         return s
+    qualification = None
     started=time.monotonic()
     try:
         daemon=launch()
@@ -207,6 +216,9 @@ def run():
         start=time.monotonic();c.request('GET','/stream',headers={'Host':host,'Cookie':cookie})
         r=c.getresponse();assert r.read(1)==b'A' and time.monotonic()-start<0.8
         assert r.read()==b'B';c.close()
+        if os.environ.get('AHVM_NETWORK_QUALIFY') == '1':
+            from network_qualification import qualify
+            qualification = qualify(api, preview, root, daemon, preview_port, token, endpoint, terminate_record)
         channel=ws(cookie)
         api('DELETE','/sandboxes/access-a/previews/18080',expected=204)
         # Re-enabling immediately must not revive the old forwarding lease.
@@ -218,6 +230,7 @@ def run():
         assert preview()[0]!=200
         api('POST','/sandboxes/access-a/start')
         assert preview()[0]==200
+        api('DELETE','/sandboxes/access-b',expected=204)
         snapshot=api('POST','/sandboxes/access-a/snapshots',{'name':'access-snapshot'},201)
         api('POST',f'/snapshots/{snapshot["id"]}/restore',{'new_id':'access-copy'},201)
         assert api('GET','/sandboxes/access-copy/previews')==[]
@@ -235,11 +248,18 @@ def run():
         assert refused.wait(timeout=10)!=0,'live private policy change was accepted'
         policy.write_text(json.dumps({'access-a': {'owner_user_id':'admin','destinations':[f'{endpoint[0]}:{endpoint[1]}']}}))
         daemon=launch()
-        for id in ['access-a','access-b']: api('DELETE',f'/sandboxes/{id}',expected=204)
+        api('DELETE','/sandboxes/access-a',expected=204)
         assert api('GET','/sandboxes')['sandboxes']==[]
-        print(json.dumps({'result':'pass','seconds':round(time.monotonic()-started,2),
+        print(json.dumps({'result':'pass','seconds':round(time.monotonic()-started,2), 'qualification':qualification,
                           'checks':['private allow/peer deny with positive listener','exact private port boundary','restore-as-new inherits no grants','preview registration/auth','credential stripping','scoped browser cookie and cross-origin denial','streaming','WebSocket echo/revoke','stop/start','daemon adoption','policy-change refusal','cleanup']}))
     finally:
+        # Preserve worker diagnostics before destroy removes their directories.
+        import shutil
+        evidence = root/'worker-logs'
+        for worker_log in (root/'data'/'sandboxes').glob('*/**/*.log'):
+            dest = evidence/worker_log.relative_to(root/'data'/'sandboxes')
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(worker_log, dest)
         if daemon and daemon.poll() is None:
             for id in ['access-a','access-b','access-copy']:
                 try: api('DELETE',f'/sandboxes/{id}',expected=204)
