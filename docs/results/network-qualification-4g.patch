@@ -1,0 +1,55 @@
+--- a/scripts/test-network-access.py
++++ b/scripts/test-network-access.py
+@@ -174,7 +174,7 @@
+     try:
+         daemon=launch()
+         for id in ['access-a','access-b']:
+-            api('POST','/sandboxes',{'name':id,'cpus':1,'memory_mb':256},201)
++            api('POST','/sandboxes',{'name':id,'cpus':1,'memory_mb':4096},201)
+         # Independently verify the positive host control.
+         with socket.create_connection(endpoint,timeout=2) as c:
+             c.sendall(b'GET / HTTP/1.0\r\n\r\n'); assert b'PRIVATE-OK' in c.recv(4096)
+--- a/scripts/network_qualification.py
++++ b/scripts/network_qualification.py
+@@ -16,7 +16,7 @@
+ 
+ 
+ def qualify(api, preview, root, daemon, preview_port, token, endpoint, signal_record):
+-    results = {'max_sandboxes': 2, 'guest_memory_mib': 512, 'connection_ramp': []}
++    results = {'max_sandboxes': 2, 'guest_memory_mib': 8192, 'memory_mib_per_guest': 4096, 'connection_ramp': []}
+     stop = threading.Event()
+     peaks = {}
+     previous_cpu = {}
+@@ -63,6 +63,32 @@
+             assert count > 0
+             return count
+         before_threads = guest_threads()
++        mounted = api('POST','/sandboxes/access-b/exec',{'argv':['sh','-c',
++            'mkdir -p /proc; mount -t proc proc /proc 2>/dev/null; test -r /proc/meminfo']})
++        assert mounted['exit_code'] == 0, mounted
++        barrier = threading.Barrier(2)
++        def memory_test(id):
++            barrier.wait(timeout=5)
++            out = exec_guest("""
++import json,time
++from pathlib import Path
++mem_kib=int(Path('/proc/meminfo').read_text().splitlines()[0].split()[1])
++assert mem_kib > 3500*1024, mem_kib
++n=3*1024**3
++data=bytearray(n)
++for i in range(0,n,4096): data[i]=90
++start=time.time()
++time.sleep(5)
++assert all(data[i]==90 for i in range(0,n,4096))
++print(json.dumps({'mem_total_kib':mem_kib,'touched_bytes':n,'held_from':start,'held_until':time.time()}))
++""", id)
++            return id, json.loads(out['stdout'])
++        with ThreadPoolExecutor(max_workers=2) as pool:
++            results['memory_touch'] = dict(pool.map(memory_test,['access-a','access-b']))
++        measurements=list(results['memory_touch'].values())
++        overlap=min(x['held_until'] for x in measurements)-max(x['held_from'] for x in measurements)
++        assert overlap > 0, measurements
++        results['memory_touch_overlap_seconds']=round(overlap,2)
+         vm = json.loads((root/'data'/'sandboxes'/'access-a'/'state.json').read_text())
+         vm_fds_before = len(list(Path(f'/proc/{vm["pid"]}/fd').iterdir()))
+         results['forge_threads_before_churn'] = before_threads
