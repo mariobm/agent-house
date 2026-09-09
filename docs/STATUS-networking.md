@@ -2,7 +2,8 @@
 
 The Phase 5 spike is merged. This slice integrates its smoltcp TCP/UDP-DNS
 forwarder as `rust/ahvm-netd`, supervised by the Rust engine and enabled by the
-Rust daemon. It is opt-in; it is not the Phase 5 security/production exit.
+Rust daemon. It is opt-in. The bounded Phase 5 qualification and its upgrade boundary are
+recorded in [network qualification](NETWORK-QUALIFICATION.md).
 
 ## Enable on a Linux host
 
@@ -135,14 +136,10 @@ runs count as KVM validation. GitHub-hosted CI is not relied on for these result
 Preview ports and exact owner-bound private TCP grants are implemented in the
 [network access slice](NETWORK-ACCESS.md); broader project routing is not implicit.
 
-## Remaining Phase 5 work
+## Qualification and next steps
 
-- A decision on broader UDP/IPv6 support.
-- Complete checksum/segmentation-offload qualification. This integration retains
-  the spike's receive-checksum handling for the stripped virtio stream; the live
-  TCP test is not proof of every offload combination.
-- Sustained multi-guest load, coverage-guided fuzzing and focused security review
-  before enabling networking for untrusted guests. The bounded-connect fix is
-  useful hardening, not a completed adversarial-traffic qualification.
-- Upload optimization remains deferred until after Phase 5. This slice does not claim new throughput
-  parity or ship CLI/systemd packaging and cutover.
+The resource-bounded Phase 5 qualification, fixes, evidence and limits are in
+[NETWORK-QUALIFICATION.md](NETWORK-QUALIFICATION.md). Run its KVM gates serially
+to stay within two small guests. General UDP and IPv6 remain unsupported.
+Upload optimization stays deferred; Phase 6 covers CLI, packaging and a fresh
+installation of matched Rust artifacts.

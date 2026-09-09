@@ -36,14 +36,6 @@ pub const KERNEL_RAW: u32 = 0;
 #[cfg(target_arch = "x86_64")]
 pub const KERNEL_ELF: u32 = 1;
 
-/// virtio-net features (from uapi/linux/virtio_net.h, per libkrun.h).
-pub const NET_FEATURE_CSUM: u32 = 1 << 0;
-pub const NET_FEATURE_GUEST_CSUM: u32 = 1 << 1;
-pub const NET_FEATURE_GUEST_TSO4: u32 = 1 << 7;
-pub const NET_FEATURE_GUEST_UFO: u32 = 1 << 10;
-pub const NET_FEATURE_HOST_TSO4: u32 = 1 << 11;
-pub const NET_FEATURE_HOST_UFO: u32 = 1 << 14;
-
 // Safe wrappers: each centralizes one FFI call so the driver (main.rs)
 // contains zero unsafe code. Pointer args must borrow from a CString arena
 // that outlives the call; the driver guarantees this (see Arena).
@@ -146,12 +138,9 @@ pub fn add_vsock_port(cid: u32, port: u32, uds: *const c_char, listen: bool) {
 }
 
 pub fn add_net_unixstream(cid: u32, uds: *const c_char, mac: &[u8; 6]) {
-    let features = NET_FEATURE_CSUM
-        | NET_FEATURE_GUEST_CSUM
-        | NET_FEATURE_GUEST_TSO4
-        | NET_FEATURE_GUEST_UFO
-        | NET_FEATURE_HOST_TSO4
-        | NET_FEATURE_HOST_UFO;
+    // The Unix protocol carries Ethernet only: no virtio checksum/GSO metadata.
+    // Require complete checksums and ordinary MTU-sized segments from the guest.
+    let features = 0;
     check(
         unsafe { krun_add_net_unixstream(cid, uds, -1, mac.as_ptr(), features, 0) },
         "krun_add_net_unixstream",
