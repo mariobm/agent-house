@@ -1,0 +1,66 @@
+[
+  {
+    "exit_code": 0,
+    "truncated": false,
+    "stdout": "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP qlen 1000\n    link/ether 02:00:00:00:00:02 brd ff:ff:ff:ff:ff:ff\n    inet 100.64.0.2/24 scope global eth0\n       valid_lft forever preferred_lft forever\n    inet6 fe80::ff:fe00:2/64 scope link tentative \n       valid_lft forever preferred_lft forever\n",
+    "stderr": "",
+    "label": "network",
+    "seconds": 0.023
+  },
+  {
+    "exit_code": 0,
+    "truncated": false,
+    "stdout": "Server:\t\t100.64.0.1\nAddress:\t100.64.0.1:53\n\nNon-authoritative answer:\ndl-cdn.alpinelinux.org\tcanonical name = dualstack.j.sni.global.fastly.net\nName:\tdualstack.j.sni.global.fastly.net\nAddress: 146.75.122.132\n\nNon-authoritative answer:\ndl-cdn.alpinelinux.org\tcanonical name = dualstack.j.sni.global.fastly.net\nName:\tdualstack.j.sni.global.fastly.net\nAddress: 2a04:4e42:8e::644\n\n",
+    "stderr": "",
+    "label": "dns",
+    "seconds": 0.011
+  },
+  {
+    "exit_code": 0,
+    "truncated": false,
+    "stdout": "fetch https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/APKINDEX.tar.gz\nfetch https://dl-cdn.alpinelinux.org/alpine/v3.22/community/x86_64/APKINDEX.tar.gz\nv3.22.5-130-gd9056f7f3f4 [https://dl-cdn.alpinelinux.org/alpine/v3.22/main]\nv3.22.5-130-gd9056f7f3f4 [https://dl-cdn.alpinelinux.org/alpine/v3.22/community]\nOK: 26337 distinct packages available\n(1/16) Installing ca-certificates (20260611-r0)\n(2/16) Installing brotli-libs (1.1.0-r2)\n(3/16) Installing c-ares (1.34.8-r0)\n(4/16) Installing libunistring (1.3-r0)\n(5/16) Installing libidn2 (2.3.7-r0)\n(6/16) Installing nghttp2-libs (1.69.0-r0)\n(7/16) Installing libpsl (0.21.5-r3)\n(8/16) Installing zstd-libs (1.5.7-r0)\n(9/16) Installing libcurl (8.14.1-r3)\n(10/16) Installing curl (8.14.1-r3)\n(11/16) Installing libmnl (1.0.5-r2)\n(12/16) Installing ethtool (6.14.1-r0)\n(13/16) Installing libexpat (2.8.4-r0)\n(14/16) Installing pcre2 (10.46-r0)\n(15/16) Installing git (2.49.1-r0)\n(16/16) Installing git-init-template (2.49.1-r0)\nExecuting busybox-1.37.0-r18.trigger\nExecuting ca-certificates-20260611-r0.trigger\nOK: 20 MiB in 32 packages\n",
+    "stderr": "",
+    "label": "packages",
+    "seconds": 1.496
+  },
+  {
+    "exit_code": 0,
+    "truncated": false,
+    "stdout": "Features for eth0:\nrx-checksumming: on [fixed]\ntx-checksumming: on\n\ttx-checksum-ipv4: off [fixed]\n\ttx-checksum-ip-generic: on\n\ttx-checksum-ipv6: off [fixed]\n\ttx-checksum-fcoe-crc: off [fixed]\n\ttx-checksum-sctp: off [fixed]\nscatter-gather: on\n\ttx-scatter-gather: on\n\ttx-scatter-gather-fraglist: off [fixed]\ntcp-segmentation-offload: on\n\ttx-tcp-segmentation: on\n\ttx-tcp-ecn-segmentation: off [fixed]\n\ttx-tcp-mangleid-segmentation: off\n\ttx-tcp6-segmentation: off [fixed]\ngeneric-segmentation-offload: on\ngeneric-receive-offload: on\nlarge-receive-offload: off [fixed]\nrx-vlan-offload: off [fixed]\ntx-vlan-offload: off [fixed]\nntuple-filters: off [fixed]\nreceive-hashing: off [fixed]\nhighdma: on [fixed]\nrx-vlan-filter: off [fixed]\nvlan-challenged: off [fixed]\ntx-gso-robust: on [fixed]\ntx-fcoe-segmentation: off [fixed]\ntx-gre-segmentation: off [fixed]\ntx-gre-csum-segmentation: off [fixed]\ntx-ipxip4-segmentation: off [fixed]\ntx-ipxip6-segmentation: off [fixed]\ntx-udp_tnl-segmentation: off [fixed]\ntx-udp_tnl-csum-segmentation: off [fixed]\ntx-gso-partial: off [fixed]\ntx-tunnel-remcsum-segmentation: off [fixed]\ntx-sctp-segmentation: off [fixed]\ntx-esp-segmentation: off [fixed]\ntx-udp-segmentation: off [fixed]\ntx-gso-list: off [fixed]\ntx-nocache-copy: off\nloopback: off [fixed]\nrx-fcs: off [fixed]\nrx-all: off [fixed]\ntx-vlan-stag-hw-insert: off [fixed]\nrx-vlan-stag-hw-parse: off [fixed]\nrx-vlan-stag-filter: off [fixed]\nl2-fwd-offload: off [fixed]\nhw-tc-offload: off [fixed]\nesp-hw-offload: off [fixed]\nesp-tx-csum-hw-offload: off [fixed]\nrx-udp_tunnel-port-offload: off [fixed]\ntls-hw-tx-offload: off [fixed]\ntls-hw-rx-offload: off [fixed]\nrx-gro-hw: on [fixed]\ntls-hw-record: off [fixed]\nrx-gro-list: off\nmacsec-hw-offload: off [fixed]\nrx-udp-gro-forwarding: off\nhsr-tag-ins-offload: off [fixed]\nhsr-tag-rm-offload: off [fixed]\nhsr-fwd-offload: off [fixed]\nhsr-dup-offload: off [fixed]\n",
+    "stderr": "",
+    "label": "offloads",
+    "seconds": 0.011
+  },
+  {
+    "exit_code": 0,
+    "truncated": false,
+    "stdout": "{\n  \"id\": 1296269,\n  \"node_id\": \"MDEwOlJlcG9zaXRvcnkxMjk2MjY5\",\n  \"name\": \"Hello-World\",\n  \"full_name\": \"octocat/Hello-World\",\n  \"private\": false,\n  \"owner\": {\n",
+    "stderr": "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n                                 Dload  Upload   Total   Spent    Left  Speed\n\r  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0\r100  5566  100  5566    0     0  23587      0 --:--:-- --:--:-- --:--:-- 23685\n",
+    "label": "https",
+    "seconds": 0.255
+  },
+  {
+    "exit_code": 0,
+    "truncated": false,
+    "stdout": "Hello World!\n",
+    "stderr": "Cloning into '/workspace/hello'...\n",
+    "label": "clone",
+    "seconds": 0.838
+  },
+  {
+    "exit_code": 0,
+    "truncated": false,
+    "stdout": "",
+    "stderr": "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n                                 Dload  Upload   Total   Spent    Left  Speed\n\r  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0\r  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0\r  0     0    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0\ncurl: (28) Connection timed out after 2002 milliseconds\n",
+    "label": "blocked-metadata",
+    "seconds": 2.021
+  },
+  {
+    "exit_code": 0,
+    "truncated": false,
+    "stdout": "",
+    "stderr": "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n                                 Dload  Upload   Total   Spent    Left  Speed\n\r  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0\r  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0\r  0     0    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0\ncurl: (28) Connection timed out after 2002 milliseconds\n",
+    "label": "blocked-host",
+    "seconds": 2.014
+  }
+]
