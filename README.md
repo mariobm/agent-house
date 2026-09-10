@@ -3,9 +3,17 @@
 Self-hosted, stateful Linux microVM sandboxes for running code and coding agents.
 The runtime is Rust, using the pinned `libkrucible` fork of libkrun.
 
-**Pre-release.** The qualified server target is Linux x86_64 with KVM and
-systemd. The CLI also builds on macOS. This is not yet a public release or a
-claim of production readiness for hostile multi-tenant workloads.
+**Public early access.** The qualified server target is Linux x86_64 with KVM,
+systemd and glibc 2.35+. The CLI also builds on macOS. This is not a claim of
+production readiness for hostile multi-tenant workloads.
+
+Install on a fresh supported Linux host:
+
+```sh
+curl -fsSL https://ahvm.app/install.sh | bash
+```
+
+[Product website](https://ahvm.app) · [Installation guide](https://ahvm.app/docs/)
 
 ## Current functionality
 
@@ -53,4 +61,3 @@ The Go implementation and its installers are retired. They remain in Git
 history at pre-cutover commit `639aeee`; historical plans and experiment results
 are evidence of earlier development, not current installation instructions.
 Agent House originated as a fork of [Bhatti](https://github.com/sahil-shubham/bhatti).
-See [FORK.md](FORK.md) for provenance and the VMM fork policy.
