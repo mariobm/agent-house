@@ -46,7 +46,7 @@ tar -xf "$archive" -C "$WORK"
     sed -i -e 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
         -e 's/CONFIG_TC=y/# CONFIG_TC is not set/' .config
     make oldconfig </dev/null >/dev/null
-    make -j"$(nproc)" busybox > "$WORK/busybox-build.log" 2>&1 || {
+    make -j"${BUILD_JOBS:-$(nproc)}" busybox > "$WORK/busybox-build.log" 2>&1 || {
         cat "$WORK/busybox-build.log" >&2; exit 1;
     }
 )
@@ -63,6 +63,22 @@ chmod +x "$ROOT/init.krun" "$ROOT/bin/busybox"
 for link in "$ROOT/bin/"*; do
     [[ ! -L "$link" ]] || ln -sf busybox "$link"
 done
+# Forge remains PID 1 after exec, but needs the guest pseudo-filesystems for
+# PTYs and /proc-backed tooling. These mounts happen inside the guest only.
+mv "$ROOT/init.krun" "$ROOT/usr/local/bin/ahvm-forge"
+cat > "$ROOT/init.krun" <<'INIT'
+#!/bin/sh
+set -eu
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys || mount -t sysfs sysfs /sys
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts
+mountpoint -q /dev/pts || mount -t devpts -o newinstance,ptmxmode=0666,mode=0620 devpts /dev/pts
+ln -sf pts/ptmx /dev/ptmx
+exec /usr/local/bin/ahvm-forge
+INIT
+chmod +x "$ROOT/init.krun"
 printf 'root:x:0:0:root:/root:/bin/sh\n' > "$ROOT/etc/passwd"
 printf '127.0.0.1 localhost\n' > "$ROOT/etc/hosts"
 printf 'nameserver 1.1.1.1\n' > "$ROOT/etc/resolv.conf"

@@ -1,0 +1,49 @@
+name: Rust release bundle
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this rust-v* tag as a prerelease (otherwise build only)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  bundle:
+    runs-on: [self-hosted, linux, x64, ahvm-build]
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: ./.github/actions/checkout-libkrucible
+        with:
+          ssh-key: ${{ secrets.LIBKRUCIBLE_SSH_KEY }}
+      - name: Validate publish ref
+        if: inputs.publish
+        env:
+          REF: ${{ github.ref }}
+        run: '[[ "$REF" == refs/tags/rust-v* ]]'
+      - name: Build and check
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path rust/Cargo.toml --locked -p ahvm-cli
+          cargo clippy --manifest-path rust/Cargo.toml --locked -p ahvm-cli --all-targets -- -D warnings
+          scripts/package-rust.sh "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python3 scripts/test-rust-cli.py "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/bin/ahvm"
+          mkdir -p dist
+          tar -C "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -czf dist/ahvm-rust-linux-x86_64.tar.gz .
+          (cd dist && sha256sum ahvm-rust-linux-x86_64.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ahvm-rust-linux-x86_64
+          path: dist/*
+      - name: Publish prerelease
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --verify-tag --prerelease --generate-notes dist/ahvm-rust-linux-x86_64.tar.gz dist/SHA256SUMS
+      - name: Remove build bundle
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"

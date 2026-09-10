@@ -141,5 +141,6 @@ Preview ports and exact owner-bound private TCP grants are implemented in the
 The resource-bounded Phase 5 qualification, fixes, evidence and limits are in
 [NETWORK-QUALIFICATION.md](NETWORK-QUALIFICATION.md). Run its KVM gates serially
 to stay within two small guests. General UDP and IPv6 remain unsupported.
-Upload optimization stays deferred; Phase 6 covers CLI, packaging and a fresh
-installation of matched Rust artifacts.
+Upload optimization stays deferred. Phase 6 CLI and packaging implementation,
+fresh-install verification and operational limits are documented in
+[RUST-INSTALL.md](RUST-INSTALL.md).
