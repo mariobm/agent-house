@@ -59,7 +59,22 @@ and backup plan; binary rollback alone does not reverse data migrations.
 
 ## Verification
 
-Deployment results will be recorded here after the live gate completes.
+Verified on `agent_house` on 2026-09-10:
+
+- Candidate runtime/build source: `e821eeb`; VMM pin `39626f9`.
+- Fresh packaged KVM acceptance: **14.18 seconds**, at most two 1-vCPU/256 MiB
+  guests. Covers exec, 32 MiB uploads, interruption cleanup, terminals, previews,
+  networking, snapshot isolation, daemon adoption and worker recovery.
+- Baseline → candidate → baseline → candidate: saved marker files in each
+  independent installation survived stop/start and both direction changes.
+- Primary service left enabled and active; rollback service inactive. Both
+  sandbox registries empty after testing. Listeners remain on loopback.
+- `make check` and `make test` pass on macOS and Linux, including 11 CLI contract tests.
+  Workflow YAML and shell syntax validated; no tracked Go source or Go CI jobs.
+
+The rollback baseline remains installed intentionally. Disposable acceptance
+installation and build scratch are removed after collecting test logs. No
+release/tag was created and no public endpoint was enabled.
 
 The normal CI uses Rust unit/integration tests without a hypervisor, CLI
 contract tests, Clippy and formatting. Private submodule checkout is required
