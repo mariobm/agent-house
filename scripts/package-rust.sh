@@ -3,6 +3,7 @@
 # Requires Rust + musl target, cc/musl-gcc, clang, pkg-config, libkrunfw.so.5,
 # libzstd-dev, patchelf, curl, bzip2, make, readelf, mkfs.ext4 and Python 3.
 # AHVM_FW_DIR defaults to /usr/local/lib64. Output must not already exist.
+# AHVM_GUEST_IMAGE selects a prebuilt development image; default is minimal.
 set -euo pipefail
 umask 022
 cd "$(dirname "$0")/.."
@@ -57,7 +58,12 @@ while pending:
             subprocess.run(['patchelf','--set-rpath','$ORIGIN',str(dest)],check=True)
             pending.append(dest)
 PY
-FORGE_BIN="$STAGE/bin/ahvm-forge" scripts/rust-guest-rootfs.sh "$STAGE/share/base.ext4"
+if [[ -n ${AHVM_GUEST_IMAGE:-} ]]; then
+    [[ -f $AHVM_GUEST_IMAGE ]] || { echo 'Missing AHVM_GUEST_IMAGE' >&2; exit 1; }
+    cp --sparse=always "$AHVM_GUEST_IMAGE" "$STAGE/share/base.ext4"
+else
+    FORGE_BIN="$STAGE/bin/ahvm-forge" scripts/rust-guest-rootfs.sh "$STAGE/share/base.ext4"
+fi
 chmod 644 "$STAGE/share/base.ext4"
 cp packaging/rust/ahvm-rust.service.in "$STAGE/packaging/"
 cp scripts/install-rust.sh "$STAGE/install.sh"
