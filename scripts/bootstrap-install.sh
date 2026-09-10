@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AHVM early-access installer. Served at https://ahvm.app/install.sh.
+# AHVM server installer. Served at https://ahvm.app/install.sh.
 # The function is invoked only after the whole script has been received.
 set -euo pipefail
 main() {
@@ -54,7 +54,8 @@ PY
             *) echo 'Downloads require HTTPS.' >&2; return 1 ;;
         esac
     }
-    echo 'AHVM / early access — downloading a verified Linux server bundle.'
+    echo 'AHVM: downloading a verified Linux server bundle.'
+    echo 'License terms: https://ahvm.app/license'
     fetch "$manifest_url" "$tmp/manifest.json"
     python3 - "$tmp/manifest.json" "$tmp" <<'PY'
 import json,re,sys

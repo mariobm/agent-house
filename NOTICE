@@ -1,0 +1,20 @@
+AHVM attribution and license scope
+
+AHVM originated as a fork of Bhatti by Sahil Shubham and its contributors:
+https://github.com/sahil-shubham/bhatti
+
+Upstream materials remain subject to their original licenses. A copy of the
+Apache License 2.0 that accompanied earlier AHVM/Bhatti source is retained at
+licenses/Apache-2.0.txt. Individual third-party notices must also be retained.
+
+The AHVM Community License 1.0 applies to the AHVM edition distributed with
+that license, only to the extent the relevant copyright holders can grant
+those rights. It does not relabel third-party code or revoke earlier grants.
+AHVM versions previously distributed under Apache-2.0, including the public
+early-access releases, retain the permissions granted by that license.
+
+The libkrucible submodule, Rust dependencies, guest operating system, firmware
+and bundled tools retain their own licenses. Their source, package notices
+and any release-specific THIRD-PARTY.md provide further attribution.
+
+Commercial licensing: sales@ahvm.app

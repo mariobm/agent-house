@@ -3,7 +3,7 @@
 Self-hosted, stateful Linux microVM sandboxes for running code and coding agents.
 The runtime is Rust, using the pinned `libkrucible` fork of libkrun.
 
-**Public early access.** The qualified server target is Linux x86_64 with KVM,
+**v0.1.0, initial release.** The qualified server target is Linux x86_64 with KVM,
 systemd and glibc 2.35+. The CLI also builds on macOS. This is not a claim of
 production readiness for hostile multi-tenant workloads.
 
@@ -24,9 +24,9 @@ curl -fsSL https://ahvm.app/install.sh | bash
 - Worker adoption after daemon restart and recovery from saved checkpoints.
 - Managed outbound networking, explicit private TCP grants and authenticated previews.
 
-The default packaged guest is BusyBox plus forge. The optional
-[Ubuntu development image](docs/DEVELOPMENT-IMAGE.md) adds Node.js LTS, Bun,
-Python, build tools, Claude Code, Codex, OpenCode and Pi. There is no implemented Firecracker
+The default [Ubuntu development image](docs/DEVELOPMENT-IMAGE.md) includes Node.js LTS, Bun,
+Python, build tools, Claude Code, Codex, OpenCode and Pi. BusyBox is an explicit
+minimal build option. There is no implemented Firecracker
 backend, automatic wake-on-request, off-host backup or multi-host scheduler.
 
 ## Build and run
@@ -62,3 +62,16 @@ The Go implementation and its installers are retired. They remain in Git
 history at pre-cutover commit `639aeee`; historical plans and experiment results
 are evidence of earlier development, not current installation instructions.
 Agent House originated as a fork of [Bhatti](https://github.com/sahil-shubham/bhatti).
+
+## License
+
+AHVM v0.1.0 and later editions designated under the [AHVM Community License](LICENSE)
+are source-available. Community use is free while your company and its controlled
+affiliates have total worldwide ARR of **USD 1 million or less**. Above that
+threshold, a separate **paid commercial software license** is required; contact
+[sales@ahvm.app](mailto:sales@ahvm.app). Hosting and support fees are separate.
+
+This change is prospective. Existing Apache-2.0 grants and upstream/third-party
+licenses remain valid. See [NOTICE](NOTICE) and the retained
+[Apache-2.0 text](licenses/Apache-2.0.txt). See the
+[licensing explanation](docs/LICENSING.md) for prior-release and third-party scope.
