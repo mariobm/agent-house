@@ -104,6 +104,9 @@ pub struct ExecResp {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum FileReq {
+    Upload {
+        path: String,
+    },
     Read {
         path: String,
         offset: u64,
@@ -284,6 +287,21 @@ pub fn handle(stream: Conn, cfg: &Config) {
                 }
             },
             FrameType::FileReq => match parse::<FileReq>(&frame.payload) {
+                Ok(FileReq::Upload { path }) => {
+                    let response = crate::files::upload(&path, cfg, &mut r, &mut w);
+                    match response {
+                        Ok(bytes) => send_frame(
+                            &mut w,
+                            Frame {
+                                msg_type: FrameType::FileResp,
+                                payload: serde_json::to_vec(&FileResp::Write { bytes }).unwrap(),
+                            },
+                        ),
+                        Err(message) => send_frame(&mut w, err_frame(message)),
+                    }
+                    // One transaction per connection. EOF is abort, never commit.
+                    return;
+                }
                 Ok(req) => match crate::files::serve(&req, cfg) {
                     Ok(resp) => {
                         let body = serde_json::to_vec(&resp).expect("serialize file resp");

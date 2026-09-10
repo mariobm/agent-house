@@ -1,8 +1,20 @@
-//! ahvm-cli: user command line.
-//!
-//! Phase 6 target: clap-based. Same workflows as the Go CLI (conformance),
-//! output free to improve. Replaces `cmd/ahvm` client commands.
+//! Rust control client. Guest argv is passed as an array, never shell-joined.
+mod client;
+mod commands;
+mod session;
+
+use clap::Parser;
+use commands::Cli;
 
 fn main() {
-    eprintln!("ahvm-cli: not yet implemented (see docs/PLAN-rust-rewrite.md)");
+    let code = match commands::run(Cli::parse()) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("ahvm: {e}");
+            1
+        }
+    };
+    std::process::exit(code);
 }
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

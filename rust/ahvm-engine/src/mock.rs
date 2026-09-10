@@ -296,6 +296,13 @@ impl Backend for MockBackend {
         })
     }
 
+    fn file_upload(&self, id: &str, path: &str, input: &mut dyn std::io::Read) -> Result<u64> {
+        // The in-memory fake stores complete files; production streams to disk.
+        let mut data = Vec::new();
+        input.read_to_end(&mut data)?;
+        self.file_write(id, path, &data)
+    }
+
     fn file_write(&self, id: &str, path: &str, data: &[u8]) -> Result<u64> {
         let mut inner = self.lock();
         Self::live(&inner.sandboxes, id)?;

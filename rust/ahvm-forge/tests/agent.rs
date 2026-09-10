@@ -1024,3 +1024,117 @@ fn forward_preserves_pipelined_bytes_and_half_close() {
     .unwrap();
     assert!(expect_error(&mut bad).contains("invalid port"));
 }
+
+fn begin_upload(agent: &Agent, path: &str) -> AgentConn {
+    let mut c = agent.connect();
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::FileReq,
+            payload: serde_json::to_vec(&serde_json::json!({"op":"upload","path":path})).unwrap(),
+        },
+    )
+    .unwrap();
+    let frame = read_frame(&mut c.r).unwrap();
+    assert_eq!(frame.msg_type, FrameType::FileResp);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&frame.payload).unwrap()["op"],
+        "upload_ready"
+    );
+    c
+}
+fn no_upload_temps(agent: &Agent) {
+    let end = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if !std::fs::read_dir(&agent.dir).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".ahvm-tmp-")
+        }) {
+            return;
+        }
+        assert!(std::time::Instant::now() < end, "upload temp leaked");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+#[test]
+fn streaming_upload_large_atomic_and_empty() {
+    let agent = Agent::spawn("");
+    let dest = agent.dir.join("large");
+    std::fs::write(&dest, b"original").unwrap();
+    let mut c = begin_upload(&agent, "large");
+    let data: Vec<u8> = (0..65536).map(|i| (i % 251) as u8).collect();
+    for _ in 0..160 {
+        write_frame(
+            &mut c.w,
+            &Frame {
+                msg_type: FrameType::FileData,
+                payload: data.clone(),
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(std::fs::read(&dest).unwrap(), b"original");
+    let size = 160 * 65536u64;
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::FileCommit,
+            payload: serde_json::to_vec(&size).unwrap(),
+        },
+    )
+    .unwrap();
+    assert_eq!(read_frame(&mut c.r).unwrap().msg_type, FrameType::FileResp);
+    let actual = std::fs::read(&dest).unwrap();
+    assert_eq!(actual.len(), size as usize);
+    assert!(actual.chunks(65536).all(|c| c == data));
+    no_upload_temps(&agent);
+    let mut c = begin_upload(&agent, "large");
+    write_frame(
+        &mut c.w,
+        &Frame {
+            msg_type: FrameType::FileCommit,
+            payload: b"0".to_vec(),
+        },
+    )
+    .unwrap();
+    assert_eq!(read_frame(&mut c.r).unwrap().msg_type, FrameType::FileResp);
+    assert_eq!(std::fs::metadata(&dest).unwrap().len(), 0);
+}
+#[test]
+fn streaming_upload_abort_and_bad_commit_preserve_original() {
+    let agent = Agent::spawn("");
+    let dest = agent.dir.join("kept");
+    std::fs::write(&dest, b"original").unwrap();
+    {
+        let mut c = begin_upload(&agent, "kept");
+        write_frame(
+            &mut c.w,
+            &Frame {
+                msg_type: FrameType::FileData,
+                payload: vec![7; 65536],
+            },
+        )
+        .unwrap();
+        // Drop without a commit, as happens after an interrupted HTTP upload.
+    }
+    no_upload_temps(&agent);
+    assert_eq!(std::fs::read(&dest).unwrap(), b"original");
+    for bad in [
+        Frame {
+            msg_type: FrameType::FileCommit,
+            payload: b"123".to_vec(),
+        },
+        Frame {
+            msg_type: FrameType::FileData,
+            payload: vec![0; 65537],
+        },
+    ] {
+        let mut c = begin_upload(&agent, "kept");
+        write_frame(&mut c.w, &bad).unwrap();
+        assert_eq!(read_frame(&mut c.r).unwrap().msg_type, FrameType::Error);
+        no_upload_temps(&agent);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"original");
+    }
+}

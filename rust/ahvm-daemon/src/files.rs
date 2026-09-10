@@ -136,3 +136,104 @@ fn base64_decode(s: &str) -> ApiResult<Vec<u8>> {
         .decode(s)
         .map_err(|e| ApiError::Invalid(format!("data_b64 is not base64: {e}")))
 }
+
+// EOF is explicit: losing the HTTP task/channel is an abort, not a valid end.
+enum UploadPart {
+    Data(Vec<u8>),
+    Eof,
+}
+struct UploadReader {
+    rx: tokio::sync::mpsc::Receiver<UploadPart>,
+    pending: std::io::Cursor<Vec<u8>>,
+    eof: bool,
+}
+impl std::io::Read for UploadReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let n = self.pending.read(out)?;
+            if n > 0 || self.eof {
+                return Ok(n);
+            }
+            match self.rx.blocking_recv() {
+                Some(UploadPart::Data(bytes)) => self.pending = std::io::Cursor::new(bytes),
+                Some(UploadPart::Eof) => self.eof = true,
+                None => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "HTTP upload interrupted",
+                    ))
+                }
+            }
+        }
+    }
+}
+
+/// Raw streaming endpoint, separate from the legacy small JSON write route.
+pub async fn upload(
+    State(state): State<AppState>,
+    Extension(user): Extension<UserId>,
+    Path(id): Path<String>,
+    Query(q): Query<ReadQuery>,
+    body: axum::body::Body,
+) -> ApiResult<Json<WriteResponse>> {
+    use futures_util::StreamExt;
+    use std::time::Duration;
+    owned(&state, &user.0, &id).await?;
+    if q.path.is_empty() {
+        return Err(ApiError::Invalid("path must not be empty".into()));
+    }
+    // Fail fast rather than retaining unbounded waiting HTTP uploads.
+    let permit = state
+        .ops
+        .try_acquire()
+        .ok_or_else(|| ApiError::Conflict("upload capacity busy; retry later".into()))?;
+    let flight = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| ApiError::Conflict(format!("sandbox {id} is stopping")))?;
+    let (tx, rx) = tokio::sync::mpsc::channel(2);
+    let backend = state.backend.clone();
+    let mut worker = tokio::task::spawn_blocking(move || {
+        // A cancelled HTTP handler must not release admission/activity while
+        // the blocking backend is still unwinding its guest transaction.
+        let (_permit, _flight) = (permit, flight);
+        let mut reader = UploadReader {
+            rx,
+            pending: std::io::Cursor::new(Vec::new()),
+            eof: false,
+        };
+        backend.file_upload(&id, &q.path, &mut reader)
+    });
+    let feeding = async move {
+        let mut stream = body.into_data_stream();
+        while let Some(part) = tokio::time::timeout(Duration::from_secs(30), stream.next())
+            .await
+            .map_err(|_| ApiError::Invalid("upload idle timeout".into()))?
+        {
+            let bytes = part.map_err(|e| ApiError::Invalid(format!("upload body: {e}")))?;
+            for chunk in bytes.chunks(65536) {
+                tokio::time::timeout(
+                    Duration::from_secs(30),
+                    tx.send(UploadPart::Data(chunk.to_vec())),
+                )
+                .await
+                .map_err(|_| ApiError::Invalid("upload stalled".into()))?
+                .map_err(|_| ApiError::Invalid("guest upload closed".into()))?;
+            }
+        }
+        tx.send(UploadPart::Eof)
+            .await
+            .map_err(|_| ApiError::Invalid("guest upload closed".into()))?;
+        Ok::<_, ApiError>(())
+    };
+    tokio::pin!(feeding);
+    let result = tokio::select! {
+        result=&mut worker=>result,
+        result=&mut feeding=>{result?;worker.await},
+    }
+    .map_err(|e| ApiError::Invalid(format!("upload worker: {e}")))??;
+    Ok(Json(WriteResponse { bytes: result }))
+}

@@ -29,6 +29,8 @@ pub enum FrameType {
     SessionData = 0xA,
     ForwardReq = 0xB,
     ForwardResp = 0xC,
+    FileData = 0xD,
+    FileCommit = 0xE,
 }
 
 impl FrameType {
@@ -47,6 +49,8 @@ impl FrameType {
             0xA => Some(Self::SessionData),
             0xB => Some(Self::ForwardReq),
             0xC => Some(Self::ForwardResp),
+            0xD => Some(Self::FileData),
+            0xE => Some(Self::FileCommit),
             _ => None,
         }
     }
@@ -201,6 +205,8 @@ mod tests {
             FrameType::Error,
             FrameType::FileReq,
             FrameType::FileResp,
+            FrameType::FileData,
+            FrameType::FileCommit,
             FrameType::SessionReq,
             FrameType::SessionResp,
             FrameType::SessionData,

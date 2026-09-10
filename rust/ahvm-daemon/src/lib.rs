@@ -234,6 +234,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/sandboxes/{id}/files",
             get(files::read).put(files::write),
         )
+        .route(
+            "/v1/sandboxes/{id}/files/upload",
+            axum::routing::put(files::upload),
+        )
         .route("/v1/sandboxes/{id}/dir", get(files::list))
         .route(
             "/v1/sandboxes/{id}/snapshots",
