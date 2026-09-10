@@ -69,6 +69,25 @@ impl Api {
         Ok(request)
     }
 
+    pub fn upload(&self, id: &str, path: &str, body: reqwest::blocking::Body) -> Result<Value> {
+        if self.token.is_empty() {
+            return Err("set AHVM_TOKEN or --token-file to authenticate".into());
+        }
+        let mut url = self.base.clone();
+        url.path_segments_mut()
+            .map_err(|_| "invalid endpoint")?
+            .extend(["v1", "sandboxes", id, "files", "upload"]);
+        url.query_pairs_mut().append_pair("path", path);
+        let response = self
+            .client
+            .put(url)
+            .bearer_auth(&self.token)
+            .header("Content-Type", "application/octet-stream")
+            .body(body)
+            .send()?;
+        Self::response(response)
+    }
+
     pub fn call(
         &self,
         method: Method,
@@ -96,6 +115,10 @@ impl Api {
             request = request.json(&body);
         }
         let response = request.send()?;
+        Self::response(response)
+    }
+
+    fn response(response: reqwest::blocking::Response) -> Result<Value> {
         let status = response.status();
         // Bound a malformed/untrusted server's response. File downloads page.
         let mut bytes = Vec::new();

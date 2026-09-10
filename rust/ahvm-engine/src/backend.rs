@@ -67,6 +67,13 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     // -- files (cf. Go's fileEngine surface) --
     fn file_read(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<FileChunk>;
     fn file_write(&self, id: &str, path: &str, data: &[u8]) -> Result<u64>;
+    /// Stream into a guest temporary file; publish only after reader EOF.
+    /// Reader errors abort the transaction. Implementations must not buffer all input.
+    fn file_upload(&self, _id: &str, _path: &str, _input: &mut dyn std::io::Read) -> Result<u64> {
+        Err(crate::Error::InvalidState(
+            "streaming uploads unavailable".into(),
+        ))
+    }
     fn file_list(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<DirListing>;
 
     // -- sessions (cf. forge SessionReq ops) --

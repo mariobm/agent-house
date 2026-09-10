@@ -907,3 +907,70 @@ async fn private_policy_names_cannot_be_claimed_by_another_owner() {
         StatusCode::FORBIDDEN
     );
 }
+
+#[tokio::test]
+async fn streaming_upload_large_aborted_body_and_ownership() {
+    let app = app();
+    let (status, created) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"upload"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = created["id"].as_str().unwrap();
+    let uri = format!("/v1/sandboxes/{id}/files/upload?path=%2Fdata");
+    let content = vec![42; 3 * 1024 * 1024];
+    let req = Request::builder()
+        .method("PUT")
+        .uri(&uri)
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN_A}"))
+        .body(Body::from(content))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let req = Request::builder()
+        .method("PUT")
+        .uri(&uri)
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN_B}"))
+        .body(Body::from("foreign"))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    let parts = vec![
+        Ok(axum::body::Bytes::from_static(b"partial")),
+        Err(std::io::Error::other("disconnected")),
+    ];
+    let req = Request::builder()
+        .method("PUT")
+        .uri(&uri)
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN_A}"))
+        .body(Body::from_stream(futures_util::stream::iter(parts)))
+        .unwrap();
+    assert!(!app
+        .clone()
+        .oneshot(req)
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    let (_, v) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "GET",
+        &format!("/v1/sandboxes/{id}/files?path=%2Fdata&limit=10"),
+        None,
+    )
+    .await;
+    use base64::Engine;
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(v["data_b64"].as_str().unwrap())
+            .unwrap(),
+        vec![42; 10]
+    );
+}
