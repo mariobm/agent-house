@@ -1384,6 +1384,67 @@ impl Backend for KrucibleBackend {
         })
     }
 
+    fn file_upload(&self, id: &str, path: &str, input: &mut dyn std::io::Read) -> Result<u64> {
+        let dir = self.live_dir(id)?;
+        let mut conn = connect_rpc(&forge_sock(&dir), CONNECT_BUDGET)?;
+        conn.set_read_timeout(Some(Duration::from_secs(30)))?;
+        conn.set_write_timeout(Some(Duration::from_secs(30)))?;
+        write_frame(
+            &mut conn,
+            &Frame {
+                msg_type: FrameType::FileReq,
+                payload: serde_json::to_vec(&serde_json::json!({"op":"upload","path":path}))?,
+            },
+        )
+        .map_err(|e| Error::Control(e.to_string()))?;
+        let reply = read_frame(&mut conn).map_err(|e| Error::Control(e.to_string()))?;
+        let ready: serde_json::Value =
+            serde_json::from_slice(&reply.payload).map_err(|e| Error::Control(e.to_string()))?;
+        if reply.msg_type != FrameType::FileResp || ready["op"] != "upload_ready" {
+            return Err(Error::Control(format!("upload unavailable: {ready}")));
+        }
+        let mut chunk = [0u8; 65536];
+        let mut total = 0u64;
+        loop {
+            let n = match input.read(&mut chunk) {
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                other => other?,
+            };
+            if n == 0 {
+                break;
+            }
+            write_frame(
+                &mut conn,
+                &Frame {
+                    msg_type: FrameType::FileData,
+                    payload: chunk[..n].to_vec(),
+                },
+            )
+            .map_err(|e| Error::Control(e.to_string()))?;
+            total = total
+                .checked_add(n as u64)
+                .ok_or_else(|| Error::Control("upload size overflow".into()))?;
+        }
+        write_frame(
+            &mut conn,
+            &Frame {
+                msg_type: FrameType::FileCommit,
+                payload: serde_json::to_vec(&total)?,
+            },
+        )
+        .map_err(|e| Error::Control(e.to_string()))?;
+        let reply = read_frame(&mut conn).map_err(|e| Error::Control(e.to_string()))?;
+        let response: serde_json::Value =
+            serde_json::from_slice(&reply.payload).map_err(|e| Error::Control(e.to_string()))?;
+        if reply.msg_type != FrameType::FileResp
+            || response["op"] != "write"
+            || response["bytes"].as_u64() != Some(total)
+        {
+            return Err(Error::Control(format!("upload failed: {response}")));
+        }
+        Ok(total)
+    }
+
     fn file_write(&self, id: &str, path: &str, data: &[u8]) -> Result<u64> {
         let dir = self.live_dir(id)?;
         let v = forge_call(

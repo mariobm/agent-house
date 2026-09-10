@@ -74,6 +74,7 @@ fn jail(root: &std::path::Path, req: &str) -> Result<PathBuf, String> {
 
 pub fn serve(req: &FileReq, cfg: &Config) -> Result<FileResp, String> {
     match req {
+        FileReq::Upload { .. } => Err("upload requires a streaming connection".into()),
         FileReq::Read {
             path,
             offset,
@@ -184,6 +185,71 @@ pub fn serve(req: &FileReq, cfg: &Config) -> Result<FileResp, String> {
                 next_offset: has_more.then_some(end as u64),
             };
             Ok(resp)
+        }
+    }
+}
+
+/// A connection-scoped transaction. Disconnect, invalid frames, timeout and
+/// write failures drop the temporary file without changing the destination.
+pub fn upload(
+    path: &str,
+    cfg: &Config,
+    r: &mut std::io::BufReader<crate::agent::Conn>,
+    w: &mut crate::agent::Conn,
+) -> Result<u64, String> {
+    use ahvm_proto::{read_frame, write_frame, Frame, FrameType};
+    use std::io::Write;
+    r.get_ref()
+        .timeout(std::time::Duration::from_secs(30))
+        .map_err(|e| e.to_string())?;
+    let dest = jail(&cfg.root, path)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let (tmp, mut file) = unique_sibling(&dest).ok_or("cannot create upload temporary file")?;
+    struct Cleanup(Option<PathBuf>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if let Some(path) = &self.0 {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    let mut cleanup = Cleanup(Some(tmp.clone()));
+    write_frame(
+        w,
+        &Frame {
+            msg_type: FrameType::FileResp,
+            payload: br#"{"op":"upload_ready"}"#.to_vec(),
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let mut bytes = 0u64;
+    loop {
+        let frame = read_frame(r).map_err(|e| format!("upload interrupted: {e}"))?;
+        match frame.msg_type {
+            FrameType::FileData => {
+                if frame.payload.is_empty() || frame.payload.len() > 65536 {
+                    return Err("upload chunks must be 1..=65536 bytes".into());
+                }
+                file.write_all(&frame.payload)
+                    .map_err(|e| format!("upload write: {e}"))?;
+                bytes = bytes
+                    .checked_add(frame.payload.len() as u64)
+                    .ok_or("upload size overflow")?;
+            }
+            FrameType::FileCommit => {
+                let claimed: u64 = serde_json::from_slice(&frame.payload)
+                    .map_err(|e| format!("upload commit: {e}"))?;
+                if claimed != bytes {
+                    return Err("upload length mismatch".into());
+                }
+                file.sync_all().map_err(|e| format!("upload sync: {e}"))?;
+                std::fs::rename(&tmp, &dest).map_err(|e| format!("upload publish: {e}"))?;
+                cleanup.0.take();
+                return Ok(bytes);
+            }
+            _ => return Err("expected upload data or commit".into()),
         }
     }
 }
