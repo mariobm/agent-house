@@ -1,7 +1,7 @@
 # Rust CLI and Linux installation
 
-The Phase 6 bundle contains `ahvm`, `ahvm-daemon`, `ahvm-vmm`, `ahvm-netd`, static
-`ahvm-forge`, the native library closure and a minimal BusyBox ext4 guest image.
+The bundle contains `ahvm`, `ahvm-daemon`, `ahvm-vmm`, `ahvm-netd`, static
+`ahvm-forge`, the native library closure and an Ubuntu development ext4 guest image.
 The initial server target is Linux x86_64 with KVM and systemd. Build on the
 oldest Linux/glibc you intend to support; the bundle records the build host's
 glibc version and still uses the destination's glibc/loader. macOS CLI builds
@@ -23,7 +23,7 @@ tar and sha256sum are prerequisites; root or sudo is needed for installation.
 The manifest and website live in the private `mariobm/ahvm-site` repository.
 The public early-access build is compiled on Ubuntu 22.04 (glibc 2.35).
 
-Verification: full installed KVM acceptance **14.16 seconds** on `agent_house`,
+Original minimal-bundle verification: full installed KVM acceptance **14.16 seconds** on `agent_house`,
 max two 256 MiB guests; malformed checksum rejected before installation paths
 were created. A fresh install through the live HTTPS endpoint and anonymous
 GitHub download passed the health check; repeat installation was refused.
@@ -41,8 +41,8 @@ target), C/C++ and musl toolchains, clang/libclang, pkg-config, libzstd-dev,
 patchelf, curl, bzip2, make, binutils, e2fsprogs and Python 3. Initialize the
 pinned libkrucible submodule and provide the tested `libkrunfw.so.5` installation
 in `AHVM_FW_DIR` (default `/usr/local/lib64`). The fork is linked natively into
-the VMM. The build script downloads and checksum-verifies BusyBox 1.37.0, builds
-it statically and inserts the just-built forge into the image. Guest init mounts
+the VMM. The default builder verifies the Ubuntu and Node archives, installs
+the development tools and inserts the just-built forge into the image. Guest init mounts
 proc, sysfs, devtmpfs and devpts before execing forge as PID 1, so PTY shells
 work without manual guest setup. No Go is used.
 
@@ -63,10 +63,10 @@ service account. Installation requires root; workers run under the dedicated
 account with KVM group access and no new privileges. The configured data path
 must be on a filesystem with enough space for disk and RAM snapshots.
 
-The image intentionally supplies only BusyBox and forge: shell, standard tools,
-HTTP server and basic networking. It is not an Alpine package-manager image or
-a browser/development environment. Richer image distribution is separate from
-this minimal install gate.
+New sandboxes use Ubuntu with Node.js LTS, Bun, Python and the AI CLIs already
+installed. No image selection is required. See [development image usage and
+qualification](DEVELOPMENT-IMAGE.md). The explicit minimal profile is intended
+for lightweight tests.
 
 ## Connection and commands
 
