@@ -24,8 +24,9 @@ curl -fsSL https://ahvm.app/install.sh | bash
 - Worker adoption after daemon restart and recovery from saved checkpoints.
 - Managed outbound networking, explicit private TCP grants and authenticated previews.
 
-The packaged guest is BusyBox plus forge. Development toolchains and coding
-agents require a richer guest image. There is no implemented Firecracker
+The default packaged guest is BusyBox plus forge. The optional
+[Ubuntu development image](docs/DEVELOPMENT-IMAGE.md) adds Node.js LTS, Bun,
+Python, build tools, Claude Code, Codex, OpenCode and Pi. There is no implemented Firecracker
 backend, automatic wake-on-request, off-host backup or multi-host scheduler.
 
 ## Build and run
