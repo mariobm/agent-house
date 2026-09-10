@@ -3,6 +3,7 @@
 Usage: sudo test-rust-install.py PREFIX CONFIG_DIR DATA_DIR TEST_UNIT
 Only use a disposable installation: this restarts its unit and edits its policy.
 """
+import hashlib
 import http.client
 import http.server
 import json
@@ -96,11 +97,37 @@ try:
     print('create, exec, private grant and DNS passed',flush=True)
     with tempfile.TemporaryDirectory() as directory:
         local=Path(directory)/'payload';download=Path(directory)/'download'
-        content=bytes(range(256))*1024
+        content=bytes(range(256))*(128*1024)
         local.write_bytes(content)
         obj('files','put',ids[0],str(local),'/workspace/payload')
         cli('files','get',ids[0],'/workspace/payload',str(download))
         assert download.read_bytes()==content
+        digest=hashlib.sha256(content).hexdigest()
+        assert execute(ids[0],'sha256sum /workspace/payload').decode().split()[0]==digest
+        cli('files','put',ids[0],'-','/workspace/stdin',input=content)
+        assert execute(ids[0],'sha256sum /workspace/stdin').decode().split()[0]==digest
+        cli('files','put',ids[0],'-','/workspace/empty',input=b'')
+        assert execute(ids[0],'wc -c < /workspace/empty').strip()==b'0'
+        # Drop a real HTTP request before its terminating chunk. Old data must
+        # survive and the guest must remove its connection-scoped temporary.
+        host,port=settings['AHVM_LISTEN'].rsplit(':',1)
+        token=(config/'admin.token').read_text().strip()
+        with socket.create_connection((host,int(port)),timeout=5) as sock:
+            headers=(f'PUT /v1/sandboxes/{ids[0]}/files/upload?path=%2Fworkspace%2Fpayload HTTP/1.1\r\n'
+                     f'Host: {host}\r\nAuthorization: Bearer {token}\r\n'
+                     'Transfer-Encoding: chunked\r\nContent-Type: application/octet-stream\r\n\r\n')
+            sock.sendall(headers.encode())
+            sock.sendall(b'10000\r\n'+b'x'*65536+b'\r\n')
+            end=time.monotonic()+5
+            while not any(e['name'].startswith('.ahvm-tmp-') for e in obj('files','list',ids[0],'/workspace')['entries']):
+                assert time.monotonic()<end, 'guest upload never opened'
+                time.sleep(.05)
+        end=time.monotonic()+5
+        while any(e['name'].startswith('.ahvm-tmp-') for e in obj('files','list',ids[0],'/workspace')['entries']):
+            assert time.monotonic()<end, 'aborted upload temporary leaked'
+            time.sleep(.05)
+        assert execute(ids[0],'sha256sum /workspace/payload').decode().split()[0]==digest
+        print('32 MiB file and stdin uploads, checksum/download, empty file and interrupted replacement passed',flush=True)
         assert any(e['name']=='payload' for e in obj('files','list',ids[0],'/workspace')['entries'])
     cli('files','put',ids[0],'-','/workspace/index.html',input=b'PREVIEW-OK')
     sid=obj('session','create',ids[0],'--','sh','-c','printf SESSION-READY; read line; printf "%s" "$line"; sleep 300')['session_id']

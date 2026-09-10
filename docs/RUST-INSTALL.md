@@ -80,9 +80,11 @@ ahvm delete dev
 `exec` preserves argv and returns the guest exit status; use `--` before guest
 arguments. `--json` returns structured output; session reads emit one JSON
 object per chunk with the authoritative `next_seq` cursor. File downloads page
-and replace local files only after success. Uploads are currently atomic
-single-frame writes, limited to **512 KiB**; larger inputs fail before a request.
-Do not use this limit as a large-upload performance result. Snapshot deletion
+and replace local files only after success. Uploads stream binary data in 64 KiB
+chunks, from a file or stdin, with no fixed total size cap. The guest atomically
+replaces the destination only after the complete transfer; an interrupted
+transfer preserves the original. Use matching daemon and guest artifacts; see
+[upload protocol and limits](FILE-UPLOADS.md). Snapshot deletion
 currently removes the record, not its stored bundle. The client HTTP timeout
 (default 600 seconds) is configurable with `--timeout`; it does not extend the
 guest exec limit of 300 seconds. Cancelling the client does not cancel exec.
@@ -154,8 +156,11 @@ and idle configuration, restarts it, uses at most two guests, restores the
 configuration files and deletes its guests afterward. Stored snapshot bundles
 remain until the disposable data directory is removed.
 
-Verified on `agent_house`: **13.07 seconds, two 1-vCPU/256 MiB guests maximum**.
-Exec exit codes, 256 KiB binary upload/download, DNS, private access and copy
+Verified on `agent_house`: **14.17 seconds, two 1-vCPU/256 MiB guests maximum**.
+32 MiB binary file and stdin uploads passed, with checksum verification and a
+full download comparison. Empty upload passed; dropping a real chunked HTTP
+request preserved the old destination and removed the guest temporary file.
+Exec exit codes, DNS, private access and copy
 isolation, preview browser bootstrap/revocation, snapshots, stop/start, worker
 SIGKILL recovery and daemon adoption passed. Real WebSocket PTY input/output,
 resize, detach/reattach and exit status passed; an idle attached terminal still
