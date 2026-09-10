@@ -126,6 +126,9 @@ redesigned better. No migration shims, no legacy readers.
 - **Exit:** install-from-scratch on ahvm-node-01 using only Rust artifacts.
 
 ### Phase 7 — Cutover (2 wks)
+
+Implementation and deployment evidence: [RUST-CUTOVER.md](RUST-CUTOVER.md).
+Publication is deferred until the separate pre-release improvements are done.
 - Fresh state per host (no migration); flag-day cutover per host with
   rollback = previous binary. Delete Go tree.
 - **Exit:** repo is Rust + libkrucible submodule only; CI has zero Go.

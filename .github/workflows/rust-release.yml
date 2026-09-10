@@ -27,8 +27,9 @@ jobs:
       - name: Build and check
         run: |
           set -euo pipefail
-          cargo test --manifest-path rust/Cargo.toml --locked -p ahvm-cli
-          cargo clippy --manifest-path rust/Cargo.toml --locked -p ahvm-cli --all-targets -- -D warnings
+          make check
+          make test
+          python3 scripts/check-rust-cutover.py
           scripts/package-rust.sh "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           python3 scripts/test-rust-cli.py "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/bin/ahvm"
           mkdir -p dist

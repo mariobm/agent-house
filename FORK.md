@@ -8,7 +8,7 @@ AHVM (Agent House Virtual Machine) is a fork of
 
 - `origin` — ours (private `mariobm/agent-house`), push here.
 - `upstream` — `https://github.com/sahil-shubham/bhatti.git`, pull-only.
-  Sync with: `git fetch upstream && git merge upstream/main`
+  Historical upstream. Do not merge its retired Go runtime back into the Rust tree.
 
 ## Policy
 
@@ -31,8 +31,9 @@ AHVM (Agent House Virtual Machine) is a fork of
 
 ## Server
 
-Dedicated-server credentials arrive separately. Until then: local builds,
-`go vet`/`go test`, docs. No host-specific secrets in this repo.
+The private deployment target is `agent_house`. Use `make test` and `make check`
+locally and the packaged KVM gate on the server. No host-specific secrets in
+this repo. See `docs/RUST-CUTOVER.md` for installation and rollback.
 
 ## CI dependency access
 
