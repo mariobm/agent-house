@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Native Linux x86_64 build; produces a complete Rust runtime + minimal guest.
+# Native Linux x86_64 build; produces a complete Rust runtime + Ubuntu guest.
 # Requires Rust + musl target, cc/musl-gcc, clang, pkg-config, libkrunfw.so.5,
 # libzstd-dev, patchelf, curl, bzip2, make, readelf, mkfs.ext4 and Python 3.
 # AHVM_FW_DIR defaults to /usr/local/lib64. Output must not already exist.
-# AHVM_GUEST_IMAGE selects a prebuilt development image; default is minimal.
+# AHVM_GUEST_IMAGE selects a prebuilt image. AHVM_GUEST_PROFILE=minimal opts
+# into BusyBox; the default ubuntu-dev builder needs root or sudo.
 set -euo pipefail
 umask 022
 cd "$(dirname "$0")/.."
@@ -11,6 +12,8 @@ cd "$(dirname "$0")/.."
 OUT=${1:?Usage: package-rust.sh OUTPUT_DIRECTORY}
 OUT=$(realpath -m "$OUT")
 [[ ! -e $OUT ]] || { echo "Refusing existing output: $OUT" >&2; exit 1; }
+GUEST_PROFILE=${AHVM_GUEST_PROFILE:-ubuntu-dev}
+case "$GUEST_PROFILE" in ubuntu-dev|minimal) ;; *) echo 'Unknown AHVM_GUEST_PROFILE' >&2; exit 1 ;; esac
 FW_DIR=$(realpath "${AHVM_FW_DIR:-/usr/local/lib64}")
 [[ -f $FW_DIR/libkrunfw.so.5 ]] || { echo 'Missing libkrunfw.so.5' >&2; exit 1; }
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -61,18 +64,26 @@ PY
 if [[ -n ${AHVM_GUEST_IMAGE:-} ]]; then
     [[ -f $AHVM_GUEST_IMAGE ]] || { echo 'Missing AHVM_GUEST_IMAGE' >&2; exit 1; }
     cp --sparse=always "$AHVM_GUEST_IMAGE" "$STAGE/share/base.ext4"
-else
+elif [[ $GUEST_PROFILE == minimal ]]; then
     FORGE_BIN="$STAGE/bin/ahvm-forge" scripts/rust-guest-rootfs.sh "$STAGE/share/base.ext4"
+else
+    elevate=()
+    if (( EUID != 0 )); then
+        command -v sudo >/dev/null || { echo 'Ubuntu image provisioning requires sudo or AHVM_GUEST_IMAGE' >&2; exit 1; }
+        elevate=(sudo)
+    fi
+    "${elevate[@]}" env FORGE_BIN="$STAGE/bin/ahvm-forge" "$PWD/scripts/ubuntu-dev-rootfs.sh" "$STAGE/share/base.ext4"
 fi
 chmod 644 "$STAGE/share/base.ext4"
 cp packaging/rust/ahvm-rust.service.in "$STAGE/packaging/"
 cp scripts/install-rust.sh "$STAGE/install.sh"
 cp docs/RUST-INSTALL.md "$STAGE/README.md"
-cp docs/NETWORK-ACCESS.md docs/NETWORK-QUALIFICATION.md docs/FILE-UPLOADS.md LICENSE "$STAGE/"
+cp docs/NETWORK-ACCESS.md docs/NETWORK-QUALIFICATION.md docs/FILE-UPLOADS.md docs/LICENSING.md docs/DEVELOPMENT-IMAGE.md LICENSE NOTICE "$STAGE/"
+cp -R licenses "$STAGE/licenses"
 printf 'platform=linux-x86_64\nglibc=%s\nsource=%s\nfork=%s\n' \
     "$(getconf GNU_LIBC_VERSION)" "${AHVM_SOURCE_REV:-$(git rev-parse HEAD 2>/dev/null || echo source-archive)}" \
     "${AHVM_FORK_REV:-$(git -C libkrucible rev-parse HEAD 2>/dev/null || echo source-archive)}" > "$STAGE/BUILD.txt"
-(cd "$STAGE" && find bin lib share packaging -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum install.sh README.md NETWORK-ACCESS.md NETWORK-QUALIFICATION.md FILE-UPLOADS.md LICENSE BUILD.txt >> SHA256SUMS)
+(cd "$STAGE" && find bin lib share packaging licenses -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum install.sh README.md NETWORK-ACCESS.md NETWORK-QUALIFICATION.md FILE-UPLOADS.md LICENSING.md DEVELOPMENT-IMAGE.md LICENSE NOTICE BUILD.txt >> SHA256SUMS)
 chmod 755 "$STAGE"
 mv "$STAGE" "$OUT"
 echo "Built $OUT. Install with: sudo $OUT/install.sh $OUT"
