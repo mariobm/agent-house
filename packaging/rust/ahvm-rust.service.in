@@ -1,0 +1,31 @@
+[Unit]
+Description=Agent House Rust daemon
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+SupplementaryGroups=kvm
+EnvironmentFile=@CONFIG@/daemon.env
+ExecStart=@PREFIX@/bin/ahvm-daemon
+WorkingDirectory=@DATA@
+Restart=on-failure
+RestartSec=5
+# Workers intentionally survive daemon restart and are adopted on startup.
+# Stop/delete sandboxes via the CLI before stopping the service for maintenance.
+KillMode=process
+TimeoutStopSec=15
+LimitNOFILE=65536
+TasksMax=4096
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=@DATA@
+
+[Install]
+WantedBy=multi-user.target
