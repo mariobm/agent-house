@@ -90,7 +90,7 @@ enum Files {
         path: String,
         output: PathBuf,
     },
-    /// Atomic upload, currently limited to 512 KiB by the single-frame API.
+    /// Stream a file atomically; use - to upload stdin.
     Put {
         id: String,
         input: PathBuf,
@@ -198,13 +198,6 @@ fn limited_read(reader: impl Read, max: usize) -> Result<Vec<u8>> {
         return Err(format!("input exceeds {max} bytes").into());
     }
     Ok(bytes)
-}
-fn upload_input(path: &PathBuf) -> Result<Vec<u8>> {
-    if path.as_os_str() == "-" {
-        limited_read(io::stdin(), 512 * 1024)
-    } else {
-        limited_read(std::fs::File::open(path)?, 512 * 1024)
-    }
 }
 pub fn decoded(v: &Value) -> Result<Vec<u8>> {
     Ok(B64.decode(field(v, "data_b64")?)?)
@@ -416,14 +409,16 @@ fn files(api: &Api, command: Files) -> Result<i32> {
             show(&json!({"entries":entries}))?;
         }
         Files::Put { id, input, path } => {
-            let bytes = upload_input(&input)?;
-            let v = api.call(
-                Method::PUT,
-                &["sandboxes", &id, "files"],
-                &[],
-                Some(json!({"path":path,"data_b64":B64.encode(&bytes)})),
-            )?;
-            if v["bytes"].as_u64() != Some(bytes.len() as u64) {
+            let (body, expected) = if input.as_os_str() == "-" {
+                (reqwest::blocking::Body::new(io::stdin()), None)
+            } else {
+                let file = std::fs::File::open(&input)?;
+                let size = file.metadata()?.len();
+                (reqwest::blocking::Body::sized(file, size), Some(size))
+            };
+            let v = api.upload(&id, &path, body)?;
+            let actual = v["bytes"].as_u64().ok_or("upload reply missing bytes")?;
+            if expected.is_some_and(|size| size != actual) {
                 return Err("incomplete upload".into());
             }
             show(&v)?;

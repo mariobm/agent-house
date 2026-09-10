@@ -24,8 +24,16 @@ class ClientTests(unittest.TestCase):
             def do_POST(self): self.handle_request()
             def do_PUT(self): self.handle_request()
             def handle_request(self):
-                body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
-                outer.requests.append((self.command, self.path, self.headers, json.loads(body) if body else None))
+                if self.headers.get('Transfer-Encoding')=='chunked':
+                    body=bytearray()
+                    while True:
+                        size=int(self.rfile.readline().split(b';')[0],16)
+                        if not size: self.rfile.readline();break
+                        body.extend(self.rfile.read(size));assert self.rfile.read(2)==b'\r\n'
+                    body=bytes(body)
+                else: body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+                parsed=body if self.headers.get('Content-Type')=='application/octet-stream' else json.loads(body) if body else None
+                outer.requests.append((self.command, self.path, self.headers, parsed))
                 status, body, headers = outer.replies.pop(0)
                 data = json.dumps(body).encode()
                 self.send_response(status)
@@ -81,9 +89,17 @@ class ClientTests(unittest.TestCase):
         self.reply({},302,Location='/v1/healthz')
         p=self.run_cli('get','box')
         self.assertEqual(p.returncode,1); self.assertEqual(len(self.requests),1)
-    def test_large_upload_rejected_locally(self):
-        p=self.run_cli('files','put','box','-','/big',input=b'x'*(512*1024+1))
-        self.assertEqual(p.returncode,1); self.assertEqual(self.requests,[])
+    def test_large_upload_file_and_stdin(self):
+        content=bytes(range(256))*16384
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'large';path.write_bytes(content)
+            for source in [str(path),'-']:
+                self.reply({'bytes':len(content)})
+                p=self.run_cli('files','put','box',source,'/large file',input=content if source=='-' else None)
+                self.assertEqual(p.returncode,0,p.stderr)
+                self.assertEqual(self.requests[-1][3],content)
+                self.assertEqual(self.requests[-1][1],'/v1/sandboxes/box/files/upload?path=%2Flarge+file')
+
     def test_auth_failure_reported(self):
         self.reply({'error':'unauthorized'},401)
         p=self.run_cli('get','box')
