@@ -7,9 +7,10 @@ oldest Linux/glibc you intend to support; the bundle records the build host's
 glibc version and still uses the destination's glibc/loader. macOS CLI builds
 work; macOS server packaging and Linux arm64 qualification are separate work.
 
-## One-command early-access install
+## One-command install
 
-On a fresh Linux x86_64/KVM/systemd host with glibc 2.35+:
+Review the [community/commercial license terms](LICENSING.md), then install on a
+fresh Linux x86_64/KVM/systemd host with glibc 2.35+:
 
 ```sh
 curl -fsSL https://ahvm.app/install.sh | bash
@@ -21,7 +22,7 @@ installer below. It links the CLI into `/usr/local/bin` and starts the service
 unless `--no-start` is supplied. Existing paths are refused. curl, Python 3,
 tar and sha256sum are prerequisites; root or sudo is needed for installation.
 The manifest and website live in the private `mariobm/ahvm-site` repository.
-The public early-access build is compiled on Ubuntu 22.04 (glibc 2.35).
+The public runtime binaries are compiled on Ubuntu 22.04 (glibc 2.35).
 
 Original minimal-bundle verification: full installed KVM acceptance **14.16 seconds** on `agent_house`,
 max two 256 MiB guests; malformed checksum rejected before installation paths
