@@ -1,7 +1,6 @@
 # Ubuntu development image
 
-The optional `ubuntu-dev` image adds a working development environment to the
-minimal BusyBox image. Linux x86_64/KVM is the qualified target. Start with 2 CPUs
+The default `ubuntu-dev` image provides a working development environment. Linux x86_64/KVM is the qualified target. Start with 2 CPUs
 and 4 GiB RAM; larger projects and multiple agents may need more.
 
 Includes Ubuntu 24.04 LTS, Node.js 24 LTS with npm, Bun, Python 3 with pip/venv,
@@ -39,15 +38,16 @@ For a new native bundle, supply the resulting image to the normal packager:
 AHVM_GUEST_IMAGE=/var/tmp/ubuntu-dev.ext4 scripts/package-rust.sh /tmp/ahvm-dev-bundle
 ```
 
-Without `AHVM_GUEST_IMAGE`, packaging keeps the minimal image. The public
-early-access installer still selects its published minimal bundle until a
-development bundle is explicitly published.
+Without `AHVM_GUEST_IMAGE`, packaging builds Ubuntu automatically (requires root
+or sudo). `AHVM_GUEST_PROFILE=minimal` explicitly selects BusyBox for lightweight
+tests. The public installer selects the Ubuntu development bundle.
 
 ## Use
 
-Configure `AHVM_BASE_IMAGE` in the daemon's environment to select the image for
-new sandboxes. Keep the old image and use a fresh sandbox; changing the base does
-not upgrade existing filesystems or snapshots.
+Fresh installations configure the bundled Ubuntu image automatically: `ahvm create`
+uses it without an image flag or provisioning step. Existing installations can
+select it through `AHVM_BASE_IMAGE`. Changing the base does not upgrade existing
+filesystems or snapshots.
 
 ```sh
 ahvm create dev --cpus 2 --memory 4096

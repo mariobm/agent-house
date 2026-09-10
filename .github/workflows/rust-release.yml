@@ -33,7 +33,7 @@ jobs:
           scripts/package-rust.sh "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           python3 scripts/test-rust-cli.py "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/bin/ahvm"
           mkdir -p dist
-          tar -C "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -czf dist/ahvm-rust-linux-x86_64.tar.gz .
+          tar --sparse -C "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -czf dist/ahvm-rust-linux-x86_64.tar.gz .
           (cd dist && sha256sum ahvm-rust-linux-x86_64.tar.gz > SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

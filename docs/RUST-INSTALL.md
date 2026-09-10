@@ -31,10 +31,10 @@ The permanent primary service was not changed by these tests.
 
 ## Build and install
 
-For Ubuntu with development tools and AI CLIs, see the optional
-[development image](DEVELOPMENT-IMAGE.md). Build it first, then set
-`AHVM_GUEST_IMAGE=/path/to/ubuntu-dev.ext4` when running `package-rust.sh`.
-The default remains the lightweight BusyBox guest.
+Packaging builds the [Ubuntu development image](DEVELOPMENT-IMAGE.md) by default
+(root or sudo is needed for image provisioning). To reuse an image, set
+`AHVM_GUEST_IMAGE=/path/to/ubuntu-dev.ext4`. For a lightweight test bundle,
+explicitly set `AHVM_GUEST_PROFILE=minimal`.
 
 Native build dependencies: Rust (including the `x86_64-unknown-linux-musl`
 target), C/C++ and musl toolchains, clang/libclang, pkg-config, libzstd-dev,
