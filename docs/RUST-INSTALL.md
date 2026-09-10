@@ -138,8 +138,8 @@ Do not remove a service account while it still owns workers or other installs.
 
 The manual Rust release workflow uses a dedicated self-hosted `ahvm-build` runner
 and never runs on PRs. It builds/checks a native bundle and can publish a
-`rust-v*` tag only when explicitly requested. The existing Go release path remains
-until Phase 7. Before cutover, test a fresh install and restart/recovery through
+`rust-v*` tag only when explicitly requested. The Go release path has been retired. Publication remains explicitly deferred.
+Before cutover, test a fresh install and restart/recovery through
 the packaged CLI, not binaries from a development checkout.
 
 ## Validation
