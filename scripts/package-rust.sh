@@ -78,11 +78,12 @@ chmod 644 "$STAGE/share/base.ext4"
 cp packaging/rust/ahvm-rust.service.in "$STAGE/packaging/"
 cp scripts/install-rust.sh "$STAGE/install.sh"
 cp docs/RUST-INSTALL.md "$STAGE/README.md"
-cp docs/NETWORK-ACCESS.md docs/NETWORK-QUALIFICATION.md docs/FILE-UPLOADS.md LICENSE "$STAGE/"
+cp docs/NETWORK-ACCESS.md docs/NETWORK-QUALIFICATION.md docs/FILE-UPLOADS.md LICENSE NOTICE "$STAGE/"
+cp -R licenses "$STAGE/licenses"
 printf 'platform=linux-x86_64\nglibc=%s\nsource=%s\nfork=%s\n' \
     "$(getconf GNU_LIBC_VERSION)" "${AHVM_SOURCE_REV:-$(git rev-parse HEAD 2>/dev/null || echo source-archive)}" \
     "${AHVM_FORK_REV:-$(git -C libkrucible rev-parse HEAD 2>/dev/null || echo source-archive)}" > "$STAGE/BUILD.txt"
-(cd "$STAGE" && find bin lib share packaging -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum install.sh README.md NETWORK-ACCESS.md NETWORK-QUALIFICATION.md FILE-UPLOADS.md LICENSE BUILD.txt >> SHA256SUMS)
+(cd "$STAGE" && find bin lib share packaging licenses -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum install.sh README.md NETWORK-ACCESS.md NETWORK-QUALIFICATION.md FILE-UPLOADS.md LICENSE NOTICE BUILD.txt >> SHA256SUMS)
 chmod 755 "$STAGE"
 mv "$STAGE" "$OUT"
 echo "Built $OUT. Install with: sudo $OUT/install.sh $OUT"

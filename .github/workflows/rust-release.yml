@@ -3,7 +3,11 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish this rust-v* tag as a prerelease (otherwise build only)
+        description: Publish this v* tag as a release (otherwise build only)
+        type: boolean
+        default: false
+      prerelease:
+        description: Mark the published release as a prerelease
         type: boolean
         default: false
 permissions:
@@ -23,7 +27,7 @@ jobs:
         if: inputs.publish
         env:
           REF: ${{ github.ref }}
-        run: '[[ "$REF" == refs/tags/rust-v* ]]'
+        run: '[[ "$REF" == refs/tags/v[0-9]* || "$REF" == refs/tags/rust-v[0-9]* ]]'
       - name: Build and check
         run: |
           set -euo pipefail
@@ -39,12 +43,16 @@ jobs:
         with:
           name: ahvm-rust-linux-x86_64
           path: dist/*
-      - name: Publish prerelease
+      - name: Publish release
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --verify-tag --prerelease --generate-notes dist/ahvm-rust-linux-x86_64.tar.gz dist/SHA256SUMS
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          args=(--verify-tag --generate-notes)
+          if [[ "$PRERELEASE" == true ]]; then args+=(--prerelease); fi
+          gh release create "$TAG" "${args[@]}" dist/ahvm-rust-linux-x86_64.tar.gz dist/SHA256SUMS
       - name: Remove build bundle
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"

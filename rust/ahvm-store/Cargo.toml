@@ -2,7 +2,7 @@
 name = "ahvm-store"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 
 [dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
