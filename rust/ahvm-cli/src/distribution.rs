@@ -29,6 +29,8 @@ pub struct Catalog {
     #[serde(default)]
     pub cli: std::collections::BTreeMap<String, Artifact>,
     #[serde(default)]
+    pub client: std::collections::BTreeMap<String, Artifact>,
+    #[serde(default)]
     pub server: std::collections::BTreeMap<String, Artifact>,
 }
 fn client() -> Result<reqwest::blocking::Client> {

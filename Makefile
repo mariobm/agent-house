@@ -9,6 +9,7 @@ test:
 	cargo build --manifest-path rust/Cargo.toml --locked -p ahvm-cli
 	python3 scripts/test-rust-cli.py rust/target/debug/ahvm
 	python3 scripts/test-host-cli.py rust/target/debug/ahvm
+	python3 scripts/test-client-bundle.py
 	python3 scripts/test-server-upgrade.py
 
 check:

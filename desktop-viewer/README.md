@@ -2,7 +2,8 @@
 
 Experimental native window for `ahvm desktop dev`. This separate Cargo project
 uses the operating system WebView and embeds noVNC. The ordinary CLI has no GUI
-or browser dependencies. The viewer is not yet included in public installers.
+or browser dependencies. The macOS client release archive now includes it alongside the CLI. This draft
+has not been published as a release yet.
 
 ## Build and use on macOS
 
@@ -25,9 +26,12 @@ work. Without `--desktop`, existing image and resource defaults are unchanged.
 The host must advertise desktop support; an older daemon cannot silently create
 a regular VM instead. Desktop images are configured by the host, so omit `--image`.
 
-For a shorter command, install `dist/ahvm-desktop` next to the CLI or on PATH.
-Then `ahvm desktop dev` finds it automatically. The `.app` is currently unsigned;
-release signing, notarization and automated optional installation remain pending.
+The curl installer, Homebrew formula and `ahvm upgrade` install the bundled
+viewer next to the CLI on macOS, so `ahvm desktop dev` needs no separate install.
+For source builds, copy `dist/ahvm-desktop` next to the CLI or use the explicit
+path above. Linux server/client artifacts remain CLI-only until Linux viewer
+dependencies are qualified. The `.app` is currently unsigned;
+release signing and notarization remain pending.
 Only macOS arm64 has been tested. The Linux WebKitGTK build is not qualified.
 
 Closing the window leaves the VM running. A connected viewer holds an activity
@@ -47,10 +51,11 @@ Normal VM snapshots, previews and shell behavior are unchanged.
 ## Measured size
 
 macOS arm64 release builds on this branch: the CLI increased from 7,618,512
-to 7,653,136 bytes, a 34,624-byte increase (33.8 KiB, 0.45%). The separate
+to 7,660,224 bytes, a 41,712-byte increase (40.7 KiB, 0.55%). The separate
 viewer executable is 2,432,016 bytes (2.32 MiB), including the JavaScript
 bundle. This excludes the desktop guest image and uses the system WebView;
-other platforms and signed distribution sizes will differ.
+the combined client archive is about 4.04 MiB compressed. Other platforms
+and signed distribution sizes will differ.
 
 ## Transport
 
@@ -82,3 +87,12 @@ prototype. No keyboard-event logging is included in the viewer.
 The renderer runs in the VMM process. This is a trusted-workload experiment;
 untrusted desktop isolation, Omarchy customization and release packaging remain
 follow-up work. GPU snapshots are intentionally outside this milestone.
+
+## Hosting VMs on this computer
+
+The viewer is a client, not a virtualization backend. The current server
+installer requires Linux x86_64, KVM and systemd. macOS can run the CLI and
+viewer against a remote Linux host; Mac-local provisioning is not supported by
+this release. A future `ahvm host add local --local --install` interface would
+need a qualified macOS runtime, matching architecture images and local service
+management. It is not necessary to SSH into a Mac to use the client.
