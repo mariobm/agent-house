@@ -15,7 +15,6 @@ pub enum Images {
     Pull { name: String },
     Default { name: String },
 }
-const CATALOG: &str = "https://images.ahvm.app/catalog.json";
 pub fn root() -> PathBuf {
     std::env::var_os("AHVM_IMAGE_DIR")
         .map(PathBuf::from)
@@ -40,7 +39,7 @@ pub fn run(command: Images) -> Result<i32> {
     let root = root();
     match command {
         Images::Available => {
-            let catalog = distribution::catalog(CATALOG)?;
+            let catalog = distribution::catalog(&distribution::catalog_url())?;
             println!("{}", serde_json::to_string_pretty(&catalog.images)?);
         }
         Images::List => {
@@ -60,7 +59,7 @@ pub fn run(command: Images) -> Result<i32> {
             if !valid(&name) {
                 return Err("invalid image name".into());
             }
-            let catalog = distribution::catalog(CATALOG)?;
+            let catalog = distribution::catalog(&distribution::catalog_url())?;
             let artifact = catalog
                 .images
                 .get(&name)

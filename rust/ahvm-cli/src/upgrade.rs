@@ -5,7 +5,6 @@ use std::{
     path::PathBuf,
     process::{Command, Stdio},
 };
-pub const CATALOG: &str = "https://images.ahvm.app/catalog.json";
 pub fn platform() -> Result<String> {
     let os = match std::env::consts::OS {
         "macos" => "darwin",
@@ -33,7 +32,7 @@ pub fn run() -> Result<i32> {
                 .into(),
         );
     }
-    let catalog = distribution::catalog(CATALOG)?;
+    let catalog = distribution::catalog(&distribution::catalog_url())?;
     let artifact = catalog
         .cli
         .get(&platform()?)
@@ -117,7 +116,7 @@ pub fn refresh() -> Result<i32> {
     if recent {
         return Ok(0);
     }
-    let version = distribution::catalog(CATALOG)
+    let version = distribution::catalog(&distribution::catalog_url())
         .ok()
         .and_then(|c| c.cli.get(&platform().ok()?).map(|a| a.version.clone()));
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;

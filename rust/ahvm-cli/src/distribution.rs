@@ -19,6 +19,8 @@ pub struct Artifact {
     pub size: u64,
     pub unpacked_size: u64,
     pub guest_abi: u32,
+    #[serde(default)]
+    pub state_abi: u32,
 }
 #[derive(Deserialize)]
 pub struct Catalog {
@@ -148,6 +150,12 @@ pub fn unpack_gzip(source: &Path, output: &mut File, size: u64) -> Result<()> {
     output.sync_all()?;
     Ok(())
 }
+
+pub fn catalog_url() -> String {
+    std::env::var("AHVM_CATALOG_URL")
+        .unwrap_or_else(|_| "https://images.ahvm.app/catalog.json".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
