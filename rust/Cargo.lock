@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ahvm-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "ahvm-daemon"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ahvm-engine",
  "ahvm-store",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "ahvm-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ahvm-proto",
  "base64 0.22.1",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "ahvm-forge"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ahvm-proto",
  "base64 0.22.1",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "ahvm-netd"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ahvm-proto",
  "nix",
@@ -98,11 +98,11 @@ dependencies = [
 
 [[package]]
 name = "ahvm-proto"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "ahvm-store"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rusqlite",
  "serde",
@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "ahvm-vmm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "imago",
  "libc",

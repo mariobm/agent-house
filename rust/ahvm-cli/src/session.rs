@@ -31,7 +31,7 @@ pub fn attach(api: &Api, id: &str, sid: &str, seq: u64) -> Result<i32> {
     let _raw = RawTerminal;
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         let config=WebSocketConfig::default().max_message_size(Some(4*1024*1024)).max_frame_size(Some(4*1024*1024));
-        let (mut socket,_)=tokio::time::timeout(Duration::from_secs(10),tokio_tungstenite::connect_async_with_config(request,Some(config),false)).await??;
+        let (mut socket,_)=tokio::time::timeout(Duration::from_secs(10),tokio_tungstenite::connect_async_with_config(request,Some(config),true)).await??;
         let (tx,mut rx)=tokio::sync::mpsc::channel(8);
         // Raw stdin retains escape sequences and paste bytes. This bounded
         // thread never owns terminal cleanup; process exit releases its read.

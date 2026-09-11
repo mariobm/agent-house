@@ -73,6 +73,24 @@ fn kvm_backend_lifecycle_and_recovery() {
     assert_eq!(r.stdout, "hello");
     assert!(!r.truncated);
 
+    // A live session emits output and stays open. Interactive reads must
+    // return the marker before EOF/the two-second guest timeout.
+    let live = be
+        .session_create(&info.id, &sh("printf ready; sleep 5"), false)
+        .unwrap();
+    let began = Instant::now();
+    let chunk = be
+        .session_poll(&info.id, &live, 0, Duration::from_secs(3))
+        .unwrap();
+    assert_eq!(chunk.data, b"ready");
+    assert!(!chunk.eof);
+    assert_eq!(chunk.next_seq, 5);
+    assert!(
+        began.elapsed() < Duration::from_secs(1),
+        "output was buffered until the drain deadline"
+    );
+    be.session_delete(&info.id, &live).unwrap();
+
     // Slow exec: a valid reply arriving after the old 15s readiness
     // timeout must be waited out, not abandoned (forge allows 300s).
     let r = be.exec(&info.id, &sh("sleep 16; printf slow")).unwrap();

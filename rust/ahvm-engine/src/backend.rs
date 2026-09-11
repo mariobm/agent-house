@@ -89,6 +89,17 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
         from_seq: u64,
         budget: Duration,
     ) -> Result<SessionChunk>;
+    /// Interactive read: return as soon as output is available, without
+    /// waiting to fill the drain budget. Cursors retain normal read semantics.
+    fn session_poll(
+        &self,
+        id: &str,
+        session_id: &str,
+        from_seq: u64,
+        budget: Duration,
+    ) -> Result<SessionChunk> {
+        self.session_read(id, session_id, from_seq, budget)
+    }
     fn session_input(&self, id: &str, session_id: &str, data: &[u8]) -> Result<u64>;
     fn session_kill(&self, id: &str, session_id: &str) -> Result<()>;
     fn session_delete(&self, id: &str, session_id: &str) -> Result<()>;

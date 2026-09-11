@@ -199,12 +199,19 @@ async fn main() {
         });
     }
     eprintln!("ahvm-daemon: listening on {addr}");
+    use axum::serve::ListenerExt;
     axum::serve(
         tokio::net::TcpListener::bind(addr)
             .await
             .unwrap_or_else(|e| {
                 eprintln!("ahvm-daemon: bind {addr}: {e}");
                 std::process::exit(1);
+            })
+            .tap_io(|stream| {
+                // Interactive WebSocket frames should leave immediately.
+                if let Err(error) = stream.set_nodelay(true) {
+                    eprintln!("ahvm-daemon: TCP_NODELAY: {error}");
+                }
             }),
         ahvm_daemon::build_router(state),
     )

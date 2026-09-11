@@ -215,76 +215,67 @@ pub async fn stream(
 async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: WebSocket) {
     use futures_util::{SinkExt, StreamExt};
     let (mut tx, mut rx) = socket.split();
-    // Upper bound per drain; idle guests just long-poll at this cadence.
+    // Keep exactly one output read in flight while admitting keyboard input.
+    // Dropping a blocking-task handle cannot cancel the guest RPC, so never
+    // restart it merely because input arrived.
     let budget = Duration::from_millis(1000);
     'outer: loop {
-        // Pump pending input without blocking the output drain.
-        while let Ok(incoming) = tokio::time::timeout(Duration::from_millis(0), rx.next()).await {
-            let data: Option<Vec<u8>> = match incoming {
-                Some(Ok(Message::Text(t))) => serde_json::from_str::<serde_json::Value>(&t)
-                    .ok()
-                    .and_then(|v| v["data_b64"].as_str().map(str::to_string))
-                    .and_then(|b| {
-                        use base64::Engine;
-                        base64::engine::general_purpose::STANDARD.decode(&b).ok()
-                    }),
-                Some(Ok(Message::Binary(b))) => Some(b.to_vec()),
-                // Control frames are protocol, not data: answer pings so
-                // idle terminals are not timed out by intermediaries.
-                Some(Ok(Message::Ping(p))) => {
-                    if tx.send(Message::Pong(p)).await.is_err() {
-                        break 'outer;
-                    }
-                    None
-                }
-                Some(Ok(Message::Pong(_))) => None,
-                // Client close, error, or end of stream: detach (the guest
-                // session itself survives; attach is just a view).
-                _ => break 'outer,
-            };
-            if let Some(data) = data {
-                // Input admits per operation, never per connection: a
-                // stopping box refuses with a reported error instead of
-                // silently dropping, and idle sockets still go cold. The
-                // guard lives across the call below (not moved into it).
-                let Some(_guard) = state.activity.begin(&id) else {
-                    let frame = serde_json::json!({
-                        "error": "sandbox is stopping; input rejected",
-                    });
-                    if tx
-                        .send(Message::Text(frame.to_string().into()))
-                        .await
-                        .is_err()
-                    {
-                        break 'outer;
-                    }
-                    continue;
-                };
-                // Input counts as activity (but never guards: an open idle
-                // socket must not pin its VM forever).
-                state.activity.touch(&id);
-                let backend = state.backend.clone();
-                let (id, sid) = (id.clone(), sid.clone());
-                let _ =
-                    tokio::task::spawn_blocking(move || backend.session_input(&id, &sid, &data))
-                        .await;
-            }
-        }
-        // Blocking output drain (up to the budget), then forward.
         let backend = state.backend.clone();
-        let touch_id = id.clone();
-        let (id, sid) = (id.clone(), sid.clone());
-        let chunk =
-            tokio::task::spawn_blocking(move || backend.session_read(&id, &sid, seq, budget)).await;
+        let (read_id, read_sid) = (id.clone(), sid.clone());
+        let mut output = tokio::task::spawn_blocking(move || {
+            backend.session_poll(&read_id, &read_sid, seq, budget)
+        });
+        let chunk = loop {
+            tokio::select! {
+                chunk = &mut output => break chunk,
+                incoming = rx.next() => {
+                    let data: Option<Vec<u8>> = match incoming {
+                        Some(Ok(Message::Text(t))) => serde_json::from_str::<serde_json::Value>(&t)
+                            .ok()
+                            .and_then(|v| v["data_b64"].as_str().map(str::to_string))
+                            .and_then(|b| {
+                                use base64::Engine;
+                                base64::engine::general_purpose::STANDARD.decode(&b).ok()
+                            }),
+                        Some(Ok(Message::Binary(b))) => Some(b.to_vec()),
+                        Some(Ok(Message::Ping(p))) => {
+                            if tx.send(Message::Pong(p)).await.is_err() { break 'outer; }
+                            None
+                        }
+                        Some(Ok(Message::Pong(_))) => None,
+                        _ => break 'outer,
+                    };
+                    if let Some(data) = data {
+                        let Some(guard) = state.activity.begin(&id) else {
+                            let frame = serde_json::json!({"error": "sandbox is stopping; input rejected"});
+                            if tx.send(Message::Text(frame.to_string().into())).await.is_err() { break 'outer; }
+                            continue;
+                        };
+                        let backend = state.backend.clone();
+                        let (id, sid) = (id.clone(), sid.clone());
+                        let result = tokio::task::spawn_blocking(move || {
+                            // Admission lasts until the RPC actually completes,
+                            // even if this WebSocket task is cancelled.
+                            let _guard = guard;
+                            backend.session_input(&id, &sid, &data)
+                        }).await;
+                        if !matches!(result, Ok(Ok(_))) {
+                            let frame = serde_json::json!({"error": "session input failed"});
+                            let _ = tx.send(Message::Text(frame.to_string().into())).await;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        };
         let chunk = match chunk {
             Ok(Ok(c)) => c,
             _ => break,
         };
         seq = chunk.next_seq;
         if !chunk.data.is_empty() || chunk.eof {
-            // Output counts as activity; empty idle drains deliberately do
-            // not, so a forgotten-open terminal still goes cold.
-            state.activity.touch(&touch_id);
+            // An idle terminal must not keep its VM awake.
+            state.activity.touch(&id);
             use base64::Engine;
             let frame = serde_json::json!({
                 "data_b64": base64::engine::general_purpose::STANDARD.encode(&chunk.data),
