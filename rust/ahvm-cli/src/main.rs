@@ -12,6 +12,11 @@ fn main() {
         Ok(code) => code,
         Err(e) => {
             eprintln!("ahvm: {e}");
+            let mut source = e.source();
+            while let Some(cause) = source {
+                eprintln!("  caused by: {cause}");
+                source = cause.source();
+            }
             1
         }
     };
