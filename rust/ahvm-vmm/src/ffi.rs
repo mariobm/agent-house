@@ -186,6 +186,12 @@ pub fn enable_gpu(cid: u32) {
         unsafe { krun::krun_set_gpu_options(cid, FLAGS) },
         "krun_set_gpu_options",
     );
+    // Aquamarine still requires DRM CRTC capabilities with its headless flag.
+    // A virtual scanout enables KMS; the host keeps the no-op display backend.
+    let display = unsafe { krun::krun_add_display(cid, 1280, 720) };
+    if display < 0 {
+        check(display, "krun_add_display");
+    }
 }
 
 #[cfg(not(all(feature = "gpu", target_os = "linux")))]

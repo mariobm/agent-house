@@ -210,7 +210,10 @@ fn run(spec: VmSpec) {
     }
 
     krun::add_console(cid);
-    krun::add_vsock(cid, spec.net_uds.is_empty());
+    // Desktop services need native guest sockets. The bundled TSI fallback
+    // faults in tsi_dgram_setsockopt during udev startup; GPU experiments use
+    // explicit vsock bridges and optionally netd, never transparent host INET.
+    krun::add_vsock(cid, spec.net_uds.is_empty() && !spec.gpu);
 
     if !spec.net_uds.is_empty() {
         let mac = parse_mac(&spec.net_mac).unwrap_or_else(|| {

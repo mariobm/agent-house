@@ -59,11 +59,11 @@ probe image replaces with its test entrypoint.
 
 ## Boundaries and next steps
 
-This proves guest-to-host hardware rendering. It does not prove Hyprland,
-Omarchy, display capture, input, clipboard, audio, Vulkan or desktop streaming.
-There are no scanouts configured yet, and the guest reports KMS disabled.
-Next, qualify a headless Hyprland compositor and its capture/input path before
-adding an Omarchy image and packaged viewer.
+The follow-up [Hyprland desktop experiment](desktop/README.md) now verifies
+hardware-rendered Wayland, VNC capture, keyboard and pointer input. GPU mode
+now adds a virtual scanout to enable KMS and disables the legacy TSI INET
+fallback. Omarchy, clipboard, audio, Vulkan, desktop performance and the
+packaged viewer remain unqualified.
 
 GPU rendering currently runs in the VMM process, with access to the host render
 node. Production support needs an explicit isolation/permission model and
