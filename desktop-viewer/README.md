@@ -99,21 +99,22 @@ this release. A future `ahvm host add local --local --install` interface would
 need a qualified macOS runtime, matching architecture images and local service
 management. It is not necessary to SSH into a Mac to use the client.
 
-### Keyboard capture (preview)
+### Focused keyboard forwarding (preview)
 
-Click **Capture keyboard** while connected. Both Mac Command keys then map to
-Linux Super. Click **Release keyboard** or press **Ctrl+Option+Esc** on a Mac
-(Ctrl+Alt+Esc elsewhere) to release. Capture also releases when the app loses
-focus, disconnects or closes; refocusing never re-enables it automatically.
+The desktop automatically captures delivered keyboard events when connected and
+focused. There is no toggle. Both Mac Command keys map to Linux Super; the full
+Control+Option+Shift+Command combination (Raycast Hyper/Caps Lock) is collapsed
+to a single Super modifier. Hyper letter/digit shortcuts use the physical key
+rather than the Shift/Option-generated glyph. Partial modifier release does not
+leak Control/Alt/Shift into the guest.
 
-On macOS, app-scoped Carbon symbolic-hotkey suppression requires Accessibility
-permission for **AHVM Desktop** in System Settings → Privacy & Security →
-Accessibility. Without that permission the UI explicitly reports limited
-capture: Command mapping works for delivered events, but macOS can retain its
-reserved shortcuts. No global event tap, keystroke logging, automatic permission
-grant or Input Monitoring permission is used. Accessibility shortcuts remain
-available even in native capture mode. Some OS combinations may remain reserved.
+Click outside the viewer to release. Ctrl+Option+Esc also releases until the
+next focus or desktop click. Disconnect/close release all held keys. The header
+shows focus/capture state.
 
-The preview is unsigned; rebuilt binaries may need their Accessibility grant
-renewed. Full reserved-shortcut behavior requires testing after the user grants
-permission. Keyboard-layout translation is separate from shortcut capture.
+macOS symbolic-hotkey suppression still requires Accessibility permission for
+AHVM Desktop. Third-party global shortcuts such as Raycast may intercept keys
+before they reach the viewer even with this permission. We do not change Raycast
+bindings or install a global event tap. Keyboard layout translation remains
+separate from shortcut capture. Full macOS/global-shortcut behavior and the
+user's real Raycast Hyper remapper need manual qualification.
