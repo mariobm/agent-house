@@ -1,0 +1,9 @@
+[Unit]
+Description=AHVM private WayVNC server
+[Service]
+UMask=0077
+ExecStart=/usr/bin/wayvnc -u -f 30 %t/vnc.sock
+ExecStartPost=/usr/local/bin/ahvm-desktop-wait %t/vnc.sock
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=35

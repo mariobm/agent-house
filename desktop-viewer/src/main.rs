@@ -1,4 +1,11 @@
 //! Optional native viewer. Long-lived API credentials stay outside the WebView.
+mod keyboard_capture;
+
+#[derive(Debug)]
+enum UserEvent {
+    Capture(bool),
+}
+
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -14,7 +21,7 @@ use serde::Deserialize;
 use std::{io::Read, sync::Arc, time::Duration};
 use tao::{
     event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::{ControlFlow, EventLoopBuilder},
     window::WindowBuilder,
 };
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as RemoteMessage};
@@ -75,7 +82,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
     let window = WindowBuilder::new()
         .with_title(title)
         .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 760.0))
@@ -85,10 +93,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_url(&page)
         .with_navigation_handler(move |url| url == allowed)
         .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
-        .with_ipc_handler(|request| {
-            if matches!(request.body().as_str(), "connected" | "disconnected") {
-                eprintln!("desktop: {}", request.body());
+        .with_ipc_handler(move |request| match request.body().as_str() {
+            "capture:on" => {
+                let _ = proxy.send_event(UserEvent::Capture(true));
             }
+            "capture:off" | "disconnected" => {
+                let _ = proxy.send_event(UserEvent::Capture(false));
+            }
+            "connected" => eprintln!("desktop: connected"),
+            _ => {}
         })
         .with_devtools(false);
     #[cfg(not(target_os = "linux"))]
@@ -99,15 +112,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use wry::WebViewBuilderExtUnix;
         builder.build_gtk(window.default_vbox().ok_or("missing GTK container")?)?
     };
+    let mut capture = keyboard_capture::KeyboardCapture::default();
     event_loop.run(move |event, _, flow| {
         let _keep_alive = (&webview, &runtime);
         *flow = ControlFlow::Wait;
-        if let Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } = event
-        {
-            *flow = ControlFlow::Exit;
+        let mode = match event {
+            Event::UserEvent(UserEvent::Capture(true)) if window.is_focused() => {
+                Some(if capture.enable() {
+                    "native"
+                } else {
+                    "limited"
+                })
+            }
+            Event::UserEvent(UserEvent::Capture(_))
+            | Event::WindowEvent {
+                event: WindowEvent::Focused(false),
+                ..
+            } => {
+                capture.release();
+                Some("off")
+            }
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            }
+            | Event::LoopDestroyed => {
+                capture.release();
+                *flow = ControlFlow::Exit;
+                None
+            }
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            // Fixed enum strings only. Never interpolate guest or credential data.
+            let _ = webview.evaluate_script(&format!("window.ahvmCaptureState?.('{mode}')"));
         }
     });
 }

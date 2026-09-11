@@ -98,3 +98,24 @@ viewer against a remote Linux host; Mac-local provisioning is not supported by
 this release. A future `ahvm host add local --local --install` interface would
 need a qualified macOS runtime, matching architecture images and local service
 management. It is not necessary to SSH into a Mac to use the client.
+
+### Focused keyboard forwarding (preview)
+
+The desktop automatically captures delivered keyboard events when connected and
+focused. There is no toggle. Both Mac Command keys map to Linux Super; the full
+Control+Option+Shift+Command combination (Raycast Hyper/Caps Lock) is collapsed
+to a single Super modifier. Hyper letter/digit shortcuts use the physical key
+rather than the Shift/Option-generated glyph. Partial modifier release does not
+leak Control/Alt/Shift into the guest. This conversion applies only on macOS.
+Linux forwards its original modifiers, including Super and AltGr, without Hyper conversion.
+
+Click outside the viewer to release. Ctrl+Option+Esc also releases until the
+next focus or desktop click (Ctrl+Alt+Esc on Linux). Disconnect/close release all held keys. The header
+shows focus/capture state.
+
+macOS symbolic-hotkey suppression still requires Accessibility permission for
+AHVM Desktop. Third-party global shortcuts such as Raycast may intercept keys
+before they reach the viewer even with this permission. We do not change Raycast
+bindings or install a global event tap. Keyboard layout translation remains
+separate from shortcut capture. Full macOS/global-shortcut behavior and the
+user's real Raycast Hyper remapper need manual qualification.
