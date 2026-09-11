@@ -1756,6 +1756,109 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+impl KrucibleBackend {
+    fn read_session_output(
+        &self,
+        id: &str,
+        session_id: &str,
+        from_seq: u64,
+        budget: Duration,
+        first_chunk: bool,
+    ) -> Result<SessionChunk> {
+        let dir = self.live_dir(id)?;
+        let sock = forge_sock(&dir);
+        let mut c = connect_rpc(&sock, CONNECT_BUDGET)?;
+        c.set_read_timeout(Some(budget)).map_err(Error::Io)?;
+        // Bound the guest side slightly below our own budget so the forge
+        // attach always closes first: otherwise every idle poll would leak
+        // a guest thread holding a dead connection (see Attach timeout_ms).
+        let guest_ms = budget
+            .saturating_sub(Duration::from_millis(500))
+            .as_millis() as u64;
+        let body = serde_json::json!({ "op": "attach", "session_id": session_id, "from_seq": from_seq, "timeout_ms": guest_ms });
+        let payload = serde_json::to_vec(&body)?;
+        write_frame(
+            &mut c,
+            &Frame {
+                msg_type: FrameType::SessionReq,
+                payload,
+            },
+        )
+        .map_err(|e| Error::Control(format!("session attach write: {e}")))?;
+        // Drain SessionData frames until EOF or the budget (read timeout)
+        // runs out; a timeout returns whatever arrived (eof: false).
+        // Resume cursors come from the frames (seq + bytes), never from
+        // client-side byte counting: scrollback eviction makes counting
+        // wrong and silently duplicated.
+        let mut r = BufReader::new(c.try_clone().map_err(Error::Io)?);
+        let mut out = Vec::new();
+        let mut exit_code = None;
+        let mut next_seq = from_seq;
+        let mut truncated = false;
+        let deadline = Instant::now() + budget;
+        loop {
+            if Instant::now() > deadline {
+                return Ok(SessionChunk {
+                    data: out,
+                    eof: false,
+                    exit_code,
+                    next_seq,
+                    truncated,
+                });
+            }
+            let f = match read_frame(&mut r) {
+                Ok(f) => f,
+                Err(_) => {
+                    return Ok(SessionChunk {
+                        data: out,
+                        eof: false,
+                        exit_code,
+                        next_seq,
+                        truncated,
+                    })
+                }
+            };
+            if f.msg_type == FrameType::Error {
+                let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap_or_default();
+                let msg = v["message"].as_str().unwrap_or("forge error").to_string();
+                if msg.starts_with("no such session") {
+                    return Err(Error::NotFound(msg));
+                }
+                return Err(Error::Control(msg));
+            }
+            if f.msg_type != FrameType::SessionData {
+                return Err(Error::Control(format!(
+                    "want SessionData, got {:?}",
+                    f.msg_type
+                )));
+            }
+            let v: serde_json::Value = serde_json::from_slice(&f.payload)
+                .map_err(|e| Error::Control(format!("session data JSON: {e}")))?;
+            let bytes = forge_b64(&v, "data_b64")?;
+            let seq = v["seq"].as_u64().unwrap_or(next_seq);
+            if seq > next_seq {
+                truncated = true;
+            }
+            if v["truncated"].as_bool().unwrap_or(false) {
+                truncated = true;
+            }
+            next_seq = seq.saturating_add(bytes.len() as u64);
+            out.extend_from_slice(&bytes);
+            exit_code = v["exit_code"].as_i64().map(|c| c as i32).or(exit_code);
+            let eof = v["eof"].as_bool().unwrap_or(false);
+            if eof || (first_chunk && !out.is_empty()) {
+                return Ok(SessionChunk {
+                    data: out,
+                    eof,
+                    exit_code,
+                    next_seq,
+                    truncated,
+                });
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2094,108 +2197,5 @@ mod tests {
             Err(Error::InvalidState(_))
         ));
         assert!(vm.join("state.json").exists());
-    }
-}
-
-impl KrucibleBackend {
-    fn read_session_output(
-        &self,
-        id: &str,
-        session_id: &str,
-        from_seq: u64,
-        budget: Duration,
-        first_chunk: bool,
-    ) -> Result<SessionChunk> {
-        let dir = self.live_dir(id)?;
-        let sock = forge_sock(&dir);
-        let mut c = connect_rpc(&sock, CONNECT_BUDGET)?;
-        c.set_read_timeout(Some(budget)).map_err(Error::Io)?;
-        // Bound the guest side slightly below our own budget so the forge
-        // attach always closes first: otherwise every idle poll would leak
-        // a guest thread holding a dead connection (see Attach timeout_ms).
-        let guest_ms = budget
-            .saturating_sub(Duration::from_millis(500))
-            .as_millis() as u64;
-        let body = serde_json::json!({ "op": "attach", "session_id": session_id, "from_seq": from_seq, "timeout_ms": guest_ms });
-        let payload = serde_json::to_vec(&body)?;
-        write_frame(
-            &mut c,
-            &Frame {
-                msg_type: FrameType::SessionReq,
-                payload,
-            },
-        )
-        .map_err(|e| Error::Control(format!("session attach write: {e}")))?;
-        // Drain SessionData frames until EOF or the budget (read timeout)
-        // runs out; a timeout returns whatever arrived (eof: false).
-        // Resume cursors come from the frames (seq + bytes), never from
-        // client-side byte counting: scrollback eviction makes counting
-        // wrong and silently duplicated.
-        let mut r = BufReader::new(c.try_clone().map_err(Error::Io)?);
-        let mut out = Vec::new();
-        let mut exit_code = None;
-        let mut next_seq = from_seq;
-        let mut truncated = false;
-        let deadline = Instant::now() + budget;
-        loop {
-            if Instant::now() > deadline {
-                return Ok(SessionChunk {
-                    data: out,
-                    eof: false,
-                    exit_code,
-                    next_seq,
-                    truncated,
-                });
-            }
-            let f = match read_frame(&mut r) {
-                Ok(f) => f,
-                Err(_) => {
-                    return Ok(SessionChunk {
-                        data: out,
-                        eof: false,
-                        exit_code,
-                        next_seq,
-                        truncated,
-                    })
-                }
-            };
-            if f.msg_type == FrameType::Error {
-                let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap_or_default();
-                let msg = v["message"].as_str().unwrap_or("forge error").to_string();
-                if msg.starts_with("no such session") {
-                    return Err(Error::NotFound(msg));
-                }
-                return Err(Error::Control(msg));
-            }
-            if f.msg_type != FrameType::SessionData {
-                return Err(Error::Control(format!(
-                    "want SessionData, got {:?}",
-                    f.msg_type
-                )));
-            }
-            let v: serde_json::Value = serde_json::from_slice(&f.payload)
-                .map_err(|e| Error::Control(format!("session data JSON: {e}")))?;
-            let bytes = forge_b64(&v, "data_b64")?;
-            let seq = v["seq"].as_u64().unwrap_or(next_seq);
-            if seq > next_seq {
-                truncated = true;
-            }
-            if v["truncated"].as_bool().unwrap_or(false) {
-                truncated = true;
-            }
-            next_seq = seq.saturating_add(bytes.len() as u64);
-            out.extend_from_slice(&bytes);
-            exit_code = v["exit_code"].as_i64().map(|c| c as i32).or(exit_code);
-            let eof = v["eof"].as_bool().unwrap_or(false);
-            if eof || (first_chunk && !out.is_empty()) {
-                return Ok(SessionChunk {
-                    data: out,
-                    eof,
-                    exit_code,
-                    next_seq,
-                    truncated,
-                });
-            }
-        }
     }
 }
