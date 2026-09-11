@@ -10,7 +10,7 @@ curl -fsSL https://ahvm.app/install.sh | bash
 ahvm host add home --ssh root@192.168.1.50 --install
 ahvm create dev --cpus 2 --memory 4096
 ahvm exec dev -- bun --version
-ahvm shell dev
+ahvm shell dev                  # Bash by default; --shell /bin/sh overrides it
 ```
 
 The curl installer uses `~/.local/bin` (override `AHVM_BIN_DIR`) and prints the
@@ -32,6 +32,8 @@ Sandbox names are scoped to the selected host. `ahvm create` generates a
 combining an explicit endpoint with `--host` is rejected.
 
 ## Images
+
+Maintainers: see [building and publishing images](IMAGE-PUBLISHING.md).
 
 ```sh
 ahvm image available             # Published catalog
