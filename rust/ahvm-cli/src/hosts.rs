@@ -284,27 +284,6 @@ impl Connection {
         Ok(result)
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn destinations_reject_shell_and_option_injection() {
-        for value in [
-            "-oProxyCommand=sh",
-            "root@host;id",
-            "a b",
-            "x\n",
-            "$(id)",
-            "",
-        ] {
-            assert!(!valid(value));
-        }
-        for value in ["agent_house", "root@192.168.1.50", "root@[::1]"] {
-            assert!(valid(value));
-        }
-    }
-}
-
 /// Image administration happens on the selected host, not the client machine.
 pub fn image(host: &Host, command: crate::images::Images) -> Result<i32> {
     validate(host)?;
@@ -347,4 +326,25 @@ fn provision(host: &Host, upgrade: bool) -> Result<i32> {
         .ok_or("missing SSH stdin")?
         .write_all(script.as_bytes())?;
     Ok(child.wait()?.code().unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn destinations_reject_shell_and_option_injection() {
+        for value in [
+            "-oProxyCommand=sh",
+            "root@host;id",
+            "a b",
+            "x\n",
+            "$(id)",
+            "",
+        ] {
+            assert!(!valid(value));
+        }
+        for value in ["agent_house", "root@192.168.1.50", "root@[::1]"] {
+            assert!(valid(value));
+        }
+    }
 }

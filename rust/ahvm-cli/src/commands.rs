@@ -233,19 +233,18 @@ pub fn run(cli: Cli) -> Result<i32> {
         .as_ref()
         .map(crate::hosts::Connection::open)
         .transpose()?;
-    let token = match cli.token_file {
-        Some(path) => std::fs::read_to_string(path)?.trim().to_owned(),
-        None => std::env::var("AHVM_TOKEN").unwrap_or_default(),
+    let token = match connection.as_ref() {
+        Some(connection) => connection.token.clone(),
+        None => match cli.token_file {
+            Some(path) => std::fs::read_to_string(path)?.trim().to_owned(),
+            None => std::env::var("AHVM_TOKEN").unwrap_or_default(),
+        },
     };
     let endpoint = connection
         .as_ref()
         .map(|c| c.endpoint.as_str())
         .or(cli.endpoint.as_deref())
         .unwrap_or("http://127.0.0.1:8080");
-    let token = connection
-        .as_ref()
-        .map(|c| c.token.clone())
-        .unwrap_or(token);
     let api = Api::new(endpoint, token, cli.timeout)?;
     let response = match cli.command {
         Command::Host(_) | Command::Image(_) | Command::Upgrade | Command::CheckUpdates => {

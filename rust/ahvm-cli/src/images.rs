@@ -68,7 +68,13 @@ pub fn run(command: Images) -> Result<i32> {
             if artifact.guest_abi != 1 {
                 return Err("image guest-agent ABI is not supported by this runtime".into());
             }
+            let new_directory = !root.exists();
             fs::create_dir_all(&root)?;
+            #[cfg(unix)]
+            if new_directory {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&root, fs::Permissions::from_mode(0o755))?;
+            }
             let lock = fs::OpenOptions::new()
                 .create(true)
                 .truncate(false)
