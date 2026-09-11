@@ -61,6 +61,62 @@ def health():
     raise RuntimeError('Upgraded daemon failed health check')
 
 
+def upgrade_runtime(stage, temp):
+    backup = PREFIX.with_name(PREFIX.name + '.previous')
+    older = temp / 'older-rollback'
+    # Stabilize legacy bundled images before rotating runtime directories.
+    image = PREFIX / 'share/base.ext4'
+    link = Path(os.readlink(image)) if image.is_symlink() else None
+    if link is None or not link.is_absolute() or PREFIX in link.parents or backup in link.parents:
+        cache = Path('/var/lib/ahvm-images')
+        cache.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix='retained-', suffix='.ext4', dir=cache, delete=False) as saved:
+            retained = Path(saved.name)
+        try:
+            run('cp', '--reflink=auto', '--sparse=always', str(image.resolve()), str(retained))
+            retained.chmod(0o644)
+        except BaseException:
+            retained.unlink(missing_ok=True)
+            raise
+        link = retained
+    run('systemctl', 'stop', 'ahvm-rust')
+    db_backup = temp / 'database'
+    saved_database = False
+    swapped = False
+    try:
+        db_backup.mkdir()
+        for p in DATA.glob('daemon.db*'):
+            shutil.copy2(p, db_backup / p.name)
+            os.chown(db_backup / p.name, p.stat().st_uid, p.stat().st_gid)
+        saved_database = True
+        if backup.exists():
+            backup.rename(older)
+        PREFIX.rename(backup)
+        swapped = True
+        stage.rename(PREFIX)
+        (PREFIX / 'share/base.ext4').unlink()
+        (PREFIX / 'share/base.ext4').symlink_to(link)
+        run('systemctl', 'start', 'ahvm-rust')
+        health()
+    except BaseException:
+        run('systemctl', 'stop', 'ahvm-rust')
+        if swapped:
+            if PREFIX.exists():
+                PREFIX.rename(temp / 'failed-runtime')
+            backup.rename(PREFIX)
+        if older.exists():
+            older.rename(backup)
+        if saved_database:
+            for p in DATA.glob('daemon.db*'):
+                p.unlink()
+            for p in db_backup.iterdir():
+                shutil.copy2(p, DATA / p.name)
+                os.chown(DATA / p.name, p.stat().st_uid, p.stat().st_gid)
+        run('systemctl', 'start', 'ahvm-rust')
+        raise
+    shutil.copytree(db_backup, backup / 'rollback-database')
+
+
 def main():
     upgrade = sys.argv[1:] == ['--upgrade']
     if sys.argv[1:] and not upgrade:
@@ -123,43 +179,7 @@ def main():
                 Path('/usr/local/bin/ahvm').symlink_to(PREFIX / 'bin/ahvm')
                 health()
             else:
-                backup = Path('/opt/ahvm-rust.previous')
-                if backup.exists():
-                    raise ValueError('Previous rollback runtime exists; archive it before another upgrade')
-                # Keep the rollback point and SQLite files together. Workers are
-                # intentionally preserved by KillMode=process.
-                run('systemctl', 'stop', 'ahvm-rust')
-                db_backup = temp / 'database'
-                db_backup.mkdir()
-                saved_database = False
-                try:
-                    for p in DATA.glob('daemon.db*'):
-                        shutil.copy2(p, db_backup / p.name)
-                        os.chown(db_backup / p.name, p.stat().st_uid, p.stat().st_gid)
-                    saved_database = True
-                    PREFIX.rename(backup)
-                    stage.rename(PREFIX)
-                    # Retain the configured original image; upgrading does not
-                    # change the user's default guest or existing sandboxes.
-                    (PREFIX / 'share/base.ext4').unlink()
-                    (PREFIX / 'share/base.ext4').symlink_to(backup / 'share/base.ext4')
-                    run('systemctl', 'start', 'ahvm-rust')
-                    health()
-                except BaseException:
-                    run('systemctl', 'stop', 'ahvm-rust')
-                    if backup.exists():
-                        if PREFIX.exists():
-                            PREFIX.rename(temp / 'failed-runtime')
-                        backup.rename(PREFIX)
-                    if saved_database:
-                        for p in DATA.glob('daemon.db*'):
-                            p.unlink()
-                        for p in db_backup.iterdir():
-                            shutil.copy2(p, DATA / p.name)
-                            os.chown(DATA / p.name, p.stat().st_uid, p.stat().st_gid)
-                    run('systemctl', 'start', 'ahvm-rust')
-                    raise
-                shutil.copytree(db_backup, backup / 'rollback-database')
+                upgrade_runtime(stage, temp)
             print('AHVM server ready.', flush=True)
 
 
