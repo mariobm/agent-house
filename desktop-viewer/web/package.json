@@ -2,7 +2,7 @@
   "private": true,
   "scripts": {
     "build": "esbuild client.js --bundle --minify --format=esm --outfile=dist/client.js --legal-comments=external",
-    "test": "node modifiers.test.mjs"
+    "test": "node modifiers.test.mjs && node capture.test.mjs"
   },
   "dependencies": {
     "@novnc/novnc": "1.7.0"

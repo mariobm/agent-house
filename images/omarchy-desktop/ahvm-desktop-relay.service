@@ -1,0 +1,12 @@
+[Unit]
+Description=AHVM private desktop vsock relay
+Requires=ahvm-vnc.service
+After=ahvm-vnc.service
+PartOf=ahvm-vnc.service
+[Service]
+ExecStart=/usr/local/bin/desktop-relay
+ExecStartPost=/usr/local/bin/ahvm-desktop-wait %t/ahvm-desktop-ready
+ExecStopPost=/usr/bin/rm -f %t/ahvm-desktop-ready
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=35
