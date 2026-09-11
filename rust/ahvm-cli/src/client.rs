@@ -29,8 +29,13 @@ impl Api {
         if timeout == 0 {
             return Err("timeout must be positive".into());
         }
+        let builder = if base.host_str() == Some("127.0.0.1") || base.host_str() == Some("[::1]") {
+            Client::builder().no_proxy()
+        } else {
+            Client::builder()
+        };
         Ok(Self {
-            client: Client::builder()
+            client: builder
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(timeout))
                 .redirect(reqwest::redirect::Policy::none())

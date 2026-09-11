@@ -1,34 +1,21 @@
 # Rust CLI and Linux installation
 
-The bundle contains `ahvm`, `ahvm-daemon`, `ahvm-vmm`, `ahvm-netd`, static
-`ahvm-forge`, the native library closure and an Ubuntu development ext4 guest image.
-The initial server target is Linux x86_64 with KVM and systemd. Build on the
-oldest Linux/glibc you intend to support; the bundle records the build host's
-glibc version and still uses the destination's glibc/loader. macOS CLI builds
-work; macOS server packaging and Linux arm64 qualification are separate work.
-
-## One-command install
-
-Review the [community/commercial license terms](LICENSING.md), then install on a
-fresh Linux x86_64/KVM/systemd host with glibc 2.35+:
+For the normal Mac/Linux client and SSH workflow, see [remote hosts and upgrades](REMOTE-HOSTS.md).
 
 ```sh
 curl -fsSL https://ahvm.app/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+ahvm host add home --ssh root@YOUR_SERVER_IP --install
 ```
 
-The bootstrap source is `scripts/bootstrap-install.sh`. It downloads a versioned
-bundle directly from the public `agent-house` GitHub release, verifies SHA-256 and internal checksums, and calls the fresh-only
-installer below. It links the CLI into `/usr/local/bin` and starts the service
-unless `--no-start` is supplied. Existing paths are refused. curl, Python 3,
-tar and sha256sum are prerequisites; root or sudo is needed for installation.
-The manifest and website live in the private `mariobm/ahvm-site` repository.
-The public runtime binaries are compiled on Ubuntu 22.04 (glibc 2.35).
+The client is distributed separately from the server runtime and Ubuntu image.
+The server downloads its signed guest image directly from `images.ahvm.app`.
+The qualified server target remains Linux x86_64/KVM/systemd with glibc 2.35+.
+The v0.2.0 CLI and daemon use static musl builds; VMM native dependencies retain
+the glibc 2.35 baseline. macOS server packaging and Linux arm64 qualification
+are separate work. Review [licensing](LICENSING.md) before installation.
 
-Original minimal-bundle verification: full installed KVM acceptance **14.16 seconds** on `agent_house`,
-max two 256 MiB guests; malformed checksum rejected before installation paths
-were created. A fresh install through the live HTTPS endpoint and anonymous
-GitHub download passed the health check; repeat installation was refused.
-The permanent primary service was not changed by these tests.
+The following sections cover manual native builds and direct API configuration.
 
 ## Build and install
 
@@ -164,9 +151,9 @@ first delete all its sandboxes, disable/stop its unit, remove that unit and its
 three install/config/data directories, then run `systemctl daemon-reload`.
 Do not remove a service account while it still owns workers or other installs.
 
-The manual Rust release workflow uses a dedicated self-hosted `ahvm-build` runner
-and never runs on PRs. It builds/checks a native bundle and can publish a
-`rust-v*` tag only when explicitly requested. The Go release path has been retired. Publication remains explicitly deferred.
+The manual release workflow builds standalone Mac clients and a server-only
+archive on the qualified native build runner. Use the signed publisher described
+in [REMOTE-HOSTS.md](REMOTE-HOSTS.md) to promote assets and update Homebrew.
 Before cutover, test a fresh install and restart/recovery through
 the packaged CLI, not binaries from a development checkout.
 
@@ -195,7 +182,6 @@ resize, detach/reattach and exit status passed; an idle attached terminal still
 allowed automatic VM stop. The daemon and workers ran under the dedicated
 service account. The **11 CLI contract tests** passed on macOS and Linux;
 Clippy and formatting passed. Installer checks reject existing paths and a
-tampered bundle before installation. The manual release workflow has not been
-executed or published; the native bundle build and fresh install were tested
+tampered bundle before installation. These historical Phase 6 results predate the split release workflow; the native bundle build and fresh install were tested
 locally on the server. Phase 5's separate two-4-GiB
 network qualification remains documented in `NETWORK-QUALIFICATION.md`.

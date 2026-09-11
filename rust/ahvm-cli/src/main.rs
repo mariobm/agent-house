@@ -1,6 +1,7 @@
 //! Rust control client. Guest argv is passed as an array, never shell-joined.
 mod client;
 mod commands;
+mod hosts;
 mod session;
 
 use clap::Parser;
@@ -11,6 +12,11 @@ fn main() {
         Ok(code) => code,
         Err(e) => {
             eprintln!("ahvm: {e}");
+            let mut source = e.source();
+            while let Some(cause) = source {
+                eprintln!("  caused by: {cause}");
+                source = cause.source();
+            }
             1
         }
     };
@@ -18,3 +24,8 @@ fn main() {
 }
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+mod distribution;
+mod images;
+
+mod upgrade;

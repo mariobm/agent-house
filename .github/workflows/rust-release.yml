@@ -1,58 +1,61 @@
-name: Rust release bundle
+name: Build release assets
 on:
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish this v* tag as a release (otherwise build only)
-        type: boolean
-        default: false
-      prerelease:
-        description: Mark the published release as a prerelease
-        type: boolean
-        default: false
 permissions:
   contents: read
 jobs:
-  bundle:
-    runs-on: [self-hosted, linux, x64, ahvm-build]
-    timeout-minutes: 45
-    permissions:
-      contents: write
+  mac-client:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            platform: darwin-aarch64
+          - runner: macos-15-intel
+            platform: darwin-x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: ./.github/actions/checkout-libkrucible
         with:
           ssh-key: ${{ secrets.LIBKRUCIBLE_SSH_KEY }}
-      - name: Validate publish ref
-        if: inputs.publish
+      - name: Build standalone client
         env:
-          REF: ${{ github.ref }}
-        run: '[[ "$REF" == refs/tags/v[0-9]* || "$REF" == refs/tags/rust-v[0-9]* ]]'
-      - name: Build and check
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked -p ahvm-cli
+          python3 scripts/test-rust-cli.py rust/target/release/ahvm
+          python3 scripts/test-host-cli.py rust/target/release/ahvm
+          mkdir -p "$RUNNER_TEMP/client/bin"
+          cp rust/target/release/ahvm "$RUNNER_TEMP/client/bin/"
+          VERSION=$(rust/target/release/ahvm --version | cut -d' ' -f2)
+          python3 scripts/package-distribution.py "$RUNNER_TEMP/client" dist "$VERSION" "$PLATFORM"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: client-${{ matrix.platform }}
+          path: dist/*
+  server:
+    # The native VMM builder remains an explicitly provisioned Linux host.
+    # Use the qualified glibc 2.35 build environment, not the deployment host.
+    runs-on: [self-hosted, linux, x64, ahvm-build]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: ./.github/actions/checkout-libkrucible
+        with:
+          ssh-key: ${{ secrets.LIBKRUCIBLE_SSH_KEY }}
+      - name: Build runtime without bundling the guest image
         run: |
           set -euo pipefail
           make check
           make test
-          python3 scripts/check-rust-cutover.py
-          scripts/package-rust.sh "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          python3 scripts/test-rust-cli.py "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/bin/ahvm"
-          mkdir -p dist
-          tar --sparse -C "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -czf dist/ahvm-rust-linux-x86_64.tar.gz .
-          (cd dist && sha256sum ahvm-rust-linux-x86_64.tar.gz > SHA256SUMS)
+          AHVM_SKIP_GUEST=1 scripts/package-rust.sh "$RUNNER_TEMP/ahvm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          VERSION=$(rust/target/release/ahvm --version | cut -d' ' -f2)
+          python3 scripts/package-distribution.py "$RUNNER_TEMP/ahvm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" dist "$VERSION" linux-x86_64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ahvm-rust-linux-x86_64
+          name: server-linux-x86_64
           path: dist/*
-      - name: Publish release
-        if: inputs.publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-          PRERELEASE: ${{ inputs.prerelease }}
-        run: |
-          args=(--verify-tag --generate-notes)
-          if [[ "$PRERELEASE" == true ]]; then args+=(--prerelease); fi
-          gh release create "$TAG" "${args[@]}" dist/ahvm-rust-linux-x86_64.tar.gz dist/SHA256SUMS
-      - name: Remove build bundle
+      - name: Remove build directory
         if: always()
-        run: rm -rf -- "$RUNNER_TEMP/ahvm-rust-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        run: rm -rf -- "$RUNNER_TEMP/ahvm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
