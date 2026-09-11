@@ -1,0 +1,29 @@
+#!/bin/bash
+set -eu
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/root USER=root LANG=C.UTF-8 TERM=xterm-256color
+mountpoint -q /proc || mount -t proc proc /proc
+printf '%s\n' ahvm > /proc/sys/kernel/hostname
+mountpoint -q /sys || mount -t sysfs sysfs /sys
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /dev/shm /run /tmp
+mountpoint -q /dev/pts || mount -t devpts -o newinstance,ptmxmode=0666,mode=0620 devpts /dev/pts
+ln -sf pts/ptmx /dev/ptmx
+mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
+mountpoint -q /run || mount -t tmpfs -o mode=755,nosuid,nodev tmpfs /run
+install -d -m1777 /tmp/.X11-unix /tmp/.ICE-unix
+chmod 1777 /tmp
+# Fresh runtime files on disk-only restart. Never reuse a stale X lock/socket.
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+install -d -m700 -o developer -g developer /run/ahvm-desktop
+runuser -u developer -- env HOME=/home/developer USER=developer LANG=C.UTF-8 \
+    XDG_RUNTIME_DIR=/run/ahvm-desktop /usr/local/bin/ahvm-desktop-session > /tmp/desktop.log 2>&1 &
+# Create is ready only after the private desktop relay has bound its port.
+for ((i=0;i<300;i++)); do
+    [[ ! -f /run/ahvm-desktop/ready ]] || break
+    sleep 0.1
+done
+[[ -f /run/ahvm-desktop/ready ]] || { cat /tmp/desktop.log >&2; exit 1; }
+cd /workspace
+/usr/local/bin/ahvm-forge &
+while true; do wait -n || true; sleep 1; done

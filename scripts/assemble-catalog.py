@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory() as temp:
     catalog = json.loads(payload)
 for path in sys.argv[3:]:
     metadata = json.loads(Path(path).read_bytes())
-    for kind in ['cli', 'server']:
+    for kind in ['cli', 'client', 'server']:
         catalog.setdefault(kind, {}).update(metadata.get(kind, {}))
 catalog['expires'] = int(time.time()) + 90*86400
 output.write_text(json.dumps(catalog,indent=2)+'\n')

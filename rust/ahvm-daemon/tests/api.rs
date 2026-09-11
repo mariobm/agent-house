@@ -974,3 +974,45 @@ async fn streaming_upload_large_aborted_body_and_ownership() {
         vec![42; 10]
     );
 }
+
+#[tokio::test]
+async fn desktop_upgrade_checks_auth_ownership_and_capability() {
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Error};
+    let app = app();
+    let (status, created) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"desktop-auth"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = created["id"].as_str().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    for (token, expected) in [
+        (None, 401),
+        (Some("invalid"), 401),
+        (Some(TOKEN_B), 404),
+        (Some(TOKEN_A), 422),
+    ] {
+        let mut request = format!("ws://{address}/v1/sandboxes/{id}/desktop/stream")
+            .into_client_request()
+            .unwrap();
+        if let Some(token) = token {
+            request
+                .headers_mut()
+                .insert("Authorization", format!("Bearer {token}").parse().unwrap());
+        }
+        let result = tokio_tungstenite::connect_async(request).await;
+        match result {
+            Err(Error::Http(response)) => assert_eq!(response.status().as_u16(), expected),
+            _ => panic!("desktop upgrade bypassed a gate"),
+        }
+    }
+    server.abort();
+}

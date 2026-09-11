@@ -58,6 +58,10 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
             "preview transport unavailable".into(),
         ))
     }
+    /// Raw VNC stream, only for explicitly desktop-enabled sandboxes.
+    fn desktop_connect(&self, _id: &str) -> Result<std::os::unix::net::UnixStream> {
+        Err(crate::Error::InvalidState("desktop unavailable".into()))
+    }
     fn capabilities(&self) -> Capabilities;
 
     /// Read a registered snapshot's manifest (for `restore`, which takes

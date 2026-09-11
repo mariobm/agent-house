@@ -74,6 +74,25 @@ impl Api {
         Ok(request)
     }
 
+    pub fn desktop_request(
+        &self,
+        id: &str,
+    ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+        let mut request = self.stream_request(id, "", 0)?;
+        let mut url = self.base.clone();
+        url.set_scheme(if self.base.scheme() == "https" {
+            "wss"
+        } else {
+            "ws"
+        })
+        .map_err(|_| "bad WebSocket scheme")?;
+        url.path_segments_mut()
+            .map_err(|_| "invalid endpoint")?
+            .extend(["v1", "sandboxes", id, "desktop", "stream"]);
+        *request.uri_mut() = url.as_str().parse()?;
+        Ok(request)
+    }
+
     pub fn upload(&self, id: &str, path: &str, body: reqwest::blocking::Body) -> Result<Value> {
         if self.token.is_empty() {
             return Err("set AHVM_TOKEN or --token-file to authenticate".into());
@@ -170,4 +189,22 @@ pub fn exit_code(value: &Value) -> Result<i32> {
     } else {
         1
     })
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::*;
+    #[test]
+    fn desktop_identifiers_cannot_change_routes_or_leak_token_into_url() {
+        let api = Api::new("https://example.test", "private-test-token".into(), 30).unwrap();
+        let request = api.desktop_request("dev/other?token=bad").unwrap();
+        assert_eq!(request.uri().scheme_str(), Some("wss"));
+        assert!(request.uri().path().contains("dev%2Fother%3Ftoken=bad"));
+        assert_eq!(request.uri().query(), None);
+        assert!(!request.uri().to_string().contains("private-test-token"));
+        assert_eq!(
+            request.headers()["Authorization"],
+            "Bearer private-test-token"
+        );
+    }
 }

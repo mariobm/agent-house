@@ -32,6 +32,24 @@ cli = output / f'ahvm-{version}-{platform}.gz'
 with (bundle / 'bin/ahvm').open('rb') as src, gzip.open(cli, 'wb', compresslevel=6) as dest:
     shutil.copyfileobj(src, dest)
 records = {'cli': {platform: info(cli, (bundle / 'bin/ahvm').stat().st_size)}, 'server': {}}
+# Keep the legacy single-binary artifact for existing updaters. New clients
+# consume one archive containing the CLI, viewer (when qualified), and notices.
+with tempfile.TemporaryDirectory() as temp:
+    stage = Path(temp)
+    shutil.copy2(bundle / 'bin/ahvm', stage / 'ahvm')
+    if platform.startswith('darwin-'):
+        viewer = bundle / 'desktop'
+        if not (viewer / 'ahvm-desktop').is_file():
+            raise SystemExit('macOS client requires the bundled desktop viewer')
+        shutil.copy2(viewer / 'ahvm-desktop', stage / 'ahvm-desktop')
+        for name in ['AHVM-LICENSE', 'noVNC-LICENSE.txt', 'noVNC-AUTHORS', 'pako-LICENSE']:
+            shutil.copy2(viewer / name, stage / ('ahvm-desktop-' + name))
+    archive = output / f'ahvm-client-{version}-{platform}.tar.gz'
+    with tarfile.open(archive, 'w:gz', format=tarfile.USTAR_FORMAT, compresslevel=6) as tar:
+        for path in sorted(stage.iterdir()):
+            tar.add(path, arcname=path.name)
+    records['client'] = {platform: info(archive, sum(p.stat().st_size for p in stage.iterdir()))}
+
 if platform == 'linux-x86_64':
     for folder in ['bin', 'lib']:
         for binary in (bundle / folder).glob('*'):

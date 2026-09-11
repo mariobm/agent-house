@@ -64,6 +64,12 @@ impl BackendKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxSpec {
     pub name: String,
+    /// Desktop VM with disk-only stop/start.
+    #[serde(default)]
+    pub desktop: bool,
+    /// Host opt-in for the separate experimental Hyprland image.
+    #[serde(default)]
+    pub desktop_gpu: bool,
     pub cpus: u8,
     pub memory_mb: u32,
     pub backend: BackendKind,
@@ -175,6 +181,8 @@ mod tests {
             backend: BackendKind::Krucible,
             root_image: Some("img-root".to_string()),
             kernel_image: None,
+            desktop: false,
+            desktop_gpu: false,
             extra_env: HashMap::from([("FOO".to_string(), "bar".to_string())]),
         };
         let raw = serde_json::to_string(&spec).unwrap();
