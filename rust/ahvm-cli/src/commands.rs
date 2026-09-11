@@ -361,7 +361,7 @@ pub fn run(cli: Cli) -> Result<i32> {
                 Method::POST,
                 &["sandboxes", &id, "sessions"],
                 &[],
-                Some(json!({"argv":["/bin/sh"],"pty":true})),
+                Some(json!({"argv":["/bin/bash"],"pty":true})),
             )?;
             let sid = field(&v, "session_id")?;
             eprintln!("Session {sid}; Ctrl-] detaches. Reattach: ahvm session attach {id} {sid}");
