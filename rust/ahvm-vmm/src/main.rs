@@ -23,6 +23,8 @@ use std::os::raw::c_char;
 #[derive(Debug, Deserialize)]
 struct VmSpec {
     vcpus: u8,
+    #[serde(default)]
+    gpu: bool,
     mem_mib: u32,
     #[serde(default)]
     log_level: u32,
@@ -148,6 +150,10 @@ fn create_overlay(args: &[String]) {
 }
 
 fn run(spec: VmSpec) {
+    if spec.gpu && (!spec.snapshot_dir.is_empty() || !spec.control_socket_uds.is_empty()) {
+        eprintln!("vmm: experimental GPU mode does not support snapshots or control sockets");
+        std::process::exit(1);
+    }
     let mut arena = Arena::default();
     krun::init_log(-1, spec.log_level);
     let ctx = krun::create_ctx();
@@ -158,6 +164,9 @@ fn run(spec: VmSpec) {
     let cid = ctx as u32;
 
     krun::set_vm_config(cid, spec.vcpus, spec.mem_mib);
+    if spec.gpu {
+        krun::enable_gpu(cid);
+    }
 
     let external_kernel = !spec.kernel_image.is_empty();
     if external_kernel {
