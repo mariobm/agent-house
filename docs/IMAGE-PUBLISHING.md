@@ -23,7 +23,7 @@ different program selection, create a separate profile and builder from this
 recipe rather than overwriting the existing one. For Debian, Alpine, etc.,
 replace the base filesystem and package provisioning, adapt init/mount setup,
 and retain the static guest agent. Include Bash for `ahvm shell`; minimal
-images can still launch another shell through `ahvm session create`.
+images can select another shell with `ahvm shell NAME --shell /bin/sh`.
 
 Test the image locally on KVM before publishing: boot, exec, Bash/PTY, files,
 networking, stop/start, snapshot/restore and worker recovery. Images must be

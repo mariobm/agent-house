@@ -76,6 +76,9 @@ enum Command {
     /// Create and attach a persistent PTY shell; Ctrl-] detaches.
     Shell {
         id: String,
+        /// Shell executable in the guest (override for minimal images).
+        #[arg(long, default_value = "/bin/bash")]
+        shell: String,
     },
     #[command(subcommand)]
     Files(Files),
@@ -355,13 +358,13 @@ pub fn run(cli: Cli) -> Result<i32> {
             }
             return exit_code(&v);
         }
-        Command::Shell { id } => {
+        Command::Shell { id, shell } => {
             crate::session::require_terminal()?;
             let v = api.call(
                 Method::POST,
                 &["sandboxes", &id, "sessions"],
                 &[],
-                Some(json!({"argv":["/bin/bash"],"pty":true})),
+                Some(json!({"argv":[shell],"pty":true})),
             )?;
             let sid = field(&v, "session_id")?;
             eprintln!("Session {sid}; Ctrl-] detaches. Reattach: ahvm session attach {id} {sid}");
