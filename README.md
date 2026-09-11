@@ -1,54 +1,143 @@
-# Agent House
+<p align="center">
+  <a href="https://ahvm.app"><img src="https://ahvm.app/og-image-v1.png" alt="AHVM: Give your agents a machine of their own." width="1200"></a>
+</p>
 
-[![AHVM: Give your agents a machine of their own.](https://ahvm.app/og-image-v1.png)](https://ahvm.app)
+<h1 align="center">Agent House</h1>
 
-Self-hosted, stateful Linux microVM sandboxes for running code and coding agents.
-The runtime is Rust, using the pinned `libkrucible` fork of libkrun.
+<p align="center">Stateful Linux microVMs for coding agents, on the hardware you control.</p>
 
-**v0.2.1.** The qualified server target is Linux x86_64 with KVM,
-systemd and glibc 2.35+. Standalone clients are available for Mac and Linux. This is not a claim of
-production readiness for hostile multi-tenant workloads.
+<p align="center">
+  <a href="https://ahvm.app">Website</a> ·
+  <a href="https://ahvm.app/docs/">Documentation</a> ·
+  <a href="https://github.com/mariobm/agent-house/releases">Releases</a>
+</p>
 
-Install the client on your Mac or Linux machine, then connect your server:
+## What is AHVM?
+
+AHVM gives your coding agents persistent Linux machines with interactive shells,
+files, networking and snapshots. Install the client on your Mac or Linux machine;
+your sandboxes run on a Linux server you control. No domain or public API port
+is needed.
+
+The default [Ubuntu image](docs/DEVELOPMENT-IMAGE.md) includes Node.js LTS, Bun,
+Python, Git, build tools, Claude Code, Codex, OpenCode and Pi. Bring your own
+provider credentials. Inside the guest, run `ahvm-dev` to use the developer account.
+
+## 1. Install the client
 
 ```sh
 curl -fsSL https://ahvm.app/install.sh | bash
 export PATH="$HOME/.local/bin:$PATH"
+```
+
+Or use Homebrew:
+
+```sh
+brew install mariobm/ahvm/ahvm
+```
+
+Clients are available for Apple Silicon, Intel Macs and Linux x86_64. The curl
+installer needs curl, gzip and Python 3. You can [inspect the script](https://ahvm.app/install.sh)
+before running it.
+
+## 2. Connect your Linux server
+
+```sh
 ahvm host add home --ssh root@YOUR_SERVER_IP --install
+```
+
+Existing SSH aliases work too: replace `root@YOUR_SERVER_IP` with your alias.
+The server needs Linux x86_64, KVM, systemd, glibc 2.35+, Python 3, OpenSSL 3
+and GNU tar. Use root or an account with passwordless sudo.
+
+Installation downloads the runtime and Ubuntu image. Leave off `--install` to
+connect an already installed server. The first host becomes your default;
+`--host home` selects a host explicitly. SSH handles encryption and host-key
+checks; the admin token is not saved on your laptop.
+
+```sh
+ahvm host list
+ahvm host use home
+```
+
+## 3. Create a workspace
+
+```sh
 ahvm create dev --cpus 2 --memory 4096
+ahvm exec dev -- bun --version
 ahvm shell dev
 ```
 
-Type `exit` to end the Bash session and return to your local terminal. This
-leaves the VM and its files intact; the VM can still stop automatically when
-idle. Run `ahvm shell dev` to open a new shell while it is running, or
-`ahvm start dev` first if it has stopped. To leave the current shell running
-and reattach later, press `Ctrl-]` instead of typing `exit`.
+Omit the name to let AHVM generate one: `ahvm create`.
 
-When you are finished with the sandbox, delete the VM and its working disk:
+Type `exit` to end Bash and return to your local terminal. Your VM and files
+remain. Press `Ctrl-]` instead to detach while keeping the shell session alive.
+Run `ahvm shell dev` to open a new shell, or `ahvm start dev` first if the VM
+has stopped automatically while idle.
+
+## 4. Files and checkpoints
+
+```sh
+printf 'Hello from AHVM\n' > hello.txt
+ahvm files put dev ./hello.txt /workspace/hello.txt
+ahvm files get dev /workspace/hello.txt ./download.txt
+ahvm snapshot create dev before-change
+ahvm stop dev
+ahvm start dev
+```
+
+Uploads replace the guest file only when complete. Stop saves a local disk and
+memory checkpoint; start resumes it. Idle-stop is automatic, and wake is explicit.
+Crash recovery uses the latest checkpoint. Keep off-host backups for important data.
+
+When you are finished, delete the VM and its working disk:
 
 ```sh
 ahvm delete dev
 ```
 
-[Remote hosts and upgrades](docs/REMOTE-HOSTS.md) · [Product website](https://ahvm.app) · [Installation guide](https://ahvm.app/docs/)
+## Images
 
-## Current functionality
+```sh
+ahvm image available
+ahvm image list
+ahvm image pull ubuntu-dev
+ahvm image default ubuntu-dev
+ahvm create another-dev --image ubuntu-dev
+```
 
-- Saved SSH hosts, a default host, signed guest-image downloads and explicit upgrades.
-- Authenticated HTTP API and CLI for sandbox lifecycle and command execution.
-- Persistent sessions and interactive terminals with detach/reattach and resize.
-- Streaming file uploads with atomic replacement, and paginated downloads.
-- Local disk/RAM snapshots, restore-as-new, idle-stop and explicit restart.
-- Worker adoption after daemon restart and recovery from saved checkpoints.
-- Managed outbound networking, explicit private TCP grants and authenticated previews.
+Ubuntu is the automatic default. These are VM disks, not Docker images. Downloads
+are verified against a signed catalog and cached on your server. Updating an
+image affects future sandboxes; existing filesystems and snapshots stay unchanged.
+See [building your own images](docs/IMAGE-PUBLISHING.md).
 
-The default [Ubuntu development image](docs/DEVELOPMENT-IMAGE.md) includes Node.js LTS, Bun,
-Python, build tools, Claude Code, Codex, OpenCode and Pi. BusyBox is an explicit
-minimal build option. There is no implemented Firecracker
-backend, automatic wake-on-request, off-host backup or multi-host scheduler.
+## Upgrades
 
-## Build and run
+```sh
+ahvm upgrade                 # Client installed with curl
+brew upgrade ahvm            # Client installed with Homebrew
+ahvm host upgrade home       # Server
+```
+
+Use the client upgrade command matching your installation. Server upgrades
+preserve configuration and the selected image, check API health, and roll back
+the runtime and database if the new version fails to start.
+
+## More documentation
+
+- [Remote hosts, images and upgrades](docs/REMOTE-HOSTS.md)
+- [Server installation and maintenance](docs/RUST-INSTALL.md)
+- [Files](docs/FILE-UPLOADS.md)
+- [Preview ports and private network access](docs/NETWORK-ACCESS.md)
+- [Recovery and rollback](docs/RUST-CUTOVER.md)
+
+AHVM is an early-release product for evaluation; it is not yet qualified for
+hostile multi-tenant workloads.
+
+## Development
+
+The runtime is Rust, using the pinned `libkrucible` fork of libkrun. Private
+submodule access is required to build the VMM; see the [build guide](docs/RUST-INSTALL.md).
 
 ```sh
 make build
@@ -56,30 +145,6 @@ make test
 make check
 ```
 
-For the native server bundle and prerequisites, see
-[installation and operation](docs/RUST-INSTALL.md). Private submodule access is
-required to build the VMM. Start with a fresh data directory; Go state is not
-migrated.
-
-```sh
-ahvm --token-file /path/to/admin.token create dev --cpus 1 --memory 1024
-ahvm --token-file /path/to/admin.token exec dev -- sh -c 'echo hello'
-ahvm --token-file /path/to/admin.token shell dev
-ahvm --token-file /path/to/admin.token delete dev
-```
-
-## Documentation
-
-- [Installation and operations](docs/RUST-INSTALL.md)
-- [Cutover and rollback](docs/RUST-CUTOVER.md)
-- [File uploads](docs/FILE-UPLOADS.md)
-- [Preview ports and private access](docs/NETWORK-ACCESS.md)
-- [Network qualification](docs/NETWORK-QUALIFICATION.md)
-- [Rewrite plan and history](docs/PLAN-rust-rewrite.md)
-
-The Go implementation and its installers are retired. They remain in Git
-history at pre-cutover commit `639aeee`; historical plans and experiment results
-are evidence of earlier development, not current installation instructions.
 Agent House originated as a fork of [Bhatti](https://github.com/sahil-shubham/bhatti).
 
 ## License
