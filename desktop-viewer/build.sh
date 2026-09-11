@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 npm --prefix web ci --ignore-scripts
+npm --prefix web test
 npm --prefix web run build
 cargo build --release --locked
 mkdir -p dist
