@@ -175,3 +175,15 @@ This change is prospective. Existing Apache-2.0 grants and upstream/third-party
 licenses remain valid. See [NOTICE](NOTICE) and the retained
 [Apache-2.0 text](licenses/Apache-2.0.txt). See the
 [licensing explanation](docs/LICENSING.md) for prior-release and third-party scope.
+
+### Omarchy desktop preview
+
+On a supported Linux GPU host:
+
+```bash
+ahvm create omarchy --image omarchy-desktop
+ahvm desktop omarchy
+```
+
+The first create downloads the image on a saved SSH host. Defaults to 4 CPUs and
+8 GiB RAM. See [setup, requirements and limitations](docs/OMARCHY-DESKTOP.md).

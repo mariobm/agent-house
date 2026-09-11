@@ -23,7 +23,8 @@ if '-M' in a:
   def log_message(self,*a): pass
   def do_GET(self):
    self.send_response(200);self.end_headers()
-   body={'features':['named-images-v1','desktop-v1'],'desktop_image':'ubuntu-desktop','desktop_image_installed':cache.exists()} if self.path.endswith('healthz') else {'sandboxes':[]}
+   body={'features':['named-images-v1','desktop-v1'],'desktop_image':'ubuntu-desktop','desktop_image_installed':cache.exists(), 'desktop_images': {'ubuntu-desktop':cache.exists(),'omarchy-desktop':(cache.parent/'omarchy-cache').exists()}} if self.path.endswith('healthz') else {'sandboxes':[]}
+   if (cache.parent/'gpu-feature').exists(): body.setdefault('features',[]).append('omarchy-desktop-v1')
    self.wfile.write(json.dumps(body).encode())
   def do_POST(self):
    body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
@@ -35,7 +36,7 @@ if '-M' in a:
  threading.Thread(target=server.serve_forever,daemon=True).start()
  sys.stdin.read()
 elif 'image pull' in a[-1]:
- cache.write_text('installed'); print('Installed ubuntu-desktop')
+ (cache.parent/'omarchy-cache' if 'omarchy-desktop' in a[-1] else cache).write_text('installed'); print('Installed image')
 else: print('a'*64)
 ''')
     ssh.chmod(0o755)
@@ -61,6 +62,21 @@ else: print('a'*64)
     before=(root/'image-cache').stat().st_mtime_ns
     run('create', 'desk2', '--desktop')
     assert (root/'image-cache').stat().st_mtime_ns==before
+
+    # Refuse old servers; pull Omarchy even when Ubuntu is already installed.
+    run('create', 'omarchy', '--image', 'omarchy-desktop', ok=False)
+    assert not (root/'omarchy-cache').exists()
+    (root/'gpu-feature').touch()
+    run('create', 'omarchy', '--image', 'omarchy-desktop')
+    assert (root/'omarchy-cache').exists()
+    body=json.loads((root/'last-create').read_text())
+    assert body['desktop'] and body['image']=='omarchy-desktop'
+    assert body['cpus']==4 and body['memory_mb']==8192
+    before=(root/'omarchy-cache').stat().st_mtime_ns
+    run('create', 'omarchy2', '--image', 'omarchy-desktop', '--cpus', '2', '--memory', '4096')
+    assert (root/'omarchy-cache').stat().st_mtime_ns==before
+    body=json.loads((root/'last-create').read_text())
+    assert body['cpus']==2 and body['memory_mb']==4096
 
     run('host', 'use', 'other')
     assert json.loads(run('host', 'list', '--json').stdout)['default'] == 'other'
