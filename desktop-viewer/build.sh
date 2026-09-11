@@ -22,6 +22,6 @@ import plistlib,sys
 with open(sys.argv[1],'wb') as f:
     plistlib.dump(dict(CFBundleExecutable='ahvm-desktop',CFBundleIdentifier='app.ahvm.desktop',
         CFBundleName='AHVM Desktop',CFBundleDisplayName='AHVM Desktop',CFBundlePackageType='APPL',
-        CFBundleShortVersionString='0.2.1',CFBundleVersion='1',NSHighResolutionCapable=True),f)
+        CFBundleShortVersionString='0.2.2',CFBundleVersion='1',NSHighResolutionCapable=True),f)
 PY
 fi
