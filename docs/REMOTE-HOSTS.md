@@ -59,6 +59,18 @@ Image records declare the guest-agent ABI, which the CLI and daemon check.
 The current guest ABI is 1; this is a publisher-maintained compatibility
 contract, not a general guarantee for arbitrary imported disks.
 
+## Desktop
+
+On a compatible daemon, `ahvm create dev --desktop` installs the signed
+`ubuntu-desktop` image on the selected SSH host if missing, then creates a
+2-CPU / 4-GiB VM. `ahvm desktop dev` opens the bundled Mac viewer. A direct
+`--endpoint` connection needs the image installed on the server beforehand;
+there are no SSH credentials available to provision it automatically.
+
+The regular Ubuntu default does not change. Desktop stop/start preserves disk
+files but discards RAM/session state. The software-rendered XFCE image needs no
+GPU; local VM hosting on macOS is a separate, unsupported capability.
+
 ## Upgrades
 
 ```sh

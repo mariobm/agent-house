@@ -435,6 +435,8 @@ mod tests {
             backend: ahvm_engine::BackendKind::Krucible,
             root_image: None,
             kernel_image: None,
+            desktop: false,
+            desktop_gpu: false,
             extra_env: Default::default(),
         };
         let info = st.backend.create(&spec).unwrap();

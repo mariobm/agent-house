@@ -15,6 +15,7 @@
 //! `spawn_blocking`; store calls are fast-local and run inline.
 
 pub mod auth;
+pub mod desktop;
 pub mod files;
 pub mod previews;
 pub mod quotas;
@@ -226,6 +227,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/sandboxes/{id}/stop",
             axum::routing::post(sandboxes::stop),
         )
+        .route("/v1/sandboxes/{id}/desktop/stream", get(desktop::stream))
         .route(
             "/v1/sandboxes/{id}/exec",
             axum::routing::post(sandboxes::exec),
@@ -290,7 +292,11 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 async fn healthz() -> Json<serde_json::Value> {
-    Json(
-        serde_json::json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION"), "features": ["named-images-v1"] }),
-    )
+    let custom = std::env::var_os("AHVM_DESKTOP_IMAGE").is_some();
+    Json(serde_json::json!({
+        "status": "ok", "version": env!("CARGO_PKG_VERSION"),
+        "features": ["named-images-v1", "desktop-v1"],
+        "desktop_image": if custom { None } else { Some("ubuntu-desktop") },
+        "desktop_image_installed": custom || sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
+    }))
 }

@@ -227,6 +227,8 @@ impl Backend for MockBackend {
             backend: BackendKind::Krucible,
             root_image: None,
             kernel_image: None,
+            desktop: false,
+            desktop_gpu: false,
             extra_env: HashMap::new(),
         };
         let n = inner.sandboxes.len() as u64 + 2;
@@ -493,6 +495,8 @@ mod tests {
             backend: BackendKind::Krucible,
             root_image: None,
             kernel_image: None,
+            desktop: false,
+            desktop_gpu: false,
             extra_env: HashMap::new(),
         }
     }

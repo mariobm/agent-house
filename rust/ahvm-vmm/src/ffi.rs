@@ -175,3 +175,27 @@ pub fn set_exec(cid: u32, path: *const c_char, env: &[*const c_char]) {
 pub fn start_enter(cid: u32) -> i32 {
     krun_start_enter(cid)
 }
+
+#[cfg(all(feature = "gpu", target_os = "linux"))]
+pub fn enable_gpu(cid: u32) {
+    // Headless EGL uses the host render node; no display server or passthrough.
+    // The worker does not poll VirGL fences. Async callbacks must retire
+    // them, otherwise the guest waits for its GPU timeout on readback.
+    const FLAGS: u32 = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 8);
+    check(
+        unsafe { krun::krun_set_gpu_options(cid, FLAGS) },
+        "krun_set_gpu_options",
+    );
+    // Aquamarine still requires DRM CRTC capabilities with its headless flag.
+    // A virtual scanout enables KMS; the host keeps the no-op display backend.
+    let display = unsafe { krun::krun_add_display(cid, 1280, 720) };
+    if display < 0 {
+        check(display, "krun_add_display");
+    }
+}
+
+#[cfg(not(all(feature = "gpu", target_os = "linux")))]
+pub fn enable_gpu(_cid: u32) {
+    eprintln!("vmm: GPU mode requires a Linux build with --features gpu");
+    std::process::exit(1);
+}

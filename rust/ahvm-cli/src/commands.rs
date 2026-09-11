@@ -47,12 +47,22 @@ enum Command {
     Health,
     Create {
         name: Option<String>,
+        /// Use the Ubuntu desktop image (XFCE, terminal and browser).
+        #[arg(long)]
+        desktop: bool,
         #[arg(long)]
         image: Option<String>,
-        #[arg(long, default_value_t = 1)]
-        cpus: u8,
-        #[arg(long, default_value_t = 512)]
-        memory: u32,
+        #[arg(long)]
+        cpus: Option<u8>,
+        #[arg(long)]
+        memory: Option<u32>,
+    },
+    /// Open the optional native desktop viewer (desktop-enabled VMs only).
+    Desktop {
+        id: String,
+        /// Explicit path to the optional ahvm-desktop helper.
+        #[arg(long)]
+        viewer: Option<PathBuf>,
     },
     List,
     Get {
@@ -268,33 +278,58 @@ pub fn run(cli: Cli) -> Result<i32> {
         | Command::License => {
             unreachable!()
         }
+        Command::Desktop { id, viewer } => return crate::desktop::launch(&api, &id, viewer),
         Command::Health => api.call(Method::GET, &["healthz"], &[], None)?,
         Command::Create {
             name,
+            desktop,
             image,
             cpus,
             memory,
         } => {
+            let desktop = desktop || image.as_deref() == Some("ubuntu-desktop");
+            let cpus = cpus.unwrap_or(if desktop { 2 } else { 1 });
+            let memory = memory.unwrap_or(if desktop { 4096 } else { 512 });
+            if cpus == 0 || memory < 128 {
+                return Err("use at least 1 CPU and 128 MiB RAM".into());
+            }
             let name = name.unwrap_or_else(|| {
                 format!("vm-{}", &uuid::Uuid::new_v4().simple().to_string()[..12])
             });
-            if image.is_some() {
+            if desktop
+                && image
+                    .as_deref()
+                    .is_some_and(|name| name != "ubuntu-desktop")
+            {
+                return Err("desktop requires the ubuntu-desktop image".into());
+            }
+            if desktop || image.is_some() {
+                let feature = if desktop {
+                    "desktop-v1"
+                } else {
+                    "named-images-v1"
+                };
                 let health = api.call(Method::GET, &["healthz"], &[], None)?;
                 if !health["features"]
                     .as_array()
-                    .is_some_and(|f| f.iter().any(|v| v == "named-images-v1"))
+                    .is_some_and(|f| f.iter().any(|v| v == feature))
                 {
-                    return Err("server does not support named images; upgrade it first".into());
+                    return Err(format!("server does not advertise {feature}; enable it on a compatible server first").into());
                 }
-            }
-            if cpus == 0 || memory < 128 {
-                return Err("use at least 1 CPU and 128 MiB RAM".into());
+                if desktop && health["desktop_image_installed"] == false {
+                    let name = health["desktop_image"].as_str().unwrap_or("ubuntu-desktop");
+                    let host = host.as_ref().ok_or("install ubuntu-desktop on the server with ahvm image pull ubuntu-desktop, or use a saved SSH host for automatic installation")?;
+                    eprintln!("Installing {name} on the selected host (first desktop only)...");
+                    if crate::hosts::pull_for_create(host, name.into())? != 0 {
+                        return Err("desktop image installation failed".into());
+                    }
+                }
             }
             api.call(
                 Method::POST,
                 &["sandboxes"],
                 &[],
-                Some(json!({"name":name,"cpus":cpus,"memory_mb":memory,"image":image})),
+                Some(json!({"name":name,"cpus":cpus,"memory_mb":memory,"image":image,"desktop":desktop})),
             )?
         }
         Command::List => {

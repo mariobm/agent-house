@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 pub struct CreateBody {
     pub name: String,
     #[serde(default)]
+    pub desktop: bool,
+    #[serde(default)]
     pub image: Option<String>,
     #[serde(default = "default_cpus")]
     pub cpus: u8,
@@ -83,8 +85,26 @@ pub async fn create(
         cpus: body.cpus,
         memory_mb: body.memory_mb,
         backend: ahvm_engine::BackendKind::Krucible,
-        root_image: resolve_image(body.image.as_deref())?,
+        root_image: if body.desktop {
+            if body
+                .image
+                .as_deref()
+                .is_some_and(|name| name != "ubuntu-desktop")
+            {
+                return Err(ApiError::Invalid(
+                    "desktop requires the ubuntu-desktop image".into(),
+                ));
+            }
+            match std::env::var("AHVM_DESKTOP_IMAGE") {
+                Ok(path) => Some(path),
+                Err(_) => resolve_image(Some("ubuntu-desktop"))?,
+            }
+        } else {
+            resolve_image(body.image.as_deref())?
+        },
         kernel_image: None,
+        desktop: body.desktop,
+        desktop_gpu: body.desktop && std::env::var("AHVM_DESKTOP_GPU").as_deref() == Ok("1"),
         extra_env: Default::default(),
     };
     let backend = state.backend.clone();
@@ -279,7 +299,7 @@ pub async fn exec(
 
 // Image aliases resolve only inside the administrator-managed cache. API users
 // cannot supply arbitrary host filesystem paths.
-fn resolve_image(name: Option<&str>) -> ApiResult<Option<String>> {
+pub(crate) fn resolve_image(name: Option<&str>) -> ApiResult<Option<String>> {
     let Some(name) = name else {
         return Ok(None);
     };

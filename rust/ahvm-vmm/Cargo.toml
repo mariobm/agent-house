@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license-file.workspace = true
 
+[features]
+default = []
+# Experimental Linux headless VirGL; opt in at build and VM configuration.
+gpu = ["krun/gpu"]
+
 [dependencies]
 # NOTE: package is `libkrun`, lib target is `krun` — the rename below is what
 # creates the --extern edge so the linker sees the rlib (a bare extern block

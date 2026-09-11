@@ -286,6 +286,12 @@ impl Connection {
 }
 /// Image administration happens on the selected host, not the client machine.
 pub fn image(host: &Host, command: crate::images::Images) -> Result<i32> {
+    image_command(host, command, false)
+}
+pub fn pull_for_create(host: &Host, name: String) -> Result<i32> {
+    image_command(host, crate::images::Images::Pull { name }, true)
+}
+fn image_command(host: &Host, command: crate::images::Images, quiet: bool) -> Result<i32> {
     validate(host)?;
     let args = match command {
         crate::images::Images::List => "list".into(),
@@ -299,6 +305,7 @@ pub fn image(host: &Host, command: crate::images::Images) -> Result<i32> {
         crate::images::Images::Default { name } => format!("default '{name}'"),
     };
     let status = Command::new("ssh")
+        .stdout(if quiet { Stdio::null() } else { Stdio::inherit() })
         .args(["-T", "--", &host.ssh])
         .arg(format!("if [ \"$(id -u)\" = 0 ]; then env AHVM_CONFIG_DIR=/etc/ahvm-rust/client /opt/ahvm-rust/bin/ahvm image {args}; else sudo -n env AHVM_CONFIG_DIR=/etc/ahvm-rust/client /opt/ahvm-rust/bin/ahvm image {args}; fi"))
         .status()?;
