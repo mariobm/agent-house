@@ -30,9 +30,10 @@ cp -a "$r/usr/share/omarchy/config/." "$r/home/desktop/.config/"
 install -m755 "$4/session.sh" "$r/usr/local/bin/desktop-session"
 cat "$4/hyprland.lua" >> "$r/home/desktop/.config/hypr/hyprland.lua"
 cp "$r/home/desktop/.config/hypr/hyprland.lua" "$r/home/desktop/hyprland.lua"
-# AHVM has its own PID 1; launch Quickshell without a systemd user journal.
-printf '#!/bin/bash\nexec quickshell -n -p /usr/share/omarchy/shell\n' > "$r/usr/share/omarchy/bin/omarchy-launch-shell"
-chmod 755 "$r/usr/share/omarchy/bin/omarchy-launch-shell"
+"$4/install-systemd.sh" "$r"
+# This VM has an AHVM-managed virtual NIC, not a Wi-Fi device/NetworkManager.
+printf '[[ -d /sys/class/net/wlan0/wireless ]] || exit 0\n' | cat - "$r/usr/share/omarchy/install/user/first-run/wifi.sh" > "$r/tmp/ahvm-wifi.sh"
+mv "$r/tmp/ahvm-wifi.sh" "$r/usr/share/omarchy/install/user/first-run/wifi.sh"
 chroot "$r" chown -R desktop:desktop /home/desktop
 chroot "$r" runuser -u desktop -- env HOME=/home/desktop \
   OMARCHY_PATH=/usr/share/omarchy PATH=/usr/share/omarchy/bin:/usr/bin \

@@ -1,0 +1,13 @@
+[Unit]
+Description=AHVM guest agent
+Requires=ahvm-desktop.service
+After=ahvm-desktop.service
+[Service]
+WorkingDirectory=/workspace
+ExecStartPre=/usr/local/bin/ahvm-desktop-wait /run/user/1000/ahvm-desktop-ready
+ExecStart=/usr/local/bin/ahvm-forge
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=40
+[Install]
+WantedBy=multi-user.target

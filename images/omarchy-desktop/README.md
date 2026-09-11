@@ -24,18 +24,31 @@ For testing use one 4-vCPU / 8-GiB VM, the experimental GPU-enabled worker and
 `AHVM_DESKTOP_IMAGE=/path/to/new-omarchy.ext4`, `AHVM_DESKTOP_GPU=1` on an isolated
 daemon. The public catalog does not contain an `omarchy-desktop` entry yet.
 
-AHVM supplies PID 1, networking and the private VNC transport. Quickshell is
-launched directly because this guest does not have a systemd user manager.
+The initialization wrapper execs systemd as PID 1. System services supervise
+Forge and the PAM-backed desktop session. `user@1000.service` supplies the user
+manager and D-Bus session; user services supervise WayVNC and the private vsock
+relay. Forge waits for the relay before advertising readiness. The normal Ubuntu
+image and host services are unchanged.
+
+The bundled 6.12.44 kernel supports this boot and cgroup v2. The image overrides
+Arch's PID maximum with the supported 32768 limit. AHVM owns virtual networking,
+so networkd/resolved are disabled in this image; its first-run Wi-Fi prompt is
+skipped when no wireless device exists. Journal storage is bounded to 64 MiB.
+
 Power management, desktop login/lock, sound, Omarchy updates, hardware helpers,
-clipboard integration and GPU isolation require further qualification. RAM
-snapshots are unsupported. Keep the released Ubuntu image as the default.
+clipboard/international keyboard integration and GPU isolation remain outside
+this qualification. RAM snapshots are unsupported. Keep Ubuntu as the default.
 
-## Initial qualification (2026-09-11)
+## Qualification (2026-09-11)
 
-On `agent_house`, one 4-CPU / 8-GiB VM booted the 40-GiB image with the
-experimental GPU worker. The RFB probe received a nonblank 1280×720 WayVNC
-framebuffer and typed a command; `/home/desktop/input-ok` contained
-`AHVM-VNC-INPUT-OK`, also visible in the capture. Quickshell started, but the
-captured desktop only showed the themed terminal; the bar/launcher and full
-Omarchy appearance are not yet qualified. The VM was terminated after the test.
-No production service or existing sandbox was changed. No image was published.
+On `agent_house`, one 4-CPU / 8-GiB VM booted the 40-GiB image using the
+experimental GPU worker. Confirmed systemd is PID 1, cgroup v2 is mounted,
+Forge/desktop/user manager/VNC/relay are active, and no systemd units failed.
+Native macOS viewer displays Omarchy's bar, notifications and menu. The RFB
+probe typed a command and the guest marker confirmed delivery. HTTPS returned
+200 through the AHVM gateway. Stop/start preserved a disk marker and all services
+came back without failed units. A fresh build from the committed recipe also
+booted with healthy services and working HTTPS.
+
+PR remains draft pending the owner's final visual test. No Omarchy image has
+been published and no production service or existing sandbox was changed.

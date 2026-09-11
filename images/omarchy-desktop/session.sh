@@ -1,9 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-cd /home/desktop
 hyprctl output create headless desktop
-sleep 1
-wayvnc -u -f 30 /run/user/1000/vnc.sock &
-foot --font='DejaVu Sans Mono:size=14' --title='AHVM desktop' bash &
-while [[ ! -S /run/user/1000/vnc.sock ]]; do sleep 0.1; done
-exec /usr/local/bin/desktop-relay
+systemctl --user import-environment WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP
+systemctl --user restart ahvm-vnc.service ahvm-desktop-relay.service
+foot --font='JetBrainsMono Nerd Font:size=13' --title='Omarchy on AHVM' bash &
