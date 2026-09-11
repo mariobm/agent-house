@@ -64,6 +64,9 @@ impl BackendKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxSpec {
     pub name: String,
+    /// Experimental desktop VM: GPU rendering, disk-only stop/start.
+    #[serde(default)]
+    pub desktop: bool,
     pub cpus: u8,
     pub memory_mb: u32,
     pub backend: BackendKind,
@@ -175,6 +178,7 @@ mod tests {
             backend: BackendKind::Krucible,
             root_image: Some("img-root".to_string()),
             kernel_image: None,
+            desktop: false,
             extra_env: HashMap::from([("FOO".to_string(), "bar".to_string())]),
         };
         let raw = serde_json::to_string(&spec).unwrap();

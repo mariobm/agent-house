@@ -612,6 +612,10 @@ impl KrucibleBackend {
             "control_socket_uds": control_sock(dir).to_string_lossy(),
             "env": spec.extra_env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
         });
+        if spec.desktop {
+            js["gpu"] = true.into();
+            js.as_object_mut().unwrap().remove("control_socket_uds");
+        }
         if self.networks.is_some() {
             js["net_uds"] = sock.join("net.sock").to_string_lossy().into();
             js["net_mac"] = "02:00:00:00:00:02".into();
@@ -693,6 +697,11 @@ impl KrucibleBackend {
     /// only a fully-written generation is published by rename.
     /// Returns the bundle dir.
     fn snapshot_live(&self, dir: &Path, rec: &SandboxRecord, snapshot_id: &str) -> Result<PathBuf> {
+        if rec.spec.desktop {
+            return Err(Error::InvalidState(
+                "desktop snapshots are not supported".into(),
+            ));
+        }
         validate_snapshot_id(snapshot_id)?;
         let bundle = dir.join("bundle");
         let gen = dir.join("bundle.new");
@@ -902,6 +911,7 @@ impl KrucibleBackend {
             backend: BackendKind::Krucible,
             root_image: None,
             kernel_image: None,
+            desktop: false,
             extra_env: HashMap::new(),
         };
         let dir = self.cfg.data_dir.join(new_id);
@@ -1267,7 +1277,19 @@ impl Backend for KrucibleBackend {
                 .map(|r| r.record.clone())
                 .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?
         };
-        self.snapshot_live(&dir, &record, &format!("stop-{id}"))?;
+        if record.spec.desktop {
+            // No GPU/RAM checkpoint: flush guest disk writes before terminating.
+            let result = rpc_exec(
+                &forge_sock(&dir),
+                &["/bin/sync".into()],
+                Duration::from_secs(15),
+            )?;
+            if result.exit_code != 0 {
+                return Err(Error::Control("desktop disk sync failed".into()));
+            }
+        } else {
+            self.snapshot_live(&dir, &record, &format!("stop-{id}"))?;
+        }
         let worker = {
             let mut inner = self.lock();
             inner.sandboxes.get_mut(id).and_then(|r| r.worker.take())
@@ -1335,7 +1357,33 @@ impl Backend for KrucibleBackend {
         ids.iter().map(|id| self.status(id)).collect()
     }
 
+    fn desktop_connect(&self, id: &str) -> Result<UnixStream> {
+        validate_id(id)?;
+        {
+            let inner = self.lock();
+            let rec = inner
+                .sandboxes
+                .get(id)
+                .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?;
+            if !rec.record.spec.desktop {
+                return Err(Error::InvalidState("sandbox is not desktop-enabled".into()));
+            }
+        }
+        let dir = self.live_dir(id)?;
+        Ok(UnixStream::connect(sock_dir(&dir).join("f.sock"))?)
+    }
+
     fn preview_connect(&self, id: &str, port: u16) -> Result<UnixStream> {
+        if self
+            .lock()
+            .sandboxes
+            .get(id)
+            .is_some_and(|rec| rec.record.spec.desktop)
+        {
+            return Err(Error::InvalidState(
+                "previews are not yet supported for desktop VMs".into(),
+            ));
+        }
         if port == 0 || self.cfg.network.is_none() {
             return Err(Error::InvalidState(
                 "previews require managed networking and a nonzero port".into(),
@@ -1884,6 +1932,7 @@ mod tests {
             backend: BackendKind::Krucible,
             root_image: None,
             kernel_image: None,
+            desktop: false,
             extra_env: HashMap::new(),
         }
     }
@@ -1896,6 +1945,7 @@ mod tests {
             backend: BackendKind::Krucible,
             root_image: None,
             kernel_image: None,
+            desktop: false,
             extra_env: HashMap::new(),
         };
         let rec = SandboxRecord {
@@ -1919,6 +1969,37 @@ mod tests {
     }
 
     #[test]
+    fn desktop_worker_uses_gpu_without_snapshot_control() {
+        let dir = crate::test_scratch("desktop-spec");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        let mut spec = spec_named("desktop");
+        // Persisted records from before desktop support keep ordinary behavior.
+        let mut legacy = serde_json::to_value(&spec).unwrap();
+        legacy.as_object_mut().unwrap().remove("desktop");
+        assert!(
+            !serde_json::from_value::<SandboxSpec>(legacy)
+                .unwrap()
+                .desktop
+        );
+        for enabled in [false, true] {
+            spec.desktop = enabled;
+            let path = be
+                .write_worker_spec(&dir, &dir.join("root.qcow2"), &spec, None)
+                .unwrap();
+            let js: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(
+                js.get("gpu").and_then(|v| v.as_bool()).unwrap_or(false),
+                enabled
+            );
+            assert_eq!(js.get("control_socket_uds").is_some(), !enabled);
+            assert!(js.get("snapshot_dir").is_none());
+        }
+    }
+
+    #[test]
     fn config_validation_rejects_missing_files() {
         let dir = crate::test_scratch("krucible-cfg");
         assert!(KrucibleBackend::open(cfg(&dir)).is_err());
@@ -1937,6 +2018,7 @@ mod tests {
             backend: BackendKind::Krucible,
             root_image: None,
             kernel_image: None,
+            desktop: false,
             extra_env: HashMap::new(),
         };
         assert!(matches!(be.create(&spec), Err(Error::InvalidState(_))));

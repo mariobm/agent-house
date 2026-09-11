@@ -45,6 +45,7 @@ fn spec(name: &str) -> ahvm_engine::SandboxSpec {
         backend: ahvm_engine::BackendKind::Krucible,
         root_image: None,
         kernel_image: None,
+        desktop: false,
         extra_env: Default::default(),
     }
 }

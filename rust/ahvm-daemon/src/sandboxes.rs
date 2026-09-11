@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 pub struct CreateBody {
     pub name: String,
     #[serde(default)]
+    pub desktop: bool,
+    #[serde(default)]
     pub image: Option<String>,
     #[serde(default = "default_cpus")]
     pub cpus: u8,
@@ -83,8 +85,21 @@ pub async fn create(
         cpus: body.cpus,
         memory_mb: body.memory_mb,
         backend: ahvm_engine::BackendKind::Krucible,
-        root_image: resolve_image(body.image.as_deref())?,
+        root_image: if body.desktop {
+            if body.image.is_some() {
+                return Err(ApiError::Invalid(
+                    "desktop uses the host-configured desktop image; omit --image".into(),
+                ));
+            }
+            Some(
+                std::env::var("AHVM_DESKTOP_IMAGE")
+                    .map_err(|_| ApiError::Invalid("desktop is not enabled on this host".into()))?,
+            )
+        } else {
+            resolve_image(body.image.as_deref())?
+        },
         kernel_image: None,
+        desktop: body.desktop,
         extra_env: Default::default(),
     };
     let backend = state.backend.clone();

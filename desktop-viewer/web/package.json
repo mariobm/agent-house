@@ -1,0 +1,1 @@
+{"private":true,"scripts":{"build":"esbuild client.js --bundle --minify --format=esm --outfile=dist/client.js --legal-comments=external"},"dependencies":{"@novnc/novnc":"1.7.0"},"devDependencies":{"esbuild":"0.28.2"}}

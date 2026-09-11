@@ -63,8 +63,10 @@ back to readback. The tested path works, but zero-copy capture is not qualified.
 The renderer is in the VMM process: this remains a trusted-workload experiment,
 not an isolation qualification for untrusted desktop guests.
 
-Next: integrate a desktop-capable image and an authenticated desktop stream with
-AHVM, then the packaged viewer. Omarchy customization follows that integration.
+The next integration is now available as an experimental
+[managed image](../../../images/arch-desktop/README.md) and
+[optional native viewer](../../../desktop-viewer/README.md). Omarchy customization
+and release qualification remain pending.
 
 ## Build checks
 

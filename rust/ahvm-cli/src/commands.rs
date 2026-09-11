@@ -47,12 +47,22 @@ enum Command {
     Health,
     Create {
         name: Option<String>,
+        /// Use the host-configured experimental desktop image and GPU.
+        #[arg(long)]
+        desktop: bool,
         #[arg(long)]
         image: Option<String>,
-        #[arg(long, default_value_t = 1)]
-        cpus: u8,
-        #[arg(long, default_value_t = 512)]
-        memory: u32,
+        #[arg(long)]
+        cpus: Option<u8>,
+        #[arg(long)]
+        memory: Option<u32>,
+    },
+    /// Open the optional native desktop viewer (desktop-enabled VMs only).
+    Desktop {
+        id: String,
+        /// Explicit path to the optional ahvm-desktop helper.
+        #[arg(long)]
+        viewer: Option<PathBuf>,
     },
     List,
     Get {
@@ -268,23 +278,35 @@ pub fn run(cli: Cli) -> Result<i32> {
         | Command::License => {
             unreachable!()
         }
+        Command::Desktop { id, viewer } => return crate::desktop::launch(&api, &id, viewer),
         Command::Health => api.call(Method::GET, &["healthz"], &[], None)?,
         Command::Create {
             name,
+            desktop,
             image,
             cpus,
             memory,
         } => {
+            let cpus = cpus.unwrap_or(if desktop { 2 } else { 1 });
+            let memory = memory.unwrap_or(if desktop { 4096 } else { 512 });
             let name = name.unwrap_or_else(|| {
                 format!("vm-{}", &uuid::Uuid::new_v4().simple().to_string()[..12])
             });
-            if image.is_some() {
+            if desktop && image.is_some() {
+                return Err("desktop uses the host-configured desktop image; omit --image".into());
+            }
+            if desktop || image.is_some() {
+                let feature = if desktop {
+                    "desktop-v1"
+                } else {
+                    "named-images-v1"
+                };
                 let health = api.call(Method::GET, &["healthz"], &[], None)?;
                 if !health["features"]
                     .as_array()
-                    .is_some_and(|f| f.iter().any(|v| v == "named-images-v1"))
+                    .is_some_and(|f| f.iter().any(|v| v == feature))
                 {
-                    return Err("server does not support named images; upgrade it first".into());
+                    return Err(format!("server does not advertise {feature}; enable it on a compatible server first").into());
                 }
             }
             if cpus == 0 || memory < 128 {
@@ -294,7 +316,7 @@ pub fn run(cli: Cli) -> Result<i32> {
                 Method::POST,
                 &["sandboxes"],
                 &[],
-                Some(json!({"name":name,"cpus":cpus,"memory_mb":memory,"image":image})),
+                Some(json!({"name":name,"cpus":cpus,"memory_mb":memory,"image":image,"desktop":desktop})),
             )?
         }
         Command::List => {
