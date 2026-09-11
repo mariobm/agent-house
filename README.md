@@ -3,20 +3,25 @@
 Self-hosted, stateful Linux microVM sandboxes for running code and coding agents.
 The runtime is Rust, using the pinned `libkrucible` fork of libkrun.
 
-**v0.1.0, initial release.** The qualified server target is Linux x86_64 with KVM,
-systemd and glibc 2.35+. The CLI also builds on macOS. This is not a claim of
+**v0.2.0.** The qualified server target is Linux x86_64 with KVM,
+systemd and glibc 2.35+. Standalone clients are available for Mac and Linux. This is not a claim of
 production readiness for hostile multi-tenant workloads.
 
-Install on a fresh supported Linux host:
+Install the client on your Mac or Linux machine, then connect your server:
 
 ```sh
 curl -fsSL https://ahvm.app/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+ahvm host add home --ssh root@YOUR_SERVER_IP --install
+ahvm create dev --cpus 2 --memory 4096
+ahvm shell dev
 ```
 
-[Product website](https://ahvm.app) · [Installation guide](https://ahvm.app/docs/)
+[Remote hosts and upgrades](docs/REMOTE-HOSTS.md) · [Product website](https://ahvm.app) · [Installation guide](https://ahvm.app/docs/)
 
 ## Current functionality
 
+- Saved SSH hosts, a default host, signed guest-image downloads and explicit upgrades.
 - Authenticated HTTP API and CLI for sandbox lifecycle and command execution.
 - Persistent sessions and interactive terminals with detach/reattach and resize.
 - Streaming file uploads with atomic replacement, and paginated downloads.

@@ -16,3 +16,5 @@ docs/internal/
 bench/results-krucible-mac/
 /cmd/ahvm-netd/ahvm-netd
 /rust/target/
+
+__pycache__/

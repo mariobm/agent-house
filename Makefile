@@ -8,6 +8,8 @@ test:
 	cargo test --manifest-path rust/Cargo.toml --locked --workspace --exclude ahvm-vmm
 	cargo build --manifest-path rust/Cargo.toml --locked -p ahvm-cli
 	python3 scripts/test-rust-cli.py rust/target/debug/ahvm
+	python3 scripts/test-host-cli.py rust/target/debug/ahvm
+	python3 scripts/test-server-upgrade.py
 
 check:
 	cargo fmt --manifest-path rust/Cargo.toml --all --check

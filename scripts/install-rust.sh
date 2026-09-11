@@ -35,7 +35,7 @@ getent group kvm >/dev/null || { echo 'kvm group is required' >&2; exit 1; }
 command -v python3 >/dev/null
 command -v systemctl >/dev/null
 BUNDLE=$(realpath "$BUNDLE")
-(cd "$BUNDLE" && sha256sum --strict -c SHA256SUMS)
+(cd "$BUNDLE" && sha256sum --quiet --strict -c SHA256SUMS)
 [[ -x $BUNDLE/bin/ahvm && -s $BUNDLE/share/base.ext4 ]] || { echo 'Incomplete bundle' >&2; exit 1; }
 # Resolve DNS from the host; a local stub is reachable by the host gateway.
 RESOLVER=${AHVM_DNS_RESOLVER:-$(awk '$1=="nameserver" && $2 ~ /^[0-9.]+$/ {print $2; exit}' /etc/resolv.conf)}

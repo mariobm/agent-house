@@ -14,13 +14,11 @@ use std::{
 #[derive(Parser)]
 #[command(name = "ahvm", version, about = "Manage Rust microVM sandboxes")]
 pub struct Cli {
-    #[arg(
-        long,
-        global = true,
-        env = "AHVM_ENDPOINT",
-        default_value = "http://127.0.0.1:8080"
-    )]
-    endpoint: String,
+    #[arg(long, global = true, env = "AHVM_ENDPOINT")]
+    endpoint: Option<String>,
+    /// Select a saved host (otherwise use the default host).
+    #[arg(long, global = true, env = "AHVM_HOST")]
+    host: Option<String>,
     /// File containing a Bearer token (otherwise read AHVM_TOKEN).
     #[arg(long, global = true, env = "AHVM_TOKEN_FILE")]
     token_file: Option<PathBuf>,
@@ -36,9 +34,21 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(subcommand)]
+    Host(crate::hosts::Hosts),
+    /// Update a standalone CLI installation.
+    Upgrade,
+    /// Show AHVM licensing and upstream notices.
+    License,
+    #[command(hide = true)]
+    CheckUpdates,
+    #[command(subcommand)]
+    Image(crate::images::Images),
     Health,
     Create {
-        name: String,
+        name: Option<String>,
+        #[arg(long)]
+        image: Option<String>,
         #[arg(long, default_value_t = 1)]
         cpus: u8,
         #[arg(long, default_value_t = 512)]
@@ -204,14 +214,76 @@ pub fn decoded(v: &Value) -> Result<Vec<u8>> {
 }
 
 pub fn run(cli: Cli) -> Result<i32> {
-    let token = match cli.token_file {
-        Some(path) => std::fs::read_to_string(path)?.trim().to_owned(),
-        None => std::env::var("AHVM_TOKEN").unwrap_or_default(),
+    if matches!(cli.command, Command::License) {
+        print!(
+            "{}\n{}\n{}",
+            include_str!("../../../LICENSE"),
+            include_str!("../../../NOTICE"),
+            include_str!("../../../licenses/Apache-2.0.txt")
+        );
+        return Ok(0);
+    }
+    if matches!(cli.command, Command::Upgrade) {
+        return crate::upgrade::run();
+    }
+    if matches!(cli.command, Command::CheckUpdates) {
+        return crate::upgrade::refresh();
+    }
+    crate::upgrade::notice();
+    if let Command::Host(command) = cli.command {
+        return crate::hosts::run(command, cli.json);
+    }
+    let host = crate::hosts::selected(cli.host.as_deref(), cli.endpoint.is_some())?;
+    if let Command::Image(command) = cli.command {
+        return match host {
+            Some(host) => crate::hosts::image(&host, command),
+            None => crate::images::run(command),
+        };
+    }
+    let connection = host
+        .as_ref()
+        .map(crate::hosts::Connection::open)
+        .transpose()?;
+    let token = match connection.as_ref() {
+        Some(connection) => connection.token.clone(),
+        None => match cli.token_file {
+            Some(path) => std::fs::read_to_string(path)?.trim().to_owned(),
+            None => std::env::var("AHVM_TOKEN").unwrap_or_default(),
+        },
     };
-    let api = Api::new(&cli.endpoint, token, cli.timeout)?;
+    let endpoint = connection
+        .as_ref()
+        .map(|c| c.endpoint.as_str())
+        .or(cli.endpoint.as_deref())
+        .unwrap_or("http://127.0.0.1:8080");
+    let api = Api::new(endpoint, token, cli.timeout)?;
     let response = match cli.command {
+        Command::Host(_)
+        | Command::Image(_)
+        | Command::Upgrade
+        | Command::CheckUpdates
+        | Command::License => {
+            unreachable!()
+        }
         Command::Health => api.call(Method::GET, &["healthz"], &[], None)?,
-        Command::Create { name, cpus, memory } => {
+        Command::Create {
+            name,
+            image,
+            cpus,
+            memory,
+        } => {
+            let name = name.unwrap_or_else(|| {
+                format!("vm-{}", &uuid::Uuid::new_v4().simple().to_string()[..12])
+            });
+            if image.is_some() {
+                let health = api.call(Method::GET, &["healthz"], &[], None)?;
+                if !health["features"]
+                    .as_array()
+                    .is_some_and(|f| f.iter().any(|v| v == "named-images-v1"))
+                {
+                    return Err("server does not support named images; upgrade it first".into());
+                }
+            }
             if cpus == 0 || memory < 128 {
                 return Err("use at least 1 CPU and 128 MiB RAM".into());
             }
@@ -219,7 +291,7 @@ pub fn run(cli: Cli) -> Result<i32> {
                 Method::POST,
                 &["sandboxes"],
                 &[],
-                Some(json!({"name":name,"cpus":cpus,"memory_mb":memory})),
+                Some(json!({"name":name,"cpus":cpus,"memory_mb":memory,"image":image})),
             )?
         }
         Command::List => {

@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 pub struct CreateBody {
     pub name: String,
+    #[serde(default)]
+    pub image: Option<String>,
     #[serde(default = "default_cpus")]
     pub cpus: u8,
     #[serde(default = "default_mem")]
@@ -81,7 +83,7 @@ pub async fn create(
         cpus: body.cpus,
         memory_mb: body.memory_mb,
         backend: ahvm_engine::BackendKind::Krucible,
-        root_image: None,
+        root_image: resolve_image(body.image.as_deref())?,
         kernel_image: None,
         extra_env: Default::default(),
     };
@@ -273,4 +275,39 @@ pub async fn exec(
     let backend = state.backend.clone();
     let out = blocking(move || backend.exec(&id, &body.argv)).await?;
     Ok(Json(out))
+}
+
+// Image aliases resolve only inside the administrator-managed cache. API users
+// cannot supply arbitrary host filesystem paths.
+fn resolve_image(name: Option<&str>) -> ApiResult<Option<String>> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    if name.is_empty()
+        || name.len() >= 100
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+    {
+        return Err(ApiError::Invalid("invalid image name".into()));
+    }
+    let root = std::env::var_os("AHVM_IMAGE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "/var/lib/ahvm-images".into());
+    let bytes = std::fs::read(root.join(format!("{name}.json")))
+        .map_err(|_| ApiError::Invalid("image is not installed; use ahvm image pull".into()))?;
+    let record: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| ApiError::Invalid("invalid image record".into()))?;
+    let digest = record["sha256"].as_str().unwrap_or_default();
+    if digest.len() != 64
+        || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+        || record["guest_abi"].as_u64() != Some(1)
+    {
+        return Err(ApiError::Invalid("incompatible image record".into()));
+    }
+    let image = root.join(format!("{digest}.ext4"));
+    if !image.is_file() {
+        return Err(ApiError::Invalid("image file is missing".into()));
+    }
+    Ok(Some(image.to_string_lossy().into_owned()))
 }
