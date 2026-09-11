@@ -1,9 +1,11 @@
 # Agent House
 
+[![AHVM: Give your agents a machine of their own.](https://ahvm.app/og-image-v1.png)](https://ahvm.app)
+
 Self-hosted, stateful Linux microVM sandboxes for running code and coding agents.
 The runtime is Rust, using the pinned `libkrucible` fork of libkrun.
 
-**v0.2.0.** The qualified server target is Linux x86_64 with KVM,
+**v0.2.1.** The qualified server target is Linux x86_64 with KVM,
 systemd and glibc 2.35+. Standalone clients are available for Mac and Linux. This is not a claim of
 production readiness for hostile multi-tenant workloads.
 
@@ -15,6 +17,18 @@ export PATH="$HOME/.local/bin:$PATH"
 ahvm host add home --ssh root@YOUR_SERVER_IP --install
 ahvm create dev --cpus 2 --memory 4096
 ahvm shell dev
+```
+
+Type `exit` to end the Bash session and return to your local terminal. This
+leaves the VM and its files intact; the VM can still stop automatically when
+idle. Run `ahvm shell dev` to open a new shell while it is running, or
+`ahvm start dev` first if it has stopped. To leave the current shell running
+and reattach later, press `Ctrl-]` instead of typing `exit`.
+
+When you are finished with the sandbox, delete the VM and its working disk:
+
+```sh
+ahvm delete dev
 ```
 
 [Remote hosts and upgrades](docs/REMOTE-HOSTS.md) · [Product website](https://ahvm.app) · [Installation guide](https://ahvm.app/docs/)
