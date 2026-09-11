@@ -98,3 +98,22 @@ viewer against a remote Linux host; Mac-local provisioning is not supported by
 this release. A future `ahvm host add local --local --install` interface would
 need a qualified macOS runtime, matching architecture images and local service
 management. It is not necessary to SSH into a Mac to use the client.
+
+### Keyboard capture (preview)
+
+Click **Capture keyboard** while connected. Both Mac Command keys then map to
+Linux Super. Click **Release keyboard** or press **Ctrl+Option+Esc** on a Mac
+(Ctrl+Alt+Esc elsewhere) to release. Capture also releases when the app loses
+focus, disconnects or closes; refocusing never re-enables it automatically.
+
+On macOS, app-scoped Carbon symbolic-hotkey suppression requires Accessibility
+permission for **AHVM Desktop** in System Settings → Privacy & Security →
+Accessibility. Without that permission the UI explicitly reports limited
+capture: Command mapping works for delivered events, but macOS can retain its
+reserved shortcuts. No global event tap, keystroke logging, automatic permission
+grant or Input Monitoring permission is used. Accessibility shortcuts remain
+available even in native capture mode. Some OS combinations may remain reserved.
+
+The preview is unsigned; rebuilt binaries may need their Accessibility grant
+renewed. Full reserved-shortcut behavior requires testing after the user grants
+permission. Keyboard-layout translation is separate from shortcut capture.
