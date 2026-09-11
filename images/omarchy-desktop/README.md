@@ -50,8 +50,8 @@ probe typed a command and the guest marker confirmed delivery. HTTPS returned
 came back without failed units. A fresh build from the committed recipe also
 booted with healthy services and working HTTPS.
 
-PR remains draft pending the owner's final visual test. No Omarchy image has
-been published and no production service or existing sandbox was changed.
+The owner completed visual testing and approved merging the preview. No Omarchy
+image has been published and no production service or existing sandbox was changed.
 
 Keybindings menu follow-up: explicitly install Perl and Lua, and adapt the pinned
 upstream scanner's monitor mock for qconsole. The four-modifier Hyper+K sequence

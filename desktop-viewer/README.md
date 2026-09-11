@@ -2,8 +2,7 @@
 
 Experimental native window for `ahvm desktop dev`. This separate Cargo project
 uses the operating system WebView and embeds noVNC. The ordinary CLI has no GUI
-or browser dependencies. The macOS client release archive now includes it alongside the CLI. This draft
-has not been published as a release yet.
+or browser dependencies. The macOS client release archive now includes it alongside the CLI. Focused keyboard forwarding is included from v0.2.3.
 
 ## Build and use on macOS
 
