@@ -637,22 +637,64 @@ impl KrucibleBackend {
         spec: &SandboxSpec,
         snapshot_dir: Option<&Path>,
     ) -> Result<LiveWorker> {
+        let gpu_worker = self.cfg.vmm_bin.with_file_name("ahvm-vmm-gpu");
+        let worker = if spec.desktop_gpu {
+            if !gpu_worker.is_file() {
+                return Err(Error::InvalidState(
+                    "GPU worker is not installed; upgrade the host runtime".into(),
+                ));
+            }
+            let accessible = std::fs::read_dir("/dev/dri").is_ok_and(|entries| {
+                entries.flatten().any(|entry| {
+                    entry.file_name().to_string_lossy().starts_with("renderD")
+                        && std::fs::OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .open(entry.path())
+                            .is_ok()
+                })
+            });
+            if !accessible {
+                return Err(Error::InvalidState("GPU desktop requires an accessible /dev/dri/renderD* device; install or upgrade the host on a machine with a supported GPU".into()));
+            }
+            &gpu_worker
+        } else {
+            &self.cfg.vmm_bin
+        };
         let spec_path = self.write_worker_spec(dir, overlay, spec, snapshot_dir)?;
         // Stale bridge sockets from a previous worker would steal connects.
         for stale in ["c.sock", "f.sock", "control.sock"] {
             let _ = std::fs::remove_file(sock_dir(dir).join(stale));
         }
-        let env = vec![
+        let mut env = vec![
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
             "HOME=/root".to_string(),
             "LANG=C.UTF-8".to_string(),
             format!("LD_LIBRARY_PATH={}", self.cfg.lib_path),
         ];
+        if spec.desktop_gpu {
+            let gpu = worker.parent().unwrap().parent().unwrap().join("gpu");
+            env.retain(|item| !item.starts_with("LD_LIBRARY_PATH="));
+            env.push(format!(
+                "LD_LIBRARY_PATH={}/lib:{}",
+                gpu.display(),
+                self.cfg.lib_path
+            ));
+            env.push(format!(
+                "__EGL_VENDOR_LIBRARY_FILENAMES={}/egl.json",
+                gpu.display()
+            ));
+            env.push(format!("LIBGL_DRIVERS_PATH={}/dri", gpu.display()));
+            env.push(format!(
+                "MESA_SHADER_CACHE_DIR={}",
+                dir.join("mesa-cache").display()
+            ));
+        }
         if let Some(net) = &self.networks {
             net.prepare(dir)?;
         }
         let result = spawn_worker_cfg(&SpawnConfig {
-            vmm_binary: self.cfg.vmm_bin.as_os_str(),
+            vmm_binary: worker.as_os_str(),
             spec_arg: &spec_path,
             state_path: &dir.join("state.json"),
             hermetic: true,

@@ -49,4 +49,11 @@ chroot "$r" chown -R desktop:desktop /home/desktop
 chroot "$r" runuser -u desktop -- env HOME=/home/desktop \
   OMARCHY_PATH=/usr/share/omarchy PATH=/usr/share/omarchy/bin:/usr/bin \
   XDG_RUNTIME_DIR=/tmp OMARCHY_THEME_HEADLESS=1 omarchy-theme-set 'Tokyo Night'
+# Remove state inherited from the development base before distribution.
+rm -rf "$r/home/desktop/.cache" "$r/home/desktop/.mozilla" "$r/home/desktop/.ssh" "$r/root/.ssh"
+rm -f "$r/home/desktop/.bash_history" "$r/root/.bash_history" "$r/etc/ssh/ssh_host_"*
+find "$r/var/log" -type f -exec truncate -s 0 {} +
+rm -rf "$r/var/log/journal/"* "$r/var/cache/pacman/pkg/"*
+rm -f "$r/var/lib/systemd/random-seed"
+: > "$r/etc/machine-id"
 INNER

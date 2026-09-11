@@ -22,7 +22,7 @@ versions roll, so the source pin alone does not make the image reproducible.
 
 For testing use one 4-vCPU / 8-GiB VM, the experimental GPU-enabled worker and
 `AHVM_DESKTOP_IMAGE=/path/to/new-omarchy.ext4`, `AHVM_DESKTOP_GPU=1` on an isolated
-daemon. The public catalog does not contain an `omarchy-desktop` entry yet.
+daemon. See [normal installation](../../docs/OMARCHY-DESKTOP.md) for the packaged path.
 
 The initialization wrapper execs systemd as PID 1. System services supervise
 Forge and the PAM-backed desktop session. `user@1000.service` supplies the user

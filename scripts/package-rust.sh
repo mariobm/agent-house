@@ -25,6 +25,14 @@ cargo build --manifest-path rust/Cargo.toml --release --locked -j "${BUILD_JOBS:
     -p ahvm-cli -p ahvm-daemon -p ahvm-vmm -p ahvm-netd
 cargo build --manifest-path rust/Cargo.toml --release --locked -j "${BUILD_JOBS:-2}" \
     -p ahvm-forge --target x86_64-unknown-linux-musl
+# Keep the standard worker free of graphics dependencies.
+GPU_TARGET="$PWD/rust/target-gpu"
+export AHVM_VIRGL_PREFIX="$PWD/rust/virgl-build"
+scripts/build-gpu-deps.sh "$AHVM_VIRGL_PREFIX"
+export LIBRARY_PATH="$AHVM_VIRGL_PREFIX/lib:$LIBRARY_PATH"
+export LD_LIBRARY_PATH="$AHVM_VIRGL_PREFIX/lib:$LD_LIBRARY_PATH"
+CARGO_TARGET_DIR="$GPU_TARGET" cargo build --manifest-path rust/Cargo.toml --release --locked \
+    -j "${BUILD_JOBS:-2}" -p ahvm-vmm --features gpu
 mkdir -p "$(dirname "$OUT")"
 STAGE=$(mktemp -d "${OUT}.build.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
@@ -34,6 +42,8 @@ for name in ahvm ahvm-daemon ahvm-vmm ahvm-netd; do
     patchelf --set-rpath '$ORIGIN/../lib' "$STAGE/bin/$name"
 done
 install -m755 rust/target/x86_64-unknown-linux-musl/release/ahvm-forge "$STAGE/bin/ahvm-forge"
+install -m755 "$GPU_TARGET/release/ahvm-vmm" "$STAGE/bin/ahvm-vmm-gpu"
+patchelf --set-rpath '$ORIGIN/../gpu/lib:$ORIGIN/../lib' "$STAGE/bin/ahvm-vmm-gpu"
 # dlopen dependency: ldd cannot discover the bundled guest firmware.
 install -m755 "$FW_DIR/libkrunfw.so.5" "$STAGE/lib/libkrunfw.so.5"
 patchelf --set-rpath '$ORIGIN' "$STAGE/lib/libkrunfw.so.5"
@@ -42,7 +52,7 @@ patchelf --set-rpath '$ORIGIN' "$STAGE/lib/libkrunfw.so.5"
 python3 - "$STAGE" <<'PY'
 from pathlib import Path
 import subprocess,sys,shutil
-root=Path(sys.argv[1]); pending=list((root/'bin').iterdir())+list((root/'lib').iterdir()); seen=set()
+root=Path(sys.argv[1]); pending=[p for p in (root/'bin').iterdir() if p.name != 'ahvm-vmm-gpu']+list((root/'lib').iterdir()); seen=set()
 excluded={'libc.so.6','libm.so.6','libpthread.so.0','libdl.so.2','librt.so.1','ld-linux-x86-64.so.2'}
 while pending:
     binary=pending.pop()
@@ -61,6 +71,7 @@ while pending:
             subprocess.run(['patchelf','--set-rpath','$ORIGIN',str(dest)],check=True)
             pending.append(dest)
 PY
+python3 scripts/package-gpu.py "$STAGE"
 if [[ ${AHVM_SKIP_GUEST:-0} == 1 ]]; then
     : # Guest images are published independently to R2.
 elif [[ -n ${AHVM_GUEST_IMAGE:-} ]]; then
@@ -81,11 +92,12 @@ cp packaging/rust/ahvm-rust.service.in "$STAGE/packaging/"
 cp scripts/install-rust.sh "$STAGE/install.sh"
 cp docs/RUST-INSTALL.md "$STAGE/README.md"
 cp docs/NETWORK-ACCESS.md docs/NETWORK-QUALIFICATION.md docs/FILE-UPLOADS.md docs/LICENSING.md docs/DEVELOPMENT-IMAGE.md docs/REMOTE-HOSTS.md LICENSE NOTICE "$STAGE/"
-cp -R licenses "$STAGE/licenses"
+mkdir -p "$STAGE/licenses"
+cp -R licenses/. "$STAGE/licenses/"
 printf 'platform=linux-x86_64\nglibc=%s\nsource=%s\nfork=%s\n' \
     "$(getconf GNU_LIBC_VERSION)" "${AHVM_SOURCE_REV:-$(git rev-parse HEAD 2>/dev/null || echo source-archive)}" \
     "${AHVM_FORK_REV:-$(git -C libkrucible rev-parse HEAD 2>/dev/null || echo source-archive)}" > "$STAGE/BUILD.txt"
-(cd "$STAGE" && find bin lib share packaging licenses -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum install.sh README.md NETWORK-ACCESS.md NETWORK-QUALIFICATION.md FILE-UPLOADS.md LICENSING.md DEVELOPMENT-IMAGE.md REMOTE-HOSTS.md LICENSE NOTICE BUILD.txt >> SHA256SUMS)
+(cd "$STAGE" && find bin lib gpu share packaging licenses -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum install.sh README.md NETWORK-ACCESS.md NETWORK-QUALIFICATION.md FILE-UPLOADS.md LICENSING.md DEVELOPMENT-IMAGE.md REMOTE-HOSTS.md LICENSE NOTICE BUILD.txt >> SHA256SUMS)
 chmod 755 "$STAGE"
 mv "$STAGE" "$OUT"
 echo "Built $OUT. Install with: sudo $OUT/install.sh $OUT"

@@ -51,8 +51,9 @@ with tempfile.TemporaryDirectory() as temp:
     records['client'] = {platform: info(archive, sum(p.stat().st_size for p in stage.iterdir()))}
 
 if platform == 'linux-x86_64':
-    for folder in ['bin', 'lib']:
-        for binary in (bundle / folder).glob('*'):
+    for folder in ['bin', 'lib', 'gpu']:
+        for binary in (bundle / folder).rglob('*'):
+            if not binary.is_file(): continue
             versions = [tuple(map(int, pair)) for pair in re.findall(rb'GLIBC_([0-9]+)\.([0-9]+)', binary.read_bytes())]
             if versions and max(versions) > (2, 35):
                 raise SystemExit(f'{binary.name} requires glibc {max(versions)}; rebuild in the qualified glibc 2.35 environment or use a static build')

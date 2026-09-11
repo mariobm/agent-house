@@ -97,6 +97,14 @@ def upgrade_runtime(stage, temp):
         stage.rename(PREFIX)
         (PREFIX / 'share/base.ext4').unlink()
         (PREFIX / 'share/base.ext4').symlink_to(link)
+        # Existing services also need render-node access after a GPU-capable upgrade.
+        if (PREFIX / 'bin/ahvm-vmm-gpu').is_file():
+            import grp
+            user = subprocess.check_output(['systemctl', 'show', 'ahvm-rust', '-p', 'User', '--value'], text=True).strip()
+            for node in Path('/dev/dri').glob('renderD*'):
+                group = grp.getgrgid(node.stat().st_gid).gr_name
+                if group != 'root' and user:
+                    run('usermod', '-a', '-G', group, user)
         run('systemctl', 'start', 'ahvm-rust')
         health()
     except BaseException:

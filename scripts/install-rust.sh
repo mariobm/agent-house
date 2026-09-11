@@ -47,6 +47,15 @@ if ! id "$RUN_USER" >/dev/null 2>&1; then
     useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$RUN_USER"
 fi
 getent group "$RUN_USER" >/dev/null || { echo 'Service user requires a matching primary group' >&2; exit 1; }
+# Grant only the render-node group, never the display/card device group.
+if [[ -x $BUNDLE/bin/ahvm-vmm-gpu ]]; then
+    for node in /dev/dri/renderD*; do
+        [[ -c $node ]] || continue
+        group=$(stat -c %G "$node")
+        [[ $group != root && $group != UNKNOWN ]] || continue
+        usermod -a -G "$group" "$RUN_USER"
+    done
+fi
 install -d -m755 "$PREFIX"
 cp -a "$BUNDLE/." "$PREFIX/"
 chown -R root:root "$PREFIX"
