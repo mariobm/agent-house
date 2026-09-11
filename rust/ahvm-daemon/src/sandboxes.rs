@@ -80,31 +80,46 @@ pub async fn create(
         body.cpus as i64,
         body.memory_mb as i64,
     )?;
+    let desktop = body.desktop
+        || matches!(
+            body.image.as_deref(),
+            Some("ubuntu-desktop" | "omarchy-desktop")
+        );
+    let gpu = body.image.as_deref() == Some("omarchy-desktop");
+    if desktop
+        && body
+            .image
+            .as_deref()
+            .is_some_and(|name| !matches!(name, "ubuntu-desktop" | "omarchy-desktop"))
+    {
+        return Err(ApiError::Invalid(
+            "desktop requires ubuntu-desktop or omarchy-desktop".into(),
+        ));
+    }
+    let root_image = if desktop {
+        // Explicit named images always win over legacy preview overrides.
+        match body.image.as_deref() {
+            Some(name) => resolve_image(Some(name))?,
+            None => match std::env::var("AHVM_DESKTOP_IMAGE") {
+                Ok(path) => Some(path),
+                Err(_) => resolve_image(Some("ubuntu-desktop"))?,
+            },
+        }
+    } else {
+        resolve_image(body.image.as_deref())?
+    };
     let spec = ahvm_engine::SandboxSpec {
         name: body.name.clone(),
         cpus: body.cpus,
         memory_mb: body.memory_mb,
         backend: ahvm_engine::BackendKind::Krucible,
-        root_image: if body.desktop {
-            if body
-                .image
-                .as_deref()
-                .is_some_and(|name| name != "ubuntu-desktop")
-            {
-                return Err(ApiError::Invalid(
-                    "desktop requires the ubuntu-desktop image".into(),
-                ));
-            }
-            match std::env::var("AHVM_DESKTOP_IMAGE") {
-                Ok(path) => Some(path),
-                Err(_) => resolve_image(Some("ubuntu-desktop"))?,
-            }
-        } else {
-            resolve_image(body.image.as_deref())?
-        },
+        root_image,
         kernel_image: None,
-        desktop: body.desktop,
-        desktop_gpu: body.desktop && std::env::var("AHVM_DESKTOP_GPU").as_deref() == Ok("1"),
+        desktop,
+        desktop_gpu: gpu
+            || (desktop
+                && body.image.is_none()
+                && std::env::var("AHVM_DESKTOP_GPU").as_deref() == Ok("1")),
         extra_env: Default::default(),
     };
     let backend = state.backend.clone();

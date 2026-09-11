@@ -287,9 +287,22 @@ pub fn run(cli: Cli) -> Result<i32> {
             cpus,
             memory,
         } => {
-            let desktop = desktop || image.as_deref() == Some("ubuntu-desktop");
-            let cpus = cpus.unwrap_or(if desktop { 2 } else { 1 });
-            let memory = memory.unwrap_or(if desktop { 4096 } else { 512 });
+            let omarchy = image.as_deref() == Some("omarchy-desktop");
+            let desktop = desktop || omarchy || image.as_deref() == Some("ubuntu-desktop");
+            let cpus = cpus.unwrap_or(if omarchy {
+                4
+            } else if desktop {
+                2
+            } else {
+                1
+            });
+            let memory = memory.unwrap_or(if omarchy {
+                8192
+            } else if desktop {
+                4096
+            } else {
+                512
+            });
             if cpus == 0 || memory < 128 {
                 return Err("use at least 1 CPU and 128 MiB RAM".into());
             }
@@ -299,12 +312,14 @@ pub fn run(cli: Cli) -> Result<i32> {
             if desktop
                 && image
                     .as_deref()
-                    .is_some_and(|name| name != "ubuntu-desktop")
+                    .is_some_and(|name| !matches!(name, "ubuntu-desktop" | "omarchy-desktop"))
             {
-                return Err("desktop requires the ubuntu-desktop image".into());
+                return Err("desktop requires ubuntu-desktop or omarchy-desktop".into());
             }
             if desktop || image.is_some() {
-                let feature = if desktop {
+                let feature = if omarchy {
+                    "omarchy-desktop-v1"
+                } else if desktop {
                     "desktop-v1"
                 } else {
                     "named-images-v1"
@@ -316,8 +331,12 @@ pub fn run(cli: Cli) -> Result<i32> {
                 {
                     return Err(format!("server does not advertise {feature}; enable it on a compatible server first").into());
                 }
-                if desktop && health["desktop_image_installed"] == false {
-                    let name = health["desktop_image"].as_str().unwrap_or("ubuntu-desktop");
+                let requested = image.as_deref().unwrap_or("ubuntu-desktop");
+                let installed = health["desktop_images"][requested]
+                    .as_bool()
+                    .unwrap_or(!omarchy && health["desktop_image_installed"] != false);
+                if desktop && !installed {
+                    let name = requested;
                     let host = host.as_ref().ok_or("install ubuntu-desktop on the server with ahvm image pull ubuntu-desktop, or use a saved SSH host for automatic installation")?;
                     eprintln!("Installing {name} on the selected host (first desktop only)...");
                     if crate::hosts::pull_for_create(host, name.into())? != 0 {

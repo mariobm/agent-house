@@ -112,7 +112,7 @@ pub fn run(command: Images) -> Result<i32> {
             }
             record.as_file().sync_all()?;
             record.persist(root.join(format!("{name}.json")))?;
-            if !root.join("default.ext4").exists() {
+            if name != "omarchy-desktop" && !root.join("default.ext4").exists() {
                 set_default(&root, &name)?;
             }
             println!("{name}\t{}", artifact.version);
@@ -125,6 +125,11 @@ pub fn run(command: Images) -> Result<i32> {
     Ok(0)
 }
 fn set_default(root: &Path, name: &str) -> Result<()> {
+    if name == "omarchy-desktop" {
+        return Err(
+            "Omarchy must be selected explicitly with create --image omarchy-desktop".into(),
+        );
+    }
     let artifact = record(root, name)?;
     if artifact.sha256.len() != 64 || !artifact.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("invalid cached image digest".into());
