@@ -3,6 +3,8 @@
 # Subsequent ahvm upgrade calls verify signatures with the embedded public key.
 set -euo pipefail
 main() {
+    if (($#)); then echo "Usage: curl -fsSL https://ahvm.app/install.sh | bash (set AHVM_BIN_DIR to choose a directory)" >&2; return 1; fi
+    echo "License terms: https://ahvm.app/license"
     local dest=${AHVM_BIN_DIR:-$HOME/.local/bin} platform tmp
     case "$(uname -s)-$(uname -m)" in
         Darwin-arm64) platform=darwin-aarch64 ;;
@@ -15,7 +17,7 @@ main() {
     [[ ! -L $dest/ahvm ]] || { echo 'Existing CLI is a symlink; update it with its package manager.' >&2; return 1; }
     tmp=$(mktemp -d "$dest/.ahvm-install.XXXXXX")
     trap "rm -rf -- $(printf '%q' "$tmp")" EXIT
-    curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 15 --max-time 30 https://images.ahvm.app/catalog.json -o "$tmp/catalog.json"
+    curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 15 --max-time 30 --max-filesize 262144 https://images.ahvm.app/catalog.json -o "$tmp/catalog.json"
     python3 - "$tmp" "$platform" <<'PY'
 import base64,json,sys,urllib.parse
 from pathlib import Path
@@ -29,7 +31,7 @@ if u.scheme!='https' or u.netloc!='github.com' or not u.path.startswith('/mariob
 (root/'artifact.json').write_text(json.dumps(a))
 (root/'url').write_text(a['url'])
 PY
-    curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 15 --max-time 600 "$(cat "$tmp/url")" -o "$tmp/ahvm.gz"
+    curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 15 --max-time 600 --max-filesize 268435456 "$(cat "$tmp/url")" -o "$tmp/ahvm.gz"
     python3 - "$tmp" <<'PY'
 from pathlib import Path
 import gzip,hashlib,json,sys

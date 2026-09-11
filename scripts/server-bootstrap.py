@@ -29,7 +29,7 @@ def fetch(url, target, maximum, expected=None):
         raise ValueError('Downloads require HTTPS')
     digest = hashlib.sha256()
     total = 0
-    with urllib.request.urlopen(url, timeout=60) as response, target.open('wb') as out:
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "AHVM/0.2.0"}), timeout=60) as response, target.open('wb') as out:
         if not response.url.startswith('https://'):
             raise ValueError('Insecure download redirect')
         while True:
@@ -199,4 +199,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as error:
+        print('ahvm server: ' + str(error), file=sys.stderr)
+        sys.exit(1)

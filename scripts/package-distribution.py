@@ -6,6 +6,7 @@ Images are published separately; preserves all bundled third-party notices.
 import gzip
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 import sys
@@ -26,6 +27,11 @@ with (bundle / 'bin/ahvm').open('rb') as src, gzip.open(cli, 'wb', compresslevel
     shutil.copyfileobj(src, dest)
 records = {'cli': {platform: info(cli, (bundle / 'bin/ahvm').stat().st_size)}, 'server': {}}
 if platform == 'linux-x86_64':
+    for folder in ['bin', 'lib']:
+        for binary in (bundle / folder).glob('*'):
+            versions = [tuple(map(int, pair)) for pair in re.findall(rb'GLIBC_([0-9]+)\.([0-9]+)', binary.read_bytes())]
+            if versions and max(versions) > (2, 35):
+                raise SystemExit(f'{binary.name} requires glibc {max(versions)}; rebuild in the qualified glibc 2.35 environment or use a static build')
     with tempfile.TemporaryDirectory() as temp:
         stage = Path(temp) / 'bundle'
         shutil.copytree(bundle, stage, ignore=lambda directory, names: ['share'] if Path(directory) == bundle else [])

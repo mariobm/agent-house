@@ -82,3 +82,32 @@ once a day in a separate process and never block the foreground command. JSON
 and redirected stderr suppress notices. Set `AHVM_NO_UPDATE_CHECK=1` to opt out.
 Initial curl installation trusts the HTTPS bootstrap and its download digest;
 subsequent updates enforce the public key embedded in the installed client.
+
+## Publishing a release
+
+Build assets through the manual `Build release assets` workflow, or run
+`scripts/package-distribution.py` on each qualified platform. It emits separate
+client downloads, a server-only archive, and per-platform metadata. The Linux
+packager refuses dependencies requiring glibc newer than 2.35. Guest images are
+built and qualified separately, then published under immutable R2 keys.
+
+After merging and qualification, download the three workflow artifacts into one
+directory and run:
+
+```sh
+scripts/publish-release.py /path/to/dist 0.2.1 FULL_QUALIFIED_COMMIT_SHA
+```
+
+The publisher checks artifact hashes, creates the GitHub release, signs and
+publishes the update catalog, and updates the Homebrew tap through a PR. It uses
+local GitHub authentication, `~/.config/ahvm-release/signing-key.pem`, and the
+bucket-scoped `r2-publisher.json` in the same private directory. Never commit
+those files. Back up the signing key securely; the embedded public key is in
+`packaging/keys/releases.pem`. Merely creating a release through GitHub's UI
+does not promote it into the signed catalog or update Homebrew.
+
+`AHVM_CATALOG_URL` selects a signed qualification channel without weakening
+signature verification. Normal installations use the production catalog.
+Refresh/re-sign the catalog before its 90-day expiry even if no new release is
+planned. A new guest or state ABI requires explicit compatibility qualification;
+automatic migration is not inferred from a version number.
