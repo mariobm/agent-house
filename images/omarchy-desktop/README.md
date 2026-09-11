@@ -52,3 +52,8 @@ booted with healthy services and working HTTPS.
 
 PR remains draft pending the owner's final visual test. No Omarchy image has
 been published and no production service or existing sandbox was changed.
+
+Keybindings menu follow-up: explicitly install Perl and Lua, and adapt the pinned
+upstream scanner's monitor mock for qconsole. The four-modifier Hyper+K sequence
+was verified in the native viewer to reopen the Keybindings menu after Escape.
+The user's physical Raycast Caps Lock remapper remains a manual input check.

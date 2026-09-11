@@ -23,9 +23,20 @@ mount --rbind /dev "$r/dev"
 cp -L /etc/resolv.conf "$r/etc/resolv.conf"
 chroot "$r" pacman -Syu --needed --noconfirm quickshell qt6-multimedia qt6-svg qt6-5compat \
   qt6-wayland jq socat wl-clipboard cliphist playerctl pipewire wireplumber \
-  ttf-jetbrains-mono-nerd firefox xdg-utils imagemagick gum
+  ttf-jetbrains-mono-nerd firefox xdg-utils imagemagick gum perl lua
 mkdir -p "$r/usr/share/omarchy"
 cp -a "$3/." "$r/usr/share/omarchy/"
+# The pinned upstream keybinding scanner mocks live compositor APIs. Its generic
+# mock is a table, but qconsole compares monitor.scale with a number.
+python3 - "$r/usr/share/omarchy/bin/omarchy-menu-keybindings" <<'PYFIX'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+needle = "hl = setmetatable({\n"
+assert s.count(needle) == 1, "Upstream keybinding scanner changed; review this adapter"
+p.write_text(s.replace(needle, needle + "  get_active_monitor = function() return nil end,\n"))
+PYFIX
 cp -a "$r/usr/share/omarchy/config/." "$r/home/desktop/.config/"
 install -m755 "$4/session.sh" "$r/usr/local/bin/desktop-session"
 cat "$4/hyprland.lua" >> "$r/home/desktop/.config/hypr/hyprland.lua"
