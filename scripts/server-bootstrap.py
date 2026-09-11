@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -153,6 +154,15 @@ def main():
             artifact = catalog['server']['linux-x86_64']
             if artifact['guest_abi'] != 1 or not 0 < artifact['size'] <= 4 * 1024**3:
                 raise ValueError('Incompatible server release')
+            if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', artifact['version']):
+                raise ValueError('Invalid stable server version')
+            if upgrade:
+                installed = subprocess.check_output([PREFIX / 'bin/ahvm', '--version'], text=True).strip().removeprefix('ahvm ')
+                if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', installed):
+                    raise ValueError('Unknown installed server version; manual upgrade required')
+                if tuple(map(int, installed.split('.'))) >= tuple(map(int, artifact['version'].split('.'))):
+                    print('Server is up to date (' + installed + ')')
+                    return
             print('Downloading AHVM server ' + artifact['version'], flush=True)
             fetch(artifact['url'], temp / 'server.tar.gz', artifact['size'], artifact['sha256'])
             stage = temp / 'runtime'

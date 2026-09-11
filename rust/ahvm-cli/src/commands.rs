@@ -38,6 +38,8 @@ enum Command {
     Host(crate::hosts::Hosts),
     /// Update a standalone CLI installation.
     Upgrade,
+    /// Show AHVM licensing and upstream notices.
+    License,
     #[command(hide = true)]
     CheckUpdates,
     #[command(subcommand)]
@@ -212,6 +214,15 @@ pub fn decoded(v: &Value) -> Result<Vec<u8>> {
 }
 
 pub fn run(cli: Cli) -> Result<i32> {
+    if matches!(cli.command, Command::License) {
+        print!(
+            "{}\n{}\n{}",
+            include_str!("../../../LICENSE"),
+            include_str!("../../../NOTICE"),
+            include_str!("../../../licenses/Apache-2.0.txt")
+        );
+        return Ok(0);
+    }
     if matches!(cli.command, Command::Upgrade) {
         return crate::upgrade::run();
     }
@@ -247,7 +258,11 @@ pub fn run(cli: Cli) -> Result<i32> {
         .unwrap_or("http://127.0.0.1:8080");
     let api = Api::new(endpoint, token, cli.timeout)?;
     let response = match cli.command {
-        Command::Host(_) | Command::Image(_) | Command::Upgrade | Command::CheckUpdates => {
+        Command::Host(_)
+        | Command::Image(_)
+        | Command::Upgrade
+        | Command::CheckUpdates
+        | Command::License => {
             unreachable!()
         }
         Command::Health => api.call(Method::GET, &["healthz"], &[], None)?,
