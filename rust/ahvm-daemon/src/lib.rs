@@ -290,5 +290,7 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 async fn healthz() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok" }))
+    Json(
+        serde_json::json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION"), "features": ["named-images-v1"] }),
+    )
 }
