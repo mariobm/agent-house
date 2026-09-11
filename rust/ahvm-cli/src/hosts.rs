@@ -109,11 +109,11 @@ pub fn run(command: Hosts, json: bool) -> Result<i32> {
             let host = config.hosts.get(&name).ok_or("unknown host")?;
             validate(host)?;
             // Verify compatibility metadata before asking the host to upgrade.
-            let catalog = crate::distribution::catalog(crate::upgrade::CATALOG)?;
+            let catalog = crate::distribution::catalog(&crate::distribution::catalog_url())?;
             if catalog
                 .server
                 .get("linux-x86_64")
-                .is_none_or(|a| a.guest_abi != 1)
+                .is_none_or(|a| a.guest_abi != 1 || a.state_abi != 1)
             {
                 return Err("no compatible server release available".into());
             }
@@ -307,10 +307,18 @@ pub fn image(host: &Host, command: crate::images::Images) -> Result<i32> {
 
 fn provision(host: &Host, upgrade: bool) -> Result<i32> {
     validate(host)?;
-    let script = include_str!("../../../scripts/server-bootstrap.py").replace(
-        "@PUBLIC_KEY@",
-        include_str!("../../../packaging/keys/releases.pem"),
-    );
+    let script = include_str!("../../../scripts/server-bootstrap.py")
+        .replace(
+            "@PUBLIC_KEY@",
+            include_str!("../../../packaging/keys/releases.pem"),
+        )
+        .replace(
+            "CATALOG = 'https://images.ahvm.app/catalog.json'",
+            &format!(
+                "CATALOG = {}",
+                serde_json::to_string(&crate::distribution::catalog_url())?
+            ),
+        );
     let mut child = Command::new("ssh")
         .args(["--", &host.ssh])
         .arg(if upgrade {

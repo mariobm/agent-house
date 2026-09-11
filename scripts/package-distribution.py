@@ -19,7 +19,7 @@ output.mkdir(parents=True, exist_ok=True)
 def info(path, unpacked):
     with path.open('rb') as f:
         sha = hashlib.file_digest(f, 'sha256').hexdigest()
-    return dict(version=version, url=f'https://github.com/mariobm/agent-house/releases/download/v{version}/{path.name}', sha256=sha, size=path.stat().st_size, unpacked_size=unpacked, guest_abi=1)
+    return dict(version=version, url=f'https://github.com/mariobm/agent-house/releases/download/v{version}/{path.name}', sha256=sha, size=path.stat().st_size, unpacked_size=unpacked, guest_abi=1, state_abi=1)
 
 cli = output / f'ahvm-{version}-{platform}.gz'
 with (bundle / 'bin/ahvm').open('rb') as src, gzip.open(cli, 'wb', compresslevel=6) as dest:

@@ -152,7 +152,7 @@ def main():
             if catalog['expires'] <= time.time():
                 raise ValueError('Release catalog expired')
             artifact = catalog['server']['linux-x86_64']
-            if artifact['guest_abi'] != 1 or not 0 < artifact['size'] <= 4 * 1024**3:
+            if artifact['guest_abi'] != 1 or artifact.get('state_abi') != 1 or not 0 < artifact['size'] <= 4 * 1024**3:
                 raise ValueError('Incompatible server release')
             if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', artifact['version']):
                 raise ValueError('Invalid stable server version')
@@ -160,6 +160,10 @@ def main():
                 installed = subprocess.check_output([PREFIX / 'bin/ahvm', '--version'], text=True).strip().removeprefix('ahvm ')
                 if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', installed):
                     raise ValueError('Unknown installed server version; manual upgrade required')
+                abi_file = PREFIX / 'state-abi'
+                current_abi = int(abi_file.read_text()) if abi_file.exists() else (1 if installed in ['0.1.0', '0.2.0'] else 0)
+                if current_abi != artifact['state_abi']:
+                    raise ValueError('State format change requires an explicit migration')
                 if tuple(map(int, installed.split('.'))) >= tuple(map(int, artifact['version'].split('.'))):
                     print('Server is up to date (' + installed + ')')
                     return
@@ -178,6 +182,7 @@ def main():
             version = subprocess.check_output([stage / 'bin/ahvm', '--version'], text=True).strip()
             if version != 'ahvm ' + artifact['version']:
                 raise ValueError('Server bundle version mismatch')
+            (stage / 'state-abi').write_text(str(artifact['state_abi']) + '\n')
             image = Path('/var/lib/ahvm-images/default.ext4')
             if not image.is_file():
                 run(str(stage / 'bin/ahvm'), 'image', 'pull', 'ubuntu-dev', env={**os.environ, 'AHVM_CONFIG_DIR': str(temp / 'cli-config')})
