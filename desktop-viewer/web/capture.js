@@ -1,5 +1,5 @@
 // Own modifier state while focused so Raycast Hyper becomes only Linux Super.
-export function keyboardCapture(sendKey, releaseRequested, keysymForEvent = () => null) {
+export function keyboardCapture(sendKey, releaseRequested, keysymForEvent = () => null, isMac = false) {
   let enabled = false;
   let hyper = false;
   const held = new Map();
@@ -24,6 +24,8 @@ export function keyboardCapture(sendKey, releaseRequested, keysymForEvent = () =
       if (e.type === 'keydown' && e.code === 'Escape' && e.ctrlKey && e.altKey && !full) {
         this.setEnabled(false); releaseRequested(); return true;
       }
+      // Other platforms keep noVNC’s native modifier and AltGr handling.
+      if (!isMac) return false;
       const wasHyper = hyper;
       if (full) hyper = true;
       const wanted = new Map();

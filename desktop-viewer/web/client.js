@@ -10,7 +10,8 @@ rfb.resizeSession = false;
 let connected = false;
 let capturing = false;
 const modifiers = modifierRepair((...args) => rfb.sendKey(...args));
-const capture = keyboardCapture((...args) => rfb.sendKey(...args), release, getKeysym);
+const isMac = /Mac/.test(navigator.platform);
+const capture = keyboardCapture((...args) => rfb.sendKey(...args), release, getKeysym, isMac);
 let resetting = false;
 function resetKeyboard() {
   capture.setEnabled(false);
@@ -37,10 +38,11 @@ window.ahvmCaptureState = mode => {
   resetKeyboard();
   capturing = true;
   capture.setEnabled(true);
-  const limited = /Mac/.test(navigator.platform)
+  const limited = isMac
     ? ' · macOS shortcuts need Accessibility permission for AHVM Desktop'
     : ' · system shortcuts may stay on the host';
-  hint.textContent = `Keyboard focused · Command / Hyper = Super · Ctrl+Option+Esc to release${mode === 'native' ? '' : limited}`;
+  const shortcuts = isMac ? 'Command / Hyper = Super · Ctrl+Option+Esc to release' : 'Super = Super · Ctrl+Alt+Esc to release';
+  hint.textContent = `Keyboard focused · ${shortcuts}${mode === 'native' ? '' : limited}`;
   rfb.focus();
 };
 function focusCapture() {

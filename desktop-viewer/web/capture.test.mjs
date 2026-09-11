@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { keyboardCapture } from './capture.js';
 const sent = [];
 let released = 0;
-const c = keyboardCapture((...a) => sent.push(a), () => released++, e => e.key.codePointAt(0));
+const c = keyboardCapture((...a) => sent.push(a), () => released++, e => e.key.codePointAt(0), true);
 const event = (type, code, flags = {}) => c.event({type, code, key:'', ...flags});
 assert.equal(event('keydown','MetaLeft',{metaKey:true}),false);
 c.setEnabled(true);
@@ -39,3 +39,18 @@ event('keydown','KeyK',{...full,key:'K'});
 c.setEnabled(false);
 assert.deepEqual(sent.slice(-2),[[107,'KeyK',false],[0xffeb,'MetaLeft',false]]);
 console.log('Command, Hyper collapse, key release, focus reset and escape passed');
+
+// Linux retains all original modifiers, including right Alt / AltGr.
+const linuxSent = [];
+let linuxReleased = false;
+const linux = keyboardCapture((...a) => linuxSent.push(a), () => linuxReleased = true);
+linux.setEnabled(true);
+for (const type of ['keydown', 'keyup']) {
+  for (const code of ['MetaLeft', 'ControlRight', 'AltRight', 'ShiftRight', 'KeyK', 'CapsLock']) {
+    assert.equal(linux.event({type, code, key:'K', ...full}), false);
+  }
+}
+assert.deepEqual(linuxSent, []);
+assert.equal(linux.event({type:'keydown', code:'Escape', ctrlKey:true, altKey:true}), true);
+assert.equal(linuxReleased, true);
+console.log('Linux modifier passthrough and release shortcut passed');

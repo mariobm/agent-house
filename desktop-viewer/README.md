@@ -106,10 +106,11 @@ focused. There is no toggle. Both Mac Command keys map to Linux Super; the full
 Control+Option+Shift+Command combination (Raycast Hyper/Caps Lock) is collapsed
 to a single Super modifier. Hyper letter/digit shortcuts use the physical key
 rather than the Shift/Option-generated glyph. Partial modifier release does not
-leak Control/Alt/Shift into the guest.
+leak Control/Alt/Shift into the guest. This conversion applies only on macOS.
+Linux forwards its original modifiers, including Super and AltGr, without Hyper conversion.
 
 Click outside the viewer to release. Ctrl+Option+Esc also releases until the
-next focus or desktop click. Disconnect/close release all held keys. The header
+next focus or desktop click (Ctrl+Alt+Esc on Linux). Disconnect/close release all held keys. The header
 shows focus/capture state.
 
 macOS symbolic-hotkey suppression still requires Accessibility permission for
