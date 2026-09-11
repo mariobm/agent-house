@@ -69,7 +69,8 @@ that channel before promoting the same signed catalog:
 python3 scripts/sign-catalog.py /tmp/catalog-payload.json \
   ~/.config/ahvm-release/signing-key.pem /tmp/catalog-next.json
 python3 scripts/r2-publish.py /tmp/catalog-next.json qualification.json
-AHVM_CATALOG_URL=https://images.ahvm.app/qualification.json ahvm image pull PROFILE
+# Set the channel on the server, where the image download runs.
+ssh agent_house 'env AHVM_CONFIG_DIR=/etc/ahvm-rust/client AHVM_CATALOG_URL=https://images.ahvm.app/qualification.json /opt/ahvm-rust/bin/ahvm image pull PROFILE'
 ahvm create image-check --image PROFILE --cpus 2 --memory 4096
 # Run the guest checks, then delete image-check.
 # Re-fetch/check the current catalog before promotion if another publisher ran.
