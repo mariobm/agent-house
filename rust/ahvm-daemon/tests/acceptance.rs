@@ -480,6 +480,7 @@ fn cleanup_guard_runs_on_panic() {
             root_image: None,
             kernel_image: None,
             desktop: false,
+            desktop_gpu: false,
             extra_env: Default::default(),
         })
         .unwrap();

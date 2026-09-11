@@ -27,7 +27,7 @@ LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/opt/ahvm-rust/lib}" timeout --kill-after=5s
 worker=$!
 # Guest starts the bridge only after the compositor, terminal and capture server.
 sleep 7
-python3 "$DESKTOP_RECIPE/rfb-probe.py" "$DESKTOP_RUN/vnc.sock" "$DESKTOP_OUTPUT/vnc"
+python3 "$DESKTOP_RECIPE/../../../scripts/desktop-rfb-probe.py" "$DESKTOP_RUN/vnc.sock" "$DESKTOP_OUTPUT/vnc"
 wait "$worker"
 worker=
 grep -q 'DESKTOP_INPUT_OK' "$DESKTOP_OUTPUT/console.log"

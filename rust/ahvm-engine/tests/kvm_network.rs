@@ -85,6 +85,7 @@ fn isolated_gateways_recover_without_disturbing_peers() {
             root_image: None,
             kernel_image: None,
             desktop: false,
+            desktop_gpu: false,
             extra_env: Default::default(),
         })
         .unwrap();
@@ -296,6 +297,7 @@ fn dns_rejects_wrong_replies_and_retries_truncation_over_tcp() {
         root_image: None,
         kernel_image: None,
         desktop: false,
+        desktop_gpu: false,
         extra_env: Default::default(),
     })
     .unwrap();

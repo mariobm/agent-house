@@ -228,6 +228,7 @@ impl Backend for MockBackend {
             root_image: None,
             kernel_image: None,
             desktop: false,
+            desktop_gpu: false,
             extra_env: HashMap::new(),
         };
         let n = inner.sandboxes.len() as u64 + 2;
@@ -495,6 +496,7 @@ mod tests {
             root_image: None,
             kernel_image: None,
             desktop: false,
+            desktop_gpu: false,
             extra_env: HashMap::new(),
         }
     }

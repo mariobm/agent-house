@@ -292,11 +292,11 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 async fn healthz() -> Json<serde_json::Value> {
-    let mut features = vec!["named-images-v1"];
-    if std::env::var_os("AHVM_DESKTOP_IMAGE").is_some() {
-        features.push("desktop-v1");
-    }
-    Json(
-        serde_json::json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION"), "features": features }),
-    )
+    let custom = std::env::var_os("AHVM_DESKTOP_IMAGE").is_some();
+    Json(serde_json::json!({
+        "status": "ok", "version": env!("CARGO_PKG_VERSION"),
+        "features": ["named-images-v1", "desktop-v1"],
+        "desktop_image": if custom { None } else { Some("ubuntu-desktop") },
+        "desktop_image_installed": custom || sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
+    }))
 }

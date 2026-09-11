@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded RFB 3.8 smoke client for the private experimental desktop socket."""
+"""Bounded RFB 3.8 smoke client for the private desktop socket."""
 import socket
 import struct
 import sys
@@ -84,7 +84,7 @@ else:
 s.sendall(struct.pack('!BBHH', 5, 0, 320, 240))
 s.sendall(struct.pack('!BBHH', 5, 1, 320, 240))
 s.sendall(struct.pack('!BBHH', 5, 0, 320, 240))
-command = 'echo AHVM-VNC-INPUT-OK | tee /home/desktop/input-ok'
+command = sys.argv[3] if len(sys.argv) > 3 else 'echo AHVM-VNC-INPUT-OK | tee /home/desktop/input-ok'
 for key in [ord(c) for c in command] + [0xff0d]:
     s.sendall(struct.pack('!BBHI', 4, 1, 0, key) + struct.pack('!BBHI', 4, 0, 0, key))
     time.sleep(0.01)

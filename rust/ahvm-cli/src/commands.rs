@@ -47,7 +47,7 @@ enum Command {
     Health,
     Create {
         name: Option<String>,
-        /// Use the host-configured experimental desktop image and GPU.
+        /// Use the Ubuntu desktop image (XFCE, terminal and browser).
         #[arg(long)]
         desktop: bool,
         #[arg(long)]
@@ -287,13 +287,21 @@ pub fn run(cli: Cli) -> Result<i32> {
             cpus,
             memory,
         } => {
+            let desktop = desktop || image.as_deref() == Some("ubuntu-desktop");
             let cpus = cpus.unwrap_or(if desktop { 2 } else { 1 });
             let memory = memory.unwrap_or(if desktop { 4096 } else { 512 });
+            if cpus == 0 || memory < 128 {
+                return Err("use at least 1 CPU and 128 MiB RAM".into());
+            }
             let name = name.unwrap_or_else(|| {
                 format!("vm-{}", &uuid::Uuid::new_v4().simple().to_string()[..12])
             });
-            if desktop && image.is_some() {
-                return Err("desktop uses the host-configured desktop image; omit --image".into());
+            if desktop
+                && image
+                    .as_deref()
+                    .is_some_and(|name| name != "ubuntu-desktop")
+            {
+                return Err("desktop requires the ubuntu-desktop image".into());
             }
             if desktop || image.is_some() {
                 let feature = if desktop {
@@ -308,9 +316,14 @@ pub fn run(cli: Cli) -> Result<i32> {
                 {
                     return Err(format!("server does not advertise {feature}; enable it on a compatible server first").into());
                 }
-            }
-            if cpus == 0 || memory < 128 {
-                return Err("use at least 1 CPU and 128 MiB RAM".into());
+                if desktop && health["desktop_image_installed"] == false {
+                    let name = health["desktop_image"].as_str().unwrap_or("ubuntu-desktop");
+                    let host = host.as_ref().ok_or("install ubuntu-desktop on the server with ahvm image pull ubuntu-desktop, or use a saved SSH host for automatic installation")?;
+                    eprintln!("Installing {name} on the selected host (first desktop only)...");
+                    if crate::hosts::pull_for_create(host, name.into())? != 0 {
+                        return Err("desktop image installation failed".into());
+                    }
+                }
             }
             api.call(
                 Method::POST,

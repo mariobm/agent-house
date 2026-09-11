@@ -21,7 +21,7 @@ to overwrite a disk. Do not mount or modify a backing image while a VM uses it.
 Build the VMM with the branch's optional GPU feature and readback-fix fork pin,
 as described in [the GPU experiment](../../experiments/gpu/README.md). Set
 `AHVM_DESKTOP_IMAGE=/absolute/new-desktop.ext4` in the isolated daemon's environment,
-and point `AHVM_VMM_BIN` at that GPU-enabled worker. The host needs the tested
+set `AHVM_DESKTOP_GPU=1`, and point `AHVM_VMM_BIN` at that GPU-enabled worker. The host needs the tested
 VirGL/Mesa runtime and access to its render device. The default installed VMM
 and daemon are not changed by building this image.
 

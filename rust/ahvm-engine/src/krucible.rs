@@ -613,7 +613,7 @@ impl KrucibleBackend {
             "env": spec.extra_env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
         });
         if spec.desktop {
-            js["gpu"] = true.into();
+            js["gpu"] = spec.desktop_gpu.into();
             js.as_object_mut().unwrap().remove("control_socket_uds");
         }
         if self.networks.is_some() {
@@ -912,6 +912,7 @@ impl KrucibleBackend {
             root_image: None,
             kernel_image: None,
             desktop: false,
+            desktop_gpu: false,
             extra_env: HashMap::new(),
         };
         let dir = self.cfg.data_dir.join(new_id);
@@ -1933,6 +1934,7 @@ mod tests {
             root_image: None,
             kernel_image: None,
             desktop: false,
+            desktop_gpu: false,
             extra_env: HashMap::new(),
         }
     }
@@ -1946,6 +1948,7 @@ mod tests {
             root_image: None,
             kernel_image: None,
             desktop: false,
+            desktop_gpu: false,
             extra_env: HashMap::new(),
         };
         let rec = SandboxRecord {
@@ -1969,7 +1972,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_worker_uses_gpu_without_snapshot_control() {
+    fn desktop_worker_defaults_to_software_with_optional_gpu() {
         let dir = crate::test_scratch("desktop-spec");
         std::fs::write(dir.join("vmm"), "x").unwrap();
         std::fs::write(dir.join("base.ext4"), "x").unwrap();
@@ -1983,8 +1986,17 @@ mod tests {
                 .unwrap()
                 .desktop
         );
+        spec.desktop = true;
+        let path = be
+            .write_worker_spec(&dir, &dir.join("root.qcow2"), &spec, None)
+            .unwrap();
+        let software: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(software["gpu"], false);
+        assert!(software.get("control_socket_uds").is_none());
         for enabled in [false, true] {
             spec.desktop = enabled;
+            spec.desktop_gpu = enabled;
             let path = be
                 .write_worker_spec(&dir, &dir.join("root.qcow2"), &spec, None)
                 .unwrap();
@@ -2019,6 +2031,7 @@ mod tests {
             root_image: None,
             kernel_image: None,
             desktop: false,
+            desktop_gpu: false,
             extra_env: HashMap::new(),
         };
         assert!(matches!(be.create(&spec), Err(Error::InvalidState(_))));

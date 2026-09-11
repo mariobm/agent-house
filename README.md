@@ -111,6 +111,22 @@ are verified against a signed catalog and cached on your server. Updating an
 image affects future sandboxes; existing filesystems and snapshots stay unchanged.
 See [building your own images](docs/IMAGE-PUBLISHING.md).
 
+## Desktop
+
+The desktop preview adds XFCE, Bash and Firefox to the Ubuntu development image.
+It runs on the same Linux server without a GPU. With a desktop-capable release:
+
+```bash
+ahvm create dev-desktop --desktop
+ahvm desktop dev-desktop
+```
+
+The first create downloads `ubuntu-desktop` to your saved SSH host. The Mac
+client includes the native viewer. Closing its window leaves the VM running;
+`ahvm stop dev-desktop` preserves files but discards the desktop session.
+Remove it with `ahvm delete dev-desktop`. Desktop snapshots are not supported.
+See the [desktop image guide](images/ubuntu-desktop/README.md).
+
 ## Upgrades
 
 ```sh

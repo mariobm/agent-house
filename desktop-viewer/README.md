@@ -14,7 +14,7 @@ bash desktop-viewer/build.sh
 cargo build --manifest-path rust/Cargo.toml --release -p ahvm-cli
 ```
 
-Configure a host with the [desktop image](../images/arch-desktop/README.md), then:
+Configure a host with the [desktop image](../images/ubuntu-desktop/README.md), then:
 
 ```bash
 ahvm create dev --desktop
@@ -24,7 +24,8 @@ ahvm desktop dev --viewer "$PWD/desktop-viewer/dist/AHVM Desktop.app/Contents/Ma
 The flag defaults to 2 CPUs and 4096 MiB. Explicit `--cpus` and `--memory` still
 work. Without `--desktop`, existing image and resource defaults are unchanged.
 The host must advertise desktop support; an older daemon cannot silently create
-a regular VM instead. Desktop images are configured by the host, so omit `--image`.
+a regular VM instead. The default desktop image is `ubuntu-desktop`; saved SSH hosts pull it on first
+use. A host may override the image for private qualification.
 
 The curl installer, Homebrew formula and `ahvm upgrade` install the bundled
 viewer next to the CLI on macOS, so `ahvm desktop dev` needs no separate install.
@@ -78,15 +79,16 @@ that created a guest file, disconnected without stopping the VM, and reconnected
 Disk markers survived stop/start. GPU acceleration and raw RFB pointer input were
 also verified by the preceding [GPU experiment](../experiments/gpu/desktop/README.md).
 
-Shortcut qualification is incomplete: automated Mac events delivered modifier
-flags without separate modifier key events, so Ctrl+C/shifted input was not a
-valid end-to-end physical-keyboard test. Check a real keyboard, alternate layouts,
-clipboard, sustained desktop latency and reconnect UX before promoting this
-prototype. No keyboard-event logging is included in the viewer.
+Ubuntu/XFCE qualification now also covers uppercase/punctuation and Ctrl+C in
+the native window. A modifier-event repair handles event sources that provide
+flags without separate modifier key events; physical events are left to noVNC.
+International layouts, host clipboard integration and sustained frame-rate
+benchmarks remain follow-up work. No keyboard-event logging is included.
 
-The renderer runs in the VMM process. This is a trusted-workload experiment;
-untrusted desktop isolation, Omarchy customization and release packaging remain
-follow-up work. GPU snapshots are intentionally outside this milestone.
+The default Ubuntu/XFCE desktop uses software rendering. The separate
+Hyprland experiment runs its GPU renderer in the VMM process and remains for
+trusted workloads. Omarchy customization and GPU snapshots are outside this
+milestone.
 
 ## Hosting VMs on this computer
 
