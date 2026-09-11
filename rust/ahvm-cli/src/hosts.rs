@@ -300,7 +300,7 @@ pub fn image(host: &Host, command: crate::images::Images) -> Result<i32> {
     };
     let status = Command::new("ssh")
         .args(["-T", "--", &host.ssh])
-        .arg(format!("sudo -n /opt/ahvm-rust/bin/ahvm image {args}"))
+        .arg(format!("if [ \"$(id -u)\" = 0 ]; then env AHVM_CONFIG_DIR=/etc/ahvm-rust/client /opt/ahvm-rust/bin/ahvm image {args}; else sudo -n env AHVM_CONFIG_DIR=/etc/ahvm-rust/client /opt/ahvm-rust/bin/ahvm image {args}; fi"))
         .status()?;
     Ok(status.code().unwrap_or(1))
 }
@@ -322,9 +322,9 @@ fn provision(host: &Host, upgrade: bool) -> Result<i32> {
     let mut child = Command::new("ssh")
         .args(["--", &host.ssh])
         .arg(if upgrade {
-            "sudo -n python3 - --upgrade"
+            "if [ \"$(id -u)\" = 0 ]; then python3 - --upgrade; else sudo -n python3 - --upgrade; fi"
         } else {
-            "sudo -n python3 -"
+            "if [ \"$(id -u)\" = 0 ]; then python3 -; else sudo -n python3 -; fi"
         })
         .stdin(Stdio::piped())
         .spawn()?;
