@@ -252,10 +252,44 @@ fn read_ahead_is_bounded_and_speculative_corruption_does_not_hide_requested_data
     let mut byte = [0];
     v.read(0, &mut byte).unwrap();
     assert_eq!(byte, [1]);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while s.gets.load(Ordering::SeqCst) - before < 9 {
+        assert!(std::time::Instant::now() < until);
+        std::thread::yield_now();
+    }
     assert_eq!(s.gets.load(Ordering::SeqCst) - before, 9); // one page + eight data requests
     let before = s.gets.load(Ordering::SeqCst);
     v.read(0, &mut byte).unwrap();
     assert_eq!(s.gets.load(Ordering::SeqCst), before); // cache hit performs no read-ahead
     assert!(v.read(CHUNK_BYTES as u64, &mut byte).is_err());
     assert!(cached.bytes() <= 16 * CHUNK_BYTES);
+}
+
+#[test]
+fn identical_rewrites_and_zero_holes_do_not_republish() {
+    let s = Arc::new(Store::default());
+    let mut v = create(s.clone());
+    v.write(0, b"same").unwrap();
+    v.commit().unwrap();
+    let puts = s.puts.load(Ordering::SeqCst);
+    let before = s.head("v").unwrap().unwrap().revision;
+    v.write(0, b"same").unwrap();
+    v.write(CHUNK_BYTES as u64, &[0; 512]).unwrap();
+    v.commit().unwrap();
+    assert_eq!(s.puts.load(Ordering::SeqCst), puts);
+    assert_eq!(s.head("v").unwrap().unwrap().revision, before);
+    assert_eq!(v.dirty_bytes(), 0);
+    // Mixed commits still publish changed chunks, including clearing old data.
+    v.write(0, b"same").unwrap();
+    v.write(CHUNK_BYTES as u64, b"new").unwrap();
+    v.commit().unwrap();
+    assert_eq!(s.puts.load(Ordering::SeqCst), puts + 2); // changed data + page
+    v.write(0, &[0; 4]).unwrap();
+    v.commit().unwrap();
+    let reopened = IndexedVolume::open(s, "v").unwrap();
+    let mut b = [0; 4];
+    reopened.read(0, &mut b).unwrap();
+    assert_eq!(b, [0; 4]);
+    reopened.read(CHUNK_BYTES as u64, &mut b[..3]).unwrap();
+    assert_eq!(&b[..3], b"new");
 }
