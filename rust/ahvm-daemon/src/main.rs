@@ -150,6 +150,12 @@ async fn main() {
         Err(e) => eprintln!("ahvm-daemon: backend list for reconcile: {e}"),
     }
 
+    // Previous request tasks died with the previous daemon process. Preserve
+    // their receipts so a late retry cannot execute an old command again.
+    store
+        .interrupt_lifecycle_operations()
+        .expect("recover lifecycle receipts");
+
     let state = ahvm_daemon::AppState {
         private_owners,
         store: Arc::new(store),

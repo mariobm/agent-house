@@ -17,6 +17,7 @@
 pub mod auth;
 pub mod desktop;
 pub mod files;
+pub mod operations;
 pub mod previews;
 pub mod quotas;
 pub mod routes;
@@ -202,6 +203,10 @@ pub fn build_router(state: AppState) -> Router {
     use axum::middleware;
 
     let authed = Router::new()
+        .route(
+            "/v1/operations/{id}",
+            get(operations::get).post(operations::submit),
+        )
         .route("/v1/sandboxes/{id}/previews", get(previews::list))
         .route(
             "/v1/sandboxes/{id}/previews/{port}/access",
@@ -295,7 +300,7 @@ async fn healthz() -> Json<serde_json::Value> {
     let custom = std::env::var_os("AHVM_DESKTOP_IMAGE").is_some();
     Json(serde_json::json!({
         "status": "ok", "version": env!("CARGO_PKG_VERSION"),
-        "features": ["named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
+        "features": ["lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
         "desktop_images": {
             "ubuntu-desktop": sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
             "omarchy-desktop": sandboxes::resolve_image(Some("omarchy-desktop")).is_ok(),

@@ -184,6 +184,17 @@ fn device_login_refresh_whoami_logout_leave_self_hosted_config_untouched() {
                 send(s, json!({"name":"dev","state":"running"}));
             }
         }
+        let (mut s, headers, _) = receive(&server);
+        assert!(headers.starts_with("POST /v1/sandboxes/dev/stop "));
+        let failed = json!({"error":"operation_failed"}).to_string();
+        write!(
+            s,
+            "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            failed.len(),
+            failed
+        )
+        .unwrap();
+        drop(s);
         let (s, headers, body) = receive(&server);
         assert!(headers.starts_with("POST /oauth/revoke "));
         assert!(body.contains(&format!("token={}", "s".repeat(43))));
@@ -235,6 +246,14 @@ fn device_login_refresh_whoami_logout_leave_self_hosted_config_untouched() {
                 .contains("same-request-key-1234"));
         }
     }
+    let failed = cli(temp.path())
+        .args(["--cloud", "stop", "dev"])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    let message = String::from_utf8(failed.stderr).unwrap();
+    assert!(message.contains("choose a new key"));
+    assert!(!message.contains("retry this lifecycle request with"));
     let logout = cli(temp.path()).arg("logout").output().unwrap();
     assert!(logout.status.success());
     assert!(!path.exists());

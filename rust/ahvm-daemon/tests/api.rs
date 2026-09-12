@@ -39,6 +39,10 @@ fn user(id: &str, token: &str) -> User {
 }
 
 fn app() -> axum::Router {
+    build_router(test_state())
+}
+
+fn test_state() -> AppState {
     let dir = std::env::temp_dir().join(format!("ahvm-daemon-test-{}", std::process::id()));
     let store = Arc::new(Store::open_in_memory().unwrap());
     store.upsert_user(&user("alice", TOKEN_A)).unwrap();
@@ -72,7 +76,7 @@ fn app() -> axum::Router {
         })
         .unwrap();
     let backend: Arc<dyn ahvm_engine::Backend> = Arc::new(MockBackend::new(dir.join("snapshots")));
-    build_router(AppState {
+    AppState {
         private_owners: Arc::new(std::collections::BTreeMap::from([(
             "host-granted".into(),
             "alice".into(),
@@ -83,7 +87,7 @@ fn app() -> axum::Router {
         activity: ahvm_daemon::thermal::ActivityTracker::new(),
         ops: ahvm_daemon::scheduler::OpsLimiter::new(4),
         lifecycle: ahvm_daemon::scheduler::LifecycleLocks::new(),
-    })
+    }
 }
 
 async fn call(
@@ -1015,4 +1019,174 @@ async fn desktop_upgrade_checks_auth_ownership_and_capability() {
         }
     }
     server.abort();
+}
+
+#[tokio::test]
+async fn lifecycle_receipts_survive_delete_and_fence_old_retries() {
+    let app = app();
+    let create =
+        serde_json::json!({"action":"create","sandbox_id":"journal-vm","cpus":1,"memory_mb":512});
+    let (status, receipt) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/create-1",
+        Some(create.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(receipt["state"], "done");
+    assert_eq!(receipt["status"], 201);
+    assert_eq!(receipt["sandbox_state"], "running");
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_B),
+        "GET",
+        "/v1/operations/create-1",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/create-1",
+        Some(serde_json::json!({"action":"stop","sandbox_id":"journal-vm"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (_, receipt) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/delete-1",
+        Some(serde_json::json!({"action":"delete","sandbox_id":"journal-vm"})),
+    )
+    .await;
+    assert_eq!(receipt["status"], 204);
+    assert_eq!(receipt["sandbox_state"], "absent");
+    let (_, receipt) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/create-1",
+        Some(create),
+    )
+    .await;
+    assert_eq!(receipt["status"], 201);
+    assert_eq!(receipt["sandbox_state"], "absent");
+    let (status, _) = call(app, Some(TOKEN_A), "GET", "/v1/sandboxes/journal-vm", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn dropped_http_request_keeps_its_task_and_fence() {
+    let state = test_state();
+    let app = build_router(state.clone());
+    let lock = state.lifecycle.lock("detached").await;
+    let request =
+        serde_json::json!({"action":"create","sandbox_id":"detached","cpus":1,"memory_mb":512});
+    let handler = tokio::spawn(call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/detached-create",
+        Some(request.clone()),
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while state
+            .store
+            .lifecycle_operation("detached-create", "alice")
+            .is_err()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    handler.abort();
+    let _ = handler.await;
+    let (status, receipt) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/detached-create",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(receipt["state"], "pending");
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/competing-create",
+        Some(request),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(state.store.check_lifecycle_fence("detached", None).is_err());
+    drop(lock);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while state
+            .store
+            .lifecycle_operation("detached-create", "alice")
+            .unwrap()
+            .state
+            == "pending"
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let (_, receipt) = call(
+        app,
+        Some(TOKEN_A),
+        "GET",
+        "/v1/operations/detached-create",
+        None,
+    )
+    .await;
+    assert_eq!(receipt["status"], 201);
+    assert_eq!(receipt["sandbox_state"], "running");
+    assert_eq!(state.backend.list().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn interrupted_receipt_cannot_be_reexecuted_after_restart() {
+    let state = test_state();
+    let request =
+        serde_json::json!({"action":"create","sandbox_id":"interrupted","cpus":1,"memory_mb":512});
+    let canonical = serde_json::to_string(
+        &serde_json::from_value::<ahvm_daemon::operations::Request>(request.clone()).unwrap(),
+    )
+    .unwrap();
+    state
+        .store
+        .admit_lifecycle_operation(
+            &ahvm_store::LifecycleOperation {
+                id: "interrupted-create".into(),
+                owner_user_id: "alice".into(),
+                sandbox_id: "interrupted".into(),
+                request: canonical,
+                state: "pending".into(),
+                status: None,
+            },
+            1,
+        )
+        .unwrap();
+    state.store.interrupt_lifecycle_operations().unwrap();
+    let (_, receipt) = call(
+        build_router(state.clone()),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/interrupted-create",
+        Some(request),
+    )
+    .await;
+    assert_eq!(receipt["state"], "interrupted");
+    assert_eq!(receipt["sandbox_state"], "absent");
+    assert!(state.backend.list().unwrap().is_empty());
 }

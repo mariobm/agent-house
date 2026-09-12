@@ -7,7 +7,9 @@
 
 mod entities;
 mod events;
+mod operations;
 mod schema;
+pub use operations::LifecycleOperation;
 #[cfg(test)]
 mod tests;
 
