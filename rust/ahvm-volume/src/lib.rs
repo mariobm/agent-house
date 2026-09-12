@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub mod s3;
+
 pub const CHUNK_BYTES: usize = 64 * 1024;
 /// Deliberately small for protocol qualification; not a product disk limit.
 pub const MAX_VOLUME_BYTES: u64 = 64 * 1024 * 1024;
