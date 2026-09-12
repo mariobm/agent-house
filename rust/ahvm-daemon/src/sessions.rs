@@ -175,7 +175,15 @@ pub async fn read(
         .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let budget = Duration::from_millis(q.budget_ms.clamp(100, 30_000));
     let backend = state.backend.clone();
-    let chunk = blocking(move || backend.session_read(&id, &sid, q.from_seq, budget)).await?;
+    let stream_guard = state
+        .ops
+        .try_stream(&id)
+        .ok_or_else(|| ApiError::Conflict("workspace stream limit reached; retry later".into()))?;
+    let chunk = blocking(move || {
+        let (_stream, _flight) = (stream_guard, _flight);
+        backend.session_read(&id, &sid, q.from_seq, budget)
+    })
+    .await?;
     Ok(Json(ReadResponse {
         data_b64: base64::engine::general_purpose::STANDARD.encode(&chunk.data),
         eof: chunk.eof,
@@ -200,20 +208,45 @@ pub async fn stream(
 ) -> ApiResult<axum::response::Response> {
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
+    let stream_guard = state
+        .ops
+        .try_stream(&id)
+        .ok_or_else(|| ApiError::Conflict("workspace stream limit reached; retry later".into()))?;
     // The session must exist before we upgrade (else the socket dangles).
     {
         let backend = state.backend.clone();
         let (id, sid) = (id.clone(), sid.clone());
-        let list = blocking(move || backend.session_list(&id)).await?;
+        let pending_guard = stream_guard.clone();
+        let list = blocking(move || {
+            let _stream = pending_guard;
+            backend.session_list(&id)
+        })
+        .await?;
         if !list.iter().any(|s| s.id == sid) {
             return Err(ApiError::NotFound(format!("session {sid}")));
         }
     }
-    Ok(ws.on_upgrade(move |socket| bridge(state, id, sid, q.from_seq, socket)))
+    Ok(ws
+        .max_message_size(256 * 1024)
+        .max_frame_size(256 * 1024)
+        .on_upgrade(move |socket| async move {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(3600),
+                bridge(state, id, sid, q.from_seq, socket, stream_guard),
+            )
+            .await;
+        }))
 }
 
-async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: WebSocket) {
-    use futures_util::{SinkExt, StreamExt};
+async fn bridge(
+    state: AppState,
+    id: String,
+    sid: String,
+    mut seq: u64,
+    socket: WebSocket,
+    stream_guard: std::sync::Arc<crate::scheduler::StreamGuard>,
+) {
+    use futures_util::StreamExt;
     let (mut tx, mut rx) = socket.split();
     // Keep exactly one output read in flight while admitting keyboard input.
     // Dropping a blocking-task handle cannot cancel the guest RPC, so never
@@ -222,7 +255,9 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
     'outer: loop {
         let backend = state.backend.clone();
         let (read_id, read_sid) = (id.clone(), sid.clone());
+        let read_guard = stream_guard.clone();
         let mut output = tokio::task::spawn_blocking(move || {
+            let _stream = read_guard;
             backend.session_poll(&read_id, &read_sid, seq, budget)
         });
         let chunk = loop {
@@ -239,7 +274,7 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
                             }),
                         Some(Ok(Message::Binary(b))) => Some(b.to_vec()),
                         Some(Ok(Message::Ping(p))) => {
-                            if tx.send(Message::Pong(p)).await.is_err() { break 'outer; }
+                            if !send_frame(&mut tx, Message::Pong(p)).await { break 'outer; }
                             None
                         }
                         Some(Ok(Message::Pong(_))) => None,
@@ -248,12 +283,14 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
                     if let Some(data) = data {
                         let Some(guard) = state.activity.begin(&id) else {
                             let frame = serde_json::json!({"error": "sandbox is stopping; input rejected"});
-                            if tx.send(Message::Text(frame.to_string().into())).await.is_err() { break 'outer; }
+                            if !send_frame(&mut tx, Message::Text(frame.to_string().into())).await { break 'outer; }
                             continue;
                         };
                         let backend = state.backend.clone();
                         let (id, sid) = (id.clone(), sid.clone());
+                        let input_guard = stream_guard.clone();
                         let result = tokio::task::spawn_blocking(move || {
+                            let _stream = input_guard;
                             // Admission lasts until the RPC actually completes,
                             // even if this WebSocket task is cancelled.
                             let _guard = guard;
@@ -261,7 +298,7 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
                         }).await;
                         if !matches!(result, Ok(Ok(_))) {
                             let frame = serde_json::json!({"error": "session input failed"});
-                            let _ = tx.send(Message::Text(frame.to_string().into())).await;
+                            let _ = send_frame(&mut tx, Message::Text(frame.to_string().into())).await;
                             break 'outer;
                         }
                     }
@@ -284,11 +321,7 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
                 "next_seq": chunk.next_seq,
                 "truncated": chunk.truncated,
             });
-            if tx
-                .send(Message::Text(frame.to_string().into()))
-                .await
-                .is_err()
-            {
+            if !send_frame(&mut tx, Message::Text(frame.to_string().into())).await {
                 break;
             }
         }
@@ -296,4 +329,15 @@ async fn bridge(state: AppState, id: String, sid: String, mut seq: u64, socket: 
             break;
         }
     }
+}
+
+async fn send_frame(
+    tx: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    message: Message,
+) -> bool {
+    use futures_util::SinkExt;
+    matches!(
+        tokio::time::timeout(Duration::from_secs(10), tx.send(message)).await,
+        Ok(Ok(()))
+    )
 }

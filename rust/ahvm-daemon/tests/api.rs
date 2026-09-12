@@ -1190,3 +1190,52 @@ async fn interrupted_receipt_cannot_be_reexecuted_after_restart() {
     assert_eq!(receipt["sandbox_state"], "absent");
     assert!(state.backend.list().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn workspace_stream_admission_isolated_and_released() {
+    let state = test_state();
+    let limiter = state.ops.clone();
+    let app = build_router(state);
+    let (_, a) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"stream-a"})),
+    )
+    .await;
+    let (_, b) = call(
+        app.clone(),
+        Some(TOKEN_B),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"stream-b"})),
+    )
+    .await;
+    let a = a["id"].as_str().unwrap();
+    let b = b["id"].as_str().unwrap();
+    let held: Vec<_> = (0..4).map(|_| limiter.try_stream(a).unwrap()).collect();
+    for (id, token, expected) in [
+        (a, TOKEN_A, StatusCode::CONFLICT),
+        (b, TOKEN_B, StatusCode::OK),
+    ] {
+        let request = Request::builder()
+            .method("PUT")
+            .uri(format!("/v1/sandboxes/{id}/files/upload?path=%2Fcap-test"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from("test"))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            expected
+        );
+    }
+    drop(held);
+    let request = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/sandboxes/{a}/files/upload?path=%2Fcap-test"))
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN_A}"))
+        .body(Body::from("test"))
+        .unwrap();
+    assert_eq!(app.oneshot(request).await.unwrap().status(), StatusCode::OK);
+}
