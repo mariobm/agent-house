@@ -1,8 +1,9 @@
 # Local and durable storage
 
-Status: phases 1–2 complete; phase 3 NBD data-disk spike qualified.
-Full durable root disks and the remaining phase-3 work are not implemented. Owner-approved direction, 2026-09-12. No Jira ticket
-was supplied; this document is the scoped work item until one exists.
+Status: phases 1–2 complete; phase 3 guest storage qualification in progress.
+Owner-approved contract updated 2026-09-13: local durable writes with eventual
+object-store replication. Host-disk loss may lose unreplicated changes. No Jira
+ticket was supplied; this document is the scoped work item until one exists.
 
 ## Product decisions
 
@@ -22,19 +23,29 @@ was supplied; this document is the scoped work item until one exists.
 
 ## Durability contract
 
-An ordinary buffered write is not a promise of survival after host loss. The
-initial production target is that a successful guest flush/fsync reaches an
-off-host durable commit of both data and its disk map. Every filesystem/VMM/device
-layer must preserve ordering and flush semantics. Never advertise this guarantee
-based only on a storage-library test. FUA/discard/zeroing must also be handled or
-explicitly not advertised by the device.
+The production target is **local durability with eventual remote replication**.
+A successful guest flush/fsync or FUA persists the corresponding writes to the
+host journal. It does not promise that R2 already has them. Ordinary writes that
+have not been flushed may also be lost in a process/power failure.
 
-Background upload batches reduce dirty data and amortize object requests. Flush
-waits for the corresponding batch to become remotely durable; clean stop and
-checkpoint wait for a durable commit too. If the store is unavailable, cap dirty
-bytes, apply backpressure, and fail/hold the flush rather than acknowledge local
-data as remote-durable. Whether to offer weaker asynchronous durability later is
-a separate product decision, not a hidden performance optimization.
+Background replication publishes ordered, atomic remote disk generations. A
+permanent loss of the host disk may lose locally synced writes newer than the
+last remote generation. The replication delay is not a guaranteed one-second
+loss window: slow or unavailable R2 can extend it. Reads on the current writer
+see its own writes immediately; this is eventual *durability*, not stale local
+read consistency.
+
+Provide a separate remote-sync barrier and status watermark. Planned migration,
+checkpoint creation and any operation promising remote recovery must wait for
+that barrier, or fail explicitly. A plain guest fsync must not wait for R2.
+Bound journal/backlog growth and apply write backpressure if it fills; do not
+silently discard pending writes. Local disk or journal errors fail local fsync.
+
+Retain the strict remote-flush implementation as an experimental reference/test
+path, not as the default product target. The earlier phase-1/2/3 remote-flush
+results remain valid for that stronger contract; they do not describe the new
+default. Device ordering, FUA/discard/zeroing and host ownership still require
+qualification before customer integration.
 
 Cold recovery restores the disk and starts services anew. RAM snapshots are
 optional and do not determine disk correctness. A cold restart does not preserve
@@ -89,7 +100,7 @@ storage budget. Quota enforcement is still needed for local files, logs and RAM.
 | --- | --- | --- |
 | 1: protocol foundation | This plan; separate experimental Rust crate; bounded chunk map and object-store interface; deterministic failures and conflicting publications | Reopen without client state; failed uploads leave prior head intact; ambiguous responses force reopen; concurrent commits have one winner; corrupt data fails closed. Existing runtime is unaffected. |
 | 2: S3/R2 adapter | Private qualification bucket; scoped credential loading; signed S3 requests; bounded streams/timeouts; conditional writes and reconciliation; independent-process recovery tool | Real R2 round trips, lost responses, competing clients, cache deletion and a fresh process recover acknowledged data. Prove provider preconditions, not merely SDK support. No VMs yet. |
-| 3: guest disk integration | Select Linux block attachment after a small NBD/ublk versus direct VMM adapter spike; indexed metadata; bounded local cache/write log; background upload; flush barrier; raw ext4 volume | One 1-vCPU/1-GiB disposable VM boots, runs Git/package installs/SQLite, and recovers synced writes after abrupt compute/storage termination and cache removal. R2 outage never returns a false durable flush. |
+| 3: guest disk integration | Select Linux block attachment after a small NBD/ublk versus direct VMM adapter spike; indexed metadata; bounded local cache/write log; background upload; flush barrier; raw ext4 volume | One 1-vCPU/1-GiB disposable VM boots, runs Git/package installs/SQLite, and recovers synced writes after abrupt compute/storage termination and cache removal. R2 outage permits local fsync but never a false remote-sync acknowledgement; host-journal loss explicitly demonstrates loss of unreplicated data. |
 | 4: coexistence and ownership | Engine local/durable interface; immutable per-VM mode; persisted volume ID; explicit capabilities; fenced writer acquisition; create/start/stop/delete recovery; status fields | Local conformance unchanged; durable unavailable fails closed; old host cannot publish or continue serving after takeover; interrupted lifecycle cannot orphan unaccounted writable storage. No mode conversion. |
 | 5: checkpoints and space reclamation | Immutable map roots; explicit checkpoints; safe deletion/GC with active-writer roots, grace periods and crash recovery; base-image sharing; cache/remote quotas | Referenced objects are never reclaimed; ordinary syncing does not retain unlimited history; deletes and checkpoint retention release space; concurrent commits/GC survive interruption. |
 | 6: qualification and cloud rollout | R2 request/byte accounting, latency/backpressure benchmarks, security review, second-host recovery, install/config/docs; optional self-hosted S3 configuration | Defined performance/cost budget; host-loss recovery tested on another host; pilot cloud opt-in first, then default. Public local mode requires no object store. |
@@ -134,8 +145,10 @@ metadata, bounded RAM caching/dirty buffers and background upload now have a
 [format-2 implementation and full-root gate](../experiments/durable-storage/INDEXED-ROOT.md).
 The full-root gate now also covers three repeated synced-write/SIGKILL/recovery
 cycles and records cold/warm latency. Small synchronous commits remain slow even
-with a warm cache. A local write log, block-operation qualification and further
-performance work are still outstanding; this does not advance the plan to phase 4.
+with a warm cache. The [eventual-durability continuation](../experiments/durable-storage/EVENTUAL.md)
+adds the local write log and changes the target contract. Block-operation
+qualification and further performance work remain; this does not advance the
+plan to phase 4.
 
 ## Qualification measurements
 
