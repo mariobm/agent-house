@@ -339,11 +339,7 @@ fn kvm_snapshot_restore_cycle() {
     assert_eq!(b64(&v, "stderr_b64"), b"oops\n");
 
     // Filesystem state inside the overlay (frozen by the snapshot).
-    let v = g.exec(&[
-        "/bin/sh",
-        "-c",
-        "echo FSVAL > /workspace/fs-proof; /bin/busybox sync",
-    ]);
+    let v = g.exec(&["/bin/sh", "-c", "echo FSVAL > /workspace/fs-proof; sync"]);
     assert_eq!(v["exit_code"], 0);
     // RAM state: session output exists only in guest memory. The session
     // stays alive across ALL cycles (long sleep), so attach with a marker
@@ -404,11 +400,7 @@ fn kvm_snapshot_restore_cycle() {
         .unwrap()
         .starts_with("OK"));
     g.wait_ready();
-    let v = g.exec(&[
-        "/bin/sh",
-        "-c",
-        "echo AFTER > /workspace/fs-proof; /bin/busybox sync",
-    ]);
+    let v = g.exec(&["/bin/sh", "-c", "echo AFTER > /workspace/fs-proof; sync"]);
     assert_eq!(v["exit_code"], 0);
 
     // ---- repeated kill/restore (old #3 flake shape) ----
@@ -450,11 +442,7 @@ fn kvm_snapshot_restore_cycle() {
             "echo 3 > /proc/sys/vm/drop_caches; cat /workspace/fs-proof",
         ]);
         assert_eq!(b64(&v, "stdout_b64"), b"FSVAL\n", "cycle {cycle}: fs lost");
-        let v = g.exec(&[
-            "/bin/sh",
-            "-c",
-            "echo AFTER > /workspace/fs-proof; /bin/busybox sync",
-        ]);
+        let v = g.exec(&["/bin/sh", "-c", "echo AFTER > /workspace/fs-proof; sync"]);
         assert_eq!(v["exit_code"], 0);
         eprintln!("PASS recovery cycle {cycle}: exec, session RAM, disk rollback");
     }
