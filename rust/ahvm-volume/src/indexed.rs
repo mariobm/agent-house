@@ -26,6 +26,14 @@ struct Root {
     generation: u64,
     ready: bool,
     pages: BTreeMap<u64, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replication: Option<Replication>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Replication {
+    pub id: String,
+    pub sequence: u64,
 }
 pub struct IndexedVolume {
     store: Arc<dyn ObjectStore>,
@@ -100,6 +108,7 @@ impl IndexedVolume {
             generation: 0,
             ready,
             pages: BTreeMap::new(),
+            replication: None,
         };
         let bytes = serde_json::to_vec(&root).map_err(|_| Error::Corrupt)?;
         let revision = store.publish(id, None, &bytes).map_err(publication_error)?;
@@ -123,7 +132,12 @@ impl IndexedVolume {
             return Err(Error::Corrupt);
         }
         let root: Root = serde_json::from_slice(&head.manifest).map_err(|_| Error::Corrupt)?;
-        if root.format != 2
+        if !matches!(root.format, 2 | 3)
+            || (root.format == 3) != root.replication.is_some()
+            || root
+                .replication
+                .as_ref()
+                .is_some_and(|r| !valid_hash(&r.id) || r.sequence == 0)
             || root.volume != id
             || root.size == 0
             || root.size > MAX_SIZE
@@ -283,16 +297,53 @@ impl IndexedVolume {
         self.dirty.clear();
         Ok(self.root.generation)
     }
+    pub(crate) fn clean_copy(&self) -> Result<Self> {
+        self.check(0, 0)?;
+        if !self.dirty.is_empty() {
+            return Err(Error::InvalidInput);
+        }
+        Ok(Self {
+            store: self.store.clone(),
+            root: self.root.clone(),
+            revision: self.revision.clone(),
+            dirty: BTreeMap::new(),
+            poisoned: false,
+        })
+    }
+    pub(crate) fn revision(&self) -> &str {
+        &self.revision
+    }
+    pub(crate) fn replication(&self) -> Option<&Replication> {
+        self.root.replication.as_ref()
+    }
+    pub(crate) fn commit_replication(&mut self, mark: Replication) -> Result<u64> {
+        if !valid_hash(&mark.id) || mark.sequence == 0 {
+            return Err(Error::InvalidInput);
+        }
+        // Remote replication is off the guest's fsync path. Allow a full bounded
+        // backlog more time than the strict synchronous experiment.
+        self.commit_inner(Instant::now() + Duration::from_secs(120), Some(mark))
+    }
     pub fn commit(&mut self) -> Result<u64> {
         self.commit_until(Instant::now() + BUDGET)
     }
     fn commit_until(&mut self, end: Instant) -> Result<u64> {
+        if self.root.replication.is_some() {
+            return Err(Error::InvalidInput);
+        }
+        self.commit_inner(end, None)
+    }
+    fn commit_inner(&mut self, end: Instant, mark: Option<Replication>) -> Result<u64> {
         self.check(0, 0)?;
-        if self.dirty.is_empty() {
+        if self.dirty.is_empty() && mark.is_none() {
             return Ok(self.root.generation);
         }
         deadline(end)?;
         let mut next = self.root.clone();
+        if let Some(mark) = mark {
+            next.format = 3;
+            next.replication = Some(mark);
+        }
         next.generation = next.generation.checked_add(1).ok_or(Error::Corrupt)?;
         let mut pages = BTreeMap::new();
         let mut uploads: BTreeMap<String, Arc<Vec<u8>>> = BTreeMap::new();
@@ -330,7 +381,7 @@ impl IndexedVolume {
                 }
             }
         }
-        if next.pages == self.root.pages {
+        if next.pages == self.root.pages && next.replication == self.root.replication {
             // Same semantics as a clean flush: no new remote state to publish.
             self.dirty.clear();
             return Ok(self.root.generation);

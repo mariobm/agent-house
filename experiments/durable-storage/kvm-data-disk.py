@@ -17,6 +17,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import textwrap
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--config', required=True)
@@ -28,9 +29,15 @@ p.add_argument('--device', default='/dev/nbd0')
 p.add_argument('--indexed-root', action='store_true', help='import image and boot entirely from indexed R2 root')
 p.add_argument('--stress-cycles', type=int, choices=range(4), default=0, help='additional synced-write/crash/recovery cycles (0-3)')
 p.add_argument('--warm-repeat', action='store_true', help='repeat the workload in a new directory with a warm cache')
+p.add_argument('--eventual', action='store_true', help='local durable fsync, asynchronous R2 replication')
 p.add_argument('--metrics', action='store_true')
+p.add_argument('--block-operations', action='store_true', help='probe discard/zeroing in an appended disposable tail, indexed root only')
 p.add_argument('--uid', type=int, default=199999)
 a = p.parse_args()
+if a.block_operations and not a.indexed_root:
+    p.error('--block-operations requires --indexed-root')
+if a.eventual and not a.indexed_root:
+    p.error('--eventual requires --indexed-root')
 assert os.geteuid() == 0, 'root required for NBD attachment and isolated UID outage'
 assert a.uid > 65535, 'use a dedicated, unused high numeric UID'
 assert re.fullmatch(r'/dev/nbd[0-9]+', a.device) and not Path(a.device).is_symlink() and Path(a.device).is_block_device()
@@ -66,17 +73,51 @@ def command(args, **kwargs):
     kwargs.setdefault('timeout', 90)
     return subprocess.run(args, check=True, **kwargs)
 
-def kill(proc):
-    if proc is not None and proc.poll() is None:
-        proc.kill()
-        proc.wait(timeout=15)
+def stop_test():
+    global vm, storage, attached
+    for proc in [vm, storage]:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+    if attached:
+        command(['nbd-client','-d',a.device]); attached=False
+    for proc in [vm, storage]:
+        if proc is not None:
+            proc.wait(timeout=30)
+    vm = storage = None
+
+def control(operation):
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(300)
+        sock.connect(str(work/'nbd.control'))
+        sock.sendall(operation.encode()+b'\n')
+        data=bytearray()
+        while True:
+            part=sock.recv(4096)
+            if not part: break
+            data.extend(part)
+            assert len(data)<=4096
+        return json.loads(data)
+
+def remote_sync():
+    result=control('sync')
+    assert 'error' not in result, result
+    print('REMOTE-SYNC',result,flush=True)
+
+def forget_journal():
+    shutil.rmtree(work/'journal')
 
 def start_storage(create):
     global storage, attached
     sock = work / 'nbd.sock'
     sock.unlink(missing_ok=True)  # only our prior single-client socket
     log = (work / ('storage-create.log' if create else 'storage-reopen.log')).open('ab', buffering=0)
-    arguments = [str(server), 'serve', str(config), volume, str(sock)] if a.indexed_root else [str(server), str(config), volume, str(sock), 'create' if create else 'open']
+    arguments = [str(server), 'serve' if a.eventual else 'serve-strict', str(config), volume, str(sock)] if a.indexed_root else [str(server), str(config), volume, str(sock), 'create' if create else 'open']
+    if a.eventual:
+        (work/'nbd.control').unlink(missing_ok=True)
+        journal=work/'journal'
+        if not journal.exists():
+            journal.mkdir(mode=0o700);os.chown(journal,a.uid,a.uid)
+        arguments.append(str(journal))
     storage = subprocess.Popen(arguments,
                                stdout=log, stderr=log, env=env, user=a.uid, group=a.uid, extra_groups=[])
     deadline = time.monotonic() + 30
@@ -188,6 +229,11 @@ try:
     if a.indexed_root:
         source = work / 'import.ext4'
         shutil.copyfile(a.image, source)
+        if a.block_operations:
+            tail_offset = source.stat().st_size
+            assert tail_offset % 65536 == 0
+            with source.open('ab') as f:
+                f.truncate(tail_offset + 8 * 1024 * 1024)
         os.chown(source, a.uid, a.uid)
         source.chmod(0o400)
         command([str(server), 'import', str(config), volume, str(source)], env=env, user=a.uid, group=a.uid, extra_groups=[], timeout=600)
@@ -198,6 +244,38 @@ try:
         rpc(['/bin/mkdir', '-p', '/mnt/durable'])
     else:
         print(rpc(['/bin/sh','-c','mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 /dev/vdb && mkdir -p /mnt/durable && mount /dev/vdb /mnt/durable']), flush=True)
+    if a.block_operations:
+        # Never issue raw operations inside ext4. Confirm its declared size
+        # independently in the guest before touching the appended tail.
+        block_setup = f'offset={tail_offset}\n' + r'''
+import os, struct, fcntl
+fd=os.open('/dev/vda',os.O_RDWR)
+sb=os.pread(fd,1024,1024)
+assert sb[56:58]==b'\x53\xef', 'expected unpartitioned ext4'
+blocks=struct.unpack_from('<I',sb,4)[0]
+if struct.unpack_from('<I',sb,96)[0] & 0x80:
+ blocks |= struct.unpack_from('<I',sb,336)[0] << 32
+assert blocks * (1024 << struct.unpack_from('<I',sb,24)[0]) <= offset
+chunk=65536
+'''
+        block_verify = r'''
+assert os.pread(fd,chunk,offset)==b'G'*chunk
+assert os.pread(fd,2*chunk,offset+chunk)==bytes(2*chunk)
+assert os.pread(fd,2*chunk,offset+3*chunk)==b'R'*(2*chunk)
+assert os.pread(fd,chunk,offset+5*chunk)==b'G'*chunk
+os.close(fd)
+print('BLOCK-ZERO-DISCARD-REWRITE-VERIFIED')
+'''
+        print(rpc(['python3','-c',block_setup+r'''
+assert os.pwrite(fd,b'G'*(6*chunk),offset)==6*chunk
+os.fsync(fd)
+# Linux include/uapi/linux/fs.h: BLKZEROOUT, BLKDISCARD; two u64 byte ranges.
+fcntl.ioctl(fd,0x127f,struct.pack('=QQ',offset+chunk,2*chunk))
+fcntl.ioctl(fd,0x1277,struct.pack('=QQ',offset+3*chunk,2*chunk))
+# Discard need not return zeroes; prove the range can be reused instead.
+assert os.pwrite(fd,b'R'*(2*chunk),offset+3*chunk)==2*chunk
+os.fsync(fd)
+'''+block_verify]),flush=True)
     started = time.monotonic()
     print(rpc(['python3','-c',workload]), flush=True)
     print(f'Workload: {time.monotonic() - started:.2f}s', flush=True)
@@ -206,19 +284,21 @@ try:
         started = time.monotonic()
         print(rpc(['python3','-c',warmed]), flush=True)
         print(f'Warm workload: {time.monotonic() - started:.2f}s', flush=True)
-    # Abrupt compute and storage loss; no shutdown/snapshot/unmount/flush here.
-    for proc in [vm, storage]:
-        if proc.poll() is None:
-            proc.kill()
-    command(['nbd-client','-d',a.device]); attached=False
-    for proc in [vm, storage]:
-        proc.wait(timeout=30)
-    vm = storage = None
+    # Retain the journal for the first restart: prove local fsync recovery.
+    stop_test()
     start_storage(False)
     start_vm()  # fresh processes/device; local overlay only in data-disk mode
     if not a.indexed_root:
         rpc(['/bin/sh','-c','mkdir -p /mnt/durable && mount /dev/vdb /mnt/durable'])
     print(rpc(['python3','-c',verify]), flush=True)
+    if a.eventual:
+        remote_sync()
+        stop_test();forget_journal()
+        start_storage(False);start_vm()
+        print(rpc(['python3','-c',verify]),flush=True)
+        print('REMOTE-ONLY-RECOVERY',flush=True)
+        if a.block_operations:
+            print(rpc(['python3','-c',block_setup+block_verify]),flush=True)
     for cycle in range(a.stress_cycles):
         # Rewrite the same 4 MiB with a distinct deterministic pattern each cycle.
         # A partial or stale recovery cannot pass the byte-for-byte check.
@@ -233,13 +313,9 @@ os.fsync(f.fileno());f.close()
 fd=os.open('/mnt/durable',os.O_RDONLY);os.fsync(fd);os.close(fd)
 '''.replace('CYCLE', str(cycle))
         rpc(['python3','-c',script])
-        for proc in [vm, storage]:
-            if proc.poll() is None:
-                proc.kill()
-        command(['nbd-client','-d',a.device]);attached=False
-        for proc in [vm, storage]:
-            proc.wait(timeout=30)
-        vm = storage = None
+        if a.eventual: remote_sync()
+        stop_test()
+        if a.eventual: forget_journal()
         start_storage(False)
         start_vm()
         if not a.indexed_root:
@@ -256,17 +332,22 @@ print('STRESS-ROUND-CYCLE-RECOVERED')
     # Deny only this test sidecar's TLS network access, including existing flows.
     for firewall in ['iptables', 'ip6tables']:
         command([firewall,'-I',*rule]); blocked.append(firewall)
-    print(rpc(['python3','-c',r'''
-import os
-with open('/mnt/durable/outage','wb',buffering=0) as f:
- f.write(b'not-durable'*100)
- try:
-  os.fsync(f.fileno())
- except OSError:
-  print('OUTAGE-FSYNC-FAILED')
- else:
-  raise RuntimeError('fsync falsely acknowledged durability during outage')
-''']), flush=True)
+    if a.eventual:
+        print(rpc(['python3','-c',"import os; f=open('/mnt/durable/outage','wb',buffering=0);f.write(b'local-only');os.fsync(f.fileno());f.close();print('OUTAGE-LOCAL-FSYNC-OK')"]),flush=True)
+        assert 'error' in control('sync'), 'remote barrier falsely succeeded during outage'
+        print('OUTAGE-REMOTE-SYNC-FAILED',flush=True)
+    else:
+        print(rpc(['python3','-c',textwrap.dedent(r'''
+    import os
+    with open('/mnt/durable/outage','wb',buffering=0) as f:
+     f.write(b'not-durable'*100)
+     try:
+      os.fsync(f.fileno())
+     except OSError:
+      print('OUTAGE-FSYNC-FAILED')
+     else:
+      raise RuntimeError('fsync falsely acknowledged durability during outage')
+    ''')]), flush=True)
     denied = 0
     for firewall in blocked:
         counters = subprocess.check_output([firewall + '-save', '-c'], text=True)
@@ -275,10 +356,34 @@ with open('/mnt/durable/outage','wb',buffering=0) as f:
                 denied += int(line.split(':', 1)[0].lstrip('['))
     assert denied > 0, 'fault injection blocked no packets'
     print(f'Confirmed {denied} denied sidecar packets', flush=True)
+    if a.eventual:
+        # Keep both processes alive: restored connectivity must drain the same
+        # journal without requiring a restart or operator repair.
+        for firewall in blocked:
+            command([firewall,'-D',*rule])
+        blocked.clear()
+        remote_sync()
+        status=control('status')
+        assert not status['replication_failed'] and not status['local_failed'], status
+        stop_test();forget_journal()
+        start_storage(False);start_vm()
+        print(rpc(['python3','-c',"from pathlib import Path;assert Path('/mnt/durable/outage').read_bytes()==b'local-only';print('CONNECTIVITY-RECOVERY-REMOTE-VERIFIED')"]),flush=True)
+        # Separately prove the accepted host-loss contract with a new write.
+        for firewall in ['iptables', 'ip6tables']:
+            command([firewall,'-I',*rule]);blocked.append(firewall)
+        print(rpc(['python3','-c',"import os;f=open('/mnt/durable/lost','wb',buffering=0);f.write(b'pending');os.fsync(f.fileno());f.close()"]),flush=True)
+        assert 'error' in control('sync')
+        stop_test();forget_journal()
     for firewall in blocked:
         command([firewall,'-D',*rule])
     blocked.clear()
-    print('PASS guest ext4/R2 crash recovery and network-outage failure', flush=True)
+    if a.eventual:
+        # No remote barrier succeeded after the outage write. Losing this local
+        # disk is allowed to lose that write; demonstrate the declared contract.
+        # Stop before unblocking so background replication cannot rescue it.
+        start_storage(False);start_vm()
+        print(rpc(['python3','-c',"import os;assert not os.path.exists('/mnt/durable/lost');print('HOST-LOSS-PENDING-WRITE-LOST-AS-EXPECTED')"]),flush=True)
+    print('PASS guest ext4/R2 recovery and declared durability contract', flush=True)
 finally:
     # Disconnect before waiting: a killed VMM can still be blocked in device I/O.
     try:
@@ -298,5 +403,6 @@ finally:
             config.unlink(missing_ok=True)
             (work/'root.qcow2').unlink(missing_ok=True)
             (work/'import.ext4').unlink(missing_ok=True)
+            if (work/'journal').exists(): shutil.rmtree(work/'journal')
             prefix = json.loads(Path(a.config).read_text())['prefix']
             print(f'Private credentials/root copies removed. R2 fixture prefix: {prefix}/{volume}/',flush=True)
