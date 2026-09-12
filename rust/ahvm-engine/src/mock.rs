@@ -114,6 +114,11 @@ impl MockBackend {
 
 impl Backend for MockBackend {
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo> {
+        if spec.storage_mode == Some(crate::StorageMode::Replicated) {
+            return Err(Error::InvalidState(
+                "replicated storage unavailable in mock".into(),
+            ));
+        }
         let mut inner = self.lock();
         inner.next += 1;
         let n = inner.next;
@@ -123,6 +128,7 @@ impl Backend for MockBackend {
             return Err(Error::Conflict(format!("sandbox {id} already exists")));
         }
         let info = SandboxInfo {
+            storage: Default::default(),
             id: id.clone(),
             name: spec.name.clone(),
             state: State::Running,
@@ -225,6 +231,7 @@ impl Backend for MockBackend {
             return Err(Error::Conflict(format!("sandbox {new_id} already exists")));
         }
         let spec = SandboxSpec {
+            storage_mode: None,
             name: new_id.to_string(),
             cpus: snapshot.compat.vcpus,
             memory_mb: snapshot.compat.mem_mib,
@@ -238,6 +245,7 @@ impl Backend for MockBackend {
         };
         let n = inner.sandboxes.len() as u64 + 2;
         let info = SandboxInfo {
+            storage: Default::default(),
             id: new_id.to_string(),
             name: new_id.to_string(),
             state: State::Running,
@@ -267,6 +275,7 @@ impl Backend for MockBackend {
         }
         let n = inner.sandboxes.len() as u64 + 2;
         let info = SandboxInfo {
+            storage: Default::default(),
             id: new_id.to_string(),
             name: new_id.to_string(),
             state: State::Running,
@@ -494,6 +503,7 @@ mod tests {
 
     fn spec() -> SandboxSpec {
         SandboxSpec {
+            storage_mode: None,
             name: "web".to_string(),
             cpus: 2,
             memory_mb: 512,

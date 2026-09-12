@@ -120,6 +120,7 @@ pub(crate) async fn create_operation(
         resolve_image(body.image.as_deref())?
     };
     let spec = ahvm_engine::SandboxSpec {
+        storage_mode: None,
         name: body.name.clone(),
         cpus: body.cpus,
         memory_mb: body.memory_mb,
