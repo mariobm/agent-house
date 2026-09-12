@@ -87,6 +87,7 @@ fn isolated_gateways_recover_without_disturbing_peers() {
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
+            network_bytes_per_sec: None,
             extra_env: Default::default(),
         })
         .unwrap();
@@ -300,6 +301,7 @@ fn dns_rejects_wrong_replies_and_retries_truncation_over_tcp() {
         kernel_image: None,
         desktop: false,
         desktop_gpu: false,
+        network_bytes_per_sec: None,
         extra_env: Default::default(),
     })
     .unwrap();
@@ -364,7 +366,7 @@ fn per_vm_bandwidth_bounds_both_directions_and_preserves_peers() {
     let fixture = std::thread::spawn(move || {
         let mut transfers = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(60);
-        while transfers.len() < 2 {
+        while transfers.len() < 3 {
             match listener.accept() {
                 Ok((mut socket, _)) => transfers.push(std::thread::spawn(move || {
                     socket
@@ -404,8 +406,8 @@ fn per_vm_bandwidth_bounds_both_directions_and_preserves_peers() {
         netd_bin: std::env::var("AHVM_NETD_BIN").unwrap().into(),
         resolver: std::env::var("AHVM_DNS_RESOLVER").unwrap().parse().unwrap(),
     });
-    let gate = Gate {
-        backend: Some(KrucibleBackend::open(cfg).unwrap()),
+    let mut gate = Gate {
+        backend: Some(KrucibleBackend::open(cfg.clone()).unwrap()),
         dir,
     };
     let be = gate.backend.as_ref().unwrap();
@@ -419,10 +421,18 @@ fn per_vm_bandwidth_bounds_both_directions_and_preserves_peers() {
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
+            network_bytes_per_sec: (id == "a").then_some(256 * 1024),
             extra_env: Default::default(),
         })
         .unwrap();
     }
+    let peer = Worker::load(gate.dir.join("b/net-state.json")).unwrap();
+    be.start_with_network_bandwidth("b", Some(256 * 1024))
+        .unwrap();
+    assert_eq!(
+        Worker::load(gate.dir.join("b/net-state.json")).unwrap().pid,
+        peer.pid
+    );
     let command = format!(
         r#"python3 - <<'PY'
 import socket,time
@@ -496,6 +506,28 @@ PY"#,
             "throttling busy-spins"
         );
     }
+    assert!(matches!(
+        be.start_with_network_bandwidth("a", Some(0)),
+        Err(ahvm_engine::Error::Conflict(_))
+    ));
+    be.stop("a").unwrap();
+    be.start_with_network_bandwidth("a", Some(0)).unwrap();
+    drop(gate.backend.take());
+    gate.backend = Some(KrucibleBackend::open(cfg).unwrap());
+    let be = gate.backend.as_ref().unwrap();
+    let old = Worker::load(gate.dir.join("a/net-state.json")).unwrap();
+    kill(&old);
+    eventually(|| Worker::load(gate.dir.join("a/net-state.json")).is_ok_and(|w| w.pid != old.pid));
+    let policy = |id: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(gate.dir.join(id).join("net.json")).unwrap()).unwrap()
+    };
+    assert!(policy("a")["bandwidth_bytes_per_sec"].is_null());
+    assert_eq!(policy("b")["bandwidth_bytes_per_sec"], 256 * 1024);
+    exec(
+        be,
+        "a",
+        &command.replace("15 < elapsed < 28", "elapsed < 5"),
+    );
     fixture.join().unwrap();
     eprintln!("PASS: independent 256KiB/s Ethernet caps, both directions, payload integrity and peer exec");
 }

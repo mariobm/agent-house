@@ -45,6 +45,14 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo>;
     fn destroy(&self, id: &str) -> Result<()>;
     fn start(&self, id: &str) -> Result<()>;
+    fn start_with_network_bandwidth(&self, id: &str, bytes: Option<u64>) -> Result<()> {
+        if bytes.is_some() {
+            return Err(crate::Error::InvalidState(
+                "network policy unavailable".into(),
+            ));
+        }
+        self.start(id)
+    }
     fn stop(&self, id: &str) -> Result<()>;
     fn status(&self, id: &str) -> Result<SandboxInfo>;
     fn list(&self) -> Result<Vec<SandboxInfo>>;

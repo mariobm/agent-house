@@ -482,6 +482,7 @@ fn cleanup_guard_runs_on_panic() {
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
+            network_bytes_per_sec: None,
             extra_env: Default::default(),
         })
         .unwrap();

@@ -155,3 +155,17 @@ creates two disposable 1-vCPU/1-GiB guests and grants only a temporary exact hos
 listener endpoint. Both transfer 2 MiB in each direction at 256 KiB/s concurrently,
 verify payload integrity and check peer exec responsiveness. No external bulk
 traffic is generated.
+
+Hosted operators can override that default per sandbox through the admin-only
+lifecycle journal. Create/start requests accept `network_bytes_per_sec`: zero
+means unlimited, a positive value uses the range above, and omission preserves
+legacy behavior. Ordinary daemon users cannot submit an override. The generic
+create route does not expose this host policy.
+
+The chosen value is stored with the VM and retained through stop/start, daemon
+adoption and gateway recovery. A different effective limit requires a stopped VM;
+a start against a live VM rejects a changed limit instead of dropping its
+connections. An equivalent effective policy can be recorded without a restart.
+The cloud dashboard applies workspace policy to each newly admitted create/start
+request, freezes it for retries, and treats a rejected change as failure even if
+the VM is still running.
