@@ -9,6 +9,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Debug, Clone)]
 pub struct OpsLimiter {
+    pub transfers: crate::bandwidth::Registry,
     sem: Arc<Semaphore>,
     streams: Arc<Mutex<StreamCounts>>,
 }
@@ -18,7 +19,13 @@ impl OpsLimiter {
         Self {
             sem: Arc::new(Semaphore::new(permits.max(1))),
             streams: Arc::default(),
+            transfers: crate::bandwidth::Registry::default(),
         }
+    }
+
+    pub fn with_api_rate(mut self, rate: Option<u64>) -> Self {
+        self.transfers = crate::bandwidth::Registry::new(rate);
+        self
     }
 
     pub async fn acquire(&self) -> OwnedSemaphorePermit {
