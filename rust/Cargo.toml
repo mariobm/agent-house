@@ -25,3 +25,7 @@ missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Preserve qcow2 metadata allocation ordering across worker crashes.
+[patch.crates-io]
+imago = { git = "https://github.com/mariobm/imago", rev = "a3e05bc06bd3364ca97ffa772fb1f3c52db062f8" }
