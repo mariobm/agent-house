@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub mod nbd;
 pub mod s3;
 
 pub const CHUNK_BYTES: usize = 64 * 1024;
@@ -106,6 +107,11 @@ fn validate(m: &Manifest, id: &str) -> Result<()> {
 }
 
 impl Volume {
+    /// Logical export size; the experiment has a fixed, bounded disk size.
+    pub fn size(&self) -> u64 {
+        self.manifest.size
+    }
+
     /// Creates an empty, zero-filled disk. Existing heads are never overwritten.
     pub fn create(store: Arc<dyn ObjectStore>, id: &str, size: u64) -> Result<Self> {
         if !valid_id(id)

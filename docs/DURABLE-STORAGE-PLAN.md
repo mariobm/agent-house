@@ -1,6 +1,7 @@
 # Local and durable storage
 
-Status: phases 1–2 protocol qualification complete; no guest integration. Owner-approved direction, 2026-09-12. No Jira ticket
+Status: phases 1–2 complete; phase 3 NBD data-disk spike qualified.
+Full durable root disks and the remaining phase-3 work are not implemented. Owner-approved direction, 2026-09-12. No Jira ticket
 was supplied; this document is the scoped work item until one exists.
 
 ## Product decisions
@@ -123,6 +124,14 @@ Run: `cargo test --manifest-path rust/Cargo.toml -p ahvm-volume`.
 The private S3 adapter and independent-process qualification tool are implemented.
 See [R2 qualification](DURABLE-STORAGE-R2.md) for setup, evidence and limitations.
 This is still an isolated protocol experiment, not a production disk backend.
+
+## Phase 3 progress
+
+The [NBD guest data-disk spike](../experiments/durable-storage/README.md) proves
+real guest ext4 recovery and fsync failure under an R2 network outage. It uses
+the unchanged VMM and a local root disk with a small durable data disk. Indexed
+metadata, bounded caching/write log, background upload and full root-disk
+qualification remain in phase 3; this does not advance the plan to phase 4.
 
 ## Qualification measurements
 
