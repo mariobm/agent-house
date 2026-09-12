@@ -14,11 +14,11 @@ gpu = ["krun/gpu"]
 # creates the --extern edge so the linker sees the rlib (a bare extern block
 # in our code does NOT link anything on its own).
 krun = { package = "libkrun", path = "../../libkrucible/src/libkrun", default-features = false, features = ["blk", "net"] }
-# Pinned to the fork's proven set (libkrucible/Cargo.lock): imago accepts
+# The workspace patches imago for crash-safe metadata allocation. It accepts
 # vm-memory >=0.16,<0.19 so fresh resolution picks 0.18 while krun-devices
 # pins =0.17.1 — two copies, trait mismatch, broken build. These pins force
 # the single-version graph the fork tests against.
-imago = "=0.2.3"
+imago = "=0.2.4"
 vm-memory = { version = "=0.17.1", features = ["backend-mmap"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
