@@ -8,6 +8,7 @@ members = [
     "ahvm-daemon",
     "ahvm-cli",
     "ahvm-vmm",
+    "ahvm-volume",
 ]
 resolver = "2"
 

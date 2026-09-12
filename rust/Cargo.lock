@@ -138,6 +138,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ahvm-volume"
+version = "0.2.7"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
