@@ -153,6 +153,7 @@ the runtime and database if the new version fails to start.
 - [Files](docs/FILE-UPLOADS.md)
 - [Preview ports and private network access](docs/NETWORK-ACCESS.md)
 - [Recovery and rollback](docs/RUST-CUTOVER.md)
+- [Local and durable storage plan](docs/DURABLE-STORAGE-PLAN.md) (experimental)
 
 AHVM is an early-release product for evaluation; it is not yet qualified for
 hostile multi-tenant workloads.
