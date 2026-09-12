@@ -370,6 +370,19 @@ fn device_login(endpoint: &str) -> Result<Credentials> {
                 ("device_code", device),
             ])
             .send()?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            interval = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(60)
+                .clamp(5, 600);
+            if Instant::now() + Duration::from_secs(interval) >= deadline {
+                break;
+            }
+            continue;
+        }
         let ok = response.status().is_success();
         let result = json_response(response)?;
         if ok {
@@ -391,7 +404,7 @@ fn refresh(metadata: &Metadata, store: &Store, creds: &mut Credentials) -> Resul
         .exchange_refresh_token(&RefreshToken::new(creds.refresh_token.clone()))
         .request(&transport)
         .map_err(|_| {
-            "cloud session expired or refresh failed; run ahvm logout and ahvm login again"
+            "cloud credential refresh failed; try again later. If the session has expired, run ahvm login"
         })?;
     let next = credentials(token)?;
     if let Err(error) = store.save(metadata, &next) {
@@ -400,6 +413,17 @@ fn refresh(metadata: &Metadata, store: &Store, creds: &mut Credentials) -> Resul
     }
     *creds = next;
     Ok(())
+}
+/// The credential lock is released before any VM RPC or interactive stream.
+pub fn connection() -> Result<(String, String)> {
+    let store = Store::open()?;
+    let metadata = store.metadata()?.ok_or("not signed in; run ahvm login")?;
+    origin(&metadata.endpoint)?;
+    let mut creds = store.load(&metadata)?;
+    if creds.expires_at <= now() + 30 {
+        refresh(&metadata, &store, &mut creds)?;
+    }
+    Ok((metadata.endpoint, creds.access_token))
 }
 pub fn whoami(json: bool) -> Result<i32> {
     let store = Store::open()?;

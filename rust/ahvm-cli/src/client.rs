@@ -8,6 +8,8 @@ pub struct Api {
     client: Client,
     base: Url,
     token: String,
+    cloud: bool,
+    operation_key: Option<String>,
 }
 
 impl Api {
@@ -36,13 +38,32 @@ impl Api {
         };
         Ok(Self {
             client: builder
+                .user_agent(concat!("ahvm/", env!("CARGO_PKG_VERSION")))
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(timeout))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             base,
             token,
+            cloud: false,
+            operation_key: None,
         })
+    }
+
+    pub fn cloud(mut self, key: Option<String>) -> Result<Self> {
+        if key.as_ref().is_some_and(|s| {
+            !(16..=100).contains(&s.len())
+                || !s
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        }) {
+            return Err(
+                "idempotency key must be 16..100 letters, digits, underscores or hyphens".into(),
+            );
+        }
+        self.cloud = true;
+        self.operation_key = key;
+        Ok(self)
     }
 
     pub fn stream_request(
@@ -131,19 +152,58 @@ impl Api {
             url.query_pairs_mut()
                 .extend_pairs(query.iter().map(|(k, v)| (*k, v)));
         }
+        let lifecycle = self.cloud
+            && ((path == ["sandboxes"] && method == Method::POST)
+                || (path.len() == 2 && path[0] == "sandboxes" && method == Method::DELETE)
+                || (path.len() == 3
+                    && path[0] == "sandboxes"
+                    && matches!(path[2], "start" | "stop")
+                    && method == Method::POST));
+        let key = lifecycle.then(|| {
+            self.operation_key
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+        });
         let mut request = self.client.request(method, url);
+        if let Some(key) = &key {
+            request = request.header("Idempotency-Key", key);
+        }
         if !self.token.is_empty() {
             request = request.bearer_auth(&self.token);
         }
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request.send()?;
-        Self::response(response)
+        let response = request.send().map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
+            if let Some(key) = &key { format!("cloud request interrupted; retry the same command with --idempotency-key {key}: {error}").into() }
+            else { error.into() }
+        })?;
+        if response.status() == reqwest::StatusCode::ACCEPTED && lifecycle {
+            return Err(format!("cloud operation is still pending; inspect its status with ahvm --cloud get <name>. Retry this request using --idempotency-key {}", key.as_deref().unwrap_or_default()).into());
+        }
+        Self::response(response).map_err(|error| {
+            if let Some(key) = key {
+                format!("{error}; retry this lifecycle request with --idempotency-key {key}").into()
+            } else {
+                error
+            }
+        })
     }
 
     fn response(response: reqwest::blocking::Response) -> Result<Value> {
         let status = response.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let seconds = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(60)
+                .min(3600);
+            return Err(
+                format!("request rate limit reached; try again in {seconds} seconds").into(),
+            );
+        }
         // Bound a malformed/untrusted server's response. File downloads page.
         let mut bytes = Vec::new();
         response
