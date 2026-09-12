@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Opt-in root/KVM gate. One 1-CPU/1-GiB VM; a 64-MiB R2 data disk.
-Requires a loaded, unused NBD device, nbd-client, iptables and an Ubuntu dev image.
+"""Opt-in root/KVM gate. One 1-CPU/1-GiB VM; R2 data disk or indexed root.
+Requires an unused NBD device, nbd-client, iptables and a compatible guest image.
 Only the exact numeric sidecar UID is blocked during the network-outage test.
 R2 fixture objects remain for explicit prefix cleanup. No production daemon used.
 """
@@ -25,6 +25,7 @@ p.add_argument('--vmm', required=True)
 p.add_argument('--lib', required=True)
 p.add_argument('--image', required=True)
 p.add_argument('--device', default='/dev/nbd0')
+p.add_argument('--indexed-root', action='store_true', help='import image and boot entirely from indexed R2 root')
 p.add_argument('--uid', type=int, default=199999)
 a = p.parse_args()
 assert os.geteuid() == 0, 'root required for NBD attachment and isolated UID outage'
@@ -57,7 +58,8 @@ rule = ['OUTPUT', '-m', 'owner', '--uid-owner', str(a.uid), '-p', 'tcp', '--dpor
 env = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LD_LIBRARY_PATH': a.lib}
 
 def command(args, **kwargs):
-    return subprocess.run(args, check=True, timeout=90, **kwargs)
+    kwargs.setdefault('timeout', 90)
+    return subprocess.run(args, check=True, **kwargs)
 
 def kill(proc):
     if proc is not None and proc.poll() is None:
@@ -69,20 +71,21 @@ def start_storage(create):
     sock = work / 'nbd.sock'
     sock.unlink(missing_ok=True)  # only our prior single-client socket
     log = (work / ('storage-create.log' if create else 'storage-reopen.log')).open('ab', buffering=0)
-    storage = subprocess.Popen([str(server), str(config), volume, str(sock), 'create' if create else 'open'],
+    arguments = [str(server), 'serve', str(config), volume, str(sock)] if a.indexed_root else [str(server), str(config), volume, str(sock), 'create' if create else 'open']
+    storage = subprocess.Popen(arguments,
                                stdout=log, stderr=log, env=env, user=a.uid, group=a.uid, extra_groups=[])
     deadline = time.monotonic() + 30
     while not sock.exists():
         assert storage.poll() is None, 'storage exited; inspect its log'
         assert time.monotonic() < deadline, 'storage socket timeout'
         time.sleep(.05)
-    command(['nbd-client', '-unix', str(sock), a.device, '-timeout', '60'])
+    command(['nbd-client', '-unix', str(sock), a.device, '-timeout', '120'])
     attached = True
     # Keep kernel requests small even when the client uses EXPORT_NAME.
     Path('/sys/block', Path(a.device).name, 'queue/max_sectors_kb').write_text('1024')
     print('Host NBD cache:', Path('/sys/block', Path(a.device).name, 'queue/write_cache').read_text().strip(), flush=True)
 
-def rpc(argv, timeout=180):
+def rpc(argv, timeout=300):
     with socket.socket(socket.AF_UNIX) as sock:
         sock.settimeout(timeout)
         sock.connect(str(work / 'forge.sock'))
@@ -110,14 +113,17 @@ def start_vm():
     global vm
     for name in ['root.qcow2', 'forge.sock']:
         (work / name).unlink(missing_ok=True)
-    command([a.vmm, 'create-overlay', str(work/'root.qcow2'), a.image, str(os.path.getsize(a.image))], env=env)
+    if not a.indexed_root:
+        command([a.vmm, 'create-overlay', str(work/'root.qcow2'), a.image, str(os.path.getsize(a.image))], env=env)
     spec = {'vcpus': 1, 'mem_mib': 1024, 'root_disk': str(work/'root.qcow2'), 'root_disk_format': 'qcow2',
             'pid1': True, 'exec_path': '/init.krun', 'vsock_control_uds': str(work/'forge.sock'),
             'volumes': [{'block_id': 'durable', 'path': a.device, 'format': 'raw'}]}
+    if a.indexed_root:
+        spec.update(root_disk=a.device, root_disk_format='raw', volumes=[])
     (work/'spec.json').write_text(json.dumps(spec))
     log = (work/'vm.log').open('ab', buffering=0)
     vm = subprocess.Popen([a.vmm, str(work/'spec.json')], env=env, stdout=log, stderr=log)
-    deadline = time.monotonic()+30
+    deadline = time.monotonic()+90
     while True:
         assert vm.poll() is None, 'VMM exited; inspect vm.log'
         try:
@@ -169,17 +175,34 @@ assert probe_pkg.VALUE=='installed-on-durable-disk'
 print('RECOVERED-GIT-PACKAGE-SQLITE')
 '''
 try:
+    if a.indexed_root:
+        source = work / 'import.ext4'
+        shutil.copyfile(a.image, source)
+        os.chown(source, a.uid, a.uid)
+        source.chmod(0o400)
+        command([str(server), 'import', str(config), volume, str(source)], env=env, user=a.uid, group=a.uid, extra_groups=[], timeout=600)
+        source.unlink()
     start_storage(True)
     start_vm()
-    print(rpc(['/bin/sh','-c','mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 /dev/vdb && mkdir -p /mnt/durable && mount /dev/vdb /mnt/durable']), flush=True)
+    if a.indexed_root:
+        rpc(['/bin/mkdir', '-p', '/mnt/durable'])
+    else:
+        print(rpc(['/bin/sh','-c','mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 /dev/vdb && mkdir -p /mnt/durable && mount /dev/vdb /mnt/durable']), flush=True)
+    started = time.monotonic()
     print(rpc(['python3','-c',workload]), flush=True)
+    print(f'Workload: {time.monotonic() - started:.2f}s', flush=True)
     # Abrupt compute and storage loss; no shutdown/snapshot/unmount/flush here.
-    kill(vm); vm=None
-    kill(storage); storage=None
+    for proc in [vm, storage]:
+        if proc.poll() is None:
+            proc.kill()
     command(['nbd-client','-d',a.device]); attached=False
+    for proc in [vm, storage]:
+        proc.wait(timeout=30)
+    vm = storage = None
     start_storage(False)
-    start_vm()  # fresh local root overlay; no old guest or host page cache
-    rpc(['/bin/sh','-c','mkdir -p /mnt/durable && mount /dev/vdb /mnt/durable'])
+    start_vm()  # fresh processes/device; local overlay only in data-disk mode
+    if not a.indexed_root:
+        rpc(['/bin/sh','-c','mkdir -p /mnt/durable && mount /dev/vdb /mnt/durable'])
     print(rpc(['python3','-c',verify]), flush=True)
     # Deny only this test sidecar's TLS network access, including existing flows.
     for firewall in ['iptables', 'ip6tables']:
@@ -206,19 +229,25 @@ with open('/mnt/durable/outage','wb',buffering=0) as f:
     for firewall in blocked:
         command([firewall,'-D',*rule])
     blocked.clear()
-    print('PASS guest ext4/R2 data-disk crash recovery and network-outage failure', flush=True)
+    print('PASS guest ext4/R2 crash recovery and network-outage failure', flush=True)
 finally:
-    for firewall in blocked:
-        subprocess.run([firewall,'-D',*rule],check=True)
-    for proc in [vm, storage]:
-        if proc is not None and proc.poll() is None:
-            proc.kill()
-    for proc in [vm, storage]:
-        if proc is not None:
-            proc.wait(timeout=30)
-    if attached:
-        subprocess.run(['nbd-client','-d',a.device],check=True,timeout=30)
-    config.unlink(missing_ok=True)
-    (work/'root.qcow2').unlink(missing_ok=True)
-    prefix = json.loads(Path(a.config).read_text())['prefix']
-    print(f'Compute stopped; credentials/root overlay removed. R2 fixture prefix: {prefix}/{volume}/',flush=True)
+    # Disconnect before waiting: a killed VMM can still be blocked in device I/O.
+    try:
+        for firewall in blocked:
+            subprocess.run([firewall,'-D',*rule],check=True,timeout=30)
+    finally:
+        try:
+            for proc in [vm, storage]:
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
+            if attached:
+                subprocess.run(['nbd-client','-d',a.device],check=True,timeout=30)
+            for proc in [vm, storage]:
+                if proc is not None:
+                    proc.wait(timeout=30)
+        finally:
+            config.unlink(missing_ok=True)
+            (work/'root.qcow2').unlink(missing_ok=True)
+            (work/'import.ext4').unlink(missing_ok=True)
+            prefix = json.loads(Path(a.config).read_text())['prefix']
+            print(f'Private credentials/root copies removed. R2 fixture prefix: {prefix}/{volume}/',flush=True)

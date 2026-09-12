@@ -77,6 +77,13 @@ impl S3Store {
     pub fn new(config: Config) -> Result<Self> {
         Self::build(config, false, Duration::from_secs(20))
     }
+    /// Bounded request budget for the block-service experiment.
+    pub fn with_timeout(config: Config, timeout: Duration) -> Result<Self> {
+        if timeout < Duration::from_secs(1) || timeout > Duration::from_secs(20) {
+            return Err(Error::InvalidInput);
+        }
+        Self::build(config, false, timeout)
+    }
     fn build(config: Config, test_http: bool, timeout: Duration) -> Result<Self> {
         let url = Url::parse(&config.endpoint).map_err(|_| Error::InvalidInput)?;
         let allowed_scheme = url.scheme() == "https"
