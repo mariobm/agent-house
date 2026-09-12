@@ -1,5 +1,8 @@
 //! Import a raw image or serve an existing format-2 disk on a private Unix socket.
 #[cfg(unix)]
+#[path = "support/metrics.rs"]
+mod metrics;
+#[cfg(unix)]
 fn main() {
     use ahvm_volume::{
         batched::BatchedDisk,
@@ -24,10 +27,10 @@ fn main() {
             );
         }
         let store = Arc::new(CachedStore::new(
-            Arc::new(S3Store::with_timeout(
+            metrics::Measured::wrap(Arc::new(S3Store::with_timeout(
                 Config::from_file(Path::new(&a[1]))?,
                 Duration::from_secs(3),
-            )?),
+            )?)),
             64 * 1024 * 1024,
         )?);
         if a[0] == "import" {

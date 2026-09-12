@@ -193,32 +193,17 @@ impl IndexedVolume {
         };
         let bytes = if let Some(bytes) = self.store.cached_chunk(&self.root.volume, &hash) {
             bytes
-        } else if prefetch {
-            // Up to eight adjacent physical chunks, in parallel, only on a cache
-            // miss. Speculative failures never replace the requested data/error.
-            let end = (index + 8)
-                .min((index / SLOTS + 1) * SLOTS)
-                .min(self.size() / CHUNK_BYTES as u64);
-            let hashes: std::collections::BTreeSet<_> =
-                (index..end).filter_map(|i| slot(&page, i)).collect();
-            std::thread::scope(|scope| -> Result<Vec<u8>> {
-                let jobs: Vec<_> = hashes
-                    .iter()
-                    .map(|h| {
-                        let requested = h == &hash;
-                        scope.spawn(move || (requested, self.store.chunk(&self.root.volume, h)))
-                    })
-                    .collect();
-                let mut result = Err(Error::Corrupt);
-                for job in jobs {
-                    let (requested, bytes) = job.join().map_err(|_| Error::Store)?;
-                    if requested {
-                        result = bytes;
-                    }
-                }
-                result
-            })?
         } else {
+            if prefetch {
+                let end = (index + 8)
+                    .min((index / SLOTS + 1) * SLOTS)
+                    .min(self.size() / CHUNK_BYTES as u64);
+                let hashes: Vec<_> = (index + 1..end)
+                    .filter_map(|i| slot(&page, i))
+                    .filter(|h| h != &hash)
+                    .collect();
+                self.store.prefetch(&self.root.volume, &hashes);
+            }
             self.store.chunk(&self.root.volume, &hash)?
         };
         if bytes.len() != CHUNK_BYTES || digest(&bytes) != hash {
@@ -323,8 +308,14 @@ impl IndexedVolume {
                 page[at..at + 32].fill(0);
             } else {
                 let hash = digest(bytes);
-                page[at..at + 32].copy_from_slice(&decode(&hash)?);
-                uploads.entry(hash).or_insert_with(|| bytes.clone());
+                let raw = decode(&hash)?;
+                // The committed page already references this immutable content.
+                // Rewriting identical bytes needs neither another PUT nor a GET
+                // to resolve a duplicate-object conditional failure.
+                if page[at..at + 32] != raw {
+                    page[at..at + 32].copy_from_slice(&raw);
+                    uploads.entry(hash).or_insert_with(|| bytes.clone());
+                }
             }
         }
         // Upload data and page objects before the only visibility point, the root CAS.
@@ -333,9 +324,16 @@ impl IndexedVolume {
                 next.pages.remove(&index);
             } else {
                 let hash = digest(&page);
-                next.pages.insert(index, hash.clone());
-                uploads.insert(hash, Arc::new(page));
+                if self.root.pages.get(&index) != Some(&hash) {
+                    next.pages.insert(index, hash.clone());
+                    uploads.insert(hash, Arc::new(page));
+                }
             }
+        }
+        if next.pages == self.root.pages {
+            // Same semantics as a clean flush: no new remote state to publish.
+            self.dirty.clear();
+            return Ok(self.root.generation);
         }
         let objects: Vec<_> = uploads.into_iter().collect();
         std::thread::scope(|scope| -> Result<()> {

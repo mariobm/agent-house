@@ -58,6 +58,8 @@ pub struct Head {
 /// queued locally. `None` means create only if absent, never unconditional PUT.
 /// A lost publication response must return an error, never fabricated success.
 pub trait ObjectStore: std::fmt::Debug + Send + Sync {
+    /// Optional best-effort immutable read-ahead. Must be bounded and nonblocking.
+    fn prefetch(&self, _volume: &str, _digests: &[String]) {}
     /// Optional disposable cache lookup. Callers still validate returned bytes.
     fn cached_chunk(&self, _volume: &str, _digest: &str) -> Option<Vec<u8>> {
         None

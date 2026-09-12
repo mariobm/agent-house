@@ -132,8 +132,10 @@ real guest ext4 recovery and fsync failure under an R2 network outage. It uses
 the unchanged VMM and a local root disk with a small durable data disk. Indexed
 metadata, bounded RAM caching/dirty buffers and background upload now have a
 [format-2 implementation and full-root gate](../experiments/durable-storage/INDEXED-ROOT.md).
-A local write log and the remaining qualification/performance work are still
-outstanding; this does not advance the plan to phase 4.
+The full-root gate now also covers three repeated synced-write/SIGKILL/recovery
+cycles and records cold/warm latency. Small synchronous commits remain slow even
+with a warm cache. A local write log, block-operation qualification and further
+performance work are still outstanding; this does not advance the plan to phase 4.
 
 ## Qualification measurements
 
