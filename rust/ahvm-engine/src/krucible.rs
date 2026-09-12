@@ -80,6 +80,8 @@ pub struct KrucibleConfig {
     pub exec_timeout: Duration,
     /// Opt-in isolated outbound TCP/DNS.
     pub network: Option<crate::NetworkConfig>,
+    /// Optional host-delegated per-VM resource limits.
+    pub resources: Option<crate::ResourceConfig>,
 }
 
 impl KrucibleConfig {
@@ -92,6 +94,7 @@ impl KrucibleConfig {
             ready_timeout: DEFAULT_READY_TIMEOUT,
             exec_timeout: DEFAULT_EXEC_TIMEOUT,
             network: None,
+            resources: None,
         }
     }
 
@@ -254,6 +257,9 @@ impl KrucibleBackend {
     /// `state.json` records. Dead pids surface as `Failed`.
     pub fn open(cfg: KrucibleConfig) -> Result<Self> {
         cfg.validate()?;
+        if let Some(resources) = &cfg.resources {
+            resources.validate()?;
+        }
         std::fs::create_dir_all(&cfg.data_dir)?;
         // Recover interrupted publication before deleting uncommitted debris.
         sweep_debris(&cfg.data_dir)?;
@@ -329,6 +335,12 @@ impl KrucibleBackend {
                     crate::network::cleanup_orphan(&dir)?;
                 }
             }
+            if let Some(resources) = &cfg.resources {
+                let group = resources.prepare(&id, record.spec.cpus, record.spec.memory_mb)?;
+                if let Some(WorkerHandle::Adopted(w)) = &worker {
+                    crate::resources::verify_member(&group, w.pid)?;
+                }
+            }
             let mut info = record.info.clone();
             // A surviving process may be paused inside an interrupted snapshot.
             // Probe once on adoption; process liveness alone cannot prove that
@@ -375,7 +387,12 @@ impl KrucibleBackend {
                             "stop existing VMs before enabling networking".into(),
                         ));
                     }
-                    networks.prepare(&rec.dir)?;
+                    let group = cfg
+                        .resources
+                        .as_ref()
+                        .map(|r| r.path(&rec.record.info.id))
+                        .transpose()?;
+                    networks.prepare(&rec.dir, group.as_deref())?;
                     networks.attach(&rec.dir, vm.clone());
                 } else {
                     networks.remove(&rec.dir)?;
@@ -719,10 +736,17 @@ impl KrucibleBackend {
                 dir.join("mesa-cache").display()
             ));
         }
+        let group = self
+            .cfg
+            .resources
+            .as_ref()
+            .map(|r| r.prepare(&spec.name, spec.cpus, spec.memory_mb))
+            .transpose()?;
         if let Some(net) = &self.networks {
-            net.prepare(dir)?;
+            net.prepare(dir, group.as_deref())?;
         }
         let result = spawn_worker_cfg(&SpawnConfig {
+            cgroup: group.as_deref(),
             vmm_binary: worker.as_os_str(),
             spec_arg: &spec_path,
             state_path: &dir.join("state.json"),
@@ -1056,6 +1080,9 @@ impl KrucibleBackend {
                     let _ = net.remove(&dir);
                 }
                 let _ = std::fs::remove_dir_all(&dir);
+                if let Some(resources) = &self.cfg.resources {
+                    let _ = resources.remove(new_id);
+                }
                 Err(e)
             }
         }
@@ -1199,6 +1226,9 @@ impl Backend for KrucibleBackend {
                     let _ = net.remove(&dir);
                 }
                 let _ = std::fs::remove_dir_all(&dir);
+                if let Some(resources) = &self.cfg.resources {
+                    let _ = resources.remove(&spec.name);
+                }
                 Err(e)
             }
         }
@@ -1221,6 +1251,9 @@ impl Backend for KrucibleBackend {
             net.remove(&rec.dir)?;
         }
         std::fs::remove_dir_all(&rec.dir)?;
+        if let Some(resources) = &self.cfg.resources {
+            resources.remove(id)?;
+        }
         Ok(())
     }
 
@@ -2027,6 +2060,7 @@ mod tests {
             ready_timeout: Duration::from_secs(1),
             exec_timeout: Duration::from_secs(1),
             network: None,
+            resources: None,
         }
     }
 
