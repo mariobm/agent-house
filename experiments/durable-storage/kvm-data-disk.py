@@ -26,6 +26,9 @@ p.add_argument('--lib', required=True)
 p.add_argument('--image', required=True)
 p.add_argument('--device', default='/dev/nbd0')
 p.add_argument('--indexed-root', action='store_true', help='import image and boot entirely from indexed R2 root')
+p.add_argument('--stress-cycles', type=int, choices=range(4), default=0, help='additional synced-write/crash/recovery cycles (0-3)')
+p.add_argument('--warm-repeat', action='store_true', help='repeat the workload in a new directory with a warm cache')
+p.add_argument('--metrics', action='store_true')
 p.add_argument('--uid', type=int, default=199999)
 a = p.parse_args()
 assert os.geteuid() == 0, 'root required for NBD attachment and isolated UID outage'
@@ -56,6 +59,8 @@ attached = False
 blocked = []
 rule = ['OUTPUT', '-m', 'owner', '--uid-owner', str(a.uid), '-p', 'tcp', '--dport', '443', '-m', 'comment', '--comment', volume, '-j', 'REJECT']
 env = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LD_LIBRARY_PATH': a.lib}
+if a.metrics:
+    env['AHVM_VOLUME_METRICS'] = '1'
 
 def command(args, **kwargs):
     kwargs.setdefault('timeout', 90)
@@ -134,13 +139,15 @@ def start_vm():
             time.sleep(.1)
 
 workload = r'''
-import os, sqlite3, subprocess, zipfile, pathlib
+import os, sqlite3, subprocess, zipfile, pathlib, time
+stage=time.monotonic()
 root=pathlib.Path('/mnt/durable')
 repo=root/'repo';repo.mkdir()
 subprocess.run(['git','init','-q',str(repo)],check=True)
 (repo/'marker').write_text('durable-git-marker\n')
 subprocess.run(['git','-C',str(repo),'add','.'],check=True)
 subprocess.run(['git','-C',str(repo),'-c','user.name=AHVM','-c','user.email=test@example.invalid','commit','-qm','durable'],check=True)
+print('Git seconds:', round(time.monotonic()-stage,2));stage=time.monotonic()
 wheel=pathlib.Path('/tmp/probe_pkg-1.0-py3-none-any.whl')
 with zipfile.ZipFile(wheel,'w') as z:
  z.writestr('probe_pkg.py','VALUE = "installed-on-durable-disk"\n')
@@ -148,10 +155,12 @@ with zipfile.ZipFile(wheel,'w') as z:
  z.writestr('probe_pkg-1.0.dist-info/WHEEL','Wheel-Version: 1.0\nGenerator: ahvm\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
  z.writestr('probe_pkg-1.0.dist-info/RECORD','')
 subprocess.run(['python3','-m','pip','install','--no-index','--no-deps','--target',str(root/'packages'),str(wheel)],check=True,stdout=subprocess.DEVNULL)
+print('Package seconds:', round(time.monotonic()-stage,2));stage=time.monotonic()
 c=sqlite3.connect(root/'proof.db');c.execute('pragma synchronous=FULL');c.execute('create table proof (id integer primary key, value text)')
 for i in range(3):
  c.execute('insert into proof values (?,?)',(i,'survived-'+str(i)));c.commit()
 c.close()
+print('SQLite seconds:', round(time.monotonic()-stage,2));stage=time.monotonic()
 with open(root/'marker','w') as f:
  f.write('guest-fsync-reached-r2\n');f.flush();os.fsync(f.fileno())
 # Flush all Git/package file and directory metadata as well as SQLite's own fsync.
@@ -160,6 +169,7 @@ import ctypes
 libc=ctypes.CDLL(None,use_errno=True)
 assert libc.syncfs(fd)==0, 'syncfs failed'
 os.close(fd)
+print('Final sync seconds:', round(time.monotonic()-stage,2))
 print('WORKLOAD-SYNCED')
 '''
 verify = r'''
@@ -191,6 +201,11 @@ try:
     started = time.monotonic()
     print(rpc(['python3','-c',workload]), flush=True)
     print(f'Workload: {time.monotonic() - started:.2f}s', flush=True)
+    if a.warm_repeat:
+        warmed = workload.replace("root=pathlib.Path('/mnt/durable')", "root=pathlib.Path('/mnt/durable/warm');root.mkdir()")
+        started = time.monotonic()
+        print(rpc(['python3','-c',warmed]), flush=True)
+        print(f'Warm workload: {time.monotonic() - started:.2f}s', flush=True)
     # Abrupt compute and storage loss; no shutdown/snapshot/unmount/flush here.
     for proc in [vm, storage]:
         if proc.poll() is None:
@@ -204,6 +219,40 @@ try:
     if not a.indexed_root:
         rpc(['/bin/sh','-c','mkdir -p /mnt/durable && mount /dev/vdb /mnt/durable'])
     print(rpc(['python3','-c',verify]), flush=True)
+    for cycle in range(a.stress_cycles):
+        # Rewrite the same 4 MiB with a distinct deterministic pattern each cycle.
+        # A partial or stale recovery cannot pass the byte-for-byte check.
+        script = '''
+import hashlib, os
+path='/mnt/durable/stress'
+f=open(path,'wb',buffering=0)
+for block in range(64):
+ data=hashlib.sha256(('CYCLE:'+str(block)).encode()).digest()*2048
+ assert f.write(data)==len(data)
+os.fsync(f.fileno());f.close()
+fd=os.open('/mnt/durable',os.O_RDONLY);os.fsync(fd);os.close(fd)
+'''.replace('CYCLE', str(cycle))
+        rpc(['python3','-c',script])
+        for proc in [vm, storage]:
+            if proc.poll() is None:
+                proc.kill()
+        command(['nbd-client','-d',a.device]);attached=False
+        for proc in [vm, storage]:
+            proc.wait(timeout=30)
+        vm = storage = None
+        start_storage(False)
+        start_vm()
+        if not a.indexed_root:
+            rpc(['/bin/sh','-c','mkdir -p /mnt/durable && mount /dev/vdb /mnt/durable'])
+        script = '''
+import hashlib
+with open('/mnt/durable/stress','rb') as f:
+ for block in range(64):
+  assert f.read(65536)==hashlib.sha256(('CYCLE:'+str(block)).encode()).digest()*2048
+ assert not f.read(1)
+print('STRESS-ROUND-CYCLE-RECOVERED')
+'''.replace('CYCLE', str(cycle))
+        print(rpc(['python3','-c',script]), flush=True)
     # Deny only this test sidecar's TLS network access, including existing flows.
     for firewall in ['iptables', 'ip6tables']:
         command([firewall,'-I',*rule]); blocked.append(firewall)
