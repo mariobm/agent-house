@@ -127,3 +127,31 @@ The follow-up [qualification](NETWORK-QUALIFICATION.md) caps the gate at two gue
 adds load/slow-reader checks, and hardens HTTPS credentials to use the
 `__Host-ahvm_preview` cookie. Old HTTPS grants need their access link reopened.
 The `ahvm_preview` development cookie is used only for localhost domains.
+
+## Optional bandwidth cap
+
+Set `AHVM_NETWORK_BYTES_PER_SEC` on the daemon to cap each managed VM's virtual
+Ethernet link in each direction. For example, `10485760` permits 10 MiB/s per
+direction. Valid values are 65536 through 1000000000 bytes/second; leaving it
+unset preserves unlimited self-hosted networking. Stop VMs before changing this
+policy: adopting a live gateway with a different saved limit is refused.
+
+The gateway uses independent ingress/egress token buckets with 100 ms of burst
+credit. Ethernet traffic, DNS and the link's four-byte frame headers all count.
+The limit aggregates all connections on that VM, while other VMs have their own
+buckets. It applies backpressure rather than dropping throttled TCP data. A
+gateway restart starts a fresh burst allowance. Existing bounded host/socket
+buffers can temporarily burst independently of the virtual link. This is a rate
+limit, not monthly transfer accounting or a host-wide egress billing guarantee.
+
+REST file transfers, terminal/desktop streams and preview proxies do not traverse
+this link and need separate API transport controls. Do not describe this setting
+as covering those paths.
+
+Linux qualification: `AHVM_KVM_BANDWIDTH_TEST=1` selects the `per_vm_bandwidth`
+test in `ahvm-engine/tests/kvm_network.rs`. Supply the same VMM, image, netd,
+resolver, library and fresh test-directory variables as the network gate. It
+creates two disposable 1-vCPU/1-GiB guests and grants only a temporary exact host
+listener endpoint. Both transfer 2 MiB in each direction at 256 KiB/s concurrently,
+verify payload integrity and check peer exec responsiveness. No external bulk
+traffic is generated.

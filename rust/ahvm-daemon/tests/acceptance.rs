@@ -45,6 +45,7 @@ fn config(dir: &std::path::Path) -> KrucibleConfig {
     );
     if let Ok(bin) = std::env::var("AHVM_NETD_BIN") {
         cfg.network = Some(ahvm_engine::NetworkConfig {
+            bandwidth_bytes_per_sec: None,
             private_access: Default::default(),
             netd_bin: bin.into(),
             resolver: std::env::var("AHVM_DNS_RESOLVER")

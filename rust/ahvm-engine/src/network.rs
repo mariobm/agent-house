@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 pub struct NetworkConfig {
     pub netd_bin: PathBuf,
     pub resolver: Ipv4Addr,
+    /// Per-direction virtual Ethernet bytes/second; None leaves self-hosted links unlimited.
+    pub bandwidth_bytes_per_sec: Option<u64>,
     /// Host-owned exact TCP destination grants, keyed by sandbox id.
     pub private_access: std::collections::BTreeMap<String, Vec<std::net::SocketAddrV4>>,
 }
@@ -111,6 +113,14 @@ impl Networks {
         {
             return Err(Error::InvalidState(
                 "DNS resolver must be a unicast IPv4 address".into(),
+            ));
+        }
+        if cfg
+            .bandwidth_bytes_per_sec
+            .is_some_and(|v| !(65536..=1_000_000_000).contains(&v))
+        {
+            return Err(Error::InvalidState(
+                "bandwidth must be 65536..=1000000000 bytes per second".into(),
             ));
         }
         if cfg.private_access.len() > 4096
@@ -215,6 +225,11 @@ impl Networks {
                         .cloned()
                         .unwrap_or_else(|| serde_json::json!([])),
                 )?;
+                if saved["bandwidth_bytes_per_sec"].as_u64() != core.cfg.bandwidth_bytes_per_sec {
+                    return Err(Error::InvalidState(
+                        "stop VMs before changing bandwidth limits".into(),
+                    ));
+                }
                 if saved_rules != rules_for(&core.cfg, dir) {
                     return Err(Error::InvalidState(
                         "stop VMs before changing private access".into(),
@@ -305,6 +320,7 @@ fn launch(cfg: &NetworkConfig, dir: &Path, cgroup: Option<&Path>) -> Result<Work
         &spec,
         serde_json::to_vec(&serde_json::json!({
             "ethernet_contract": 1, "socket": socket, "resolver": cfg.resolver, "private_access": rules_for(cfg, dir),
+            "bandwidth_bytes_per_sec": cfg.bandwidth_bytes_per_sec,
         }))?,
     )?;
     let mut worker = spawn_worker_cfg(&SpawnConfig {
@@ -345,6 +361,7 @@ mod tests {
             dir,
             NetworkConfig {
                 private_access: Default::default(),
+                bandwidth_bytes_per_sec: None,
                 netd_bin: bin,
                 resolver: Ipv4Addr::LOCALHOST,
             },
@@ -409,6 +426,14 @@ mod tests {
         });
         let replacement = Worker::load(dir.join("net-state.json")).unwrap();
         drop(networks);
+        let mut changed = cfg.clone();
+        changed.bandwidth_bytes_per_sec = Some(1024 * 1024);
+        let refused = Networks::new(changed).unwrap();
+        assert!(
+            matches!(refused.prepare(&dir, None), Err(Error::InvalidState(s)) if s.contains("bandwidth"))
+        );
+        assert!(alive(&replacement));
+        drop(refused);
         let networks = Networks::new(cfg).unwrap();
         networks.prepare(&dir, None).unwrap();
         networks.attach(&dir, vm);
