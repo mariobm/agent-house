@@ -62,7 +62,7 @@ pub async fn create(
     Extension(user): Extension<UserId>,
     Json(body): Json<CreateBody>,
 ) -> ApiResult<impl IntoResponse> {
-    create_operation(State(state), Extension(user), Json(body), None).await
+    create_operation(State(state), Extension(user), Json(body), None, None).await
 }
 
 pub(crate) async fn create_operation(
@@ -70,6 +70,7 @@ pub(crate) async fn create_operation(
     Extension(user): Extension<UserId>,
     Json(body): Json<CreateBody>,
     operation: Option<&str>,
+    network_bytes_per_sec: Option<u64>,
 ) -> ApiResult<impl IntoResponse> {
     if body.name.is_empty() || body.name.len() > 64 {
         return Err(ApiError::Invalid("name must be 1..=64 chars".to_string()));
@@ -130,6 +131,7 @@ pub(crate) async fn create_operation(
             || (desktop
                 && body.image.is_none()
                 && std::env::var("AHVM_DESKTOP_GPU").as_deref() == Ok("1")),
+        network_bytes_per_sec,
         extra_env: Default::default(),
     };
     let backend = state.backend.clone();
@@ -254,7 +256,7 @@ pub async fn start(
     Extension(user): Extension<UserId>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<SandboxView>> {
-    start_operation(State(state), Extension(user), Path(id), None).await
+    start_operation(State(state), Extension(user), Path(id), None, None).await
 }
 
 pub(crate) async fn start_operation(
@@ -262,14 +264,15 @@ pub(crate) async fn start_operation(
     Extension(user): Extension<UserId>,
     Path(id): Path<String>,
     operation: Option<&str>,
+    network_bytes_per_sec: Option<u64>,
 ) -> ApiResult<Json<SandboxView>> {
     owned(&state, &user.0, &id).await?;
     let me = state.store.get_user(&user.0)?;
     // Keep admission through the backend transition and its store mirror.
     // Stopped/failed boxes regain resource usage; running boxes are counted once.
     let _hold = state.quotas.reserve_start(&state.store, &me, &id)?;
-    set_running(&state, &id, operation, |backend, owned_id| {
-        backend.start(&owned_id)
+    set_running(&state, &id, operation, move |backend, owned_id| {
+        backend.start_with_network_bandwidth(&owned_id, network_bytes_per_sec)
     })
     .await
 }

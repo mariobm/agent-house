@@ -59,8 +59,8 @@ impl BackendKind {
 }
 
 /// What to create. Backend-agnostic subset of Go's `engine.SandboxSpec`:
-/// identity + sizing + images + env. Networking, volumes, and policy are
-/// resolved by the daemon and travel out-of-band, not here.
+/// identity + sizing + images + env. Trusted network policy is resolved by
+/// the daemon and retained here so gateway recovery preserves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxSpec {
     pub name: String,
@@ -79,6 +79,9 @@ pub struct SandboxSpec {
     pub kernel_image: Option<String>,
     #[serde(default)]
     pub extra_env: HashMap<String, String>,
+    /// Trusted host policy: None inherits daemon default; zero means unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_bytes_per_sec: Option<u64>,
 }
 
 /// Runtime state of a sandbox. `Creating` covers the window between
@@ -183,6 +186,7 @@ mod tests {
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
+            network_bytes_per_sec: None,
             extra_env: HashMap::from([("FOO".to_string(), "bar".to_string())]),
         };
         let raw = serde_json::to_string(&spec).unwrap();

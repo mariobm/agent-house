@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 pub struct NetworkConfig {
     pub netd_bin: PathBuf,
     pub resolver: Ipv4Addr,
+    /// Per-direction virtual Ethernet bytes/second; None leaves self-hosted links unlimited.
+    pub bandwidth_bytes_per_sec: Option<u64>,
     /// Host-owned exact TCP destination grants, keyed by sandbox id.
     pub private_access: std::collections::BTreeMap<String, Vec<std::net::SocketAddrV4>>,
 }
@@ -19,6 +21,7 @@ pub struct NetworkConfig {
 #[derive(Debug)]
 struct Entry {
     cgroup: Option<PathBuf>,
+    bandwidth_bytes_per_sec: Option<u64>,
     worker: Option<WorkerHandle>,
     vm: Option<Worker>,
     retry: Instant,
@@ -113,6 +116,14 @@ impl Networks {
                 "DNS resolver must be a unicast IPv4 address".into(),
             ));
         }
+        if cfg
+            .bandwidth_bytes_per_sec
+            .is_some_and(|v| !(65536..=1_000_000_000).contains(&v))
+        {
+            return Err(Error::InvalidState(
+                "bandwidth must be 65536..=1000000000 bytes per second".into(),
+            ));
+        }
         if cfg.private_access.len() > 4096
             || cfg.private_access.iter().any(|(id, rules)| {
                 id.is_empty()
@@ -139,8 +150,9 @@ impl Networks {
                 std::thread::sleep(Duration::from_millis(250));
                 let Some(core) = weak.upgrade() else { break };
                 let mut core = core.lock().unwrap_or_else(|e| e.into_inner());
-                let cfg = core.cfg.clone();
+                let mut cfg = core.cfg.clone();
                 core.entries.retain(|dir, entry| {
+                    cfg.bandwidth_bytes_per_sec = entry.bandwidth_bytes_per_sec;
                     if entry.vm.as_ref().is_some_and(|w| !alive(w)) {
                         if let Some(w) = &mut entry.worker {
                             let _ = w.terminate();
@@ -184,8 +196,20 @@ impl Networks {
         Ok(Self(shared))
     }
 
-    pub(crate) fn prepare(&self, dir: &Path, cgroup: Option<&Path>) -> Result<()> {
+    pub(crate) fn prepare(
+        &self,
+        dir: &Path,
+        cgroup: Option<&Path>,
+        bandwidth: Option<u64>,
+    ) -> Result<()> {
         let mut core = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cfg = core.cfg.clone();
+        if let Some(bytes) = bandwidth {
+            if bytes != 0 && !(65536..=1_000_000_000).contains(&bytes) {
+                return Err(Error::InvalidState("invalid bandwidth".into()));
+            }
+            cfg.bandwidth_bytes_per_sec = (bytes != 0).then_some(bytes);
+        }
         // Even when netd is dead, do not attach a new checksum-validating gateway
         // to an old live VMM which negotiated checksum/GSO offloads.
         if Worker::load(dir.join("state.json")).is_ok_and(|w| alive(&w)) {
@@ -215,6 +239,11 @@ impl Networks {
                         .cloned()
                         .unwrap_or_else(|| serde_json::json!([])),
                 )?;
+                if saved["bandwidth_bytes_per_sec"].as_u64() != cfg.bandwidth_bytes_per_sec {
+                    return Err(Error::InvalidState(
+                        "stop VMs before changing bandwidth limits".into(),
+                    ));
+                }
                 if saved_rules != rules_for(&core.cfg, dir) {
                     return Err(Error::InvalidState(
                         "stop VMs before changing private access".into(),
@@ -235,14 +264,15 @@ impl Networks {
                     "cannot adopt netd without process identity".into(),
                 ));
             }
-            Ok(_) => launch(&core.cfg, dir, cgroup)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => launch(&core.cfg, dir, cgroup)?,
+            Ok(_) => launch(&cfg, dir, cgroup)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => launch(&cfg, dir, cgroup)?,
             Err(e) => return Err(e.into()),
         };
         core.entries.insert(
             dir.to_owned(),
             Entry {
                 cgroup: cgroup.map(Path::to_owned),
+                bandwidth_bytes_per_sec: cfg.bandwidth_bytes_per_sec,
                 worker: Some(worker),
                 vm: None,
                 retry: Instant::now(),
@@ -305,6 +335,7 @@ fn launch(cfg: &NetworkConfig, dir: &Path, cgroup: Option<&Path>) -> Result<Work
         &spec,
         serde_json::to_vec(&serde_json::json!({
             "ethernet_contract": 1, "socket": socket, "resolver": cfg.resolver, "private_access": rules_for(cfg, dir),
+            "bandwidth_bytes_per_sec": cfg.bandwidth_bytes_per_sec,
         }))?,
     )?;
     let mut worker = spawn_worker_cfg(&SpawnConfig {
@@ -345,6 +376,7 @@ mod tests {
             dir,
             NetworkConfig {
                 private_access: Default::default(),
+                bandwidth_bytes_per_sec: None,
                 netd_bin: bin,
                 resolver: Ipv4Addr::LOCALHOST,
             },
@@ -371,7 +403,7 @@ mod tests {
         std::fs::write(dir.join("net.json"), b"{}").unwrap();
         let networks = Networks::new(cfg).unwrap();
         assert!(
-            matches!(networks.prepare(&dir, None), Err(Error::InvalidState(s)) if s.contains("legacy"))
+            matches!(networks.prepare(&dir, None, None), Err(Error::InvalidState(s)) if s.contains("legacy"))
         );
         assert!(!dir.join("net-state.json").exists());
         drop(networks);
@@ -382,7 +414,7 @@ mod tests {
         let (root, cfg) = fixture("managed-net");
         let dir = root.join("sandbox");
         let networks = Networks::new(cfg.clone()).unwrap();
-        networks.prepare(&dir, None).unwrap();
+        networks.prepare(&dir, None, None).unwrap();
         let vm = Worker {
             id: "test-vm".into(),
             pid: std::process::id(),
@@ -409,8 +441,16 @@ mod tests {
         });
         let replacement = Worker::load(dir.join("net-state.json")).unwrap();
         drop(networks);
+        let mut changed = cfg.clone();
+        changed.bandwidth_bytes_per_sec = Some(1024 * 1024);
+        let refused = Networks::new(changed).unwrap();
+        assert!(
+            matches!(refused.prepare(&dir, None, None), Err(Error::InvalidState(s)) if s.contains("bandwidth"))
+        );
+        assert!(alive(&replacement));
+        drop(refused);
         let networks = Networks::new(cfg).unwrap();
-        networks.prepare(&dir, None).unwrap();
+        networks.prepare(&dir, None, None).unwrap();
         networks.attach(&dir, vm);
         assert_eq!(
             Worker::load(dir.join("net-state.json")).unwrap().pid,

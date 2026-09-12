@@ -45,6 +45,7 @@ fn config(dir: &std::path::Path) -> KrucibleConfig {
     );
     if let Ok(bin) = std::env::var("AHVM_NETD_BIN") {
         cfg.network = Some(ahvm_engine::NetworkConfig {
+            bandwidth_bytes_per_sec: None,
             private_access: Default::default(),
             netd_bin: bin.into(),
             resolver: std::env::var("AHVM_DNS_RESOLVER")
@@ -481,6 +482,7 @@ fn cleanup_guard_runs_on_panic() {
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
+            network_bytes_per_sec: None,
             extra_env: Default::default(),
         })
         .unwrap();

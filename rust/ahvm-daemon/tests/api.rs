@@ -1239,3 +1239,51 @@ async fn workspace_stream_admission_isolated_and_released() {
         .unwrap();
     assert_eq!(app.oneshot(request).await.unwrap().status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn only_admin_can_override_network_policy() {
+    let state = test_state();
+    state
+        .store
+        .upsert_user(&user("admin", "admin-policy-token"))
+        .unwrap();
+    let app = build_router(state);
+    for action in ["create", "start"] {
+        let mut body =
+            serde_json::json!({"action":action,"sandbox_id":"policy-vm","network_bytes_per_sec":0});
+        if action == "create" {
+            body["cpus"] = 1.into();
+            body["memory_mb"] = 512.into();
+        }
+        let (status, _) = call(
+            app.clone(),
+            Some(TOKEN_A),
+            "POST",
+            "/v1/operations/policy-forbidden",
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        body["network_bytes_per_sec"] = 1.into();
+        let (status, _) = call(
+            app.clone(),
+            Some("admin-policy-token"),
+            "POST",
+            "/v1/operations/policy-invalid",
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+}
+
+#[test]
+fn legacy_lifecycle_receipts_keep_identical_canonical_requests() {
+    for json in [
+        r#"{"action":"start","sandbox_id":"vm"}"#,
+        r#"{"action":"create","sandbox_id":"vm","cpus":1,"memory_mb":512}"#,
+    ] {
+        let request: ahvm_daemon::operations::Request = serde_json::from_str(json).unwrap();
+        assert_eq!(serde_json::to_string(&request).unwrap(), json);
+    }
+}

@@ -9,6 +9,7 @@
 //! AHVM_BASE_IMAGE   backing guest ext4 (required)
 //! AHVM_LIB          LD_LIBRARY_PATH value for workers (default: inherited)
 //! AHVM_NETD_BIN     optional managed Rust gateway binary (Linux)
+//! AHVM_NETWORK_BYTES_PER_SEC optional per-VM per-direction Ethernet cap (65536..=1000000000)
 //! AHVM_DNS_RESOLVER required IPv4 resolver when netd is enabled
 //! AHVM_PREVIEW_LISTEN optional separate HTTP preview bind address
 //! AHVM_PREVIEW_DOMAIN dedicated domain for per-port preview hosts
@@ -109,6 +110,10 @@ async fn main() {
     );
     if let Some(bin) = std::env::var_os("AHVM_NETD_BIN") {
         backend_cfg.network = Some(ahvm_engine::NetworkConfig {
+            bandwidth_bytes_per_sec: std::env::var("AHVM_NETWORK_BYTES_PER_SEC").ok().map(|v| {
+                v.parse()
+                    .expect("AHVM_NETWORK_BYTES_PER_SEC must be an integer")
+            }),
             private_access: grants
                 .into_iter()
                 .map(|(id, g)| (id, g.destinations))

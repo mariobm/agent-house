@@ -47,6 +47,7 @@ fn spec(name: &str) -> ahvm_engine::SandboxSpec {
         kernel_image: None,
         desktop: false,
         desktop_gpu: false,
+        network_bytes_per_sec: None,
         extra_env: Default::default(),
     }
 }
