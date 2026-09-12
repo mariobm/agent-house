@@ -474,6 +474,7 @@ fn cleanup_guard_runs_on_panic() {
     let store = Arc::new(ahvm_store::Store::open_in_memory().unwrap());
     let sandbox = backend
         .create(&ahvm_engine::SandboxSpec {
+            storage_mode: None,
             name: "cleanup-proof".into(),
             cpus: 1,
             memory_mb: 128,

@@ -64,6 +64,9 @@ impl BackendKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxSpec {
     pub name: String,
+    /// None selects the host default at creation; persisted records resolve it.
+    #[serde(default)]
+    pub storage_mode: Option<crate::StorageMode>,
     /// Desktop VM with disk-only stop/start.
     #[serde(default)]
     pub desktop: bool,
@@ -109,6 +112,8 @@ pub enum Thermal {
 /// Runtime facts about one sandbox (cf. Go's `engine.SandboxInfo`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxInfo {
+    #[serde(default)]
+    pub storage: crate::SandboxStorage,
     pub id: String,
     pub name: String,
     pub state: State,
@@ -178,6 +183,7 @@ mod tests {
     #[test]
     fn spec_json_roundtrip() {
         let spec = SandboxSpec {
+            storage_mode: None,
             name: "web".to_string(),
             cpus: 2,
             memory_mb: 512,
@@ -205,6 +211,7 @@ mod tests {
     #[test]
     fn info_state_thermal_roundtrip() {
         let info = SandboxInfo {
+            storage: Default::default(),
             id: "sb-1".to_string(),
             name: "web".to_string(),
             state: State::Running,

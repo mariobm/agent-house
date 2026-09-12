@@ -79,6 +79,7 @@ fn isolated_gateways_recover_without_disturbing_peers() {
     let be = gate.backend.as_ref().unwrap();
     for id in ["a", "b"] {
         be.create(&SandboxSpec {
+            storage_mode: None,
             name: id.into(),
             cpus: 1,
             memory_mb: 256,
@@ -293,6 +294,7 @@ fn dns_rejects_wrong_replies_and_retries_truncation_over_tcp() {
     };
     let be = gate.backend.as_ref().unwrap();
     be.create(&SandboxSpec {
+        storage_mode: None,
         name: "a".into(),
         cpus: 1,
         memory_mb: 256,
@@ -413,6 +415,7 @@ fn per_vm_bandwidth_bounds_both_directions_and_preserves_peers() {
     let be = gate.backend.as_ref().unwrap();
     for id in ["a", "b"] {
         be.create(&SandboxSpec {
+            storage_mode: None,
             name: id.into(),
             cpus: 1,
             memory_mb: 1024,

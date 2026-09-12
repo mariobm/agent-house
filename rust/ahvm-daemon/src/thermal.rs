@@ -433,6 +433,7 @@ mod tests {
     /// via the backend, then rewrite the store row to the backend id.
     fn live_pair(st: &AppState, name: &str) -> String {
         let spec = ahvm_engine::SandboxSpec {
+            storage_mode: None,
             name: name.to_string(),
             cpus: 1,
             memory_mb: 512,
@@ -552,6 +553,7 @@ mod tests {
 
     fn stopped_info(id: &str) -> SandboxInfo {
         SandboxInfo {
+            storage: Default::default(),
             id: id.to_string(),
             name: id.to_string(),
             state: State::Stopped,

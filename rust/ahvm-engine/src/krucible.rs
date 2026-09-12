@@ -26,6 +26,9 @@
 //! as [`State::Failed`](crate::State). Owned children are reaped via
 //! [`LiveWorker`](crate::LiveWorker); adopted ones via pid polling.
 
+mod replicated;
+use replicated::validate_storage_record;
+
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
@@ -84,6 +87,9 @@ pub struct KrucibleConfig {
     pub resources: Option<crate::ResourceConfig>,
     /// Optional host-owned project-quota broker; fail closed when unavailable.
     pub storage: Option<crate::StorageConfig>,
+    /// Experimental host volume service. Never inferred from guest input.
+    pub replicated: Option<crate::ReplicatedConfig>,
+    pub default_storage_mode: crate::StorageMode,
 }
 
 impl KrucibleConfig {
@@ -98,6 +104,8 @@ impl KrucibleConfig {
             network: None,
             resources: None,
             storage: None,
+            replicated: None,
+            default_storage_mode: crate::StorageMode::Local,
         }
     }
 
@@ -126,6 +134,11 @@ struct SandboxRecord {
     info: SandboxInfo,
     /// Overlay backing path used at create (base image or spec root_image).
     backing: PathBuf,
+    /// A persisted delete intent prevents restart from resurrecting storage.
+    #[serde(default)]
+    deleting: bool,
+    #[serde(default)]
+    volume_prepared: bool,
 }
 
 /// A supervised worker handle: owned (we spawned it, we reap it) or
@@ -329,6 +342,20 @@ impl KrucibleBackend {
                 Error::InvalidState(format!("{}: bad sandbox.json: {e}", dir.display()))
             })?;
             let id = record.info.id.clone();
+            validate_id(&id)?;
+            if dir.file_name().and_then(|p| p.to_str()) != Some(&id) || record.spec.name != id {
+                return Err(Error::InvalidState(
+                    "sandbox record identity mismatch".into(),
+                ));
+            }
+            validate_storage_record(&record)?;
+            if record.info.storage.mode == crate::StorageMode::Replicated
+                && cfg.replicated.is_none()
+            {
+                return Err(Error::InvalidState(
+                    "replicated storage service required to reopen sandbox".into(),
+                ));
+            }
             let worker = match Worker::load(dir.join("state.json")) {
                 // Identity-verified adoption only: a live pid with a
                 // mismatched starttime belongs to someone else (PID reuse).
@@ -340,6 +367,26 @@ impl KrucibleBackend {
                 Ok(w) if is_alive(w.pid) && verified(&w) => Some(WorkerHandle::Adopted(w)),
                 _ => None,
             };
+            if record.info.storage.mode == crate::StorageMode::Replicated
+                && (cfg.resources.is_some() || cfg.storage.is_some())
+            {
+                return Err(Error::InvalidState(
+                    "replicated service resource accounting is not integrated".into(),
+                ));
+            }
+            if worker.is_some() && record.info.storage.mode == crate::StorageMode::Replicated {
+                let volume = record.info.storage.volume_id.as_deref().unwrap();
+                let device = cfg.replicated.as_ref().unwrap().inspect(volume)?;
+                let saved: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(dir.join("spec.json"))?)?;
+                if saved["root_disk"].as_str() != device.to_str()
+                    || saved["root_disk_format"] != "raw"
+                {
+                    return Err(Error::InvalidState(
+                        "replicated attachment mismatch during adoption".into(),
+                    ));
+                }
+            }
             if cfg.network.is_none() && dir.join("net.json").exists() {
                 if worker.is_some() {
                     let saved: serde_json::Value =
@@ -367,7 +414,7 @@ impl KrucibleBackend {
             let needs_resume =
                 worker.is_some() && !record.spec.desktop && recover_control(&dir).is_err();
             if worker.is_some() {
-                info.state = if needs_resume {
+                info.state = if needs_resume || record.deleting {
                     State::Failed
                 } else {
                     State::Running
@@ -673,7 +720,7 @@ impl KrucibleBackend {
             "mem_mib": spec.memory_mb,
             "log_level": 3,
             "root_disk": overlay.to_string_lossy(),
-            "root_disk_format": "qcow2",
+            "root_disk_format": if spec.storage_mode == Some(crate::StorageMode::Replicated) { "raw" } else { "qcow2" },
             "pid1": true,
             "exec_path": "/init.krun",
             "vsock_control_uds": sock.join("c.sock").to_string_lossy(),
@@ -897,8 +944,11 @@ impl KrucibleBackend {
 
     fn persist_record(&self, dir: &Path, record: &SandboxRecord) -> Result<()> {
         let tmp = dir.join("sandbox.json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(record)?)?;
+        let mut file = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut file, &serde_json::to_vec_pretty(record)?)?;
+        file.sync_all()?;
         std::fs::rename(&tmp, dir.join("sandbox.json"))?;
+        std::fs::File::open(dir)?.sync_all()?;
         Ok(())
     }
 
@@ -917,7 +967,16 @@ impl KrucibleBackend {
                 rec.record.info.state
             )));
         }
-        Ok(rec.dir.clone())
+        let dir = rec.dir.clone();
+        let volume = rec.record.info.storage.volume_id.clone();
+        if rec.record.deleting {
+            return Err(Error::Conflict("sandbox deletion pending".into()));
+        }
+        drop(inner);
+        if let Some(volume) = volume {
+            self.replica()?.inspect(&volume)?;
+        }
+        Ok(dir)
     }
 
     /// Copy a frozen bundle root into place and cold-boot it (compat-gated).
@@ -981,6 +1040,11 @@ impl KrucibleBackend {
             }
             (rec.dir.clone(), rec.record.clone())
         };
+        if record.info.storage.mode == crate::StorageMode::Replicated {
+            return Err(Error::InvalidState(
+                "replicated checkpoints/forks are not implemented".into(),
+            ));
+        }
         let bundle = self.snapshot_live(&dir, &record, snapshot_id)?;
         // Registry copy: the live bundle keeps evolving with the sandbox;
         // a named snapshot is immutable (fork/restore read it later).
@@ -1039,6 +1103,7 @@ impl KrucibleBackend {
         // Spec derives from the stored manifest: sizing is part of the
         // compat gate, so a passing gate implies a bootable shape.
         let spec = SandboxSpec {
+            storage_mode: None,
             name: new_id.to_string(),
             cpus: stored.compat.vcpus,
             memory_mb: stored.compat.mem_mib,
@@ -1077,6 +1142,7 @@ impl KrucibleBackend {
         match boot {
             Ok(worker) => {
                 let info = SandboxInfo {
+                    storage: Default::default(),
                     id: new_id.to_string(),
                     name: new_id.to_string(),
                     state: State::Running,
@@ -1091,6 +1157,8 @@ impl KrucibleBackend {
                     spec,
                     info: info.clone(),
                     backing: self.cfg.base_image.clone(),
+                    deleting: false,
+                    volume_prepared: false,
                 };
                 if let Err(e) = self.persist_record(&dir, &record) {
                     let mut w = worker;
@@ -1160,6 +1228,19 @@ fn require_op(v: &serde_json::Value, op: &str) -> Result<()> {
 }
 
 impl Backend for KrucibleBackend {
+    fn sync_remote(&self, id: &str) -> Result<crate::ReplicationStatus> {
+        validate_id(id)?;
+        let _guard = OpGuard::take(self, id)?;
+        let (_, record) = self.replicated_record(id)?;
+        if record.info.state != State::Stopped {
+            return Err(Error::InvalidState(
+                "remote barrier currently requires a stopped replicated VM".into(),
+            ));
+        }
+        self.replica()?
+            .sync(record.info.storage.volume_id.as_deref().unwrap())
+    }
+
     fn capabilities(&self) -> Capabilities {
         BackendKind::Krucible.capabilities()
     }
@@ -1194,6 +1275,11 @@ impl Backend for KrucibleBackend {
             ));
         }
         let _guard = OpGuard::take(self, &spec.name)?;
+        if spec.storage_mode.unwrap_or(self.cfg.default_storage_mode)
+            == crate::StorageMode::Replicated
+        {
+            return self.create_replicated(spec);
+        }
         let mut inner = self.lock();
         if inner.sandboxes.contains_key(&spec.name) {
             return Err(Error::Conflict(format!("sandbox {} exists", spec.name)));
@@ -1234,6 +1320,7 @@ impl Backend for KrucibleBackend {
         match boot {
             Ok(worker) => {
                 let info = SandboxInfo {
+                    storage: Default::default(),
                     id: spec.name.clone(),
                     name: spec.name.clone(),
                     state: State::Running,
@@ -1245,9 +1332,14 @@ impl Backend for KrucibleBackend {
                     },
                 };
                 let record = SandboxRecord {
-                    spec: spec.clone(),
+                    spec: SandboxSpec {
+                        storage_mode: Some(crate::StorageMode::Local),
+                        ..spec.clone()
+                    },
                     info: info.clone(),
                     backing,
+                    deleting: false,
+                    volume_prepared: false,
                 };
                 if let Err(e) = self.persist_record(&dir, &record) {
                     let mut w = worker;
@@ -1281,6 +1373,9 @@ impl Backend for KrucibleBackend {
     fn destroy(&self, id: &str) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
+        if self.is_replicated(id)? {
+            return self.destroy_replicated(id);
+        }
         let rec = self.lock().sandboxes.remove(id);
         let Some(mut rec) = rec else {
             if let Some(storage) = &self.cfg.storage {
@@ -1331,6 +1426,14 @@ impl Backend for KrucibleBackend {
     fn start_with_network_bandwidth(&self, id: &str, bytes: Option<u64>) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
+        if self.is_replicated(id)? {
+            if bytes.is_some() {
+                return Err(Error::InvalidState(
+                    "replicated bandwidth updates are not implemented".into(),
+                ));
+            }
+            return self.start_replicated(id);
+        }
         if let Some(storage) = &self.cfg.storage {
             storage.request("verify", &self.cfg.data_dir.join(id))?;
         }
@@ -1497,6 +1600,9 @@ impl Backend for KrucibleBackend {
     fn stop(&self, id: &str) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
+        if self.is_replicated(id)? {
+            return self.stop_replicated(id);
+        }
         let (dir, has_worker) = {
             let inner = self.lock();
             let rec = inner
@@ -1562,6 +1668,9 @@ impl Backend for KrucibleBackend {
 
     fn status(&self, id: &str) -> Result<SandboxInfo> {
         validate_id(id)?;
+        if self.is_replicated(id)? {
+            return self.replicated_status(id);
+        }
         let mut inner = self.lock();
         let rec = inner
             .sandboxes
@@ -2172,6 +2281,7 @@ mod tests {
         let record = SandboxRecord {
             spec: spec_named("vm"),
             info: SandboxInfo {
+                storage: Default::default(),
                 id: "vm".into(),
                 name: "vm".into(),
                 state: State::Stopped,
@@ -2179,6 +2289,8 @@ mod tests {
                 ip: String::new(),
             },
             backing: root.join("base.ext4"),
+            deleting: false,
+            volume_prepared: false,
         };
         std::fs::write(
             root.join("data/vm/sandbox.json"),
@@ -2225,11 +2337,14 @@ mod tests {
             network: None,
             resources: None,
             storage: None,
+            replicated: None,
+            default_storage_mode: crate::StorageMode::Local,
         }
     }
 
     fn spec_named(name: &str) -> SandboxSpec {
         SandboxSpec {
+            storage_mode: None,
             name: name.to_string(),
             cpus: 1,
             memory_mb: 512,
@@ -2245,6 +2360,7 @@ mod tests {
 
     fn write_record(dir: &Path, id: &str, state: State) {
         let spec = SandboxSpec {
+            storage_mode: None,
             name: id.to_string(),
             cpus: 1,
             memory_mb: 512,
@@ -2259,6 +2375,7 @@ mod tests {
         let rec = SandboxRecord {
             spec,
             info: SandboxInfo {
+                storage: Default::default(),
                 id: id.to_string(),
                 name: id.to_string(),
                 state,
@@ -2266,6 +2383,8 @@ mod tests {
                 ip: "10.42.0.9".to_string(),
             },
             backing: PathBuf::from("/tmp/kvm/rust-guest.ext4"),
+            deleting: false,
+            volume_prepared: false,
         };
         let d = dir.join("data").join(id);
         std::fs::create_dir_all(&d).unwrap();
@@ -2329,6 +2448,7 @@ mod tests {
         std::fs::write(dir.join("base.ext4"), "x").unwrap();
         let be = KrucibleBackend::open(cfg(&dir)).unwrap();
         let spec = SandboxSpec {
+            storage_mode: None,
             name: "../evil".to_string(),
             cpus: 1,
             memory_mb: 512,
