@@ -1,5 +1,6 @@
 //! Rust control client. Guest argv is passed as an array, never shell-joined.
 mod client;
+mod cloud;
 mod commands;
 mod desktop;
 mod hosts;
