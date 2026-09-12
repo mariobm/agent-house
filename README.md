@@ -99,8 +99,9 @@ ahvm delete dev
 ## Cloud pilot
 
 Invited accounts can connect the CLI with `ahvm login`, check their workspace with
-`ahvm whoami`, and revoke access with `ahvm logout`. Hosted VM commands are coming
-next. See [cloud login and headless setup](docs/CLOUD-LOGIN.md).
+`ahvm whoami`, and revoke access with `ahvm logout`. Compute-enabled pilot
+workspaces use `ahvm --cloud create dev` and `ahvm --cloud shell dev`. The cloud
+flag leaves your self-hosted default unchanged. See [cloud setup and limits](docs/CLOUD-LOGIN.md).
 
 ## Images
 

@@ -16,6 +16,12 @@ use std::{
 pub struct Cli {
     #[arg(long, global = true, env = "AHVM_ENDPOINT")]
     endpoint: Option<String>,
+    /// Use the workspace approved by ahvm login instead of a self-hosted daemon.
+    #[arg(long, global = true, conflicts_with_all = ["host", "endpoint", "token_file"])]
+    cloud: bool,
+    /// Reuse a cloud lifecycle request after an interrupted response.
+    #[arg(long, global = true, requires = "cloud")]
+    idempotency_key: Option<String>,
     /// Select a saved host (otherwise use the default host).
     #[arg(long, global = true, env = "AHVM_HOST")]
     host: Option<String>,
@@ -258,8 +264,20 @@ pub fn run(cli: Cli) -> Result<i32> {
     if let Command::Host(command) = cli.command {
         return crate::hosts::run(command, cli.json);
     }
-    let host = crate::hosts::selected(cli.host.as_deref(), cli.endpoint.is_some())?;
+    let cloud = if cli.cloud {
+        Some(crate::cloud::connection()?)
+    } else {
+        None
+    };
+    let host = if cli.cloud {
+        None
+    } else {
+        crate::hosts::selected(cli.host.as_deref(), cli.endpoint.is_some())?
+    };
     if let Command::Image(command) = cli.command {
+        if cli.cloud {
+            return Err("cloud images are managed by the service".into());
+        }
         return match host {
             Some(host) => crate::hosts::image(&host, command),
             None => crate::images::run(command),
@@ -281,7 +299,12 @@ pub fn run(cli: Cli) -> Result<i32> {
         .map(|c| c.endpoint.as_str())
         .or(cli.endpoint.as_deref())
         .unwrap_or("http://127.0.0.1:8080");
-    let api = Api::new(endpoint, token, cli.timeout)?;
+    let api = match cloud {
+        Some((origin, credential)) => {
+            Api::new(&origin, credential, cli.timeout)?.cloud(cli.idempotency_key)?
+        }
+        None => Api::new(endpoint, token, cli.timeout)?,
+    };
     let response = match cli.command {
         Command::Login(_)
         | Command::Whoami

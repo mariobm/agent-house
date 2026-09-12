@@ -159,6 +159,31 @@ fn device_login_refresh_whoami_logout_leave_self_hosted_config_untouched() {
             s,
             json!({"user":{"display_name":"Tester"},"organizations":[{"id":"org","name":"Workspace"}]}),
         );
+        let (mut s, headers, _) = receive(&server);
+        assert!(headers.starts_with("GET /v1/sandboxes?limit=100 "));
+        assert!(headers.contains(&format!("Bearer {}", "b".repeat(43))));
+        write!(s,"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 17\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        drop(s);
+        for pending in [true, false] {
+            let (mut s, headers, body) = receive(&server);
+            assert!(headers.starts_with("POST /v1/sandboxes "));
+            assert!(headers
+                .to_lowercase()
+                .contains("idempotency-key: same-request-key-1234"));
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap()["name"],
+                "dev"
+            );
+            if pending {
+                write!(
+                    s,
+                    "HTTP/1.1 202 Accepted\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                )
+                .unwrap();
+            } else {
+                send(s, json!({"name":"dev","state":"running"}));
+            }
+        }
         let (s, headers, body) = receive(&server);
         assert!(headers.starts_with("POST /oauth/revoke "));
         assert!(body.contains(&format!("token={}", "s".repeat(43))));
@@ -187,6 +212,29 @@ fn device_login_refresh_whoami_logout_leave_self_hosted_config_untouched() {
         .unwrap();
     assert!(who.status.success());
     assert!(String::from_utf8(who.stdout).unwrap().contains("Tester"));
+    let limited = cli(temp.path()).args(["--cloud", "list"]).output().unwrap();
+    assert!(!limited.status.success());
+    assert!(String::from_utf8(limited.stderr)
+        .unwrap()
+        .contains("17 seconds"));
+    for pending in [true, false] {
+        let create = cli(temp.path())
+            .args([
+                "--cloud",
+                "--idempotency-key",
+                "same-request-key-1234",
+                "create",
+                "dev",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(create.status.success(), !pending);
+        if pending {
+            assert!(String::from_utf8(create.stderr)
+                .unwrap()
+                .contains("same-request-key-1234"));
+        }
+    }
     let logout = cli(temp.path()).arg("logout").output().unwrap();
     assert!(logout.status.success());
     assert!(!path.exists());
