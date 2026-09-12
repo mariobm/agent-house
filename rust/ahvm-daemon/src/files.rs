@@ -185,6 +185,10 @@ pub async fn upload(
     if q.path.is_empty() {
         return Err(ApiError::Invalid("path must not be empty".into()));
     }
+    let stream_guard = state
+        .ops
+        .try_stream(&id)
+        .ok_or_else(|| ApiError::Conflict("workspace stream limit reached; retry later".into()))?;
     // Fail fast rather than retaining unbounded waiting HTTP uploads.
     let permit = state
         .ops
@@ -199,7 +203,7 @@ pub async fn upload(
     let mut worker = tokio::task::spawn_blocking(move || {
         // A cancelled HTTP handler must not release admission/activity while
         // the blocking backend is still unwinding its guest transaction.
-        let (_permit, _flight) = (permit, flight);
+        let (_permit, _flight, _stream) = (permit, flight, stream_guard);
         let mut reader = UploadReader {
             rx,
             pending: std::io::Cursor::new(Vec::new()),

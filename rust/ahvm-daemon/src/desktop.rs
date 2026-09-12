@@ -22,6 +22,10 @@ pub async fn stream(
     ws: WebSocketUpgrade,
 ) -> ApiResult<axum::response::Response> {
     owned(&state, &user.0, &id).await?;
+    let stream_guard = state
+        .ops
+        .try_stream(&id)
+        .ok_or_else(|| ApiError::Conflict("workspace stream limit reached; retry later".into()))?;
     let permit = CONNECTIONS
         .try_acquire()
         .map_err(|_| ApiError::Conflict("desktop connection limit reached".into()))?;
@@ -30,8 +34,12 @@ pub async fn stream(
         .begin(&id)
         .ok_or_else(|| ApiError::Conflict("sandbox is stopping".into()))?;
     let backend = state.backend.clone();
-    let (stream, guard) =
-        blocking(move || backend.desktop_connect(&id).map(|stream| (stream, guard))).await?;
+    let (stream, guard) = blocking(move || {
+        backend
+            .desktop_connect(&id)
+            .map(|stream| (stream, (guard, stream_guard)))
+    })
+    .await?;
     stream
         .set_nonblocking(true)
         .map_err(|e| ApiError::Internal(e.to_string()))?;

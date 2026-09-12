@@ -10,12 +10,14 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 #[derive(Debug, Clone)]
 pub struct OpsLimiter {
     sem: Arc<Semaphore>,
+    streams: Arc<Mutex<StreamCounts>>,
 }
 
 impl OpsLimiter {
     pub fn new(permits: usize) -> Self {
         Self {
             sem: Arc::new(Semaphore::new(permits.max(1))),
+            streams: Arc::default(),
         }
     }
 
@@ -95,5 +97,80 @@ mod tests {
         assert!(lim.sem.try_acquire().is_err());
         drop(_a);
         assert_eq!(lim.available(), 1);
+    }
+}
+
+/// Shared admission for long-lived guest transports, separate from lifecycle
+/// permits so open terminals cannot prevent a VM from being stopped.
+#[derive(Debug, Default)]
+struct StreamCounts {
+    total: usize,
+    by_sandbox: HashMap<String, usize>,
+}
+
+#[derive(Debug)]
+pub struct StreamGuard {
+    counts: Arc<Mutex<StreamCounts>>,
+    id: String,
+}
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        let mut counts = self.counts.lock().expect("stream counts poisoned");
+        counts.total -= 1;
+        let n = counts
+            .by_sandbox
+            .get_mut(&self.id)
+            .expect("stream count missing");
+        *n -= 1;
+        if *n == 0 {
+            counts.by_sandbox.remove(&self.id);
+        }
+    }
+}
+
+impl OpsLimiter {
+    pub fn try_stream(&self, id: &str) -> Option<Arc<StreamGuard>> {
+        let mut counts = self.streams.lock().expect("stream counts poisoned");
+        if counts.total >= 32 || counts.by_sandbox.get(id).copied().unwrap_or(0) >= 4 {
+            return None;
+        }
+        counts.total += 1;
+        *counts.by_sandbox.entry(id.to_owned()).or_default() += 1;
+        Some(Arc::new(StreamGuard {
+            counts: self.streams.clone(),
+            id: id.to_owned(),
+        }))
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    #[test]
+    fn caps_are_shared_and_retained_by_detached_backend_work() {
+        let limiter = OpsLimiter::new(2);
+        let mut guards: Vec<_> = (0..4).map(|_| limiter.try_stream("a").unwrap()).collect();
+        assert!(limiter.clone().try_stream("a").is_none());
+        let peer = limiter.try_stream("b").unwrap();
+        let backend = guards.pop().unwrap();
+        let detached = backend.clone();
+        drop(backend);
+        assert!(limiter.try_stream("a").is_none());
+        drop(detached);
+        assert!(limiter.try_stream("a").is_some());
+        drop(guards);
+        drop(peer);
+        assert!(limiter.streams.lock().unwrap().by_sandbox.is_empty());
+    }
+    #[test]
+    fn global_cap_does_not_queue_connections() {
+        let limiter = OpsLimiter::new(2);
+        let guards: Vec<_> = (0..32)
+            .map(|i| limiter.try_stream(&i.to_string()).unwrap())
+            .collect();
+        assert!(limiter.try_stream("new").is_none());
+        drop(guards);
+        assert!(limiter.try_stream("new").is_some());
     }
 }
