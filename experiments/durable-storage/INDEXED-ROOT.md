@@ -1,5 +1,9 @@
 # Indexed root-disk experiment
 
+The strict remote-flush contract documented here is now the comparison path.
+See [local durability with eventual replication](EVENTUAL.md) for the owner-approved
+product direction and its faster fsync behavior.
+
 This continues phase 3. It does not change the installed engine, local mode,
 CLI, production storage, or release artifacts. Format 1 remains supported by
 its original experimental implementation; there is no automatic conversion.
