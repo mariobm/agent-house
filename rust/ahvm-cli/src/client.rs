@@ -3,6 +3,18 @@ use reqwest::{blocking::Client, Method, Url};
 use serde_json::Value;
 use std::{io::Read, time::Duration};
 
+#[derive(Debug)]
+struct ApiFailure {
+    status: reqwest::StatusCode,
+    detail: String,
+}
+impl std::fmt::Display for ApiFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HTTP {}: {}", self.status, self.detail)
+    }
+}
+impl std::error::Error for ApiFailure {}
+
 #[derive(Clone)]
 pub struct Api {
     client: Client,
@@ -182,6 +194,10 @@ impl Api {
             return Err(format!("cloud operation is still pending; inspect its status with ahvm --cloud get <name>. Retry this request using --idempotency-key {}", key.as_deref().unwrap_or_default()).into());
         }
         Self::response(response).map_err(|error| {
+            if lifecycle && error.downcast_ref::<ApiFailure>().is_some_and(|e|
+                e.status==reqwest::StatusCode::CONFLICT && e.detail=="operation_failed") {
+                return format!("{error}; this operation is finished. Inspect the VM, then issue a new command without --idempotency-key (or choose a new key). Reusing the completed key will not rerun it.").into();
+            }
             if let Some(key) = key {
                 format!("{error}; retry this lifecycle request with --idempotency-key {key}").into()
             } else {
@@ -224,7 +240,7 @@ impl Api {
                 .unwrap_or_else(|| {
                     String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).into_owned()
                 });
-            return Err(format!("HTTP {status}: {detail}").into());
+            return Err(ApiFailure { status, detail }.into());
         }
         if bytes.is_empty() {
             Ok(Value::Null)
