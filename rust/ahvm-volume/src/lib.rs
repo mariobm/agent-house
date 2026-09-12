@@ -1,6 +1,7 @@
 //! Experimental durable-volume protocol, not connected to the daemon or VMM.
 //!
-//! Writes are volatile until `commit` succeeds. The store must make immutable
+//! IndexedVolume writes are volatile until `commit` succeeds. The Unix LocalDisk
+//! adapter separately provides local fsync with eventual remote replication. The store must make immutable
 //! chunks durable before atomically replacing the volume head. Opening a volume
 //! reads that head; data is fetched and verified on demand. No local cache is
 //! needed for recovery. This bounded model is not a production block device.
@@ -12,6 +13,8 @@ use std::sync::Arc;
 pub mod batched;
 pub mod cache;
 pub mod indexed;
+#[cfg(unix)]
+pub mod local;
 pub mod nbd;
 pub mod s3;
 
@@ -22,6 +25,8 @@ pub const MAX_MANIFEST_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("local replication backlog is full")]
+    Backpressure,
     #[error("volume import is not complete")]
     NotReady,
     #[error("commit budget exhausted before publication")]
