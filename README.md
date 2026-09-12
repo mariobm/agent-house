@@ -96,6 +96,12 @@ When you are finished, delete the VM and its working disk:
 ahvm delete dev
 ```
 
+## Cloud pilot
+
+Invited accounts can connect the CLI with `ahvm login`, check their workspace with
+`ahvm whoami`, and revoke access with `ahvm logout`. Hosted VM commands are coming
+next. See [cloud login and headless setup](docs/CLOUD-LOGIN.md).
+
 ## Images
 
 ```sh
