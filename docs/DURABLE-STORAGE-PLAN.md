@@ -1,6 +1,7 @@
 # Local and durable storage
 
-Status: phases 1–2 complete; phase 3 guest storage qualification in progress.
+Status: phases 1–3 foundation qualified; phase 4 engine integration in progress.
+Large-backlog performance and rollout qualification remain outstanding.
 Owner-approved contract updated 2026-09-13: local durable writes with eventual
 object-store replication. Host-disk loss may lose unreplicated changes. No Jira
 ticket was supplied; this document is the scoped work item until one exists.
@@ -149,8 +150,17 @@ with a warm cache. The [eventual-durability continuation](../experiments/durable
 adds the local write log and changes the target contract. The continuation adds
 connectivity-recovery coverage and a full-backlog drain/admission regression.
 Guest zeroing/discard-reuse and remote-only byte checks pass with an appended
-disposable tail. Large/scattered R2 backlog throughput, persistent clean caching
-and engine integration remain; this does not advance the plan to phase 4.
+disposable tail. These checks qualify the guest-disk foundation. Large/scattered R2 backlog
+throughput and persistent clean caching remain before rollout.
+
+## Phase 4 progress
+
+The [engine integration](../experiments/durable-storage/ENGINE.md) adds immutable
+mode/volume identity, a host service seam, cold replicated lifecycle and status.
+Local mode remains the public default. An isolated NBD/R2 adapter exercises the
+engine; it is not installed or exposed through the daemon/CLI. Ownership fencing,
+service supervision/restart and storage accounting remain required before the
+full phase-4 gate or cloud activation.
 
 ## Qualification measurements
 

@@ -9,8 +9,8 @@
 //! * `destroy` kills the worker and removes sandbox state (Go: kills the
 //!   helper, removes the sandbox dir). Destroying an unknown id is an
 //!   error, never silent success.
-//! * `stop` is the cold tier: quiesce at a clean boundary and persist a
-//!   snapshot bundle the sandbox can cold-restore from (Go `Stop`).
+//! * `stop` is the cold tier: local storage persists a snapshot bundle;
+//!   replicated storage drains the disk and later cold-boots without RAM.
 //! * `start` relaunches a stopped sandbox from its bundle, or fresh when
 //!   there is none (Go `Start`).
 //! * `fork` clones a sandbox into a second live one (Go's restore/fork
@@ -71,6 +71,19 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
         Err(crate::Error::InvalidState("desktop unavailable".into()))
     }
     fn capabilities(&self) -> Capabilities;
+    fn sandbox_capabilities(&self, id: &str) -> Result<Capabilities> {
+        let mut caps = self.capabilities();
+        if self.status(id)?.storage.mode == crate::StorageMode::Replicated {
+            caps.fork = false;
+            caps.typed_snapshots = false;
+            caps.live_migration = false;
+        }
+        Ok(caps)
+    }
+    /// Explicit remote barrier. Local storage has no remote durability contract.
+    fn sync_remote(&self, _id: &str) -> Result<crate::ReplicationStatus> {
+        Err(crate::Error::InvalidState("remote sync unavailable".into()))
+    }
 
     /// Read a registered snapshot's manifest (for `restore`, which takes
     /// the manifest, not just the id). Unknown ids are NotFound.

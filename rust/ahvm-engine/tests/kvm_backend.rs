@@ -39,6 +39,7 @@ fn gated() -> Option<KrucibleBackend> {
 
 fn spec(name: &str) -> ahvm_engine::SandboxSpec {
     ahvm_engine::SandboxSpec {
+        storage_mode: None,
         name: name.to_string(),
         cpus: 1,
         memory_mb: 512,
