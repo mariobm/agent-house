@@ -181,6 +181,7 @@ impl WorkerHandle {
 
 #[derive(Debug)]
 struct LiveRec {
+    needs_resume: bool,
     record: SandboxRecord,
     dir: PathBuf,
     worker: Option<WorkerHandle>,
@@ -329,8 +330,17 @@ impl KrucibleBackend {
                 }
             }
             let mut info = record.info.clone();
+            // A surviving process may be paused inside an interrupted snapshot.
+            // Probe once on adoption; process liveness alone cannot prove that
+            // guest commands can run. Desktop workers have no control socket.
+            let needs_resume =
+                worker.is_some() && !record.spec.desktop && recover_control(&dir).is_err();
             if worker.is_some() {
-                info.state = State::Running;
+                info.state = if needs_resume {
+                    State::Failed
+                } else {
+                    State::Running
+                };
             } else if info.state == State::Running {
                 info.state = State::Failed;
             }
@@ -338,6 +348,7 @@ impl KrucibleBackend {
             inner.sandboxes.insert(
                 id,
                 LiveRec {
+                    needs_resume,
                     record: SandboxRecord { info, ..record },
                     dir,
                     worker,
@@ -415,6 +426,24 @@ fn validate_id(id: &str) -> Result<()> {
 fn sock_dir(dir: &Path) -> PathBuf {
     dir.join("sock")
 }
+/// Restore execution after a supervisor died between PAUSE and RESUME.
+/// A failed probe remains retryable via start(), without hiding other VMs.
+fn recover_control(dir: &Path) -> Result<()> {
+    let ctl = control_sock(dir);
+    match send_ctl(&ctl, "STATUS")?.as_str() {
+        "OK running" => Ok(()),
+        "OK paused" => {
+            let reply = send_ctl(&ctl, "RESUME")?;
+            if reply == "OK running" {
+                Ok(())
+            } else {
+                Err(Error::Control(format!("adoption RESUME refused: {reply}")))
+            }
+        }
+        reply => Err(Error::Control(format!("adoption STATUS refused: {reply}"))),
+    }
+}
+
 fn control_sock(dir: &Path) -> PathBuf {
     // Must match Worker::control_socket (sock_dir/control.sock): the worker
     // binds whatever path its spec names, so name it for the record API.
@@ -749,12 +778,19 @@ impl KrucibleBackend {
         let gen = dir.join("bundle.new");
         let _ = std::fs::remove_dir_all(&gen);
         let ctl = control_sock(dir);
-        let reply = send_ctl(&ctl, "PAUSE")?;
-        if !reply.starts_with("OK") {
-            return Err(Error::Control(format!("PAUSE refused: {reply}")));
-        }
         let snap = (|| -> Result<()> {
-            let reply = send_ctl(&ctl, &format!("SNAPSHOT {}", gen.display()))?;
+            let reply = send_ctl(&ctl, "PAUSE")?;
+            if !reply.starts_with("OK") {
+                return Err(Error::Control(format!("PAUSE refused: {reply}")));
+            }
+            // A 4-GiB checkpoint can exceed the five-second control RPC
+            // budget on a healthy disk. Keep the operation reserved while it
+            // writes, rather than treating slow progress as a failed snapshot.
+            let reply = crate::worker::send_ctl_with_timeout(
+                &ctl,
+                &format!("SNAPSHOT {}", gen.display()),
+                Duration::from_secs(300),
+            )?;
             if !reply.starts_with("OK") {
                 return Err(Error::Control(format!("SNAPSHOT refused: {reply}")));
             }
@@ -791,17 +827,21 @@ impl KrucibleBackend {
             publish_bundle(&gen, &bundle)?;
             Ok(())
         })();
-        // A failed snapshot must not leave the guest frozen.
-        match snap {
-            Ok(()) => {
-                let reply = send_ctl(&ctl, "RESUME")?;
-                if !reply.starts_with("OK") {
-                    return Err(Error::Control(format!("RESUME refused: {reply}")));
-                }
-                Ok(bundle)
+        // Even a lost PAUSE reply may have paused the guest. Verify/resume
+        // after every attempt. If that cannot be confirmed, do not advertise
+        // Running merely because the process survived; start() can retry it.
+        if let Err(error) = recover_control(dir) {
+            let mut inner = self.lock();
+            if let Some(live) = inner.sandboxes.get_mut(&rec.info.id) {
+                live.needs_resume = true;
+                live.record.info.state = State::Failed;
+                let _ = self.persist_record(dir, &live.record);
             }
+            return Err(error);
+        }
+        match snap {
+            Ok(()) => Ok(bundle),
             Err(e) => {
-                let _ = send_ctl(&ctl, "RESUME");
                 let _ = std::fs::remove_dir_all(&gen);
                 Err(e)
             }
@@ -1003,6 +1043,7 @@ impl KrucibleBackend {
                 inner.sandboxes.insert(
                     new_id.to_string(),
                     LiveRec {
+                        needs_resume: false,
                         record,
                         dir,
                         worker: Some(WorkerHandle::Owned(worker)),
@@ -1145,6 +1186,7 @@ impl Backend for KrucibleBackend {
                 inner.sandboxes.insert(
                     spec.name.clone(),
                     LiveRec {
+                        needs_resume: false,
                         record,
                         dir,
                         worker: Some(WorkerHandle::Owned(worker)),
@@ -1195,6 +1237,25 @@ impl Backend for KrucibleBackend {
     fn start(&self, id: &str) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
+        let recovery_dir = {
+            let mut inner = self.lock();
+            let rec = inner
+                .sandboxes
+                .get_mut(id)
+                .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?;
+            (rec.needs_resume && rec.worker.as_mut().is_some_and(|worker| worker.alive()))
+                .then(|| rec.dir.clone())
+        };
+        if let Some(dir) = recovery_dir {
+            recover_control(&dir)?;
+            let mut inner = self.lock();
+            let rec = inner.sandboxes.get_mut(id).expect("reserved sandbox");
+            rec.needs_resume = false;
+            rec.record.info.state = State::Running;
+            self.persist_record(&dir, &rec.record)?;
+            return Ok(());
+        }
+
         // Snapshot the decision inputs under lock, operate unlocked.
         // Liveness is reconciled here (not trusted from cache): a worker
         // that died behind a cached Running state reboots below instead
@@ -1225,8 +1286,8 @@ impl Backend for KrucibleBackend {
                 // alive()) so the boot paths below start clean.
                 rec.worker = None;
             }
-            // A live worker means running, whatever the cached state says
-            // (liveness is ground truth; this also never double-boots).
+            // Adoption recovery was checked above. An already-running
+            // worker must never be double-booted.
             if alive {
                 return Ok(());
             }
@@ -1263,6 +1324,7 @@ impl Backend for KrucibleBackend {
                     rec.record.info.state = State::Running;
                     rec.record.info.thermal = Thermal::Warm;
                     rec.worker = Some(WorkerHandle::Owned(worker));
+                    rec.needs_resume = false;
                     let record = rec.record.clone();
                     self.persist_record(&dir, &record)?;
                 }
@@ -1280,6 +1342,7 @@ impl Backend for KrucibleBackend {
                     rec.record.info.state = State::Running;
                     rec.record.info.thermal = Thermal::Hot;
                     rec.worker = Some(WorkerHandle::Owned(worker));
+                    rec.needs_resume = false;
                     let record = rec.record.clone();
                     self.persist_record(&dir, &record)?;
                 }
@@ -1376,7 +1439,7 @@ impl Backend for KrucibleBackend {
             let _ = self.persist_record(&dir, &record);
             return Ok(record.info);
         }
-        if alive && rec.record.info.state == State::Failed {
+        if alive && !rec.needs_resume && rec.record.info.state == State::Failed {
             // Healed: liveness is ground truth (see start()).
             rec.record.info.state = State::Running;
             let record = rec.record.clone();
@@ -2148,6 +2211,95 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lost_pause_reply_requires_confirmed_resume_before_reporting_running() {
+        let dir = crate::test_scratch("lost-pause-reply");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        write_record(&dir, "vm", State::Running);
+        let live = dir.join("data/vm");
+        Worker {
+            id: "vm".into(),
+            pid: std::process::id(),
+            sock_dir: live.clone(),
+            state_path: live.join("state.json"),
+            starttime: crate::process_starttime(std::process::id()),
+        }
+        .persist()
+        .unwrap();
+        std::fs::create_dir_all(sock_dir(&live)).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(control_sock(&live)).unwrap();
+        let control = std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            for (command, reply) in [
+                ("STATUS", "OK running\n"),
+                ("PAUSE", ""),
+                ("STATUS", "OK paused\n"),
+                ("RESUME", "ERR resume unavailable\n"),
+                ("STATUS", "OK paused\n"),
+                ("RESUME", "OK running\n"),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                assert_eq!(line.trim(), command);
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        assert!(be.stop("vm").is_err());
+        assert_eq!(be.status("vm").unwrap().state, State::Failed);
+        be.start("vm").unwrap();
+        assert_eq!(be.status("vm").unwrap().state, State::Running);
+        control.join().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_adoption_probe_stays_failed_until_start_recovers_control() {
+        let dir = crate::test_scratch("adoption-probe-retry");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        write_record(&dir, "vm", State::Running);
+        let live = dir.join("data/vm");
+        Worker {
+            id: "vm".into(),
+            pid: std::process::id(),
+            sock_dir: live.clone(),
+            state_path: live.join("state.json"),
+            starttime: crate::process_starttime(std::process::id()),
+        }
+        .persist()
+        .unwrap();
+        std::fs::create_dir_all(sock_dir(&live)).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(control_sock(&live)).unwrap();
+        let control = std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            for (command, reply) in [
+                ("STATUS", "ERR temporarily unavailable\n"),
+                ("STATUS", "OK paused\n"),
+                ("RESUME", "OK running\n"),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                assert_eq!(line.trim(), command);
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        assert_eq!(be.status("vm").unwrap().state, State::Failed);
+        assert_eq!(be.status("vm").unwrap().state, State::Failed);
+        be.start("vm").unwrap();
+        assert_eq!(be.status("vm").unwrap().state, State::Running);
+        control.join().unwrap();
+    }
+
     #[test]
     fn open_adopts_live_pids_and_marks_dead_failed() {
         let dir = crate::test_scratch("krucible-recover");
@@ -2201,8 +2353,27 @@ mod tests {
             ));
             std::fs::remove_file(live.join("state.json")).unwrap();
         }
+        #[cfg(target_os = "linux")]
+        let control = {
+            std::fs::create_dir_all(sock_dir(&live)).unwrap();
+            let listener = std::os::unix::net::UnixListener::bind(control_sock(&live)).unwrap();
+            std::thread::spawn(move || {
+                use std::io::{BufRead, Write};
+                for (command, reply) in [("STATUS", "OK paused\n"), ("RESUME", "OK running\n")] {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut line = String::new();
+                    std::io::BufReader::new(stream.try_clone().unwrap())
+                        .read_line(&mut line)
+                        .unwrap();
+                    assert_eq!(line.trim(), command);
+                    stream.write_all(reply.as_bytes()).unwrap();
+                }
+            })
+        };
         let be = KrucibleBackend::open(cfg(&dir)).unwrap();
         assert_eq!(be.status("dead-vm").unwrap().state, State::Failed);
+        #[cfg(target_os = "linux")]
+        control.join().unwrap();
         #[cfg(target_os = "linux")]
         assert_eq!(be.status("live-vm").unwrap().state, State::Running);
         assert_eq!(

@@ -3,6 +3,17 @@
 //! dashboard event stream.
 
 pub(crate) const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS lifecycle_operations (
+    id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    sandbox_id TEXT NOT NULL,
+    request TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('pending','done','interrupted')),
+    status INTEGER,
+    created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS lifecycle_operation_active
+    ON lifecycle_operations(sandbox_id) WHERE state='pending';
 CREATE TABLE IF NOT EXISTS users (
     id              TEXT PRIMARY KEY,
     name            TEXT NOT NULL UNIQUE,

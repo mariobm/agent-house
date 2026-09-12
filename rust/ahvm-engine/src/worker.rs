@@ -358,6 +358,15 @@ pub fn terminate_adopted(worker: &Worker) -> crate::Result<()> {
 /// timeouts; anything off-protocol (connect failure, timeout, overlong or
 /// non-UTF8 reply) is an error.
 pub fn send_ctl(sock_path: impl AsRef<Path>, cmd: &str) -> crate::Result<String> {
+    send_ctl_with_timeout(sock_path, cmd, CTL_TIMEOUT)
+}
+
+/// Snapshot serialization can take longer than the short control-RPC budget.
+pub(crate) fn send_ctl_with_timeout(
+    sock_path: impl AsRef<Path>,
+    cmd: &str,
+    timeout: Duration,
+) -> crate::Result<String> {
     let path = sock_path.as_ref();
     let cmd = cmd.trim_end_matches(['\r', '\n']);
     if cmd.is_empty() {
@@ -370,8 +379,8 @@ pub fn send_ctl(sock_path: impl AsRef<Path>, cmd: &str) -> crate::Result<String>
     }
     let mut stream = UnixStream::connect(path)
         .map_err(|e| crate::Error::Control(format!("connect {}: {e}", path.display())))?;
-    stream.set_read_timeout(Some(CTL_TIMEOUT))?;
-    stream.set_write_timeout(Some(CTL_TIMEOUT))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
     stream.write_all(cmd.as_bytes())?;
     stream.write_all(b"\n")?;
     let mut out = Vec::new();

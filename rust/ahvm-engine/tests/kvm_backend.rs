@@ -230,6 +230,12 @@ fn kvm_backend_lifecycle_and_recovery() {
         // temp dir embeds our pid, which is stable within this test.
         std::env::temp_dir().join(format!("ahvm-kvm-be-{}", std::process::id()))
     };
+    // Simulate a daemon dying during snapshot/stop after PAUSE. Adoption
+    // must resume the survivor before reporting it as Running.
+    assert_eq!(
+        ahvm_engine::send_ctl(data.join("be-1/sock/control.sock"), "PAUSE").unwrap(),
+        "OK paused"
+    );
     drop(be);
     let lib_path = std::env::var("LD_LIBRARY_PATH").unwrap();
     let vmm = PathBuf::from(std::env::var("AHVM_VMM_BIN").unwrap());

@@ -117,7 +117,11 @@ impl Backend for MockBackend {
         let mut inner = self.lock();
         inner.next += 1;
         let n = inner.next;
-        let id = format!("mock-{n:04}");
+        // Match Krucible's caller-assigned identity and duplicate rejection.
+        let id = spec.name.clone();
+        if inner.sandboxes.contains_key(&id) {
+            return Err(Error::Conflict(format!("sandbox {id} already exists")));
+        }
         let info = SandboxInfo {
             id: id.clone(),
             name: spec.name.clone(),
@@ -681,7 +685,10 @@ mod tests {
         assert!(matches!(be.fork("nope", "x"), Err(Error::NotFound(_))));
 
         let a = be.create(&spec()).unwrap();
-        let b = be.create(&spec()).unwrap();
+        assert!(matches!(be.create(&spec()), Err(Error::Conflict(_))));
+        let mut second = spec();
+        second.name = "other".into();
+        let b = be.create(&second).unwrap();
         assert!(matches!(be.fork(&a.id, &b.id), Err(Error::Conflict(_))));
         let snap = be.create_snapshot(&a.id, "s").unwrap();
         assert!(matches!(be.restore(&snap, &b.id), Err(Error::Conflict(_))));
