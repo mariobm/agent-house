@@ -101,6 +101,7 @@ pub fn spawn_worker(
         hermetic: false,
         env: &[],
         stderr_log: None,
+        cgroup: None,
     })
 }
 
@@ -109,6 +110,8 @@ pub fn spawn_worker(
 /// so daemon credentials and host config never leak into workers.
 #[derive(Debug)]
 pub struct SpawnConfig<'a> {
+    /// Enter this host-owned cgroup before executing the worker.
+    pub cgroup: Option<&'a Path>,
     pub vmm_binary: &'a OsStr,
     pub spec_arg: &'a Path,
     pub state_path: &'a Path,
@@ -127,7 +130,24 @@ pub struct SpawnConfig<'a> {
 /// identical: persist `state.json` or kill+reap before returning Err.
 pub fn spawn_worker_cfg(cfg: &SpawnConfig) -> std::io::Result<LiveWorker> {
     let state_path = cfg.state_path.to_path_buf();
-    let mut cmd = Command::new(cfg.vmm_binary);
+    let mut cmd = if let Some(group) = cfg.cgroup {
+        // Constant trusted launcher, no interpolation of paths or arguments.
+        // Only the shell starts in the daemon leaf; the VMM/gateway cannot
+        // execute until the kernel has admitted this PID to its limited group.
+        // exec preserves the PID/starttime recorded by the supervisor.
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "printf 0 > \"$1/cgroup.procs\" || exit 125; shift; exec \"$@\"",
+                "ahvm-cgroup",
+            ])
+            .arg(group)
+            .arg(cfg.vmm_binary);
+        command
+    } else {
+        Command::new(cfg.vmm_binary)
+    };
     cmd.arg(cfg.spec_arg)
         .stdin(Stdio::null())
         .stdout(Stdio::null());
@@ -598,4 +618,30 @@ mod tests {
             Err(rustix::io::Errno::SRCH)
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_cgroup_admission_never_executes_worker() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("ahvm-cgroup-denied-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let binary = root.join("worker");
+    let marker = root.join("executed");
+    std::fs::write(&binary, "#!/bin/sh\ntouch \"$1\"\n").unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut worker = spawn_worker_cfg(&SpawnConfig {
+        vmm_binary: binary.as_os_str(),
+        spec_arg: &marker,
+        state_path: &root.join("state.json"),
+        hermetic: true,
+        env: &[],
+        stderr_log: None,
+        cgroup: Some(&root.join("missing")),
+    })
+    .unwrap();
+    let status = worker.child.as_mut().unwrap().wait().unwrap();
+    assert_eq!(status.code(), Some(125));
+    assert!(!marker.exists());
+    std::fs::remove_dir_all(root).unwrap();
 }

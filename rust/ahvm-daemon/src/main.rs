@@ -69,6 +69,8 @@ async fn main() {
         sandbox_dir,
         lib_path,
     );
+    backend_cfg.resources = std::env::var_os("AHVM_CGROUP_ROOT")
+        .map(|root| ahvm_engine::ResourceConfig { root: root.into() });
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Grant {
