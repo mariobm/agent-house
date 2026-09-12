@@ -28,6 +28,8 @@
 //!   sandbox, cold snapshot/restore, crash recovery by pid adoption).
 //! * [`mock`]: in-memory [`Backend`] for unit tests.
 
+mod storage;
+pub use storage::StorageConfig;
 mod resources;
 pub use resources::ResourceConfig;
 mod backend;

@@ -10,6 +10,8 @@
 //! AHVM_LIB          LD_LIBRARY_PATH value for workers (default: inherited)
 //! AHVM_NETD_BIN     optional managed Rust gateway binary (Linux)
 //! AHVM_NETWORK_BYTES_PER_SEC optional per-VM per-direction Ethernet cap (65536..=1000000000)
+//! AHVM_STORAGE_SOCKET optional host-owned project-quota broker Unix socket
+//! AHVM_API_BYTES_PER_SEC optional per-VM per-direction API payload cap (65536..=1000000000)
 //! AHVM_DNS_RESOLVER required IPv4 resolver when netd is enabled
 //! AHVM_PREVIEW_LISTEN optional separate HTTP preview bind address
 //! AHVM_PREVIEW_DOMAIN dedicated domain for per-port preview hosts
@@ -70,6 +72,10 @@ async fn main() {
         sandbox_dir,
         lib_path,
     );
+    backend_cfg.storage =
+        std::env::var_os("AHVM_STORAGE_SOCKET").map(|socket| ahvm_engine::StorageConfig {
+            socket: socket.into(),
+        });
     backend_cfg.resources = std::env::var_os("AHVM_CGROUP_ROOT")
         .map(|root| ahvm_engine::ResourceConfig { root: root.into() });
     #[derive(serde::Deserialize)]
@@ -174,7 +180,11 @@ async fn main() {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(4),
-        ),
+        )
+        .with_api_rate(std::env::var("AHVM_API_BYTES_PER_SEC").ok().map(|v| {
+            v.parse()
+                .expect("AHVM_API_BYTES_PER_SEC must be an integer")
+        })),
         lifecycle: ahvm_daemon::scheduler::LifecycleLocks::new(),
     };
     // Thermal sweep (idle stop + reconcile) runs for the daemon lifetime.

@@ -1287,3 +1287,63 @@ fn legacy_lifecycle_receipts_keep_identical_canonical_requests() {
         assert_eq!(serde_json::to_string(&request).unwrap(), json);
     }
 }
+
+#[tokio::test]
+async fn api_pacing_covers_legacy_json_and_upgrade_header_cannot_bypass_it() {
+    let mut state = test_state();
+    state.ops = ahvm_daemon::scheduler::OpsLimiter::new(4).with_api_rate(Some(65536));
+    let app = build_router(state);
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"paced", "cpus":1, "memory_mb":512})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(vec![b'x'; 65536]);
+    let started = std::time::Instant::now();
+    for _ in 0..2 {
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/v1/sandboxes/paced/files")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN_A}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::UPGRADE, "websocket")
+            .body(Body::from(
+                serde_json::json!({"path":"/file","data_b64":data}).to_string(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+    }
+    assert!(started.elapsed() >= std::time::Duration::from_millis(1600));
+    let started = std::time::Instant::now();
+    for _ in 0..2 {
+        let (status, result) = call(
+            app.clone(),
+            Some(TOKEN_A),
+            "GET",
+            "/v1/sandboxes/paced/files?path=/file&limit=65536",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result["data_b64"], data);
+    }
+    assert!(started.elapsed() >= std::time::Duration::from_millis(1600));
+    let (status, _) = call(
+        app,
+        Some(TOKEN_B),
+        "GET",
+        "/v1/sandboxes/paced/files?path=/file",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

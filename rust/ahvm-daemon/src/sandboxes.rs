@@ -248,6 +248,7 @@ pub(crate) async fn destroy_operation(
         Ok(()) | Err(ahvm_store::Error::NotFound(_)) => {}
         Err(e) => return Err(e.into()),
     }
+    state.ops.transfers.forget(&id);
     Ok(StatusCode::NO_CONTENT)
 }
 

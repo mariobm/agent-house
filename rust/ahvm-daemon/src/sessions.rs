@@ -248,6 +248,7 @@ async fn bridge(
 ) {
     use futures_util::StreamExt;
     let (mut tx, mut rx) = socket.split();
+    let transfer = state.ops.transfers.get(&id);
     // Keep exactly one output read in flight while admitting keyboard input.
     // Dropping a blocking-task handle cannot cancel the guest RPC, so never
     // restart it merely because input arrived.
@@ -264,6 +265,14 @@ async fn bridge(
             tokio::select! {
                 chunk = &mut output => break chunk,
                 incoming = rx.next() => {
+                    if let (Some(transfer), Some(Ok(message))) = (&transfer, &incoming) {
+                        let len = match message {
+                            Message::Text(t) => t.len(),
+                            Message::Binary(b) | Message::Ping(b) | Message::Pong(b) => b.len(),
+                            Message::Close(_) => 0,
+                        };
+                        transfer.input.take(len).await;
+                    }
                     let data: Option<Vec<u8>> = match incoming {
                         Some(Ok(Message::Text(t))) => serde_json::from_str::<serde_json::Value>(&t)
                             .ok()
@@ -283,7 +292,9 @@ async fn bridge(
                     if let Some(data) = data {
                         let Some(guard) = state.activity.begin(&id) else {
                             let frame = serde_json::json!({"error": "sandbox is stopping; input rejected"});
-                            if !send_frame(&mut tx, Message::Text(frame.to_string().into())).await { break 'outer; }
+                            let frame = frame.to_string();
+                            if let Some(transfer) = &transfer { transfer.output.take(frame.len()).await; }
+                            if !send_frame(&mut tx, Message::Text(frame.into())).await { break 'outer; }
                             continue;
                         };
                         let backend = state.backend.clone();
@@ -321,7 +332,11 @@ async fn bridge(
                 "next_seq": chunk.next_seq,
                 "truncated": chunk.truncated,
             });
-            if !send_frame(&mut tx, Message::Text(frame.to_string().into())).await {
+            let frame = frame.to_string();
+            if let Some(transfer) = &transfer {
+                transfer.output.take(frame.len()).await;
+            }
+            if !send_frame(&mut tx, Message::Text(frame.into())).await {
                 break;
             }
         }
