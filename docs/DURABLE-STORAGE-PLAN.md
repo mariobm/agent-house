@@ -1,6 +1,6 @@
 # Local and durable storage
 
-Status: phase 1 prototype. Owner-approved direction, 2026-09-12. No Jira ticket
+Status: phases 1–2 protocol qualification complete; no guest integration. Owner-approved direction, 2026-09-12. No Jira ticket
 was supplied; this document is the scoped work item until one exists.
 
 ## Product decisions
@@ -117,6 +117,12 @@ or running services are changed by this phase. The existing quota-broker
 `StorageConfig` remains separate from the future volume-backend configuration.
 
 Run: `cargo test --manifest-path rust/Cargo.toml -p ahvm-volume`.
+
+## Phase 2 implementation
+
+The private S3 adapter and independent-process qualification tool are implemented.
+See [R2 qualification](DURABLE-STORAGE-R2.md) for setup, evidence and limitations.
+This is still an isolated protocol experiment, not a production disk backend.
 
 ## Qualification measurements
 
