@@ -130,8 +130,10 @@ This is still an isolated protocol experiment, not a production disk backend.
 The [NBD guest data-disk spike](../experiments/durable-storage/README.md) proves
 real guest ext4 recovery and fsync failure under an R2 network outage. It uses
 the unchanged VMM and a local root disk with a small durable data disk. Indexed
-metadata, bounded caching/write log, background upload and full root-disk
-qualification remain in phase 3; this does not advance the plan to phase 4.
+metadata, bounded RAM caching/dirty buffers and background upload now have a
+[format-2 implementation and full-root gate](../experiments/durable-storage/INDEXED-ROOT.md).
+A local write log and the remaining qualification/performance work are still
+outstanding; this does not advance the plan to phase 4.
 
 ## Qualification measurements
 

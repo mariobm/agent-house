@@ -86,18 +86,12 @@ limit and an IPv4-only outage rule that left the actual IPv6 connection working.
 Both are covered in the current transport/gate. It would be incorrect to call
 an outage test successful without proving the fault was applied.
 
-## Still required in phase 3
+## Indexed full-root continuation
 
-The disk map is still the bounded phase-1 JSON map. Reads fetch chunks directly;
-there is no clean cache, indexed metadata, local write log or background upload.
-Dirty data is bounded by the small logical volume, not yet by production
-backpressure. An entire commit also needs a budget/batching policy before large
-disks; individual S3 request deadlines alone are insufficient.
-
-Next: indexed maps and bounded caching/upload batches, then a full durable root
-disk and repeatable recovery under write load. Qualify root boot, ext4 ordering,
-discard/zeroing and larger workloads before choosing production limits. Complete
-ownership fencing separately in phase 4. Do not enable this example for customers.
+[Format 2 and the full-root gate](INDEXED-ROOT.md) add indexed metadata,
+bounded caching/dirty data, parallel upload batches and background commits.
+The original data-disk gate and format 1 remain available. The continuation is
+still experimental; its document records remaining phase-3 work and limits.
 
 References: [NBD protocol](https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md),
 [ublk kernel documentation](https://docs.kernel.org/block/ublk.html),

@@ -9,6 +9,9 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub mod batched;
+pub mod cache;
+pub mod indexed;
 pub mod nbd;
 pub mod s3;
 
@@ -19,6 +22,10 @@ pub const MAX_MANIFEST_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("volume import is not complete")]
+    NotReady,
+    #[error("commit budget exhausted before publication")]
+    Deadline,
     #[error("invalid volume ID, size or byte range")]
     InvalidInput,
     #[error("volume not found")]
@@ -51,6 +58,10 @@ pub struct Head {
 /// queued locally. `None` means create only if absent, never unconditional PUT.
 /// A lost publication response must return an error, never fabricated success.
 pub trait ObjectStore: std::fmt::Debug + Send + Sync {
+    /// Optional disposable cache lookup. Callers still validate returned bytes.
+    fn cached_chunk(&self, _volume: &str, _digest: &str) -> Option<Vec<u8>> {
+        None
+    }
     fn head(&self, volume: &str) -> Result<Option<Head>>;
     fn chunk(&self, volume: &str, digest: &str) -> Result<Vec<u8>>;
     fn put_chunk(&self, volume: &str, digest: &str, bytes: &[u8]) -> Result<()>;
