@@ -15,6 +15,7 @@
 //! `spawn_blocking`; store calls are fast-local and run inline.
 
 pub mod auth;
+pub mod bandwidth;
 pub mod desktop;
 pub mod files;
 pub mod operations;
@@ -286,6 +287,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/sandboxes/{id}/sessions/{sid}/stream",
             get(sessions::stream),
         )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            bandwidth::limit,
+        ))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_user,

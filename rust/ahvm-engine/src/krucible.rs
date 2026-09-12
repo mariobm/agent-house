@@ -82,6 +82,8 @@ pub struct KrucibleConfig {
     pub network: Option<crate::NetworkConfig>,
     /// Optional host-delegated per-VM resource limits.
     pub resources: Option<crate::ResourceConfig>,
+    /// Optional host-owned project-quota broker; fail closed when unavailable.
+    pub storage: Option<crate::StorageConfig>,
 }
 
 impl KrucibleConfig {
@@ -95,6 +97,7 @@ impl KrucibleConfig {
             exec_timeout: DEFAULT_EXEC_TIMEOUT,
             network: None,
             resources: None,
+            storage: None,
         }
     }
 
@@ -253,6 +256,14 @@ pub struct KrucibleBackend {
 }
 
 impl KrucibleBackend {
+    fn remove_storage(&self, dir: &Path) -> Result<()> {
+        if let Some(storage) = &self.cfg.storage {
+            storage.remove(dir)
+        } else {
+            std::fs::remove_dir_all(dir).map_err(Error::Io)
+        }
+    }
+
     /// Open (or create) `cfg.data_dir`, adopting live workers from
     /// `state.json` records. Dead pids surface as `Failed`.
     pub fn open(cfg: KrucibleConfig) -> Result<Self> {
@@ -261,6 +272,11 @@ impl KrucibleBackend {
             resources.validate()?;
         }
         std::fs::create_dir_all(&cfg.data_dir)?;
+        if cfg.storage.is_some() && cfg.data_dir.join("snapshots").exists() {
+            return Err(Error::InvalidState(
+                "quota mode requires an empty named-snapshot registry".into(),
+            ));
+        }
         // Recover interrupted publication before deleting uncommitted debris.
         sweep_debris(&cfg.data_dir)?;
         let mut inner = Inner {
@@ -298,6 +314,9 @@ impl KrucibleBackend {
         }
         dirs.sort();
         for dir in dirs {
+            if let Some(storage) = &cfg.storage {
+                storage.request("verify", &dir)?;
+            }
             let record_path = dir.join("sandbox.json");
             if !record_path.is_file() {
                 if dir.join("net.json").exists() {
@@ -943,6 +962,11 @@ impl KrucibleBackend {
     /// [`Backend::create_snapshot`] with reservations already held
     /// (see [`OpGuard`]; `fork` holds both sides across the two calls).
     fn snapshot_to_registry(&self, id: &str, snapshot_id: &str) -> Result<SnapshotManifest> {
+        if self.cfg.storage.is_some() {
+            return Err(Error::InvalidState(
+                "named snapshots/forks require separate storage reservations in quota mode".into(),
+            ));
+        }
         let (dir, record) = {
             let inner = self.lock();
             let rec = inner
@@ -1027,7 +1051,11 @@ impl KrucibleBackend {
             extra_env: HashMap::new(),
         };
         let dir = self.cfg.data_dir.join(new_id);
-        std::fs::create_dir_all(&dir)?;
+        if let Some(storage) = &self.cfg.storage {
+            storage.request("prepare", &dir)?;
+        } else {
+            std::fs::create_dir_all(&dir)?;
+        }
         let octet = {
             let mut inner = self.lock();
             let octet = inner.next_ip_octet;
@@ -1084,7 +1112,7 @@ impl KrucibleBackend {
                 if let Some(net) = &self.networks {
                     let _ = net.remove(&dir);
                 }
-                let _ = std::fs::remove_dir_all(&dir);
+                let _ = self.remove_storage(&dir);
                 if let Some(resources) = &self.cfg.resources {
                     let _ = resources.remove(new_id);
                 }
@@ -1181,12 +1209,16 @@ impl Backend for KrucibleBackend {
             )));
         }
         let dir = self.cfg.data_dir.join(&spec.name);
-        std::fs::create_dir_all(&dir)?;
         // Take-operate-reinsert is unnecessary here (new record), but keep
         // worker boot outside any await: drop the guard across spawn+ready.
         let octet = inner.next_ip_octet;
         inner.next_ip_octet = octet.wrapping_add(1).max(2);
         drop(inner);
+        if let Some(storage) = &self.cfg.storage {
+            storage.request("prepare", &dir)?;
+        } else {
+            std::fs::create_dir_all(&dir)?;
+        }
 
         let boot = (|| -> Result<LiveWorker> {
             self.create_overlay(&dir.join("root.qcow2"), &backing)?;
@@ -1237,7 +1269,7 @@ impl Backend for KrucibleBackend {
                 if let Some(net) = &self.networks {
                     let _ = net.remove(&dir);
                 }
-                let _ = std::fs::remove_dir_all(&dir);
+                let _ = self.remove_storage(&dir);
                 if let Some(resources) = &self.cfg.resources {
                     let _ = resources.remove(&spec.name);
                 }
@@ -1249,22 +1281,36 @@ impl Backend for KrucibleBackend {
     fn destroy(&self, id: &str) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
-        let rec = {
-            let mut inner = self.lock();
-            inner
-                .sandboxes
-                .remove(id)
-                .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))
-        }?;
-        if let Some(mut handle) = rec.worker {
-            handle.terminate()?;
-        }
-        if let Some(net) = &self.networks {
-            net.remove(&rec.dir)?;
-        }
-        std::fs::remove_dir_all(&rec.dir)?;
-        if let Some(resources) = &self.cfg.resources {
-            resources.remove(id)?;
+        let rec = self.lock().sandboxes.remove(id);
+        let Some(mut rec) = rec else {
+            if let Some(storage) = &self.cfg.storage {
+                // Finish a cleanup interrupted after removing its directory but
+                // before releasing the durable host reservation. Broker release
+                // is empty-only; it cannot destroy an untracked live VM.
+                return storage.request("release", &self.cfg.data_dir.join(id));
+            }
+            return Err(Error::NotFound(format!("sandbox {id}")));
+        };
+        let result = (|| -> Result<()> {
+            if let Some(handle) = &mut rec.worker {
+                handle.terminate()?;
+            }
+            rec.worker = None;
+            if let Some(net) = &self.networks {
+                net.remove(&rec.dir)?;
+            }
+            self.remove_storage(&rec.dir)?;
+            if let Some(resources) = &self.cfg.resources {
+                resources.remove(id)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            // Keep failed cleanup retryable. In particular a missing quota
+            // broker must not turn the next DELETE into a false NotFound.
+            rec.record.info.state = State::Failed;
+            self.lock().sandboxes.insert(id.to_string(), rec);
+            return Err(error);
         }
         Ok(())
     }
@@ -1285,6 +1331,9 @@ impl Backend for KrucibleBackend {
     fn start_with_network_bandwidth(&self, id: &str, bytes: Option<u64>) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
+        if let Some(storage) = &self.cfg.storage {
+            storage.request("verify", &self.cfg.data_dir.join(id))?;
+        }
         if let Some(bytes) = bytes {
             if self.networks.is_none() || (bytes != 0 && !(65536..=1_000_000_000).contains(&bytes))
             {
@@ -2112,6 +2161,59 @@ mod tests {
     use super::*;
     use crate::VmmId;
 
+    #[test]
+    fn quota_release_failure_keeps_destroy_retryable() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+        let root = std::env::temp_dir().join(format!("ahvm-quota-retry-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data/vm")).unwrap();
+        std::fs::write(root.join("vmm"), b"").unwrap();
+        std::fs::write(root.join("base.ext4"), b"").unwrap();
+        let record = SandboxRecord {
+            spec: spec_named("vm"),
+            info: SandboxInfo {
+                id: "vm".into(),
+                name: "vm".into(),
+                state: State::Stopped,
+                thermal: Thermal::Cold,
+                ip: String::new(),
+            },
+            backing: root.join("base.ext4"),
+        };
+        std::fs::write(
+            root.join("data/vm/sandbox.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        let socket = root.join("q.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let path = root.join("data/vm").canonicalize().unwrap();
+        let task = std::thread::spawn(move || {
+            for i in 0..3 {
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(conn.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                if i == 2 {
+                    std::fs::remove_dir(&path).unwrap();
+                }
+                let reply =
+                    serde_json::json!({"ok": i != 1, "path": path, "error": "retry release"});
+                writeln!(conn, "{reply}").unwrap();
+            }
+        });
+        let mut config = cfg(&root);
+        config.storage = Some(crate::StorageConfig { socket });
+        let backend = KrucibleBackend::open(config).unwrap();
+        assert!(backend.destroy("vm").is_err());
+        assert_eq!(backend.list().unwrap().len(), 1);
+        backend.destroy("vm").unwrap();
+        assert!(backend.list().unwrap().is_empty());
+        task.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn cfg(dir: &Path) -> KrucibleConfig {
         KrucibleConfig {
             vmm_bin: dir.join("vmm"),
@@ -2122,6 +2224,7 @@ mod tests {
             exec_timeout: Duration::from_secs(1),
             network: None,
             resources: None,
+            storage: None,
         }
     }
 
