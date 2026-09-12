@@ -34,6 +34,12 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Sign in to AHVM Cloud and approve workspace access in your browser.
+    Login(crate::cloud::Login),
+    /// Show your AHVM Cloud account and approved workspace.
+    Whoami,
+    /// Revoke this CLI cloud login and remove its local credentials.
+    Logout,
     #[command(subcommand)]
     Host(crate::hosts::Hosts),
     /// Update a standalone CLI installation.
@@ -242,6 +248,12 @@ pub fn run(cli: Cli) -> Result<i32> {
     if matches!(cli.command, Command::CheckUpdates) {
         return crate::upgrade::refresh();
     }
+    match &cli.command {
+        Command::Login(options) => return crate::cloud::login(options),
+        Command::Whoami => return crate::cloud::whoami(cli.json),
+        Command::Logout => return crate::cloud::logout(),
+        _ => {}
+    }
     crate::upgrade::notice();
     if let Command::Host(command) = cli.command {
         return crate::hosts::run(command, cli.json);
@@ -271,7 +283,10 @@ pub fn run(cli: Cli) -> Result<i32> {
         .unwrap_or("http://127.0.0.1:8080");
     let api = Api::new(endpoint, token, cli.timeout)?;
     let response = match cli.command {
-        Command::Host(_)
+        Command::Login(_)
+        | Command::Whoami
+        | Command::Logout
+        | Command::Host(_)
         | Command::Image(_)
         | Command::Upgrade
         | Command::CheckUpdates
