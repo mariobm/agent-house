@@ -62,12 +62,22 @@ pub async fn create(
     Extension(user): Extension<UserId>,
     Json(body): Json<CreateBody>,
 ) -> ApiResult<impl IntoResponse> {
+    create_operation(State(state), Extension(user), Json(body), None).await
+}
+
+pub(crate) async fn create_operation(
+    State(state): State<AppState>,
+    Extension(user): Extension<UserId>,
+    Json(body): Json<CreateBody>,
+    operation: Option<&str>,
+) -> ApiResult<impl IntoResponse> {
     if body.name.is_empty() || body.name.len() > 64 {
         return Err(ApiError::Invalid("name must be 1..=64 chars".to_string()));
     }
     // Lifecycle serialization first (see scheduler::LifecycleLocks): the
     // whole create (quota → boot → record) is one critical section per id.
     let _lc = state.lifecycle.lock(&body.name).await;
+    state.store.check_lifecycle_fence(&body.name, operation)?;
     // Atomic quota gate: committed rows plus in-flight holds, checked
     // and reserved under one lock (see quotas.rs). The hold lives until
     // the store record commits below, so concurrent creators serialize.
@@ -210,7 +220,17 @@ pub async fn destroy(
     Extension(user): Extension<UserId>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    destroy_operation(State(state), Extension(user), Path(id), None).await
+}
+
+pub(crate) async fn destroy_operation(
+    State(state): State<AppState>,
+    Extension(user): Extension<UserId>,
+    Path(id): Path<String>,
+    operation: Option<&str>,
+) -> ApiResult<StatusCode> {
     let _lc = state.lifecycle.lock(&id).await;
+    state.store.check_lifecycle_fence(&id, operation)?;
     owned(&state, &user.0, &id).await?;
     let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
@@ -234,12 +254,24 @@ pub async fn start(
     Extension(user): Extension<UserId>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<SandboxView>> {
+    start_operation(State(state), Extension(user), Path(id), None).await
+}
+
+pub(crate) async fn start_operation(
+    State(state): State<AppState>,
+    Extension(user): Extension<UserId>,
+    Path(id): Path<String>,
+    operation: Option<&str>,
+) -> ApiResult<Json<SandboxView>> {
     owned(&state, &user.0, &id).await?;
     let me = state.store.get_user(&user.0)?;
     // Keep admission through the backend transition and its store mirror.
     // Stopped/failed boxes regain resource usage; running boxes are counted once.
     let _hold = state.quotas.reserve_start(&state.store, &me, &id)?;
-    set_running(&state, &id, |backend, owned_id| backend.start(&owned_id)).await
+    set_running(&state, &id, operation, |backend, owned_id| {
+        backend.start(&owned_id)
+    })
+    .await
 }
 
 pub async fn stop(
@@ -247,13 +279,26 @@ pub async fn stop(
     Extension(user): Extension<UserId>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<SandboxView>> {
+    stop_operation(State(state), Extension(user), Path(id), None).await
+}
+
+pub(crate) async fn stop_operation(
+    State(state): State<AppState>,
+    Extension(user): Extension<UserId>,
+    Path(id): Path<String>,
+    operation: Option<&str>,
+) -> ApiResult<Json<SandboxView>> {
     owned(&state, &user.0, &id).await?;
-    set_running(&state, &id, |backend, owned_id| backend.stop(&owned_id)).await
+    set_running(&state, &id, operation, |backend, owned_id| {
+        backend.stop(&owned_id)
+    })
+    .await
 }
 
 async fn set_running(
     state: &AppState,
     id: &str,
+    operation: Option<&str>,
     op: impl FnOnce(std::sync::Arc<dyn ahvm_engine::Backend>, String) -> Result<(), ahvm_engine::Error>
         + Send
         + 'static,
@@ -261,6 +306,7 @@ async fn set_running(
     // Lifecycle first (see scheduler::LifecycleLocks), then the op permit:
     // same order as the sweep, so neither can deadlock the other.
     let _lc = state.lifecycle.lock(id).await;
+    state.store.check_lifecycle_fence(id, operation)?;
     let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
     let a = id.to_string();

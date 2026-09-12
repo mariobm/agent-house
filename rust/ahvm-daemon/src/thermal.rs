@@ -224,6 +224,10 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
                 stats.deferred += 1;
                 continue;
             };
+            if state.store.check_lifecycle_fence(&row.id, None).is_err() {
+                stats.deferred += 1;
+                continue;
+            }
             // Backend truth first (blocking pool; NotFound handled below).
             let backend = state.backend.clone();
             let id = row.id.clone();
