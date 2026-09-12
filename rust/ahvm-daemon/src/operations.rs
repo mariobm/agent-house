@@ -18,9 +18,13 @@ pub enum Request {
         sandbox_id: String,
         cpus: u8,
         memory_mb: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        network_bytes_per_sec: Option<u64>,
     },
     Start {
         sandbox_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        network_bytes_per_sec: Option<u64>,
     },
     Stop {
         sandbox_id: String,
@@ -33,7 +37,7 @@ impl Request {
     fn sandbox_id(&self) -> &str {
         match self {
             Self::Create { sandbox_id, .. }
-            | Self::Start { sandbox_id }
+            | Self::Start { sandbox_id, .. }
             | Self::Stop { sandbox_id }
             | Self::Delete { sandbox_id } => sandbox_id,
         }
@@ -91,6 +95,27 @@ pub async fn submit(
 ) -> ApiResult<Response> {
     if !valid_id(&id) || !valid_id(request.sandbox_id()) {
         return Err(ApiError::Invalid("invalid operation or sandbox id".into()));
+    }
+    let bandwidth = match &request {
+        Request::Create {
+            network_bytes_per_sec,
+            ..
+        }
+        | Request::Start {
+            network_bytes_per_sec,
+            ..
+        } => *network_bytes_per_sec,
+        _ => None,
+    };
+    if let Some(bytes) = bandwidth {
+        if user.0 != "admin" {
+            return Err(ApiError::Forbidden(
+                "admin required for network policy".into(),
+            ));
+        }
+        if bytes != 0 && !(65536..=1_000_000_000).contains(&bytes) {
+            return Err(ApiError::Invalid("invalid bandwidth".into()));
+        }
     }
     let canonical =
         serde_json::to_string(&request).map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -173,6 +198,7 @@ async fn execute(state: AppState, user: UserId, request: Request, operation_id: 
             sandbox_id,
             cpus,
             memory_mb,
+            network_bytes_per_sec,
         } => sandboxes::create_operation(
             s,
             u,
@@ -184,14 +210,22 @@ async fn execute(state: AppState, user: UserId, request: Request, operation_id: 
                 image: None,
             }),
             Some(operation_id),
+            network_bytes_per_sec,
         )
         .await
         .into_response(),
-        Request::Start { sandbox_id } => {
-            sandboxes::start_operation(s, u, Path(sandbox_id), Some(operation_id))
-                .await
-                .into_response()
-        }
+        Request::Start {
+            sandbox_id,
+            network_bytes_per_sec,
+        } => sandboxes::start_operation(
+            s,
+            u,
+            Path(sandbox_id),
+            Some(operation_id),
+            network_bytes_per_sec,
+        )
+        .await
+        .into_response(),
         Request::Stop { sandbox_id } => {
             sandboxes::stop_operation(s, u, Path(sandbox_id), Some(operation_id))
                 .await

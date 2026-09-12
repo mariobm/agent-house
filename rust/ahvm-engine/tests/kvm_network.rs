@@ -67,6 +67,7 @@ fn isolated_gateways_recover_without_disturbing_peers() {
         std::env::var("LD_LIBRARY_PATH").unwrap(),
     );
     cfg.network = Some(NetworkConfig {
+        bandwidth_bytes_per_sec: None,
         private_access: Default::default(),
         netd_bin: std::env::var("AHVM_NETD_BIN").unwrap().into(),
         resolver: std::env::var("AHVM_DNS_RESOLVER").unwrap().parse().unwrap(),
@@ -86,6 +87,7 @@ fn isolated_gateways_recover_without_disturbing_peers() {
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
+            network_bytes_per_sec: None,
             extra_env: Default::default(),
         })
         .unwrap();
@@ -280,6 +282,7 @@ fn dns_rejects_wrong_replies_and_retries_truncation_over_tcp() {
         std::env::var("LD_LIBRARY_PATH").unwrap(),
     );
     cfg.network = Some(NetworkConfig {
+        bandwidth_bytes_per_sec: None,
         private_access: Default::default(),
         netd_bin: std::env::var("AHVM_NETD_BIN").unwrap().into(),
         resolver,
@@ -298,6 +301,7 @@ fn dns_rejects_wrong_replies_and_retries_truncation_over_tcp() {
         kernel_image: None,
         desktop: false,
         desktop_gpu: false,
+        network_bytes_per_sec: None,
         extra_env: Default::default(),
     })
     .unwrap();
@@ -341,4 +345,189 @@ PY"#,
     fixture.join().unwrap();
     assert!(matches!(forbidden.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
     be.destroy("a").unwrap();
+}
+
+#[test]
+fn per_vm_bandwidth_bounds_both_directions_and_preserves_peers() {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener, UdpSocket};
+    if std::env::var("AHVM_KVM_BANDWIDTH_TEST").as_deref() != Ok("1") {
+        return;
+    }
+    let dir = PathBuf::from(std::env::var("AHVM_NETWORK_TEST_DIR").unwrap());
+    assert!(!dir.exists(), "requires a fresh disposable directory");
+    let route = UdpSocket::bind("0.0.0.0:0").unwrap();
+    route.connect("1.1.1.1:53").unwrap();
+    let listener = TcpListener::bind((route.local_addr().unwrap().ip(), 0)).unwrap();
+    let SocketAddr::V4(address) = listener.local_addr().unwrap() else {
+        panic!("IPv4 required")
+    };
+    listener.set_nonblocking(true).unwrap();
+    let fixture = std::thread::spawn(move || {
+        let mut transfers = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while transfers.len() < 3 {
+            match listener.accept() {
+                Ok((mut socket, _)) => transfers.push(std::thread::spawn(move || {
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(30)))
+                        .unwrap();
+                    socket
+                        .set_write_timeout(Some(Duration::from_secs(30)))
+                        .unwrap();
+                    let mut data = vec![0; 2 * 1024 * 1024];
+                    socket.read_exact(&mut data).unwrap();
+                    assert!(data.iter().all(|b| *b == b'x'));
+                    socket.write_all(&data).unwrap();
+                })),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "missing guest transfer");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("listener: {e}"),
+            }
+        }
+        for transfer in transfers {
+            transfer.join().unwrap();
+        }
+    });
+    let mut cfg = KrucibleConfig::new(
+        std::env::var("AHVM_VMM_BIN").unwrap().into(),
+        std::env::var("AHVM_GUEST_IMAGE").unwrap().into(),
+        dir.clone(),
+        std::env::var("LD_LIBRARY_PATH").unwrap(),
+    );
+    cfg.network = Some(NetworkConfig {
+        bandwidth_bytes_per_sec: Some(256 * 1024),
+        private_access: ["a", "b"]
+            .into_iter()
+            .map(|id| (id.into(), vec![address]))
+            .collect(),
+        netd_bin: std::env::var("AHVM_NETD_BIN").unwrap().into(),
+        resolver: std::env::var("AHVM_DNS_RESOLVER").unwrap().parse().unwrap(),
+    });
+    let mut gate = Gate {
+        backend: Some(KrucibleBackend::open(cfg.clone()).unwrap()),
+        dir,
+    };
+    let be = gate.backend.as_ref().unwrap();
+    for id in ["a", "b"] {
+        be.create(&SandboxSpec {
+            name: id.into(),
+            cpus: 1,
+            memory_mb: 1024,
+            backend: BackendKind::Krucible,
+            root_image: None,
+            kernel_image: None,
+            desktop: false,
+            desktop_gpu: false,
+            network_bytes_per_sec: (id == "a").then_some(256 * 1024),
+            extra_env: Default::default(),
+        })
+        .unwrap();
+    }
+    let peer = Worker::load(gate.dir.join("b/net-state.json")).unwrap();
+    be.start_with_network_bandwidth("b", Some(256 * 1024))
+        .unwrap();
+    assert_eq!(
+        Worker::load(gate.dir.join("b/net-state.json")).unwrap().pid,
+        peer.pid
+    );
+    let command = format!(
+        r#"python3 - <<'PY'
+import socket,time
+s=socket.create_connection(('{ip}',{port}),timeout=30)
+data=b'x'*(2*1024*1024)
+start=time.monotonic()
+s.sendall(data)
+out=b''
+while len(out)<len(data):
+    part=s.recv(65536)
+    assert part
+    out+=part
+elapsed=time.monotonic()-start
+assert out==data
+# Each direction needs ~8s at 256KiB/s, plus Ethernet overhead.
+# A shared global bucket or a blocked peer would roughly double this.
+assert 15 < elapsed < 28, elapsed
+print('two-direction transfer seconds:',round(elapsed,2))
+s.close()
+PY"#,
+        ip = address.ip(),
+        port = address.port()
+    );
+    let hz: f64 = String::from_utf8(
+        std::process::Command::new("getconf")
+            .arg("CLK_TCK")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .parse()
+    .unwrap();
+    let ticks = |id: &str| {
+        let worker = Worker::load(gate.dir.join(id).join("net-state.json")).unwrap();
+        let stat = std::fs::read_to_string(format!("/proc/{}/stat", worker.pid)).unwrap();
+        let fields: Vec<_> = stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .collect();
+        fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
+    };
+    let before = [ticks("a"), ticks("b")];
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        let a = scope.spawn(|| exec(be, "a", &command));
+        let b = scope.spawn(|| exec(be, "b", &command));
+        for _ in 0..10 {
+            let start = Instant::now();
+            exec(be, "b", "true");
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "peer exec stalled"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        a.join().unwrap();
+        b.join().unwrap();
+    });
+    for (id, before) in ["a", "b"].into_iter().zip(before) {
+        let cpu_seconds = (ticks(id) - before) as f64 / hz;
+        eprintln!(
+            "{id} gateway CPU: {cpu_seconds:.3}s over {:.3}s",
+            started.elapsed().as_secs_f64()
+        );
+        assert!(
+            cpu_seconds < started.elapsed().as_secs_f64() / 4.0,
+            "throttling busy-spins"
+        );
+    }
+    assert!(matches!(
+        be.start_with_network_bandwidth("a", Some(0)),
+        Err(ahvm_engine::Error::Conflict(_))
+    ));
+    be.stop("a").unwrap();
+    be.start_with_network_bandwidth("a", Some(0)).unwrap();
+    drop(gate.backend.take());
+    gate.backend = Some(KrucibleBackend::open(cfg).unwrap());
+    let be = gate.backend.as_ref().unwrap();
+    let old = Worker::load(gate.dir.join("a/net-state.json")).unwrap();
+    kill(&old);
+    eventually(|| Worker::load(gate.dir.join("a/net-state.json")).is_ok_and(|w| w.pid != old.pid));
+    let policy = |id: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(gate.dir.join(id).join("net.json")).unwrap()).unwrap()
+    };
+    assert!(policy("a")["bandwidth_bytes_per_sec"].is_null());
+    assert_eq!(policy("b")["bandwidth_bytes_per_sec"], 256 * 1024);
+    exec(
+        be,
+        "a",
+        &command.replace("15 < elapsed < 28", "elapsed < 5"),
+    );
+    fixture.join().unwrap();
+    eprintln!("PASS: independent 256KiB/s Ethernet caps, both directions, payload integrity and peer exec");
 }

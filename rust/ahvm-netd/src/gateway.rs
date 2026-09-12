@@ -110,12 +110,14 @@ pub(crate) fn serve(
     resolver: Ipv4Addr,
     private_access: &[std::net::SocketAddrV4],
     connecting: Arc<AtomicUsize>,
+    bandwidth_bytes_per_sec: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     serve_with_io(
         stream,
         resolver,
         private_access,
         connecting,
+        bandwidth_bytes_per_sec,
         crate::host_ips,
         || {
             let socket = UdpSocket::bind("0.0.0.0:0")?;
@@ -131,6 +133,7 @@ fn serve_with_io(
     resolver: Ipv4Addr,
     private_access: &[std::net::SocketAddrV4],
     connecting: Arc<AtomicUsize>,
+    bandwidth_bytes_per_sec: Option<u64>,
     mut host_ips: impl FnMut() -> io::Result<Vec<Ipv4Addr>>,
     mut open_dns: impl FnMut() -> io::Result<UdpSocket>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -166,6 +169,8 @@ fn serve_with_io(
     let mut incoming = Vec::new();
     let mut write_offset = 0;
     let mut frame_started = None;
+    let mut ingress = crate::bandwidth::Bucket::new(bandwidth_bytes_per_sec, epoch);
+    let mut egress = crate::bandwidth::Bucket::new(bandwidth_bytes_per_sec, epoch);
     loop {
         let mut buf = [0; 16384];
         while completion_read.read(&mut buf).is_ok_and(|n| n > 0) {}
@@ -173,12 +178,17 @@ fn serve_with_io(
             if incoming.len() >= MAX_FRAME + 4 {
                 break;
             }
-            match stream.read(&mut buf) {
+            let count = ingress.available(Instant::now()).min(buf.len());
+            if count == 0 {
+                break;
+            }
+            match stream.read(&mut buf[..count]) {
                 Ok(0) => return Ok(()),
                 Ok(n) => {
                     if incoming.is_empty() {
                         frame_started = Some(Instant::now());
                     }
+                    ingress.consume(n);
                     incoming.extend_from_slice(&buf[..n]);
                 }
                 Err(e) if !broken(&e) => break,
@@ -459,9 +469,16 @@ fn serve_with_io(
             let Some(frame) = queue.front() else {
                 break;
             };
-            match stream.write(&frame[write_offset..]) {
+            let count = egress
+                .available(Instant::now())
+                .min(frame.len() - write_offset);
+            if count == 0 {
+                break;
+            }
+            match stream.write(&frame[write_offset..write_offset + count]) {
                 Ok(0) => return Err("guest stream stopped writing".into()),
                 Ok(n) => {
+                    egress.consume(n);
                     write_offset += n;
                     if write_offset == frame.len() {
                         queue.pop_front();
@@ -474,8 +491,11 @@ fn serve_with_io(
         }
         drop(queue);
         // Wait for useful IO or the next stack timer; never poll writable idle sockets.
-        let mut flags = PollFlags::POLLIN;
-        if !link.tx.borrow().is_empty() {
+        let mut flags = PollFlags::empty();
+        if ingress.ready(Instant::now()) {
+            flags |= PollFlags::POLLIN;
+        }
+        if !link.tx.borrow().is_empty() && egress.ready(Instant::now()) {
             flags |= PollFlags::POLLOUT;
         }
         let mut pending = vec![
@@ -509,6 +529,17 @@ fn serve_with_io(
             && incoming.len() >= 4 + u32::from_be_bytes(incoming[..4].try_into().unwrap()) as usize;
         let timeout = if buffered_frame || !link.rx.is_empty() {
             0
+        } else {
+            timeout
+        };
+        // A throttled fd must not stay in poll with readiness we cannot use.
+        // Wake for the next refill instead, avoiding a busy loop.
+        let timeout = if !ingress.ready(Instant::now())
+            || (!link.tx.borrow().is_empty() && !egress.ready(Instant::now()))
+        {
+            // Stack timers may stay due while its transmit queue is full.
+            // They cannot make progress until the link refills either.
+            timeout.clamp(1, 10)
         } else {
             timeout
         };
@@ -566,6 +597,7 @@ fn query_setup_and_host_lookup_failures_preserve_guest_link() {
             Ipv4Addr::LOCALHOST,
             &[],
             Arc::new(AtomicUsize::new(0)),
+            None,
             || {
                 host_calls += 1;
                 Err(io::Error::other("injected interface lookup failure"))

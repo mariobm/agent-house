@@ -1,4 +1,5 @@
 //! One sandbox's outbound TCP/DNS gateway. Policy is supplied by the host.
+mod bandwidth;
 mod dns;
 mod gateway;
 mod wire;
@@ -20,6 +21,8 @@ struct Config {
     resolver: Ipv4Addr,
     #[serde(default)]
     private_access: Vec<std::net::SocketAddrV4>,
+    #[serde(default)]
+    bandwidth_bytes_per_sec: Option<u64>,
 }
 
 fn host_ips() -> std::io::Result<Vec<Ipv4Addr>> {
@@ -51,6 +54,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("invalid private-access policy".into());
     }
+    if cfg
+        .bandwidth_bytes_per_sec
+        .is_some_and(|v| !(65536..=1_000_000_000).contains(&v))
+    {
+        return Err("bandwidth must be 65536..=1000000000 bytes per second".into());
+    }
     // Only the supervisor may remove an old socket after verifying its owner died.
     let listener = UnixListener::bind(&cfg.socket)?;
     std::fs::set_permissions(&cfg.socket, std::fs::Permissions::from_mode(0o600))?;
@@ -76,6 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cfg.resolver,
                     &cfg.private_access,
                     connecting.clone(),
+                    cfg.bandwidth_bytes_per_sec,
                 ) {
                     eprintln!("netd: guest link closed: {e}");
                 }

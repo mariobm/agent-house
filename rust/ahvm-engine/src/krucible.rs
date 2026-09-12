@@ -392,7 +392,11 @@ impl KrucibleBackend {
                         .as_ref()
                         .map(|r| r.path(&rec.record.info.id))
                         .transpose()?;
-                    networks.prepare(&rec.dir, group.as_deref())?;
+                    networks.prepare(
+                        &rec.dir,
+                        group.as_deref(),
+                        rec.record.spec.network_bytes_per_sec,
+                    )?;
                     networks.attach(&rec.dir, vm.clone());
                 } else {
                     networks.remove(&rec.dir)?;
@@ -743,7 +747,7 @@ impl KrucibleBackend {
             .map(|r| r.prepare(&spec.name, spec.cpus, spec.memory_mb))
             .transpose()?;
         if let Some(net) = &self.networks {
-            net.prepare(dir, group.as_deref())?;
+            net.prepare(dir, group.as_deref(), spec.network_bytes_per_sec)?;
         }
         let result = spawn_worker_cfg(&SpawnConfig {
             cgroup: group.as_deref(),
@@ -1019,6 +1023,7 @@ impl KrucibleBackend {
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
+            network_bytes_per_sec: None,
             extra_env: HashMap::new(),
         };
         let dir = self.cfg.data_dir.join(new_id);
@@ -1143,6 +1148,13 @@ impl Backend for KrucibleBackend {
     }
 
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo> {
+        if spec.network_bytes_per_sec.is_some_and(|v| {
+            self.networks.is_none() || (v != 0 && !(65536..=1_000_000_000).contains(&v))
+        }) {
+            return Err(Error::InvalidState(
+                "invalid or unavailable network policy".into(),
+            ));
+        }
         validate_id(&spec.name)?;
         // Custom kernels are a real worker feature, but the backend has no
         // story for them yet (sidecar digest, compat gate, restore sizing
@@ -1268,8 +1280,57 @@ impl Backend for KrucibleBackend {
     /// the death (`status()` → `Failed`) and only then call `start()`.
     /// In-band paths (`stop`/`destroy`) are synchronous and race-free.
     fn start(&self, id: &str) -> Result<()> {
+        self.start_with_network_bandwidth(id, None)
+    }
+    fn start_with_network_bandwidth(&self, id: &str, bytes: Option<u64>) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
+        if let Some(bytes) = bytes {
+            if self.networks.is_none() || (bytes != 0 && !(65536..=1_000_000_000).contains(&bytes))
+            {
+                return Err(Error::InvalidState(
+                    "invalid or unavailable network policy".into(),
+                ));
+            }
+            let update = {
+                let mut inner = self.lock();
+                let rec = inner
+                    .sandboxes
+                    .get_mut(id)
+                    .ok_or_else(|| Error::NotFound(id.into()))?;
+                if rec.record.spec.network_bytes_per_sec == Some(bytes) {
+                    None
+                } else {
+                    let alive = rec.worker.as_mut().is_some_and(|w| w.alive());
+                    let old = match rec.record.spec.network_bytes_per_sec {
+                        Some(0) => None,
+                        Some(v) => Some(v),
+                        None => self
+                            .cfg
+                            .network
+                            .as_ref()
+                            .and_then(|n| n.bandwidth_bytes_per_sec),
+                    };
+                    if alive && old != (bytes != 0).then_some(bytes) {
+                        return Err(Error::Conflict("stop VM before changing bandwidth".into()));
+                    }
+                    let mut record = rec.record.clone();
+                    record.spec.network_bytes_per_sec = Some(bytes);
+                    Some((rec.dir.clone(), record, alive))
+                }
+            };
+            if let Some((dir, record, alive)) = update {
+                if !alive {
+                    self.networks.as_ref().unwrap().remove(&dir)?;
+                }
+                self.persist_record(&dir, &record)?;
+                self.lock()
+                    .sandboxes
+                    .get_mut(id)
+                    .expect("reserved sandbox")
+                    .record = record;
+            }
+        }
         let recovery_dir = {
             let mut inner = self.lock();
             let rec = inner
@@ -2074,6 +2135,7 @@ mod tests {
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
+            network_bytes_per_sec: None,
             extra_env: HashMap::new(),
         }
     }
@@ -2088,6 +2150,7 @@ mod tests {
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
+            network_bytes_per_sec: None,
             extra_env: HashMap::new(),
         };
         let rec = SandboxRecord {
@@ -2171,6 +2234,7 @@ mod tests {
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
+            network_bytes_per_sec: None,
             extra_env: HashMap::new(),
         };
         assert!(matches!(be.create(&spec), Err(Error::InvalidState(_))));
