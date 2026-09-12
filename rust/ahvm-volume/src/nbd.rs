@@ -13,7 +13,8 @@ const INVALID: u32 = 22;
 const IO_ERROR: u32 = 5;
 
 /// Sequential execution is the ordering barrier: flush/FUA cannot overtake any
-/// earlier write, and success is returned only after remote commit succeeds.
+/// earlier write. Flush success follows the selected backend durability contract
+/// (local journal for LocalDisk, remote publication for Volume).
 pub trait Disk {
     fn size(&self) -> u64;
     fn read(&mut self, offset: u64, data: &mut [u8]) -> crate::Result<()>;

@@ -31,8 +31,11 @@ p.add_argument('--stress-cycles', type=int, choices=range(4), default=0, help='a
 p.add_argument('--warm-repeat', action='store_true', help='repeat the workload in a new directory with a warm cache')
 p.add_argument('--eventual', action='store_true', help='local durable fsync, asynchronous R2 replication')
 p.add_argument('--metrics', action='store_true')
+p.add_argument('--block-operations', action='store_true', help='probe discard/zeroing in an appended disposable tail, indexed root only')
 p.add_argument('--uid', type=int, default=199999)
 a = p.parse_args()
+if a.block_operations and not a.indexed_root:
+    p.error('--block-operations requires --indexed-root')
 if a.eventual and not a.indexed_root:
     p.error('--eventual requires --indexed-root')
 assert os.geteuid() == 0, 'root required for NBD attachment and isolated UID outage'
@@ -226,6 +229,11 @@ try:
     if a.indexed_root:
         source = work / 'import.ext4'
         shutil.copyfile(a.image, source)
+        if a.block_operations:
+            tail_offset = source.stat().st_size
+            assert tail_offset % 65536 == 0
+            with source.open('ab') as f:
+                f.truncate(tail_offset + 8 * 1024 * 1024)
         os.chown(source, a.uid, a.uid)
         source.chmod(0o400)
         command([str(server), 'import', str(config), volume, str(source)], env=env, user=a.uid, group=a.uid, extra_groups=[], timeout=600)
@@ -236,6 +244,38 @@ try:
         rpc(['/bin/mkdir', '-p', '/mnt/durable'])
     else:
         print(rpc(['/bin/sh','-c','mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 /dev/vdb && mkdir -p /mnt/durable && mount /dev/vdb /mnt/durable']), flush=True)
+    if a.block_operations:
+        # Never issue raw operations inside ext4. Confirm its declared size
+        # independently in the guest before touching the appended tail.
+        block_setup = f'offset={tail_offset}\n' + r'''
+import os, struct, fcntl
+fd=os.open('/dev/vda',os.O_RDWR)
+sb=os.pread(fd,1024,1024)
+assert sb[56:58]==b'\x53\xef', 'expected unpartitioned ext4'
+blocks=struct.unpack_from('<I',sb,4)[0]
+if struct.unpack_from('<I',sb,96)[0] & 0x80:
+ blocks |= struct.unpack_from('<I',sb,336)[0] << 32
+assert blocks * (1024 << struct.unpack_from('<I',sb,24)[0]) <= offset
+chunk=65536
+'''
+        block_verify = r'''
+assert os.pread(fd,chunk,offset)==b'G'*chunk
+assert os.pread(fd,2*chunk,offset+chunk)==bytes(2*chunk)
+assert os.pread(fd,2*chunk,offset+3*chunk)==b'R'*(2*chunk)
+assert os.pread(fd,chunk,offset+5*chunk)==b'G'*chunk
+os.close(fd)
+print('BLOCK-ZERO-DISCARD-REWRITE-VERIFIED')
+'''
+        print(rpc(['python3','-c',block_setup+r'''
+assert os.pwrite(fd,b'G'*(6*chunk),offset)==6*chunk
+os.fsync(fd)
+# Linux include/uapi/linux/fs.h: BLKZEROOUT, BLKDISCARD; two u64 byte ranges.
+fcntl.ioctl(fd,0x127f,struct.pack('=QQ',offset+chunk,2*chunk))
+fcntl.ioctl(fd,0x1277,struct.pack('=QQ',offset+3*chunk,2*chunk))
+# Discard need not return zeroes; prove the range can be reused instead.
+assert os.pwrite(fd,b'R'*(2*chunk),offset+3*chunk)==2*chunk
+os.fsync(fd)
+'''+block_verify]),flush=True)
     started = time.monotonic()
     print(rpc(['python3','-c',workload]), flush=True)
     print(f'Workload: {time.monotonic() - started:.2f}s', flush=True)
@@ -257,6 +297,8 @@ try:
         start_storage(False);start_vm()
         print(rpc(['python3','-c',verify]),flush=True)
         print('REMOTE-ONLY-RECOVERY',flush=True)
+        if a.block_operations:
+            print(rpc(['python3','-c',block_setup+block_verify]),flush=True)
     for cycle in range(a.stress_cycles):
         # Rewrite the same 4 MiB with a distinct deterministic pattern each cycle.
         # A partial or stale recovery cannot pass the byte-for-byte check.
@@ -315,6 +357,22 @@ print('STRESS-ROUND-CYCLE-RECOVERED')
     assert denied > 0, 'fault injection blocked no packets'
     print(f'Confirmed {denied} denied sidecar packets', flush=True)
     if a.eventual:
+        # Keep both processes alive: restored connectivity must drain the same
+        # journal without requiring a restart or operator repair.
+        for firewall in blocked:
+            command([firewall,'-D',*rule])
+        blocked.clear()
+        remote_sync()
+        status=control('status')
+        assert not status['replication_failed'] and not status['local_failed'], status
+        stop_test();forget_journal()
+        start_storage(False);start_vm()
+        print(rpc(['python3','-c',"from pathlib import Path;assert Path('/mnt/durable/outage').read_bytes()==b'local-only';print('CONNECTIVITY-RECOVERY-REMOTE-VERIFIED')"]),flush=True)
+        # Separately prove the accepted host-loss contract with a new write.
+        for firewall in ['iptables', 'ip6tables']:
+            command([firewall,'-I',*rule]);blocked.append(firewall)
+        print(rpc(['python3','-c',"import os;f=open('/mnt/durable/lost','wb',buffering=0);f.write(b'pending');os.fsync(f.fileno());f.close()"]),flush=True)
+        assert 'error' in control('sync')
         stop_test();forget_journal()
     for firewall in blocked:
         command([firewall,'-D',*rule])
@@ -324,7 +382,7 @@ print('STRESS-ROUND-CYCLE-RECOVERED')
         # disk is allowed to lose that write; demonstrate the declared contract.
         # Stop before unblocking so background replication cannot rescue it.
         start_storage(False);start_vm()
-        print(rpc(['python3','-c',"import os;assert not os.path.exists('/mnt/durable/outage');print('HOST-LOSS-PENDING-WRITE-LOST-AS-EXPECTED')"]),flush=True)
+        print(rpc(['python3','-c',"import os;assert not os.path.exists('/mnt/durable/lost');print('HOST-LOSS-PENDING-WRITE-LOST-AS-EXPECTED')"]),flush=True)
     print('PASS guest ext4/R2 recovery and declared durability contract', flush=True)
 finally:
     # Disconnect before waiting: a killed VMM can still be blocked in device I/O.

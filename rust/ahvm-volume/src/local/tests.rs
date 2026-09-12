@@ -332,3 +332,65 @@ fn compaction_failure_after_reconciling_a_lost_response_poisons_local_io() {
     assert!(disk.flush().is_err());
     assert!(disk.write(0, b"unsafe").is_err());
 }
+
+#[test]
+fn full_offline_backlog_drains_and_admits_writes_after_connectivity_returns() {
+    let s = fixture();
+    let d = Directory::new();
+    let mut disk = LocalDisk::open(s.clone(), "local", &d.0).unwrap();
+    s.offline.store(true, Ordering::SeqCst);
+    // Fill the entire logical backlog with a repeating, verifiable pattern.
+    for index in 0..DIRTY_LIMIT / CHUNK_BYTES {
+        let bytes = vec![(index % 251 + 1) as u8; CHUNK_BYTES];
+        disk.write((index * CHUNK_BYTES) as u64, &bytes).unwrap();
+    }
+    disk.flush().unwrap();
+    assert!(disk.sync_remote().is_err());
+    assert!(matches!(
+        disk.write(DIRTY_LIMIT as u64, b"later"),
+        Err(Error::Backpressure)
+    ));
+    assert_eq!(disk.status().pending_bytes, DIRTY_LIMIT);
+    s.offline.store(false, Ordering::SeqCst);
+    let status = disk.sync_remote().unwrap();
+    assert_eq!(status.pending_bytes, 0);
+    assert_eq!(status.local_sequence, status.remote_sequence);
+    assert!(!status.replication_failed);
+    disk.write(DIRTY_LIMIT as u64, b"later").unwrap();
+    disk.flush().unwrap();
+    disk.sync_remote().unwrap();
+    drop(disk);
+    let remote = IndexedVolume::open(s, "local").unwrap();
+    for index in 0..DIRTY_LIMIT / CHUNK_BYTES {
+        let mut bytes = vec![0; CHUNK_BYTES];
+        remote
+            .read((index * CHUNK_BYTES) as u64, &mut bytes)
+            .unwrap();
+        assert!(bytes.iter().all(|b| *b == (index % 251 + 1) as u8));
+    }
+    let mut bytes = [0; 5];
+    remote.read(DIRTY_LIMIT as u64, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"later");
+}
+
+#[test]
+fn zeroing_across_chunk_boundary_survives_remote_only_recovery() {
+    let s = fixture();
+    let d = Directory::new();
+    let mut disk = LocalDisk::open(s.clone(), "local", &d.0).unwrap();
+    disk.write(0, &vec![0x7b; 3 * CHUNK_BYTES]).unwrap();
+    disk.sync_remote().unwrap();
+    // Partial first/last chunks plus a whole chunk becoming a sparse zero.
+    let offset = CHUNK_BYTES / 2;
+    let length = 2 * CHUNK_BYTES;
+    disk.write(offset as u64, &vec![0; length]).unwrap();
+    disk.flush().unwrap();
+    disk.sync_remote().unwrap();
+    drop(disk);
+    let remote = IndexedVolume::open(s, "local").unwrap();
+    let mut data = vec![0; 3 * CHUNK_BYTES];
+    remote.read(0, &mut data).unwrap();
+    assert!(data[..offset].iter().all(|b| *b == 0x7b));
+    assert!(data[offset..offset + length].iter().all(|b| *b == 0));
+    assert!(data[offset + length..].iter().all(|b| *b == 0x7b));
+}

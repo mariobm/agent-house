@@ -66,7 +66,7 @@ cargo build --release --manifest-path rust/Cargo.toml --locked \
   -p ahvm-volume --example indexed_nbd
 sudo modprobe nbd nbds_max=4 max_part=0
 sudo python3 experiments/durable-storage/kvm-data-disk.py \
-  --indexed-root --eventual --metrics --warm-repeat --stress-cycles 1 \
+  --indexed-root --eventual --block-operations --metrics --warm-repeat --stress-cycles 1 \
   --config "$HOME/.config/ahvm-volume/r2.json" \
   --server "$PWD/rust/target/release/examples/indexed_nbd" \
   --vmm /opt/ahvm-rust/bin/ahvm-vmm --lib /opt/ahvm-rust/lib \
@@ -82,8 +82,19 @@ replication failure status. These are experimental service commands, not release
 
 The gate keeps the journal for a process restart, then removes it after a remote
 barrier to prove independent R2 recovery. Its outage check expects local fsync to
-succeed and remote sync to fail. It kills both processes before lifting the fault,
-removes the journal, and proves the pending outage write is absent on recovery.
+succeed and remote sync to fail. It then restores connectivity without restarting
+the sidecar, syncs to R2, removes the journal and verifies the recovered file. A
+separate interrupted-connection write is deliberately lost by killing both
+processes and removing the journal before lifting the fault. This distinguishes
+retry recovery from the accepted host-disk-loss contract.
+`--block-operations` appends an 8-MiB disposable tail to the imported copy. The
+guest checks the ext4 superblock size before issuing raw BLKZEROOUT and BLKDISCARD
+there, verifies neighboring guard data, reuses the discarded range and repeats
+the byte checks after remote-only recovery. The source image is unchanged.
+Discard is a hint: imago can legally treat unsupported backing discard as a no-op;
+this checks safe semantics, not object reclamation or secure erasure. Zeroing uses
+imago's fallback to ordinary writes when the backing device cannot offload it.
+
 Only one 1-CPU/1-GiB VM runs at a time. Cleanup removes private local files, processes,
 NBD attachment and firewall rules; R2 fixtures require explicit prefix cleanup.
 
@@ -113,3 +124,26 @@ poisoning after journal/compaction errors. Clippy with warnings denied, formatti
 and Python compilation pass. The qualification R2 prefix was deleted and verified
 empty; NBD, journal/credential copies and test processes were removed, and all four
 existing AHVM services remained active.
+
+## Connectivity and block-operation follow-up (2026-09-13)
+
+The extended gate passes on `agent_house` with one 1-CPU/1-GiB VM and a 512-MiB
+ext4 fixture plus an 8-MiB disposable tail. Guest BLKZEROOUT and BLKDISCARD/reuse
+preserved adjacent guard bytes, including after journal removal and R2-only
+recovery. No VMM fork change was needed. This verifies semantics, not reclaiming
+R2 storage; discard can remain a hint handled as a no-op.
+
+Blocking the sidecar's TLS traffic made the remote barrier fail while local fsync
+succeeded. After unblocking, the same sidecar drained its pending writes (zero
+pending bytes, equal local/remote sequence, no failure flag). Deleting the journal
+then recovered the file from R2. The separate unreplicated-write host-loss check
+still passed. Cold workload time was 29.91 s; the three SQLite FULL transactions
+took 0.26 s. These are individual observations, not new latency guarantees.
+
+50 tests have been exercised on both macOS and Linux. New regressions fill the
+64-MiB backlog, verify rejection without data eviction, restore connectivity,
+drain it, admit another write and check the remote bytes. Cross-chunk zeroing
+also preserves surrounding data after remote-only recovery. The full-backlog
+test uses the in-memory fault store; 64-MiB/scattered backlog drain time against
+real R2 remains unqualified. This continuation also corrects the NBD trait comment:
+flush follows the chosen backend's durability contract, not always R2.

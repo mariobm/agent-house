@@ -146,9 +146,11 @@ metadata, bounded RAM caching/dirty buffers and background upload now have a
 The full-root gate now also covers three repeated synced-write/SIGKILL/recovery
 cycles and records cold/warm latency. Small synchronous commits remain slow even
 with a warm cache. The [eventual-durability continuation](../experiments/durable-storage/EVENTUAL.md)
-adds the local write log and changes the target contract. Block-operation
-qualification and further performance work remain; this does not advance the
-plan to phase 4.
+adds the local write log and changes the target contract. The continuation adds
+connectivity-recovery coverage and a full-backlog drain/admission regression.
+Guest zeroing/discard-reuse and remote-only byte checks pass with an appended
+disposable tail. Large/scattered R2 backlog throughput, persistent clean caching
+and engine integration remain; this does not advance the plan to phase 4.
 
 ## Qualification measurements
 
