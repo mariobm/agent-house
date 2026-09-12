@@ -18,6 +18,7 @@ pub struct NetworkConfig {
 
 #[derive(Debug)]
 struct Entry {
+    cgroup: Option<PathBuf>,
     worker: Option<WorkerHandle>,
     vm: Option<Worker>,
     retry: Instant,
@@ -160,7 +161,7 @@ impl Networks {
                         );
                     }
                     if Instant::now() >= entry.retry {
-                        match launch(&cfg, dir) {
+                        match launch(&cfg, dir, entry.cgroup.as_deref()) {
                             Ok(w) => {
                                 entry.worker = Some(w);
                                 entry.running_since = Instant::now();
@@ -183,7 +184,7 @@ impl Networks {
         Ok(Self(shared))
     }
 
-    pub(crate) fn prepare(&self, dir: &Path) -> Result<()> {
+    pub(crate) fn prepare(&self, dir: &Path, cgroup: Option<&Path>) -> Result<()> {
         let mut core = self.0.lock().unwrap_or_else(|e| e.into_inner());
         // Even when netd is dead, do not attach a new checksum-validating gateway
         // to an old live VMM which negotiated checksum/GSO offloads.
@@ -224,6 +225,9 @@ impl Networks {
                         "stop VMs before changing their DNS resolver".into(),
                     ));
                 }
+                if let Some(group) = cgroup {
+                    crate::resources::verify_member(group, w.pid)?;
+                }
                 WorkerHandle::Adopted(w)
             }
             Ok(w) if is_alive(w.pid) && w.starttime.is_none() => {
@@ -231,13 +235,14 @@ impl Networks {
                     "cannot adopt netd without process identity".into(),
                 ));
             }
-            Ok(_) => launch(&core.cfg, dir)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => launch(&core.cfg, dir)?,
+            Ok(_) => launch(&core.cfg, dir, cgroup)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => launch(&core.cfg, dir, cgroup)?,
             Err(e) => return Err(e.into()),
         };
         core.entries.insert(
             dir.to_owned(),
             Entry {
+                cgroup: cgroup.map(Path::to_owned),
                 worker: Some(worker),
                 vm: None,
                 retry: Instant::now(),
@@ -285,7 +290,7 @@ fn rules_for(cfg: &NetworkConfig, dir: &Path) -> Vec<std::net::SocketAddrV4> {
         .unwrap_or_default()
 }
 
-fn launch(cfg: &NetworkConfig, dir: &Path) -> Result<WorkerHandle> {
+fn launch(cfg: &NetworkConfig, dir: &Path, cgroup: Option<&Path>) -> Result<WorkerHandle> {
     let sock = dir.join("sock");
     std::fs::create_dir_all(&sock)?;
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o700))?;
@@ -303,6 +308,7 @@ fn launch(cfg: &NetworkConfig, dir: &Path) -> Result<WorkerHandle> {
         }))?,
     )?;
     let mut worker = spawn_worker_cfg(&SpawnConfig {
+        cgroup,
         vmm_binary: cfg.netd_bin.as_os_str(),
         spec_arg: &spec,
         state_path: &dir.join("net-state.json"),
@@ -365,7 +371,7 @@ mod tests {
         std::fs::write(dir.join("net.json"), b"{}").unwrap();
         let networks = Networks::new(cfg).unwrap();
         assert!(
-            matches!(networks.prepare(&dir), Err(Error::InvalidState(s)) if s.contains("legacy"))
+            matches!(networks.prepare(&dir, None), Err(Error::InvalidState(s)) if s.contains("legacy"))
         );
         assert!(!dir.join("net-state.json").exists());
         drop(networks);
@@ -376,7 +382,7 @@ mod tests {
         let (root, cfg) = fixture("managed-net");
         let dir = root.join("sandbox");
         let networks = Networks::new(cfg.clone()).unwrap();
-        networks.prepare(&dir).unwrap();
+        networks.prepare(&dir, None).unwrap();
         let vm = Worker {
             id: "test-vm".into(),
             pid: std::process::id(),
@@ -404,7 +410,7 @@ mod tests {
         let replacement = Worker::load(dir.join("net-state.json")).unwrap();
         drop(networks);
         let networks = Networks::new(cfg).unwrap();
-        networks.prepare(&dir).unwrap();
+        networks.prepare(&dir, None).unwrap();
         networks.attach(&dir, vm);
         assert_eq!(
             Worker::load(dir.join("net-state.json")).unwrap().pid,
