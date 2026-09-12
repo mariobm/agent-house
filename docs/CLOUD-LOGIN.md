@@ -55,8 +55,7 @@ different HTTPS service with `--cloud-endpoint`; HTTP is accepted only for a loc
 
 ## Hosted machines
 
-The cloud compute commands require a CLI build containing `--cloud` (they are
-not in the v0.2.5 login-only release). After your workspace is enabled:
+The cloud compute commands require v0.2.6 or newer. After your workspace is enabled:
 
 ```sh
 ahvm --cloud create dev --cpus 2 --memory 4096
