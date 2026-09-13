@@ -306,3 +306,36 @@ Next: tenant accounting and normal daemon/API/CLI rollout, with cloud selecting
 replicated storage automatically and self-hosted local storage unchanged. Named
 checkpoint roots/expiration remain a separate format+collector extension. Current
 remote logical capacity accounting remains conservative, not measured R2 usage.
+
+### Tenant accounting foundation
+
+`ahvm-store` now has a durable replicated-disk reservation ledger, separate from
+sandbox lifecycle rows. Before import, the caller reserves an immutable volume
+ID, authenticated owner, sandbox binding and validated logical image size in an
+IMMEDIATE SQLite transaction. The existing user's `max_volumes_mb` bounds the
+sum of retained replicated capacity and separately recorded volumes. Independently
+opened connections cannot overbook concurrent replicated admissions. This is
+logical capacity accounting, not R2 object-byte billing or filesystem preallocation.
+
+Reservations survive failed creates, missing sandbox rows, process restarts, idle
+stops and local eviction. Deletion intent remains charged until a trusted caller
+confirms the volume supervisor has completed remote and local reclamation.
+Reclaimed identities remain as tombstones and cannot be reused; sandbox names
+can be reused with fresh identities after cleanup. The owner foreign key is
+restrictive: account deletion must not cascade away storage ownership/accounting.
+A bounded retained-reservation scan supports startup and deletion reconciliation.
+
+This is a store foundation, not enabled tenant enforcement for current endpoints.
+Next integration must mint the volume ID before engine create, use authenticated
+ownership and trusted image sizing, persist the reservation before remote writes,
+reconcile ambiguous/failed creates against engine/supervisor records, and release
+quota only on a verified reclamation result. Do not expose the confirmation method
+as a user API or release quota on a delete acknowledgement. The existing detached
+volume CRUD API is not upgraded into a new public storage product by this change.
+After that wiring: storage selection/status/sync in daemon and CLI, automatic
+Cloud selection, and automatic wake through authenticated resource admission.
+
+Validation: store tests cover independent-connection contention, database reopen,
+owner isolation, immutable identity/size, reduced/invalid quotas, shared existing
+volume capacity, delayed reclamation and bounded recovery pagination. No VM or
+object-store operations are needed for this foundation.
