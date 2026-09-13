@@ -54,6 +54,8 @@ struct Reply {
     status: Option<ReplicationStatus>,
     #[serde(default)]
     reclamation_complete: Option<bool>,
+    #[serde(default)]
+    resources_enforced: Option<bool>,
 }
 
 pub(crate) fn validate_volume(id: &str) -> Result<()> {
@@ -97,7 +99,7 @@ impl ReplicatedConfig {
         let mut conn = UnixStream::connect(&self.socket)?;
         let seconds = match operation {
             "prepare" => 600,
-            "status" => 3,
+            "status" | "resources" => 3,
             "retire" => 30,
             _ => 300,
         };
@@ -127,6 +129,18 @@ impl ReplicatedConfig {
             }
         }
         Ok(reply)
+    }
+    pub(crate) fn verify_resources(&self, id: &str, sandbox: &Path) -> Result<()> {
+        if self
+            .request("resources", id, None, sandbox)?
+            .resources_enforced
+            != Some(true)
+        {
+            return Err(Error::InvalidState(
+                "volume service requires bounded supervisor and worker cgroups".into(),
+            ));
+        }
+        Ok(())
     }
     /// Host-only retirement handshake. False acknowledges intent, not cleanup.
     /// A missing proof or protocol failure must keep the tenant's reservation.
@@ -230,6 +244,26 @@ mod tests {
         });
         task.join().unwrap();
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn resource_enforcement_requires_explicit_confirmation() {
+        let id = "a".repeat(64);
+        for (tag, proof, accepted) in [
+            ("missing", serde_json::Value::Null, false),
+            ("disabled", serde_json::json!(false), false),
+            ("enabled", serde_json::json!(true), true),
+        ] {
+            reply(
+                tag,
+                serde_json::json!({"ok":true,"volume_id":id,"resources_enforced":proof}),
+                |cfg| {
+                    assert_eq!(
+                        cfg.verify_resources(&id, Path::new("/sandbox")).is_ok(),
+                        accepted
+                    );
+                },
+            );
+        }
     }
     #[test]
     fn retirement_acknowledgement_is_not_reclamation() {

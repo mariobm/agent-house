@@ -52,6 +52,7 @@ fn service(root: &Path) -> Service {
         reclamation: Mutex::new(()),
         config: Config {
             client_uid: 0,
+            resources: None,
             limits: Limits {
                 max_volume_bytes: 1 << 30,
                 max_logical_bytes: 1 << 30,
