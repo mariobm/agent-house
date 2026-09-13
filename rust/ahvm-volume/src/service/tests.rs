@@ -148,10 +148,12 @@ fn unknown_and_oversized_requests_are_not_records() {
 }
 
 #[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
 fn privileged_import_refuses_writable_or_symlink_sources() {
-    if !rustix::process::geteuid().is_root() {
-        return;
-    }
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run make test-volume-root"
+    );
     let dir = temp();
     let file = dir.join("image");
     fs::write(&file, "test").unwrap();
@@ -210,7 +212,12 @@ fn budget_service(dir: &Path) -> Service {
     s
 }
 #[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
 fn concurrent_imports_reserve_before_remote_effects() {
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run make test-volume-root"
+    );
     let dir = temp();
     let s = Arc::new(budget_service(&dir));
     let requests = [prepare_request(&s, 'a'), prepare_request(&s, 'b')];
@@ -238,7 +245,12 @@ fn concurrent_imports_reserve_before_remote_effects() {
     fs::remove_dir_all(dir).unwrap();
 }
 #[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
 fn failed_import_and_tombstone_keep_durable_reservation() {
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run make test-volume-root"
+    );
     let dir = temp();
     let s = budget_service(&dir);
     let a = prepare_request(&s, 'a');
@@ -267,7 +279,12 @@ fn failed_import_and_tombstone_keep_durable_reservation() {
     fs::remove_dir_all(dir).unwrap();
 }
 #[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
 fn source_growth_cannot_exceed_reserved_capacity() {
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run make test-volume-root"
+    );
     let dir = temp();
     let s = budget_service(&dir);
     let a = prepare_request(&s, 'a');
@@ -342,7 +359,12 @@ fn old_records_without_capacity_fail_closed() {
 }
 
 #[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
 fn failed_record_publication_freezes_import_admission() {
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run make test-volume-root"
+    );
     let dir = temp();
     let s = budget_service(&dir);
     let a = prepare_request(&s, 'a');
@@ -365,7 +387,12 @@ fn failed_record_publication_freezes_import_admission() {
 }
 
 #[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
 fn lower_budgets_preserve_existing_identity_and_usage_includes_tombstones() {
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run make test-volume-root"
+    );
     let dir = temp();
     let mut s = budget_service(&dir);
     s.config.limits.max_logical_bytes *= 2;

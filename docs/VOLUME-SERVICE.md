@@ -206,3 +206,11 @@ size, uncertain record publication, lower budgets preserving existing identity,
 usage sampling and rejection of unaccounted old records. This slice needed no
 VMs or R2 objects and did not modify installed services. The earlier 95.97-second
 KVM result above belongs to the supervisor qualification, not this test run.
+
+The Linux suite separates six root-only service tests from ordinary unit tests.
+Run `make test-volume-root` to compile as your normal user and execute only those
+six tests with root privileges. CI runs this target explicitly after `make test`;
+no cloud access or VMs are needed. Production root-directory checks are unchanged.
+The ordinary Linux volume suite runs 69 tests, and the privileged step runs six;
+both must pass. Earlier agent_house validation ran the combined suite as root,
+which did not expose the unprivileged CI fixture mismatch.
