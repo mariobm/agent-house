@@ -160,7 +160,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(self.requests[0][1],'/v1/sandboxes/other%2Fstop%3Fx=1')
     @unittest.skipUnless(os.name == 'posix', 'requires a terminal')
     def test_pty_restores_terminal_on_handshake_error(self):
-        import fcntl, pty, termios
+        import fcntl, pty, termios, threading
         master, slave = pty.openpty()
         before = termios.tcgetattr(master)
         self.reply({'error':'unauthorized'},401)
@@ -172,9 +172,36 @@ class ClientTests(unittest.TestCase):
         try:
             p=subprocess.Popen([BINARY,'--endpoint',self.endpoint,'session','attach','box','sid'],
                 stdin=slave,stdout=slave,stderr=subprocess.PIPE,env=env,preexec_fn=setup)
-            _,error=p.communicate(timeout=10)
+            # Drain PTY output like a terminal emulator. macOS can wait for
+            # pending output before restoring termios.
+            output = bytearray()
+            done = threading.Event()
+            def drain():
+                import select
+                while not done.is_set():
+                    if select.select([master], [], [], 0.05)[0]:
+                        try:
+                            chunk = os.read(master, 65536)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        output.extend(chunk)
+            reader = threading.Thread(target=drain, daemon=True)
+            reader.start()
+            try:
+                _,error=p.communicate(timeout=10)
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                    p.communicate()
+                done.set()
+                reader.join(timeout=1)
             self.assertEqual(p.returncode,1,error)
             self.assertEqual(termios.tcgetattr(master),before)
+            self.assertIn(b'\x1b[?1003l', output)
+            self.assertIn(b'\x1b[?1049l', output)
+            self.assertIn(b'\x1b[?25h', output)
         finally:
             os.close(master);os.close(slave)
 

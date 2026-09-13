@@ -15,6 +15,30 @@ use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 struct RawTerminal;
 impl Drop for RawTerminal {
     fn drop(&mut self) {
+        // A remote TUI may have enabled these modes before disconnecting.
+        // Restore the local terminal even if its final escape sequences never
+        // arrive. End synchronized output first so cleanup becomes visible.
+        let mut out = io::stdout();
+        let _ = out.write_all(
+            concat!(
+                "\x1b[?2026l",
+                "\x1b[?1000l",
+                "\x1b[?1002l",
+                "\x1b[?1003l",
+                "\x1b[?1005l",
+                "\x1b[?1006l",
+                "\x1b[?1015l",
+                "\x1b[?1004l",
+                "\x1b[?2004l",
+                "\x1b[>4;0m",
+                "\x1b[<u",
+                "\x1b[?1049l",
+                "\x1b[0m",
+                "\x1b[?25h"
+            )
+            .as_bytes(),
+        );
+        let _ = out.flush();
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
