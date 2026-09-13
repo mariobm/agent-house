@@ -1534,14 +1534,6 @@ impl Backend for KrucibleBackend {
     fn start_with_network_bandwidth(&self, id: &str, bytes: Option<u64>) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
-        if self.is_replicated(id)? {
-            if bytes.is_some() {
-                return Err(Error::InvalidState(
-                    "replicated bandwidth updates are not implemented".into(),
-                ));
-            }
-            return self.start_replicated(id);
-        }
         if let Some(storage) = &self.cfg.storage {
             storage.request("verify", &self.cfg.data_dir.join(id))?;
         }
@@ -1590,6 +1582,11 @@ impl Backend for KrucibleBackend {
                     .expect("reserved sandbox")
                     .record = record;
             }
+        }
+        // Both storage modes boot through the same per-VM network policy.
+        // Persist/remove the stopped gateway before replicated boot as well.
+        if self.is_replicated(id)? {
+            return self.start_replicated(id);
         }
         let recovery_dir = {
             let mut inner = self.lock();
