@@ -135,6 +135,14 @@ impl IndexedVolume {
         id: &str,
         head: crate::Head,
     ) -> Result<Self> {
+        Self::decode_head(store, id, head, true)
+    }
+    fn decode_head(
+        store: Arc<dyn ObjectStore>,
+        id: &str,
+        head: crate::Head,
+        ready: bool,
+    ) -> Result<Self> {
         if head.manifest.len() > MAX_MANIFEST_BYTES || head.revision.is_empty() {
             return Err(Error::Corrupt);
         }
@@ -155,7 +163,7 @@ impl IndexedVolume {
         {
             return Err(Error::Corrupt);
         }
-        if !root.ready {
+        if ready && !root.ready {
             return Err(Error::NotReady);
         }
         Ok(Self {
@@ -165,6 +173,19 @@ impl IndexedVolume {
             dirty: BTreeMap::new(),
             poisoned: false,
         })
+    }
+    /// Resume ONLY an unfinished, unowned import. Caller must bind and verify
+    /// the source image and rewrite every byte before finish_import.
+    pub fn resume_import(store: Arc<dyn ObjectStore>, id: &str, size: u64) -> Result<Self> {
+        if !valid_id(id) {
+            return Err(Error::InvalidInput);
+        }
+        let head = store.head(id)?.ok_or(Error::NotFound)?;
+        let disk = Self::decode_head(store, id, head, false)?;
+        if disk.root.ready || disk.root.format != 2 || disk.size() != size {
+            return Err(Error::Conflict);
+        }
+        Ok(disk)
     }
     fn check(&self, at: u64, len: usize) -> Result<()> {
         if self.poisoned {
