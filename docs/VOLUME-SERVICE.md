@@ -6,8 +6,8 @@ Guest fsync does not wait for R2. The default daemon/CLI storage mode remains
 local; no object store is required for self-hosted local disks.
 
 This service replaces the Python qualification adapter. It is included in the
-Linux server bundle but **not enabled by the installer**. Quota integration,
-checkpoint-aware reclamation and daemon/API selection must land before cloud activation.
+Linux server bundle but **not enabled by the installer**. Host resource integration
+and Cloud rollout qualification remain required before cloud activation. See [storage commands and defaults](STORAGE.md).
 The Python adapter remains only for reproducing the earlier qualification gate.
 
 ## Configuration and installation
@@ -62,8 +62,9 @@ The optional systemd unit is `packaging/rust/ahvm-volume.service`. Its default
 binary/config paths are `/opt/ahvm-rust/bin/ahvm-volumed` and
 `/etc/ahvm-rust/volume-service.json`. Install/configure the unit explicitly; do not
 enable it against devices used by another service. Engine configuration must
-point `ReplicatedConfig.socket` at this socket. The public daemon does not yet
-expose that selection through its environment or API.
+point `ReplicatedConfig.socket` at this socket. Set AHVM_VOLUME_SOCKET on the daemon and select storage_mode in create requests.
+The default remains local. Existing cgroup/local-storage quota configurations
+remain incompatible with replicated mode until host resource integration lands.
 
 ## Capacity admission and accounting
 

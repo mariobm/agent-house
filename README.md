@@ -86,8 +86,9 @@ ahvm stop dev
 ahvm start dev
 ```
 
-Uploads replace the guest file only when complete. Stop saves a local disk and
-memory checkpoint; start resumes it. Idle-stop is automatic, and wake is explicit.
+Uploads replace the guest file only when complete. With default local storage,
+stop saves a disk and memory checkpoint for non-desktop VMs; desktop VMs restart
+from disk. Idle-stop defaults to one hour, and wake is explicit.
 Crash recovery uses the latest checkpoint. Keep off-host backups for important data.
 
 When you are finished, delete the VM and its working disk:
@@ -153,6 +154,7 @@ the runtime and database if the new version fails to start.
 - [Files](docs/FILE-UPLOADS.md)
 - [Preview ports and private network access](docs/NETWORK-ACCESS.md)
 - [Recovery and rollback](docs/RUST-CUTOVER.md)
+- [Storage modes, commands and defaults](docs/STORAGE.md)
 - [Local and durable storage plan](docs/DURABLE-STORAGE-PLAN.md) (experimental)
 
 AHVM is an early-release product for evaluation; it is not yet qualified for

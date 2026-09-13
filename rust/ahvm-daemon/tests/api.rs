@@ -1544,3 +1544,188 @@ async fn replicated_create_admits_before_import_and_retains_failed_charge() {
     server.join().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn storage_defaults_ownership_and_unsupported_modes() {
+    let router = app();
+    let (status, created) = call(
+        router.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"storage-local"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["storage"]["mode"], "local");
+    let (status, disk) = call(
+        router.clone(),
+        Some(TOKEN_A),
+        "GET",
+        "/v1/sandboxes/storage-local/storage",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(disk["mode"], "local");
+    assert!(disk["replication"].is_null());
+    for (method, path) in [
+        ("GET", "/v1/sandboxes/storage-local/storage"),
+        ("POST", "/v1/sandboxes/storage-local/storage/sync"),
+    ] {
+        assert_eq!(
+            call(router.clone(), Some(TOKEN_B), method, path, None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(router.clone(), None, method, path, None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        call(
+            router.clone(),
+            Some(TOKEN_A),
+            "POST",
+            "/v1/sandboxes/storage-local/storage/sync",
+            None
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let (status, _) = call(
+        router.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"unsupported","storage_mode":"replicated"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // Axum JSON extraction rejects an invalid enum before the handler and
+    // returns its own text rejection body.
+    let invalid = Request::builder()
+        .method("POST")
+        .uri("/v1/sandboxes")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN_A}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({"name":"invalid","storage_mode":"typo"}).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        router.oneshot(invalid).await.unwrap().status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn replicated_storage_http_reports_backlog_and_requires_confirmed_sync() {
+    use std::io::{BufRead, BufReader, Write};
+    let root = std::env::temp_dir().join(format!("ahvm-storage-http-{}", std::process::id()));
+    let dir = root.join("vms/disk");
+    std::fs::create_dir_all(&dir).unwrap();
+    let image = root.join("base");
+    std::fs::File::create(&image)
+        .unwrap()
+        .set_len(65536)
+        .unwrap();
+    let volume = "c".repeat(64);
+    std::fs::write(dir.join("sandbox.json"), serde_json::to_vec(&serde_json::json!({
+        "spec":{"name":"disk","storage_mode":"replicated","cpus":1,"memory_mb":512,"backend":"krucible"},
+        "info":{"id":"disk","name":"disk","state":"stopped","thermal":"cold","ip":"",
+            "storage":{"mode":"replicated","volume_id":volume,"replication":null}},
+        "backing":image, "deleting":false,"volume_prepared":true,"admitted_bytes":65536
+    })).unwrap()).unwrap();
+    let socket = root.join("volume.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || {
+        for (operation, remote) in [("status", 1), ("sync", 1), ("sync", 2)] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["operation"], operation);
+            writeln!(stream, "{}", serde_json::json!({"ok":true,"volume_id":request["volume_id"],"status":{
+                "local_sequence":2,"remote_sequence":remote,"pending_bytes":if remote==1 {65536} else {0},
+                "local_failed":false,"replication_failed":false
+            }})).unwrap();
+        }
+    });
+    let mut config = ahvm_engine::KrucibleConfig::new(
+        "/usr/bin/true".into(),
+        image,
+        root.join("vms"),
+        String::new(),
+    );
+    config.replicated = Some(ahvm_engine::ReplicatedConfig { socket });
+    let mut state = test_state();
+    state.backend = Arc::new(ahvm_engine::KrucibleBackend::open(config).unwrap());
+    state
+        .store
+        .reserve_replicated_volume("alice", "disk", &volume, 65536, 1)
+        .unwrap();
+    state
+        .store
+        .create_sandbox(&ahvm_store::Sandbox {
+            id: "disk".into(),
+            name: "disk".into(),
+            owner_user_id: "alice".into(),
+            backend: ahvm_store::Backend::Krucible,
+            state: "stopped".into(),
+            thermal: "cold".into(),
+            cpus: 1,
+            memory_mb: 512,
+            ip: "".into(),
+            created_at: 1,
+            updated_at: 1,
+        })
+        .unwrap();
+    let router = build_router(state);
+    let (status, body) = call(
+        router.clone(),
+        Some(TOKEN_A),
+        "GET",
+        "/v1/sandboxes/disk/storage",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["mode"], "replicated");
+    assert_eq!(body["logical_bytes"], 65536);
+    assert_eq!(body["replication"]["pending_bytes"], 65536);
+    assert!(body.get("volume_id").is_none());
+    assert_eq!(
+        call(
+            router.clone(),
+            Some(TOKEN_A),
+            "POST",
+            "/v1/sandboxes/disk/storage/sync",
+            None
+        )
+        .await
+        .0,
+        StatusCode::BAD_GATEWAY
+    );
+    let (status, body) = call(
+        router,
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes/disk/storage/sync",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["replication"]["pending_bytes"], 0);
+    server.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}

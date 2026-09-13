@@ -204,6 +204,7 @@ async fn execute(state: AppState, user: UserId, request: Request, operation_id: 
             u,
             Json(sandboxes::CreateBody {
                 name: sandbox_id,
+                storage_mode: None,
                 cpus,
                 memory_mb,
                 desktop: false,

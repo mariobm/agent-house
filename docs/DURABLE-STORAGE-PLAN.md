@@ -219,7 +219,7 @@ reclaimed, including failed imports and tombstones. This is the host foundation;
 tenant ownership/quota wiring, remote-byte accounting and GC are still outstanding.
 See [service accounting](VOLUME-SERVICE.md#capacity-admission-and-accounting).
 
-Proposed CLI syntax below is **not implemented by this accounting change**:
+The API/CLI slice implements this self-hosted flow. See [current limits and defaults](STORAGE.md):
 
 ```bash
 # Self-hosted: local remains the default, no object store needed.
@@ -229,8 +229,8 @@ ahvm create dev
 ahvm create durable-dev --storage replicated
 ahvm shell durable-dev
 ahvm get durable-dev                 # mode, pending bytes, replication health
-ahvm storage sync durable-dev        # explicitly wait for remote durability
 ahvm stop durable-dev
+ahvm storage sync durable-dev        # explicit barrier, currently stopped only
 ahvm start durable-dev               # same disk; cold boot, no RAM promise
 ahvm delete durable-dev
 ```
@@ -401,3 +401,18 @@ for Cloud, then authenticated automatic wake. Follow with dashboard disk/status
 visibility and admin storage/cleanup controls in the private site repository.
 Local storage remains the default here. Named checkpoint expiry is still a
 separate collector/format extension. No new release or deployment in this slice.
+
+
+### API and CLI storage controls
+
+Self-hosted create accepts explicit local/replicated mode, with feature negotiation
+to prevent older daemons ignoring the new field. Get responses include live storage
+state; list remains a metadata-only operation. Owner-scoped storage status and sync
+routes expose admitted capacity and replication state. Sync remains stopped-only,
+with lifecycle serialization and operation admission retained after disconnection.
+
+The website documentation and [storage guide](STORAGE.md) describe local defaults,
+sizing, Bash, idle-stop, cold replicated restart, pending writes and Cloud rollout
+limits. This slice does not enable the volume service through the standard installer
+or change Cloud defaults. Next: host resource integration and automatic Cloud
+selection/wake, then dashboard user/admin storage visibility.
