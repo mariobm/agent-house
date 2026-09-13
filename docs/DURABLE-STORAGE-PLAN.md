@@ -166,8 +166,12 @@ The [ownership core](../experiments/durable-storage/OWNERSHIP.md) adds a format-
 head envelope that atomically publishes the owner epoch and disk map. It supports
 explicit drain/release and same-identity journal recovery after process death.
 Concurrent/lost-response cases and independent-process R2 handoff are qualified.
-It is not wired into the engine service yet. There is deliberately no timed or
-forced takeover; supervising the VM and service identity remains the next gate.
+The isolated engine supervisor now uses this ownership core. Supervisor restart
+adopts the surviving worker; dead-worker replacement refuses while a VM holds
+the disk open. The original identity/journal are reused after observed VM death.
+There is deliberately no timed or forced takeover. Production supervision,
+attachment-to-engine/VM binding, ownership release/deletion and accounting remain
+before rollout; the single-volume adapter is not an installed service.
 
 ## Qualification measurements
 

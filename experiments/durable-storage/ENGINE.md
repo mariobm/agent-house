@@ -70,13 +70,40 @@ Prepare has a 600-second timeout, status three seconds, other operations 300
 seconds. Timed-out mutations are ambiguous: retry the same identity, never make
 another volume implicitly.
 
-`engine-service.py` is a **single-volume qualification adapter** around the
-existing Rust `indexed_nbd` example. It requires root only to attach an unused
-NBD device, keeps a private local record, and leaves R2 objects for explicit
-fixture cleanup. It refuses service-root reuse; service restart/adoption and
-multi-host fencing are not implemented. An incomplete import remains failed
-rather than overwriting remote state. This adapter is not a production service.
-Its logical deletion does not yet reclaim/tombstone the remote objects.
+`engine-service.py` is a **single-volume qualification supervisor** around the
+Rust `owned_nbd` worker. Import is enrolled offline into format 4 before first
+attachment. Every guest request goes through `OwnedDisk`; guest fsync remains
+local-only. The same private owner identity and journal survive worker restarts.
+The service record binds its device, worker PID/start time/boot ID and NBD client
+PID. A Unix peer-credential check verifies the control socket belongs to that
+worker. Supervisor restart adopts the surviving attachment without reconnecting
+it. SIGTERM and SIGKILL of the supervisor both leave the storage worker running.
+
+The engine holds a lifetime data-directory lock, preventing two controllers of
+the same persisted tree. The qualification service is restricted to one trusted
+engine and one volume. Do not clone an engine tree or owner directory, or attach
+this device with another tool. Procfs consumer checks supplement serialized
+engine lifecycle operations; they are not a security boundary against host root.
+
+If storage dies, inspect fails. Replacement and detach refuse while any process
+other than the NBD client holds the block device. Stop/kill and observe the old
+VM's death before recovery; a new storage worker then replays the same journal.
+Signals to adopted storage workers use pidfds after identity verification.
+Disconnect waits for the kernel to finish removing its NBD attachment.
+
+This remains a qualification adapter, not an installed production service:
+
+- No automatic restart loop or automatic VM kill. Recovery is explicit and
+  fails closed while a live consumer remains.
+- A crash between spawning a worker and recording its identity, or between NBD
+  attachment and recording it, requires manual fencing. The service never guesses
+  which unrecorded process/device it can kill or replace.
+- An incomplete import remains failed rather than overwriting remote state.
+- Stop/detach retain ownership for restart. Logical delete persists its intent
+  before detach, but retains the owner directory, journal and remote ownership.
+  **No release/handoff or remote GC is exposed here.** This avoids losing the
+  recovery identity before deletion/accounting is implemented. Fixtures require
+  explicit cleanup; production storage reclamation is still outstanding.
 
 ## Qualification
 
@@ -90,7 +117,8 @@ sudo modprobe nbd nbds_max=4 max_part=0
 sudo python3 experiments/durable-storage/engine-service.py \
   --root /tmp/ahvm-engine-volume \
   --config /path/to/private/r2.json \
-  --server /path/to/indexed_nbd --device /dev/nbd0
+  --server /path/to/indexed_nbd --owned-server /path/to/owned_nbd \
+  --device /dev/nbd0
 ```
 
 In another terminal, against this branch's Rust engine:
@@ -109,7 +137,7 @@ cargo test --manifest-path rust/Cargo.toml -p ahvm-engine \
 The test covers implicit host-default selection, create/exec, stop/start without
 RAM snapshots, abrupt worker loss, engine adoption with the same PID, changing
 the host default without changing the volume, capability rejection and destroy.
-After success, stop the adapter and remove its exact qualification R2 prefix and
+After success, destroy the VM, stop the adapter and remove its exact qualification R2 prefix and
 local journal. If a test fails, terminate its recorded worker before detaching
 NBD; do not detach a device underneath an unrelated VM.
 
@@ -132,9 +160,74 @@ services remained active.
 
 ## Remaining before rollout
 
-Fenced ownership and a supervised service with restart recovery are next. They
-must prevent two engines/hosts sharing a writable volume, invalidate old owners,
-and account for retained journals/attachments. No automatic failover is enabled.
+The ownership-aware worker and isolated restart supervisor are now connected.
+Production service installation, multi-volume scheduling, binding each attachment
+to its engine/VM and accounting for retained journals remain. No automatic
+failover is enabled.
 Also remaining: remote deletion/GC, quotas including the service, persistent clean
 cache, full-backlog R2 performance/cost qualification, and product API/install
 integration. This PR does not declare the full phase-4 exit gate complete.
+
+## Restart/crash gate
+
+The optional `AHVM_VOLUME_RECOVERY_HOOK` adds supervisor SIGKILL/adoption,
+rejection of detach under a live VM, storage-worker SIGKILL, rejection of live
+replacement, then VM termination and same-volume recovery to `kvm_replicated`.
+It also checks the VM PID is unchanged across supervisor restart. Use only the
+isolated service root: the hook intentionally kills its recorded processes.
+
+Instead of the foreground service command above, launch it with this small
+wrapper (adjust paths). The private `gate.json` is test-launcher metadata, not
+volume state or credentials:
+
+```python
+import importlib.util, json, subprocess, time
+from pathlib import Path
+script = Path("experiments/durable-storage/engine-service.py").resolve()
+spec = importlib.util.spec_from_file_location("adapter", script)
+adapter = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(adapter)
+root = Path("/tmp/ahvm-engine-volume")
+root.mkdir(mode=0o700)  # fresh test only
+command = ["python3", str(script), "--root", str(root),
+           "--config", "/path/to/private/r2.json",
+           "--server", "/path/to/indexed_nbd",
+           "--owned-server", "/path/to/owned_nbd", "--device", "/dev/nbd0"]
+with (root / "service.log").open("ab") as log:
+    child = subprocess.Popen(command, stdout=log, stderr=log, start_new_session=True)
+(root / "gate.json").write_text(json.dumps({
+    "command": command, "supervisor": adapter.identity(child.pid)}))
+time.sleep(1)
+assert child.poll() is None
+```
+
+Run as root on the isolated Linux host; add these to the existing gate environment:
+
+```bash
+export AHVM_SERVICE_ROOT=/tmp/ahvm-engine-volume
+export AHVM_VOLUME_RECOVERY_HOOK="$PWD/experiments/durable-storage/service-recovery-hook.py"
+```
+
+After successful destroy, terminate the supervisor using the **current** identity
+in `gate.json` (the hook updates it after restart), verify the device is detached,
+and clean the exact test volume prefix and private test directories. Never
+remove an owner directory belonging to a live or merely unreachable VM.
+
+### Ownership/service verification (2026-09-13)
+
+The full KVM gate with the crash hook passed in **85.57 seconds**, including
+512-MiB image import, using one 1-vCPU/1-GiB VM. It verified supervisor SIGKILL
+with unchanged VM PID and working exec, rejection of live detach, storage-worker
+SIGKILL, rejection of replacement under the still-live VM, then observed VM death,
+same-volume recovery with the file intact, engine adoption, and destroy.
+
+Validation: 44 engine + 58 volume unit tests on macOS, 51 engine + 58 volume on
+Linux, 49 daemon tests on macOS, nine deterministic supervisor tests, Clippy with
+warnings denied and formatting. No installed services or defaults changed.
+
+The gate caught transient helper descriptors during NBD attach and asynchronous
+kernel disconnect completion; lifecycle checks now wait boundedly without
+excluding unverified consumers. Parallel testing also exposed timestamp-only
+scratch-directory collisions, fixed with a per-process counter. Two intermediate
+imports failed on object-store errors before boot; they remained accounted and
+were explicitly deleted. Resumable import is still not provided by this adapter.
