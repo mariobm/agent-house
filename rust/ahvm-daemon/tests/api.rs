@@ -1347,3 +1347,55 @@ async fn api_pacing_covers_legacy_json_and_upgrade_header_cannot_bypass_it() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn delete_keeps_replicated_capacity_until_service_confirms_cleanup() {
+    let state = test_state();
+    let app = build_router(state.clone());
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"disk-vm"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let volume = "a".repeat(64);
+    state
+        .store
+        .reserve_replicated_volume("alice", "disk-vm", &volume, 65536, 0)
+        .unwrap();
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_B),
+        "DELETE",
+        "/v1/sandboxes/disk-vm",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        state
+            .store
+            .replicated_reservation("alice", &volume)
+            .unwrap()
+            .state,
+        "reserved"
+    );
+    let (status, _) = call(app, Some(TOKEN_A), "DELETE", "/v1/sandboxes/disk-vm", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(state.store.get_sandbox("disk-vm").is_err());
+    assert_eq!(
+        state
+            .store
+            .replicated_reservation("alice", &volume)
+            .unwrap()
+            .state,
+        "deleting"
+    );
+    assert_eq!(
+        state.store.replicated_usage("alice").unwrap().logical_bytes,
+        65536
+    );
+}

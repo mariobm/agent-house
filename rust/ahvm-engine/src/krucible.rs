@@ -1280,6 +1280,40 @@ impl Backend for KrucibleBackend {
         SnapshotManifest::read_from(&bundle)
     }
 
+    fn reclaim_replicated_volume(&self, sandbox: &str, volume: &str, bytes: u64) -> Result<bool> {
+        validate_id(sandbox)?;
+        crate::replicated::validate_volume(volume)?;
+        let _guard = OpGuard::take(self, sandbox)?;
+        let existing = {
+            let inner = self.lock();
+            if let Some(rec) = inner.sandboxes.get(sandbox) {
+                if !rec.record.deleting
+                    || rec.worker.is_some()
+                    || rec.record.info.storage.volume_id.as_deref() != Some(volume)
+                {
+                    return Err(Error::Conflict(
+                        "sandbox is retained or has another volume".into(),
+                    ));
+                }
+                true
+            } else {
+                false
+            }
+        };
+        let dir = self.cfg.data_dir.join(sandbox);
+        let complete = self.replica()?.retire(volume, &dir, bytes)?;
+        if existing {
+            // A prior destroy may have failed before service registration. The
+            // service now owns durable delete intent and verifies consumers.
+            if let Some(net) = &self.networks {
+                net.remove(&dir)?;
+            }
+            self.remove_storage(&dir)?;
+            std::fs::File::open(&self.cfg.data_dir)?.sync_all()?;
+            self.lock().sandboxes.remove(sandbox);
+        }
+        Ok(complete)
+    }
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo> {
         if spec.network_bytes_per_sec.is_some_and(|v| {
             self.networks.is_none() || (v != 0 && !(65536..=1_000_000_000).contains(&v))

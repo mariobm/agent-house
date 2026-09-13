@@ -93,6 +93,7 @@ fn busy_volume_does_not_block_other_volume_lookup() {
         volume_id: id.into(),
         sandbox_dir: dir.join("sandbox"),
         image: None,
+        logical_bytes: None,
     };
     let first = s.entry(&request(&a)).unwrap();
     let _held = first.lock().unwrap();
@@ -120,7 +121,8 @@ fn copied_sandbox_path_cannot_reuse_attachment() {
             operation: "attach".into(),
             volume_id: id,
             sandbox_dir: dir.join("copy"),
-            image: None
+            image: None,
+            logical_bytes: None,
         })
         .is_err());
     fs::remove_dir_all(dir).unwrap();
@@ -148,7 +150,8 @@ fn unknown_and_oversized_requests_are_not_records() {
             operation: "attach".into(),
             volume_id: "a".repeat(64),
             sandbox_dir: dir.clone(),
-            image: None
+            image: None,
+            logical_bytes: None,
         })
         .is_err());
     assert!(s.entries.lock().unwrap().is_empty());
@@ -206,6 +209,7 @@ fn prepare_request(s: &Service, suffix: char) -> Request {
         volume_id: id,
         sandbox_dir: sandbox,
         image: Some(image),
+        logical_bytes: None,
     }
 }
 fn budget_service(dir: &Path) -> Service {
@@ -492,6 +496,7 @@ fn busy_foreground_admission_cancels_an_already_admitted_collector() {
             volume_id: id,
             sandbox_dir: dir.join("sandbox"),
             image: None,
+            logical_bytes: None,
         })
         .unwrap_err();
     assert_eq!(err.to_string(), "volume busy");
@@ -602,5 +607,81 @@ fn cold_disks_release_local_capacity_and_reacquire_without_double_charging() {
     assert!(r.reclaimed);
     assert_eq!(s.usage().unwrap().logical_bytes, 0);
     drop(e);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
+fn retirement_of_unregistered_disk_requires_observed_cleanup() {
+    let dir = temp();
+    let s = budget_service(&dir);
+    let id = "a".repeat(64);
+    let request = || Request {
+        version: 1,
+        operation: "retire".into(),
+        volume_id: id.clone(),
+        sandbox_dir: s.config.engine_root.join("missing-sandbox"),
+        image: None,
+        logical_bytes: Some(crate::CHUNK_BYTES as u64),
+    };
+    let ack = s.request(request()).unwrap();
+    assert_eq!(ack["reclamation_complete"], false);
+    assert_eq!(s.usage().unwrap().logical_bytes, crate::CHUNK_BYTES as u64);
+    assert_eq!(s.usage().unwrap().journal_reserved_bytes, 0);
+    let entry = s.entry(&request()).unwrap();
+    let raw = Arc::new(crate::reclaim::tests::Memory::default());
+    {
+        let mut e = entry.lock().unwrap();
+        assert!(e.record.deleted && e.record.evicted);
+        assert!(!e.record.prepared);
+        s.reclaim_with_store(&mut e.record, raw).unwrap();
+    }
+    assert_eq!(s.request(request()).unwrap()["reclamation_complete"], true);
+    assert_eq!(s.usage().unwrap().logical_bytes, 0);
+    let mut wrong = request();
+    wrong.logical_bytes = Some(2 * crate::CHUNK_BYTES as u64);
+    assert!(s.request(wrong).is_err());
+    let mut wrong = request();
+    wrong.sandbox_dir = dir.join("different");
+    assert!(s.request(wrong).is_err());
+    assert_eq!(s.request(request()).unwrap()["reclamation_complete"], true);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
+fn unknown_retirement_cannot_claim_a_foreign_owned_disk() {
+    use crate::nbd::Disk;
+    let dir = temp();
+    let s = budget_service(&dir);
+    let id = "a".repeat(64);
+    let raw = Arc::new(crate::reclaim::tests::Memory::default());
+    IndexedVolume::create(raw.clone(), &id, crate::CHUNK_BYTES as u64).unwrap();
+    OwnedDisk::enroll(raw.clone(), &id).unwrap();
+    let foreign = dir.join("foreign");
+    private_dir(&foreign).unwrap();
+    let mut disk = OwnedDisk::open(raw.clone(), &id, &foreign).unwrap();
+    disk.write(0, b"keep").unwrap();
+    disk.sync_remote().unwrap();
+    let request = || Request {
+        version: 1,
+        operation: "retire".into(),
+        volume_id: id.clone(),
+        sandbox_dir: dir.join("missing"),
+        image: None,
+        logical_bytes: Some(crate::CHUNK_BYTES as u64),
+    };
+    assert_eq!(s.request(request()).unwrap()["reclamation_complete"], false);
+    let entry = s.entry(&request()).unwrap();
+    {
+        let mut e = entry.lock().unwrap();
+        assert!(s.reclaim_with_store(&mut e.record, raw.clone()).is_err());
+        assert!(!e.record.reclaimed);
+    }
+    let mut bytes = [0; 4];
+    disk.read(0, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"keep");
+    assert_eq!(s.request(request()).unwrap()["reclamation_complete"], false);
+    drop(disk);
     fs::remove_dir_all(dir).unwrap();
 }
