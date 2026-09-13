@@ -436,3 +436,26 @@ the bounded volume state filesystem and services for Cloud, routing Cloud create
 to replicated mode and implementing automatic wake, then full guest qualification
 and dashboard visibility. Final capacity planning must include guest/VMM, storage
 worker and supervisor headroom; this change is not a production capacity estimate.
+
+### Cloud storage selection and deployment preparation
+
+Durable lifecycle create requests now carry an optional storage mode. The mode
+is part of the canonical receipt, so a retry cannot change it. Omitted fields
+preserve old receipt payloads; unsupported replicated requests never become local
+creates. Nodes advertise `lifecycle-storage-v1` for this extension.
+
+The private Cloud change freezes host-selected storage in each new sandbox and
+create operation. Existing hosts/disks default to local. Replicated placement
+checks node support before reserving capacity, and admission fences concurrent
+host-policy changes. Customers do not choose the Cloud storage backend.
+
+Cloud deployment templates add a bounded volume-state mount, separate supervisor
+and persistent disk workers, and aggregate headroom. On agent_house, the disposable
+128-MiB gate proved missing-mount refusal, filesystem ENOSPC, positive resource
+proof and supervisor restart. It used no VM, disk attachment or R2 requests, and
+removed its temporary units, mount and newly loaded NBD module.
+
+This prepares activation; it does not switch the live Cloud host. After merging,
+install the bounded pool and scoped production credentials, qualify one real guest
+through create/write/stop/evict/start/delete, then activate replicated placement.
+Authenticated automatic wake and dashboard replication status remain next.
