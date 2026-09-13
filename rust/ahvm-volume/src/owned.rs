@@ -674,7 +674,18 @@ impl Disk for OwnedDisk {
         if *guard != Phase::Active {
             return Err(Error::ReopenRequired);
         }
-        self.disk.write(at, bytes)
+        loop {
+            match self.disk.write(at, bytes) {
+                Err(Error::Backpressure) => {
+                    // A full bounded journal is flow control, not a failed disk.
+                    // Drain admitted writes before retrying the still-unaccepted
+                    // request. Use the inner disk to avoid recursively taking
+                    // the phase lock while a release may be waiting for it.
+                    self.disk.sync_remote()?;
+                }
+                result => return result,
+            }
+        }
     }
     fn flush(&mut self) -> Result<()> {
         let phase = self.phase.clone();
@@ -1040,6 +1051,36 @@ mod tests {
         assert!(OwnedDisk::open(s.clone(), "owned", &b.0).is_err());
         old.release().unwrap();
     }
+    #[test]
+    fn guest_write_waits_for_replication_when_dirty_buffer_is_full() {
+        let store = Arc::new(Memory::default());
+        let size = crate::indexed::DIRTY_LIMIT + crate::CHUNK_BYTES;
+        IndexedVolume::create(store.clone(), "pressure", size as u64).unwrap();
+        OwnedDisk::enroll(store.clone(), "pressure").unwrap();
+        let dir = Directory::new();
+        let mut disk = OwnedDisk::open(store.clone(), "pressure", &dir.0).unwrap();
+        // No background uploader: the admission path itself must make room.
+        let block = vec![7; crate::indexed::WRITE_LIMIT];
+        for at in (0..crate::indexed::DIRTY_LIMIT).step_by(block.len()) {
+            disk.write(at as u64, &block).unwrap();
+        }
+        disk.write(crate::indexed::DIRTY_LIMIT as u64, &[9; 512])
+            .unwrap();
+        disk.flush().unwrap();
+        disk.release().unwrap();
+        drop(disk);
+        let next = Directory::new();
+        let mut reopened = OwnedDisk::open(store, "pressure", &next.0).unwrap();
+        let mut bytes = [0; 512];
+        reopened.read(0, &mut bytes).unwrap();
+        assert_eq!(bytes, [7; 512]);
+        reopened
+            .read(crate::indexed::DIRTY_LIMIT as u64, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [9; 512]);
+        reopened.release().unwrap();
+    }
+
     #[test]
     fn competing_acquisitions_have_exactly_one_winner() {
         let s = fixture();
