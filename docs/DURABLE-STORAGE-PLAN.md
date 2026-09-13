@@ -209,3 +209,37 @@ binding and automatic storage recovery after verified VM termination. It ships
 as an opt-in server binary/unit, not an enabled cloud default. Tenant accounting,
 remote reclamation/ownership release, and daemon/API configuration remain before
 rollout. Local mode remains the default.
+
+### Capacity admission and intended CLI
+
+The Rust service now reserves logical disk capacity, journal space (including
+compaction) and clean-cache payload before import, with explicit host budgets.
+Reservations are rebuilt from durable records and remain charged until data is
+reclaimed, including failed imports and tombstones. This is the host foundation;
+tenant ownership/quota wiring, remote-byte accounting and GC are still outstanding.
+See [service accounting](VOLUME-SERVICE.md#capacity-admission-and-accounting).
+
+Proposed CLI syntax below is **not implemented by this accounting change**:
+
+```bash
+# Self-hosted: local remains the default, no object store needed.
+ahvm create dev
+
+# Only on a host configured by its operator for replicated storage.
+ahvm create durable-dev --storage replicated
+ahvm shell durable-dev
+ahvm get durable-dev                 # mode, pending bytes, replication health
+ahvm storage sync durable-dev        # explicitly wait for remote durability
+ahvm stop durable-dev
+ahvm start durable-dev               # same disk; cold boot, no RAM promise
+ahvm delete durable-dev
+```
+
+Normal writes/fsync remain local and replication runs in the background. The
+explicit barrier must report failure if remote durability cannot be confirmed;
+it is not a named historical checkpoint. Cloud selects replicated storage by
+policy after rollout qualification, so users need no bucket credentials or
+storage flag. Self-hosted operators configure their own S3-compatible storage;
+mode remains immutable at creation. Keep these commands separate from manual
+control-plane backups. Breaking experimental changes are allowed where they
+simplify correctness; no compatibility migration is required for test records.

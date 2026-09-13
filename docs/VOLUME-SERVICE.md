@@ -32,6 +32,12 @@ host. Configuration is JSON; paths are absolute. Example:
   "nbd_client": "/usr/sbin/nbd-client",
   "devices": ["/dev/nbd0", "/dev/nbd1"],
   "client_uid": 1001,
+  "limits": {
+    "max_volume_bytes": 68719476736,
+    "max_logical_bytes": 1099511627776,
+    "max_journal_bytes": 17179869184,
+    "max_cache_bytes": 2147483648
+  },
   "image_roots": ["/opt/ahvm-rust/share"],
   "socket_dir": "/run/ahvm-volume"
 }
@@ -58,6 +64,56 @@ binary/config paths are `/opt/ahvm-rust/bin/ahvm-volumed` and
 enable it against devices used by another service. Engine configuration must
 point `ReplicatedConfig.socket` at this socket. The public daemon does not yet
 expose that selection through its environment or API.
+
+## Capacity admission and accounting
+
+The required `limits` object sets per-volume logical capacity and host totals for
+logical disk capacity, journal reservations and clean-cache payload reservations.
+All values are bytes. The example allows disks up to 64 GiB, 1 TiB of total logical
+capacity, 16 GiB of journal reservations and 2 GiB of cache reservations. The
+smallest budget or configured device pool wins. These are operator-selected host
+budgets, not per-tenant cloud quotas or measurements of object-store consumption.
+
+Before import performs any remote writes, admission reserves the source image's
+logical size under the registry lock and persists it as `logical_bytes` in the
+volume record. Sparse image holes still count toward logical capacity. The source
+cannot grow past that reservation on an import retry. Each record also reserves
+512 MiB for journals (a 256-MiB log plus its simultaneous compaction replacement)
+and 64 MiB of clean-cache payload. These values share the worker's actual bounds.
+
+Failed imports, stopped disks and deleted-but-retained records remain charged.
+Retries do not charge twice. Until reclamation lands, repeated create/delete can
+exhaust a budget; raising it requires an explicit config change and service
+restart. Do not remove owner/journal records to evade the budget. A reservation
+write failure freezes further imports until restart reconstructs the durable
+registry. Lowering a budget preserves existing disks and blocks new admission
+while over budget; it does not kill workers or discard pending writes.
+
+This is conservative admission accounting, not filesystem preallocation. Keep
+headroom for metadata, other applications and filesystem overhead. The cache
+budget is not a process RSS cap: dirty buffers, maps, in-flight requests and other
+allocations are additional. Remote historical objects remain unbounded until GC.
+The per-volume journal/backlog limits already enforce write backpressure; no
+remote request or host-wide accounting lock is added to guest I/O.
+
+A trusted client can send the existing private protocol a `usage` request:
+
+```json
+{"version":1,"operation":"usage","volume_id":"<64-character ID>","sandbox_dir":"/var/lib/ahvm-rust/sandboxes/<id>"}
+```
+
+It returns `usage.reservation`, sampled `local_file_bytes` and
+`local_allocated_bytes`, `host_reservations`, and configured `limits`. File samples
+include retained metadata and temporary journals, can race atomic compaction, and
+are informational; admission uses durable reservations. Symlinks/unexpected file
+types are rejected. A tombstoned volume can still be inspected using its original
+sandbox path. No credentials or remote keys are exposed. This protocol operation
+is not yet a public CLI command.
+
+This changes the experimental configuration/record schema: `limits` and recorded
+`logical_bytes` are mandatory. Old unaccounted records fail closed rather than
+inferring capacity from a mutable source image. Use a fresh qualification root;
+there is no silent production migration or enabled service change.
 
 ## Lifecycle and recovery
 
@@ -139,3 +195,14 @@ now includes the optional binary/unit. No installed daemon/default changed.
 All five test R2 prefixes were deleted and verified empty. Test journals, device
 attachments and copied credentials were removed. All four installed AHVM services
 remained active; no release was published and no cloud storage mode was enabled.
+
+### Capacity accounting validation
+
+On agent_house, 75 volume unit tests plus the gated-launch process test pass;
+macOS has 59 volume unit tests. Clippy with warnings denied and formatting pass.
+The added regressions cover concurrent one-slot admission, retry/retained-delete
+accounting reconstructed from records, each independent budget, changed source
+size, uncertain record publication, lower budgets preserving existing identity,
+usage sampling and rejection of unaccounted old records. This slice needed no
+VMs or R2 objects and did not modify installed services. The earlier 95.97-second
+KVM result above belongs to the supervisor qualification, not this test run.
