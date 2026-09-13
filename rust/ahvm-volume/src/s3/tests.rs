@@ -289,3 +289,20 @@ fn offline_listing_uses_exclusive_start_after_and_rejects_regression() {
     let r = worker.join().unwrap();
     assert!(r[0].contains(&format!("start-after=qualification%2Fdisk%2Fchunks%2F{a}")));
 }
+
+#[test]
+fn immutable_put_retries_transient_and_lost_replies_without_weakening_cas() {
+    let bytes = vec![7; CHUNK_BYTES];
+    let hash = digest(&bytes);
+    let (store, worker) = server(vec![
+        response("503 Unavailable", "", &[]),
+        Vec::new(),
+        response("412 Precondition Failed", "", &[]),
+        response("200 OK", "ETag: \"existing\"\r\n", &bytes),
+    ]);
+    store.put_chunk(&"a".repeat(64), &hash, &bytes).unwrap();
+    let calls = worker.join().unwrap();
+    assert_eq!(calls.len(), 4);
+    assert!(calls[..3].iter().all(|request| request.starts_with("PUT ")));
+    assert!(calls[3].starts_with("GET "));
+}

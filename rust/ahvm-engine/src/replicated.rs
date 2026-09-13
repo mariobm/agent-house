@@ -98,7 +98,9 @@ impl ReplicatedConfig {
         validate_volume(id)?;
         let mut conn = UnixStream::connect(&self.socket)?;
         let seconds = match operation {
-            "prepare" => 600,
+            // First import uploads a full developer image, not just dirty writes.
+            // Lifecycle receipts remain pollable while this bounded request runs.
+            "prepare" => 3600,
             "status" | "resources" => 3,
             "retire" => 30,
             _ => 300,

@@ -317,3 +317,24 @@ fn unfinished_import_can_resume_only_before_ready() {
     d.read(crate::CHUNK_BYTES as u64, &mut bytes).unwrap();
     assert!(bytes.iter().all(|b| *b == 9));
 }
+
+#[test]
+fn parallel_import_preserves_visibility_and_refuses_live_disks() {
+    let store = Arc::new(Store::default());
+    let id = "a".repeat(64);
+    let mut disk =
+        IndexedVolume::create_import(store.clone(), &id, 64 * CHUNK_BYTES as u64).unwrap();
+    let mut bytes = vec![0; 64 * CHUNK_BYTES];
+    for (i, chunk) in bytes.chunks_mut(CHUNK_BYTES).enumerate() {
+        chunk.fill((i + 1) as u8);
+    }
+    disk.write(0, &bytes).unwrap();
+    disk.commit_import().unwrap();
+    assert!(IndexedVolume::open(store.clone(), &id).is_err());
+    disk.finish_import().unwrap();
+    assert!(disk.commit_import().is_err());
+    let reopened = IndexedVolume::open(store, &id).unwrap();
+    let mut out = vec![0; bytes.len()];
+    reopened.read(0, &mut out).unwrap();
+    assert_eq!(out, bytes);
+}
