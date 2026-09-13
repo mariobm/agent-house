@@ -397,3 +397,30 @@ launch test pass. macOS: 79 volume tests pass. Formatting and clippy with warnin
 denied pass. Temporary service files, credentials and NBD module were removed;
 installed AHVM services stayed active. This is a small correctness probe, not a
 large-disk eviction or boot-time benchmark.
+
+## Accounting retirement handshake
+
+The trusted daemon can send `retire` with `volume_id`, the original `sandbox_dir`
+and `logical_bytes`. The reply's `reclamation_complete` is required: `false` means
+delete intent was recorded; only `true` confirms local and remote reclamation.
+Timeouts, omitted confirmation and mismatched identities never release tenant quota.
+The engine validates lifecycle ownership before issuing this host-only operation.
+
+For a never-registered identity, the supervisor records an already-deleted, cold
+record without an image import, journal/cache reservation or NBD attachment. Its
+logical size is validated and held until cleanup. The original sandbox directory
+may be absent, but must be directly under the configured engine root. Remote
+ownership checks still apply: missing local ownership cannot authorize deletion
+of another host's owned disk. Small local/remote tombstones remain permanently.
+Existing records must match the original sandbox binding and logical size.
+
+Set `AHVM_VOLUME_SOCKET` on the daemon to this service's private socket for
+reconciliation. No installer enables this service or replicated creation yet.
+The daemon's separate deletion reconciler cannot stall the thermal idle sweep.
+
+This continuation passes 53 Linux engine tests, 91 ordinary volume tests and ten
+explicit root-only tests; the daemon has 25 unit and 24 HTTP tests passing, and
+15 store tests pass. macOS engine tests (46), daemon/store regressions and volume
+tests (79) pass. Formatting and clippy with warnings denied pass. The small live
+R2/daemon handshake is recorded in the durable-storage plan; no VM or installed
+service was changed.

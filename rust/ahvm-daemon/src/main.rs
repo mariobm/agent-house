@@ -76,6 +76,10 @@ async fn main() {
         std::env::var_os("AHVM_STORAGE_SOCKET").map(|socket| ahvm_engine::StorageConfig {
             socket: socket.into(),
         });
+    backend_cfg.replicated =
+        std::env::var_os("AHVM_VOLUME_SOCKET").map(|socket| ahvm_engine::ReplicatedConfig {
+            socket: socket.into(),
+        });
     backend_cfg.resources = std::env::var_os("AHVM_CGROUP_ROOT")
         .map(|root| ahvm_engine::ResourceConfig { root: root.into() });
     #[derive(serde::Deserialize)]
@@ -200,6 +204,8 @@ async fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(60),
     };
+    let reclamation_state = state.clone();
+    tokio::spawn(async move { ahvm_daemon::replicated::run(reclamation_state).await });
     tokio::spawn(async move { ahvm_daemon::thermal::run(thermal_state, thermal_cfg).await });
     let addr: SocketAddr = env("AHVM_LISTEN", "127.0.0.1:8080")
         .parse()

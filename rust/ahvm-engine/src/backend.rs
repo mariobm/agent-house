@@ -85,6 +85,20 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
         Err(crate::Error::InvalidState("remote sync unavailable".into()))
     }
 
+    /// Trusted accounting reconciler: retire an abandoned/deleting replicated
+    /// identity and report true only after verified local and remote cleanup.
+    /// A normal retained sandbox must be explicitly destroyed first.
+    fn reclaim_replicated_volume(
+        &self,
+        _sandbox: &str,
+        _volume: &str,
+        _bytes: u64,
+    ) -> Result<bool> {
+        Err(crate::Error::InvalidState(
+            "replicated reclamation unavailable".into(),
+        ))
+    }
+
     /// Read a registered snapshot's manifest (for `restore`, which takes
     /// the manifest, not just the id). Unknown ids are NotFound.
     fn snapshot_manifest(&self, snapshot_id: &str) -> Result<SnapshotManifest>;

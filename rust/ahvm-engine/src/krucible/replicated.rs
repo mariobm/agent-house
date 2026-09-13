@@ -381,6 +381,59 @@ mod tests {
         std::fs::remove_dir_all(cfg.data_dir.parent().unwrap()).unwrap();
     }
     #[test]
+    fn accounting_reclamation_rejects_retained_disks_and_finishes_failed_delete() {
+        let cfg = config("retire-handshake");
+        let task = replies(&cfg, vec![("prepare", false), ("delete", false)]);
+        let be = KrucibleBackend::open(cfg.clone()).unwrap();
+        assert!(be.create(&spec()).is_err());
+        let volume = be
+            .replicated_record("probe")
+            .unwrap()
+            .1
+            .info
+            .storage
+            .volume_id
+            .unwrap();
+        assert!(be
+            .reclaim_replicated_volume("probe", &volume, 65536)
+            .is_err());
+        assert!(be.destroy("probe").is_err());
+        task.join().unwrap();
+        assert!(be
+            .reclaim_replicated_volume("probe", &"a".repeat(64), 65536)
+            .is_err());
+        let socket = &cfg.replicated.as_ref().unwrap().socket;
+        std::fs::remove_file(socket).unwrap();
+        let listener = UnixListener::bind(socket).unwrap();
+        let expected = volume.clone();
+        let task = std::thread::spawn(move || {
+            for complete in [false, true] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let q: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(q["operation"], "retire");
+                assert_eq!(q["volume_id"], expected);
+                assert_eq!(q["logical_bytes"], 65536);
+                writeln!(stream, "{}", serde_json::json!({"ok":true,"volume_id":expected,"reclamation_complete":complete})).unwrap();
+            }
+        });
+        assert!(!be
+            .reclaim_replicated_volume("probe", &volume, 65536)
+            .unwrap());
+        assert!(!cfg.data_dir.join("probe").exists());
+        assert!(be
+            .reclaim_replicated_volume("probe", &volume, 65536)
+            .unwrap());
+        task.join().unwrap();
+        std::fs::remove_dir_all(cfg.data_dir.parent().unwrap()).unwrap();
+    }
+    #[test]
     fn failed_delete_survives_reopen_and_blocks_resurrection() {
         let cfg = config("delete");
         let task = replies(
