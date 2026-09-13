@@ -518,3 +518,13 @@ This supplies the disk portion of intentional recovery; the Cloud backup guard
 remains until metadata capture and real-guest restore are integrated. Automatic
 wake and dashboards follow; further boot-performance and desktop qualification
 are deferred as requested.
+
+### Cloud wake network policy
+
+Replicated start now applies the same persisted per-VM bandwidth policy as local
+start. Policy changes still require a stopped VM; the gateway is replaced before
+boot and storage mode/volume identity remain unchanged. This closes a live Cloud
+wake failure where durable start receipts carried a policy that replicated start
+rejected. The private Cloud wake gate read a saved marker after authenticated
+wake in 7.724 seconds with one start record and one guest dispatch. Cloud default
+activation and dashboard qualification remain separate.
