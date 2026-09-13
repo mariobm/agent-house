@@ -416,3 +416,23 @@ sizing, Bash, idle-stop, cold replicated restart, pending writes and Cloud rollo
 limits. This slice does not enable the volume service through the standard installer
 or change Cloud defaults. Next: host resource integration and automatic Cloud
 selection/wake, then dashboard user/admin storage visibility.
+
+### Host resource integration
+
+Replicated VMs now coexist with VM cgroups and the local metadata quota broker.
+The engine checks a private volume-service enforcement proof before admission,
+start and adoption; an older or unbounded service is refused. Metadata quota
+prepare/verify/release and empty VM-group cleanup use the existing control paths.
+
+Volume workers and NBD clients enter a separate per-volume cgroup before launch.
+The service verifies exact limits on adoption/control probes, and retains failure
+if a populated group cannot be removed. A persistent worker unit survives supervisor
+restart; finite supervisor ceilings also cover import/collection. Pool admission
+checks enough aggregate RAM/task ceiling for all configured NBD slots. Existing
+logical disk/journal/cache budgets remain in force.
+
+No Cloud defaults or installed services change in this slice. Next is deploying
+the bounded volume state filesystem and services for Cloud, routing Cloud create
+to replicated mode and implementing automatic wake, then full guest qualification
+and dashboard visibility. Final capacity planning must include guest/VMM, storage
+worker and supervisor headroom; this change is not a production capacity estimate.

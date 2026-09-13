@@ -56,3 +56,12 @@ recovery point or guarantee preservation of unsnapshotted RAM.
 
 Disk accounting, I/O, bandwidth, request/stream limits and host-loss backups remain
 separate requirements before opening the shared-host pilot to untrusted workloads.
+
+## Replicated disks
+
+Replicated VMs use these same VMM/gateway groups. Their local metadata goes through
+the project-quota broker when configured. Storage workers live in an independent,
+root-owned bounded subtree; the engine requires the volume service to confirm
+enforcement before create/start/adoption with host resource controls. See
+[volume-service host controls](VOLUME-SERVICE.md#host-resource-controls).
+Deleting a replicated VM removes its empty VM group, including retry cleanup.

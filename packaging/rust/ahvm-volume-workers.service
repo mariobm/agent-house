@@ -1,0 +1,21 @@
+[Unit]
+Description=AHVM persistent replicated disk worker groups
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/bin/sleep infinity
+Delegate=cpu memory pids
+DelegateSubgroup=keeper
+CPUQuota=200%
+MemoryMax=4G
+MemorySwapMax=0
+TasksMax=1024
+Restart=always
+RestartSec=2
+# Stopping this unit terminates disk workers. Drain VMs first.
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

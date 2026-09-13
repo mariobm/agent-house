@@ -6,8 +6,7 @@ Guest fsync does not wait for R2. The default daemon/CLI storage mode remains
 local; no object store is required for self-hosted local disks.
 
 This service replaces the Python qualification adapter. It is included in the
-Linux server bundle but **not enabled by the installer**. Host resource integration
-and Cloud rollout qualification remain required before cloud activation. See [storage commands and defaults](STORAGE.md).
+Linux server bundle but **not enabled by the installer**. Cloud deployment and rollout qualification remain required before cloud activation. See [storage commands and defaults](STORAGE.md).
 The Python adapter remains only for reproducing the earlier qualification gate.
 
 ## Configuration and installation
@@ -63,8 +62,9 @@ binary/config paths are `/opt/ahvm-rust/bin/ahvm-volumed` and
 `/etc/ahvm-rust/volume-service.json`. Install/configure the unit explicitly; do not
 enable it against devices used by another service. Engine configuration must
 point `ReplicatedConfig.socket` at this socket. Set AHVM_VOLUME_SOCKET on the daemon and select storage_mode in create requests.
-The default remains local. Existing cgroup/local-storage quota configurations
-remain incompatible with replicated mode until host resource integration lands.
+The default remains local. VM cgroups and the project-quota broker can coexist with replicated disks when
+the resource proof described below is enabled. The quota broker covers sandbox
+metadata; volume-service reservations cover the separate disk/journal/cache pool.
 
 ## Capacity admission and accounting
 
@@ -155,8 +155,9 @@ The service exclusively locks its configured device pool. One slot is reserved p
 non-deleted volume. Successful local eviction or logical deletion frees the slot;
 starting a cold volume must reserve a free slot again. The pool is bounded to 32 devices, the registry to
 1,024 records including tombstones, and concurrent API handlers to 16. These are
-service bounds, not tenant quotas. Per-tenant journal/cache/disk accounting is
-still required before offering replicated storage to cloud users.
+service bounds, not tenant quotas. The daemon separately reserves tenant logical
+disk capacity. Cloud deployment must budget the worker/supervisor overhead and
+bound the volume-state filesystem before enabling replicated storage for users.
 
 Stopping the systemd unit deliberately leaves storage workers alive, like an
 engine restart leaves VMs alive. For maintenance, stop/destroy VMs through the
@@ -425,3 +426,59 @@ explicit root-only tests; the daemon has 25 unit and 24 HTTP tests passing, and
 tests (79) pass. Formatting and clippy with warnings denied pass. The small live
 R2/daemon handshake is recorded in the durable-storage plan; no VM or installed
 service was changed.
+
+## Host resource controls
+
+The optional service config accepts a resources object:
+
+    "resources": {
+      "root": "/sys/fs/cgroup/system.slice/ahvm-volume-workers.service",
+      "memory_bytes": 536870912,
+      "cpu_quota_us": 100000,
+      "tasks": 128
+    }
+
+These are operator-selected per-volume worker limits, not guest RAM allocations.
+The example provides 512 MiB, one CPU over a 100-ms period, and 128 host tasks.
+The disk worker and its NBD client enter the same group before their launch pipe
+is released. Swap is disabled and an OOM kills the whole disk group. Existing
+verified-process recovery handles loss of a disk worker; RAM is not a remote
+recovery point. Adoption checks membership and exact limits without moving PIDs.
+Stop active disks before changing these per-volume settings.
+
+Use the separately packaged ahvm-volume-workers.service for a persistent delegated
+subtree (systemd 254+). It runs a tiny keeper process and is independent of volume
+supervisor restart. Its example aggregate ceilings are 4 GiB, two CPUs and 1024
+tasks. Configure the actual ControlGroup path from systemctl show, not an assumed
+slice path. The volume service validates root ownership, finite aggregate ceilings
+and enough RAM/task budget for every configured NBD slot plus keeper overhead.
+CPU may be shared between slots under the aggregate ceiling. No RAM is physically
+preallocated by this check.
+
+The supervisor unit now has finite defaults of 1 GiB, one CPU and 256 tasks, with
+swap disabled. Imports and remote collection run in that supervisor and share
+those ceilings. Operator drop-ins can change ceilings. Workers are kept in the
+separate unit so restarting the supervisor does not destroy their cgroup tree.
+Drain VMs before stopping the worker unit, which kills all its processes.
+
+For optional legacy qualification without VM resource controls, resources may be
+omitted. This does not claim enforcement: the private resources RPC explicitly
+returns false. An engine configured with AHVM_CGROUP_ROOT or AHVM_STORAGE_SOCKET
+refuses replicated create/start/adoption without a positive service proof.
+No cgroup filesystem reads are added to guest block I/O; checks happen at lifecycle
+transitions and control/health probes.
+
+Local metadata still uses the configured project quota. Logical disk, journal and
+cache reservations remain bounded by the volume-service budgets; they are not
+R2 byte billing or a new filesystem quota on the volume-service state directory.
+Place that directory on storage sized and bounded for those budgets during Cloud
+deployment. These resource settings do not enable automatic Cloud selection.
+
+Validation: ordinary unit tests cover missing enforcement and unsafe roots; the
+engine quota-broker test covers prepare/verify/release for replicated metadata.
+Run scripts/test-volume-cgroups.py as root on an isolated Linux/systemd host for
+real controller, gated-launch, adoption-limit and populated-group cleanup checks.
+It uses transient units, no VM, NBD attachment or cloud access, and removes its
+units afterward. The standard root filesystem gate remains test-volume-root.py.
+The cgroup probe passed on agent_house with a 1.9-MiB supervisor peak in its initial
+run; this tiny helper test is not a storage-worker performance measurement.

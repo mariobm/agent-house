@@ -27,6 +27,7 @@ use std::{
 };
 mod accounting;
 mod host;
+mod resources;
 use accounting::{Limits, Usage, CACHE_BYTES};
 #[cfg(test)]
 mod tests;
@@ -39,6 +40,8 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 struct Config {
     #[serde(default)]
     client_uid: u32,
+    #[serde(default)]
+    resources: Option<resources::Resources>,
     limits: Limits,
     #[serde(default)]
     image_roots: Vec<PathBuf>,
@@ -221,6 +224,9 @@ impl Service {
             return Err("invalid service configuration".into());
         }
         let _ = S3Config::from_file(&config.credentials)?;
+        if let Some(resources) = &config.resources {
+            resources.validate(config.devices.len())?;
+        }
         let mut unique = std::collections::BTreeSet::new();
         for dev in &config.devices {
             let name = dev
@@ -269,6 +275,11 @@ impl Service {
                 return Err("unaccounted volume directory".into());
             }
             let r: Record = read(&item.path().join("record.json"))?;
+            if let Some(resources) = &config.resources {
+                for process in [&r.worker, &r.client].into_iter().flatten() {
+                    resources.verify(&r.id, process)?;
+                }
+            }
             if !r.reclaimed {
                 usage.add_residency(r.logical_bytes, !r.evicted)?;
             }
@@ -593,6 +604,9 @@ impl Service {
         {
             return Err("volume is not detached for eviction".into());
         }
+        if let Some(resources) = &self.config.resources {
+            resources.remove(&r.id)?;
+        }
         OwnedDisk::evict_local(raw, &r.id, &self.dir(r).join("owner"))?;
         // Publish the released device/budgets only after durable local removal.
         let _map = self.entries.lock().map_err(|_| "registry poisoned")?;
@@ -700,6 +714,12 @@ impl Service {
     }
     fn control(&self, r: &Record, op: &str) -> Result<crate::local::Status> {
         let worker = r.worker.as_ref().ok_or("worker unavailable")?;
+        if let Some(resources) = &self.config.resources {
+            resources.verify(&r.id, worker)?;
+            if let Some(client) = &r.client {
+                resources.verify(&r.id, client)?;
+            }
+        }
         if !worker.alive()? {
             return Err("worker unavailable".into());
         }
@@ -814,7 +834,11 @@ impl Service {
         r.worker = None;
         r.client = None;
         r.vm = None;
-        self.persist(r)
+        self.persist(r)?;
+        if let Some(resources) = &self.config.resources {
+            resources.remove(&r.id)?;
+        }
+        Ok(())
     }
     fn command(&self, args: &[&std::ffi::OsStr], mut record: Option<&mut Record>) -> Result<()> {
         let mut child = ChildGuard::new(
@@ -830,6 +854,9 @@ impl Service {
         let p = Process::read(child.id())?.ok_or("child exited")?;
         let result = (|| {
             if let Some(r) = record.as_mut() {
+                if let Some(resources) = &self.config.resources {
+                    resources.enter(&r.id, &child)?;
+                }
                 r.client = Some(p.clone());
                 self.persist(r)?;
             }
@@ -895,6 +922,9 @@ impl Service {
                 .spawn()?,
         );
         let p = Process::read(child.id())?.ok_or("worker exited")?;
+        if let Some(resources) = &self.config.resources {
+            resources.enter(&r.id, &child)?;
+        }
         r.worker = Some(p.clone());
         if let Err(e) = self.persist(r) {
             let _ = child.kill();
@@ -942,6 +972,20 @@ impl Service {
         self.inspect(r)
     }
     fn request(&self, q: Request) -> Result<serde_json::Value> {
+        if q.operation == "resources" {
+            if q.version != 1
+                || !valid_id(&q.volume_id)
+                || q.sandbox_dir.parent() != Some(&self.config.engine_root)
+            {
+                return Err("invalid resource probe".into());
+            }
+            if let Some(resources) = &self.config.resources {
+                resources.validate(self.config.devices.len())?;
+            }
+            return Ok(
+                serde_json::json!({"ok":true,"volume_id":q.volume_id,"resources_enforced":self.config.resources.is_some()}),
+            );
+        }
         let entry = self.entry(&q)?;
         let mut e = entry.foreground(!matches!(
             q.operation.as_str(),
@@ -1079,6 +1123,9 @@ impl Service {
         OwnedDisk::retire(raw.clone(), &r.id, &owner)?;
         let progress = crate::reclaim::sweep(raw.as_ref(), &r.id, 16)?;
         if progress.complete {
+            if let Some(resources) = &self.config.resources {
+                resources.remove(&r.id)?;
+            }
             fs::remove_dir_all(&owner)?;
             File::open(self.dir(r))?.sync_all()?;
             r.reclaimed = true;
