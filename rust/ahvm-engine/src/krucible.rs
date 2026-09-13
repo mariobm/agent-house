@@ -399,7 +399,7 @@ impl KrucibleBackend {
             }
             if worker.is_some() && record.info.storage.mode == crate::StorageMode::Replicated {
                 let volume = record.info.storage.volume_id.as_deref().unwrap();
-                let device = cfg.replicated.as_ref().unwrap().inspect(volume)?;
+                let device = cfg.replicated.as_ref().unwrap().inspect(volume, &dir)?;
                 let saved: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(dir.join("spec.json"))?)?;
                 if saved["root_disk"].as_str() != device.to_str()
@@ -998,7 +998,7 @@ impl KrucibleBackend {
         }
         drop(inner);
         if let Some(volume) = volume {
-            self.replica()?.inspect(&volume)?;
+            self.replica()?.inspect(&volume, &dir)?;
         }
         Ok(dir)
     }
@@ -1255,14 +1255,14 @@ impl Backend for KrucibleBackend {
     fn sync_remote(&self, id: &str) -> Result<crate::ReplicationStatus> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
-        let (_, record) = self.replicated_record(id)?;
+        let (dir, record) = self.replicated_record(id)?;
         if record.info.state != State::Stopped {
             return Err(Error::InvalidState(
                 "remote barrier currently requires a stopped replicated VM".into(),
             ));
         }
         self.replica()?
-            .sync(record.info.storage.volume_id.as_deref().unwrap())
+            .sync(record.info.storage.volume_id.as_deref().unwrap(), &dir)
     }
 
     fn capabilities(&self) -> Capabilities {

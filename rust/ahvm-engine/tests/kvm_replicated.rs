@@ -16,7 +16,12 @@ fn replicated_engine_lifecycle() {
     }
     let env = |key| std::env::var(key).expect(key);
     let data = PathBuf::from(env("AHVM_REPLICATED_DATA"));
-    assert!(!data.exists(), "use a fresh test tree");
+    assert!(
+        !data.exists()
+            || (std::env::var("AHVM_REPLICATED_ALLOW_EMPTY").as_deref() == Ok("1")
+                && std::fs::read_dir(&data).unwrap().next().is_none()),
+        "use a fresh test tree"
+    );
     let mut cfg = KrucibleConfig::new(
         env("AHVM_VMM_BIN").into(),
         env("AHVM_GUEST_IMAGE").into(),
@@ -87,18 +92,29 @@ fn replicated_engine_lifecycle() {
         // worker has died. Only the recorded test VM is killed to recover.
         invoke("busy-detach");
         invoke("kill-storage");
-        assert_eq!(be.status("replica").unwrap().state, State::Failed);
-        assert!(be.start("replica").is_err());
-        invoke("busy-attach");
-        #[allow(unsafe_code)]
-        unsafe {
-            assert_eq!(libc::kill(before as i32, libc::SIGKILL), 0);
-        }
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while std::path::Path::new(&format!("/proc/{before}")).exists() {
-            let _ = be.status("replica");
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(20));
+        if std::env::var("AHVM_VOLUME_AUTORECOVERY").as_deref() == Ok("1") {
+            invoke("recovered");
+            invoke("cleanup-peer");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while std::path::Path::new(&format!("/proc/{before}")).exists() {
+                let _ = be.status("replica");
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        } else {
+            assert_eq!(be.status("replica").unwrap().state, State::Failed);
+            assert!(be.start("replica").is_err());
+            invoke("busy-attach");
+            #[allow(unsafe_code)]
+            unsafe {
+                assert_eq!(libc::kill(before as i32, libc::SIGKILL), 0);
+            }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while std::path::Path::new(&format!("/proc/{before}")).exists() {
+                let _ = be.status("replica");
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
         be.start("replica").unwrap();
         assert_eq!(command(&be, "cat /root/engine-proof"), "persisted");

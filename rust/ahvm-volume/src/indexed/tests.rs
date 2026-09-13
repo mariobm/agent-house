@@ -293,3 +293,27 @@ fn identical_rewrites_and_zero_holes_do_not_republish() {
     reopened.read(CHUNK_BYTES as u64, &mut b[..3]).unwrap();
     assert_eq!(&b[..3], b"new");
 }
+
+#[test]
+fn unfinished_import_can_resume_only_before_ready() {
+    let store = Arc::new(Store::default());
+    let id = "resume";
+    let size = 2 * crate::CHUNK_BYTES as u64;
+    let mut d = IndexedVolume::create_import(store.clone(), id, size).unwrap();
+    d.write(0, &vec![7; crate::CHUNK_BYTES]).unwrap();
+    d.commit().unwrap();
+    drop(d);
+    assert!(IndexedVolume::open(store.clone(), id).is_err());
+    let mut d = IndexedVolume::resume_import(store.clone(), id, size).unwrap();
+    d.write(0, &vec![0; crate::CHUNK_BYTES]).unwrap();
+    d.write(crate::CHUNK_BYTES as u64, &vec![9; crate::CHUNK_BYTES])
+        .unwrap();
+    d.finish_import().unwrap();
+    assert!(IndexedVolume::resume_import(store.clone(), id, size).is_err());
+    let d = IndexedVolume::open(store.clone(), id).unwrap();
+    let mut bytes = vec![1; crate::CHUNK_BYTES];
+    d.read(0, &mut bytes).unwrap();
+    assert!(bytes.iter().all(|b| *b == 0));
+    d.read(crate::CHUNK_BYTES as u64, &mut bytes).unwrap();
+    assert!(bytes.iter().all(|b| *b == 9));
+}

@@ -1,4 +1,4 @@
-.PHONY: build test check vmm forge netd bundle
+.PHONY: build test check vmm forge netd volume bundle
 
 # Portable tools and unit tests do not need the native VMM or a hypervisor.
 build:
@@ -24,6 +24,9 @@ forge:
 
 netd:
 	cargo build --manifest-path rust/Cargo.toml --locked -p ahvm-netd
+
+volume:
+	cargo build --manifest-path rust/Cargo.toml --locked -p ahvm-volume --bin ahvm-volumed
 
 # Native Linux x86_64; OUT must not already exist. Never publishes a release.
 bundle:
