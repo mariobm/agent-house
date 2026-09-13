@@ -14,6 +14,43 @@ pub(crate) struct Store {
     lost: AtomicBool,
 }
 impl ObjectStore for Store {
+    fn base_chunk(&self, image: &str, hash: &str, _: Option<u64>) -> Result<Vec<u8>> {
+        self.chunk(image, hash)
+    }
+    fn list_chunks(&self, id: &str, limit: usize) -> Result<Vec<String>> {
+        Ok(self
+            .objects
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|(volume, _)| volume == id)
+            .take(limit)
+            .map(|(_, h)| h.clone())
+            .collect())
+    }
+    fn list_chunks_after(
+        &self,
+        id: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        Ok(self
+            .objects
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|(volume, h)| volume == id && after.is_none_or(|a| h.as_str() > a))
+            .take(limit)
+            .map(|(_, h)| h.clone())
+            .collect())
+    }
+    fn delete_chunk(&self, id: &str, hash: &str) -> Result<()> {
+        self.objects
+            .lock()
+            .unwrap()
+            .remove(&(id.into(), hash.into()));
+        Ok(())
+    }
     fn head(&self, id: &str) -> Result<Option<Head>> {
         Ok(self.heads.lock().unwrap().get(id).cloned())
     }
@@ -42,19 +79,37 @@ impl ObjectStore for Store {
         if heads.get(id).map(|h| h.revision.as_str()) != expected {
             return Err(Error::Conflict);
         }
-        let root: Root = serde_json::from_slice(bytes).unwrap();
-        let objects = self.objects.lock().unwrap();
-        for h in root.pages.values() {
-            let page = objects
-                .get(&(id.into(), h.clone()))
-                .expect("page missing at publish");
-            for i in 0..SLOTS {
-                if let Some(hash) = slot(page, i) {
-                    assert!(objects.contains_key(&(id.into(), hash)));
+        let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        let manifest = if value["format"] == 4 {
+            value["manifest"].clone()
+        } else {
+            value.clone()
+        };
+        if value["format"] != 5 {
+            let root: Root = serde_json::from_value(manifest).unwrap();
+            let objects = self.objects.lock().unwrap();
+            let base = root.base.as_ref().map(|b| b.image.as_str()).unwrap_or(id);
+            for h in root.pages.values() {
+                let page = objects
+                    .get(&(id.into(), h.clone()))
+                    .or_else(|| objects.get(&(base.into(), h.clone())))
+                    .expect("page missing at publish");
+                for i in 0..SLOTS {
+                    if let Some(hash) = slot(page, i) {
+                        assert!(
+                            objects.contains_key(&(id.into(), hash.clone()))
+                                || objects.contains_key(&(base.into(), hash))
+                        );
+                    }
                 }
             }
         }
-        let revision = format!("rev-{}", root.generation);
+        let revision = format!(
+            "rev-{}",
+            heads
+                .get(id)
+                .map_or(0, |h| h.revision[4..].parse::<u64>().unwrap() + 1)
+        );
         heads.insert(
             id.into(),
             Head {
@@ -337,4 +392,179 @@ fn parallel_import_preserves_visibility_and_refuses_live_disks() {
     let mut out = vec![0; bytes.len()];
     reopened.read(0, &mut out).unwrap();
     assert_eq!(out, bytes);
+}
+
+#[test]
+fn shared_base_isolated_writes_zeros_recovery_and_collection() {
+    let store = Arc::new(Store::default());
+    let image = "b".repeat(64);
+    let mut original =
+        IndexedVolume::create_import(store.clone(), &image, 3 * CHUNK_BYTES as u64).unwrap();
+    original.write(0, &vec![4; 3 * CHUNK_BYTES]).unwrap();
+    original.finish_import().unwrap();
+    let reference = original.export_base().unwrap();
+    let before = store.puts.load(Ordering::SeqCst);
+    let mut first =
+        IndexedVolume::create_from_base(store.clone(), "first", reference.clone()).unwrap();
+    let second =
+        IndexedVolume::create_from_base(store.clone(), "second", reference.clone()).unwrap();
+    assert_eq!(
+        store.puts.load(Ordering::SeqCst),
+        before,
+        "clone uploads no image data"
+    );
+    assert!(
+        first.references(&|| false).unwrap().is_empty(),
+        "base is outside VM GC"
+    );
+    first.write(0, b"private").unwrap();
+    first
+        .write(CHUNK_BYTES as u64, &vec![0; CHUNK_BYTES])
+        .unwrap();
+    first.commit().unwrap();
+    let reopened = IndexedVolume::open(store.clone(), "first").unwrap();
+    let mut data = vec![0; 3 * CHUNK_BYTES];
+    reopened.read(0, &mut data).unwrap();
+    assert_eq!(&data[..7], b"private");
+    assert!(data[CHUNK_BYTES..2 * CHUNK_BYTES].iter().all(|b| *b == 0));
+    assert!(data[2 * CHUNK_BYTES..].iter().all(|b| *b == 4));
+    second.read(0, &mut data).unwrap();
+    assert!(data.iter().all(|b| *b == 4));
+    assert_eq!(
+        reopened.references(&|| false).unwrap().len(),
+        2,
+        "only overlay page and changed block"
+    );
+    let puts = store.puts.load(Ordering::SeqCst);
+    first.write(0, &vec![4; 3 * CHUNK_BYTES]).unwrap();
+    first.commit().unwrap();
+    assert_eq!(
+        store.puts.load(Ordering::SeqCst),
+        puts,
+        "reverting to base uploads no duplicate bytes"
+    );
+    assert!(first.references(&|| false).unwrap().is_empty());
+    first.write(0, &vec![0; 3 * CHUNK_BYTES]).unwrap();
+    first.commit().unwrap();
+    IndexedVolume::open(store.clone(), "first")
+        .unwrap()
+        .read(0, &mut data)
+        .unwrap();
+    assert!(
+        data.iter().all(|b| *b == 0),
+        "missing overlay page means zero, never base fallback"
+    );
+    // Immutable catalog is pinned; changing the mutable image import head cannot
+    // redirect existing VMs to another image generation.
+    store.heads.lock().unwrap().remove(&image);
+    IndexedVolume::open(store.clone(), "second")
+        .unwrap()
+        .read(0, &mut data)
+        .unwrap();
+    assert!(data.iter().all(|b| *b == 4));
+    store
+        .objects
+        .lock()
+        .unwrap()
+        .remove(&(image, reference.catalog));
+    assert!(matches!(
+        IndexedVolume::open(store, "second"),
+        Err(Error::Corrupt)
+    ));
+}
+
+#[test]
+fn corrupt_overlay_never_falls_back_to_base() {
+    let store = Arc::new(Store::default());
+    let image = "c".repeat(64);
+    let mut base = IndexedVolume::create_import(store.clone(), &image, CHUNK_BYTES as u64).unwrap();
+    base.write(0, &vec![9; CHUNK_BYTES]).unwrap();
+    base.finish_import().unwrap();
+    let mut disk =
+        IndexedVolume::create_from_base(store.clone(), "vm", base.export_base().unwrap()).unwrap();
+    disk.write(0, &vec![8; CHUNK_BYTES]).unwrap();
+    disk.commit().unwrap();
+    store
+        .objects
+        .lock()
+        .unwrap()
+        .remove(&("vm".into(), digest(&vec![8; CHUNK_BYTES])));
+    assert!(matches!(disk.read(0, &mut [0; 1]), Err(Error::Corrupt)));
+}
+
+#[cfg(unix)]
+#[test]
+fn base_backed_owned_disk_survives_eviction_and_retirement_is_scoped() {
+    use crate::{nbd::Disk, owned::OwnedDisk};
+    use std::os::unix::fs::PermissionsExt;
+    let store = Arc::new(Store::default());
+    let image = "f".repeat(64);
+    let mut base = IndexedVolume::create_import(store.clone(), &image, CHUNK_BYTES as u64).unwrap();
+    base.write(0, &vec![6; CHUNK_BYTES]).unwrap();
+    base.finish_import().unwrap();
+    let reference = base.export_base().unwrap();
+    IndexedVolume::create_from_base(store.clone(), "owned", reference.clone()).unwrap();
+    IndexedVolume::create_from_base(store.clone(), "peer", reference.clone()).unwrap();
+    let path = std::env::temp_dir().join(format!("ahvm-base-owned-{}", std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Interrupted enrollment can retire a ready format-6 head without an owner.
+    IndexedVolume::create_from_base(store.clone(), "unenrolled", reference).unwrap();
+    OwnedDisk::retire(store.clone(), "unenrolled", &path).unwrap();
+    OwnedDisk::enroll(store.clone(), "owned").unwrap();
+    let mut disk = OwnedDisk::open(store.clone(), "owned", &path).unwrap();
+    disk.write(0, b"changed").unwrap();
+    disk.flush().unwrap();
+    disk.sync_remote().unwrap();
+    let collection = disk.collect_offline(None, 128, || false).unwrap();
+    assert_eq!(collection.deleted_objects, 0);
+    assert_eq!(collection.scanned_objects, 2);
+    drop(disk);
+    OwnedDisk::evict_local(store.clone(), "owned", &path).unwrap();
+    let mut recovered = OwnedDisk::open(store.clone(), "owned", &path).unwrap();
+    let mut bytes = [0; 7];
+    recovered.read(0, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"changed");
+    recovered.release().unwrap();
+    drop(recovered);
+    OwnedDisk::retire(store.clone(), "owned", &path).unwrap();
+    while !crate::reclaim::sweep(store.as_ref(), "owned", 128)
+        .unwrap()
+        .complete
+    {}
+    let peer = IndexedVolume::open(store.clone(), "peer").unwrap();
+    peer.read(0, &mut bytes).unwrap();
+    assert_eq!(bytes, [6; 7]);
+    assert!(!store.list_chunks(&image, 128).unwrap().is_empty());
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn pinned_catalog_rejects_validly_hashed_malformed_metadata() {
+    let store = Arc::new(Store::default());
+    let image = "1".repeat(64);
+    let base = IndexedVolume::create(store.clone(), &image, CHUNK_BYTES as u64).unwrap();
+    let reference = base.export_base().unwrap();
+    let original = store.base_chunk(&image, &reference.catalog, None).unwrap();
+    for mutation in 0..3 {
+        let mut bytes = original.clone();
+        match mutation {
+            0 => bytes[8..16].fill(0),       // zero logical size
+            1 => bytes[48 + 32] = 1,         // page beyond the one-block disk
+            _ => bytes[CHUNK_BYTES - 1] = 1, // nonzero reserved padding
+        }
+        let hash = digest(&bytes);
+        store.put_chunk(&image, &hash, &bytes).unwrap();
+        assert!(matches!(
+            IndexedVolume::create_from_base(
+                store.clone(),
+                "bad",
+                BaseRef {
+                    image: image.clone(),
+                    catalog: hash
+                }
+            ),
+            Err(Error::Corrupt)
+        ));
+    }
 }

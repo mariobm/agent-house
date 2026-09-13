@@ -20,7 +20,7 @@ use std::{
 
 /// Explicit credentials only; never load an ambient AWS profile or metadata service.
 /// Endpoint is a private HTTPS S3 API origin, not a CDN or public bucket URL.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub endpoint: String,
@@ -126,6 +126,18 @@ impl S3Store {
             .build()
             .map_err(|_| Error::Store)?;
         Ok(Self { config, client })
+    }
+    /// Separate namespace: VM retirement cannot list or delete shared images.
+    pub fn bases(&self) -> Result<Self> {
+        let mut config = self.config.clone();
+        config.prefix.push_str("/bases");
+        if config.prefix.len() > 256 {
+            return Err(Error::InvalidInput);
+        }
+        Ok(Self {
+            config,
+            client: self.client.clone(),
+        })
     }
     fn key(&self, volume: &str, suffix: &str) -> Result<String> {
         if !valid_id(volume) {
@@ -246,6 +258,12 @@ fn valid_hash(hash: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 impl ObjectStore for S3Store {
+    fn base_chunk(&self, image: &str, hash: &str, _: Option<u64>) -> Result<Vec<u8>> {
+        if crate::indexed::decode(image).is_err() {
+            return Err(Error::InvalidInput);
+        }
+        self.bases()?.chunk(image, hash)
+    }
     fn list_chunks(&self, volume: &str, limit: usize) -> Result<Vec<String>> {
         self.list_chunks_after(volume, None, limit)
     }

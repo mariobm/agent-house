@@ -306,3 +306,14 @@ fn immutable_put_retries_transient_and_lost_replies_without_weakening_cas() {
     assert!(calls[..3].iter().all(|request| request.starts_with("PUT ")));
     assert!(calls[3].starts_with("GET "));
 }
+
+#[test]
+fn shared_images_use_a_separate_namespace_from_vm_collection() {
+    let bytes = vec![3; CHUNK_BYTES];
+    let hash = digest(&bytes);
+    let image = "a".repeat(64);
+    let (store, worker) = server(vec![response("200 OK", "ETag: \"base\"\r\n", &bytes)]);
+    assert_eq!(store.base_chunk(&image, &hash, Some(0)).unwrap(), bytes);
+    let calls = worker.join().unwrap();
+    assert!(calls[0].contains(&format!("/qualification/bases/{image}/chunks/{hash}")));
+}

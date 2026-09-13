@@ -514,3 +514,12 @@ not replacements for the earlier small-image timings.
 Cloud replicated placement remains disabled pending reusable base-image import
 and acceptable full-image lifecycle latency. The volume service is installed for
 qualification; this is not a public release or automatic-wake activation.
+
+
+## Shared base images
+
+New replicated disks use [shared immutable base images](SHARED-BASE-IMAGES.md).
+Operators can prewarm installed images through the bounded supervisor before
+user creation. Workers prefer verified local image data and fall back to R2.
+Existing disks retain their format. See the guide for retention, rollback and
+remote-only qualification details.

@@ -106,6 +106,8 @@ supply S3 credentials or a Cloud storage flag.
 
 The pilot volume service is installed, but Cloud placement remains local. A real
 Ubuntu developer-image create took 594 seconds because the image is imported into
-each volume. Reusing a verified base image is a prerequisite for activation.
+each volume. The shared-base implementation now avoids that per-VM upload; operators can
+[prewarm installed images](SHARED-BASE-IMAGES.md) before user creation. Cloud
+activation still requires the remaining rollout gates.
 Automatic wake, Cloud CLI storage commands and dashboard storage visibility remain
 follow-ups. Self-hosted defaults are unchanged.
