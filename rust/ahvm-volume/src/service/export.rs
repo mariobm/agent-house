@@ -42,6 +42,9 @@ pub(super) fn client(args: &[std::ffi::OsString]) -> Result<()> {
         return Err("output parent must be a canonical root-owned private directory".into());
     }
     let store = Arc::new(S3Store::new(S3Config::from_file(Path::new(&args[0]))?)?);
+    // Reuse the bounded cache/read-ahead used by disk workers. In particular,
+    // do not fetch the same metadata page for every exported 64-KiB block.
+    let store = Arc::new(crate::cache::CachedStore::new(store, 16 * 1024 * 1024)?);
     // create_dir fails if the target already exists, including a symlink.
     use std::os::unix::fs::DirBuilderExt;
     fs::DirBuilder::new().mode(0o700).create(destination)?;
