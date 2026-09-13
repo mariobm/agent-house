@@ -43,6 +43,21 @@ pub struct Capabilities {
 /// its async core).
 pub trait Backend: Send + Sync + std::fmt::Debug {
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo>;
+    /// Reserve authenticated tenant capacity before replicated import. The
+    /// backend supplies its immutable volume identity and validated image size.
+    fn create_with_storage_admission(
+        &self,
+        spec: &SandboxSpec,
+        _admit: &mut dyn FnMut(&str, u64) -> Result<()>,
+    ) -> Result<SandboxInfo> {
+        if spec.storage_mode == Some(crate::StorageMode::Replicated) {
+            return Err(crate::Error::InvalidState(
+                "storage admission unavailable".into(),
+            ));
+        }
+        self.create(spec)
+    }
+
     fn destroy(&self, id: &str) -> Result<()>;
     fn start(&self, id: &str) -> Result<()>;
     fn start_with_network_bandwidth(&self, id: &str, bytes: Option<u64>) -> Result<()> {

@@ -135,8 +135,14 @@ impl ReplicatedConfig {
             .reclamation_complete
             .ok_or_else(|| Error::Control("missing reclamation confirmation".into()))
     }
-    pub(crate) fn prepare(&self, id: &str, image: &Path, sandbox: &Path) -> Result<()> {
-        self.request("prepare", id, Some(image), sandbox)
+    pub(crate) fn prepare(
+        &self,
+        id: &str,
+        image: &Path,
+        sandbox: &Path,
+        logical_bytes: Option<u64>,
+    ) -> Result<()> {
+        self.request_sized("prepare", id, Some(image), sandbox, logical_bytes)
             .map(|_| ())
     }
     pub(crate) fn attach(&self, id: &str, sandbox: &Path) -> Result<PathBuf> {

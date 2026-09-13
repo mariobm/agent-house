@@ -79,18 +79,9 @@ pub(crate) async fn create_operation(
     // whole create (quota → boot → record) is one critical section per id.
     let _lc = state.lifecycle.lock(&body.name).await;
     state.store.check_lifecycle_fence(&body.name, operation)?;
-    // Atomic quota gate: committed rows plus in-flight holds, checked
-    // and reserved under one lock (see quotas.rs). The hold lives until
-    // the store record commits below, so concurrent creators serialize.
+    // A retained disk owns the name even after its sandbox row is gone.
     crate::routes::reserved_owner(&state, &user.0, &body.name)?;
-    let me = state.store.get_user(&user.0)?;
-    let _hold = state.quotas.reserve_sandbox(
-        &state.store,
-        &me,
-        &body.name,
-        body.cpus as i64,
-        body.memory_mb as i64,
-    )?;
+    state.store.check_replicated_name_available(&body.name)?;
     let desktop = body.desktop
         || matches!(
             body.image.as_deref(),
@@ -135,34 +126,17 @@ pub(crate) async fn create_operation(
         network_bytes_per_sec,
         extra_env: Default::default(),
     };
-    let backend = state.backend.clone();
-    let _permit = state.ops.acquire().await;
-    let info = blocking(move || backend.create(&spec)).await?;
-    // Mirror to the store; on failure unwind the boot (never orphan a VM
-    // behind a missing record).
-    let now = unix_now();
-    let row = ahvm_store::Sandbox {
-        id: info.id.clone(),
-        owner_user_id: user.0.clone(),
-        name: info.name.clone(),
-        backend: ahvm_store::Backend::Krucible,
-        state: state_str(&info.state),
-        thermal: thermal_str(&info.thermal),
-        cpus: body.cpus as i64,
-        memory_mb: body.memory_mb as i64,
-        ip: info.ip.clone(),
-        created_at: now,
-        updated_at: now,
-    };
-    if let Err(e) = state.store.create_sandbox(&row) {
-        let backend = state.backend.clone();
-        let id = info.id.clone();
-        let _ = blocking(move || backend.destroy(&id)).await;
-        return Err(e.into());
-    }
-    // A newborn VM is definitionally active; without this a start/create
-    // followed by silence would be reaped on stale first-seen timestamps.
-    state.activity.touch(&info.id);
+    let permit = state.ops.acquire().await;
+    // Keep lifecycle admission and the store commit in the blocking task.
+    // Disconnecting the HTTP client must not expose an in-flight reservation
+    // to orphan recovery while import is still running.
+    let (row, info) = tokio::task::spawn_blocking(move || {
+        let _lifecycle = _lc;
+        let _permit = permit;
+        crate::replicated::create(&state, &user.0, &spec)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("create task: {e}")))??;
     Ok((StatusCode::CREATED, Json(SandboxView::new(&row, &info))))
 }
 

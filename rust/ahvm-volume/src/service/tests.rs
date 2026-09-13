@@ -685,3 +685,28 @@ fn unknown_retirement_cannot_claim_a_foreign_owned_disk() {
     drop(disk);
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn admitted_size_refuses_growth_before_registration_and_on_retry() {
+    let dir = temp();
+    let s = budget_service(&dir);
+    let mut q = prepare_request(&s, 'a');
+    q.logical_bytes = Some(crate::CHUNK_BYTES as u64 * 2);
+    assert!(s
+        .entry(&q)
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("sizing mismatch"));
+    assert!(s.entries.lock().unwrap().is_empty());
+    assert_eq!(fs::read_dir(dir.join("volumes")).unwrap().count(), 0);
+    q.logical_bytes = Some(crate::CHUNK_BYTES as u64);
+    s.entry(&q).unwrap();
+    q.logical_bytes = Some(crate::CHUNK_BYTES as u64 * 2);
+    assert!(s
+        .request(q)
+        .unwrap_err()
+        .to_string()
+        .contains("sizing mismatch"));
+    fs::remove_dir_all(dir).unwrap();
+}

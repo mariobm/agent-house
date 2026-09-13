@@ -54,7 +54,11 @@ impl KrucibleBackend {
             .record = record.clone();
         self.persist_record(&dir, &record)
     }
-    pub(super) fn create_replicated(&self, spec: &SandboxSpec) -> Result<SandboxInfo> {
+    pub(super) fn create_replicated(
+        &self,
+        spec: &SandboxSpec,
+        admit: &mut dyn FnMut(&str, u64) -> Result<()>,
+    ) -> Result<SandboxInfo> {
         self.replica()?;
         if !cfg!(any(target_os = "linux", test))
             || spec.backend != BackendKind::Krucible
@@ -88,8 +92,16 @@ impl KrucibleBackend {
         let dir = self.cfg.data_dir.join(&spec.name);
         // An interrupted create owns its directory. Never reuse/remove it under
         // a newly generated volume ID, even when sandbox.json was not written.
-        std::fs::create_dir(&dir)?;
+        if dir.try_exists()? {
+            return Err(Error::Conflict("sandbox directory already exists".into()));
+        }
+        let bytes = backing.metadata()?.len();
+        if bytes == 0 || bytes > 64 * 1024 * 1024 * 1024 || bytes % 65536 != 0 {
+            return Err(Error::InvalidState("invalid replicated image size".into()));
+        }
         let volume_id = crate::replicated::new_volume()?;
+        admit(&volume_id, bytes)?;
+        std::fs::create_dir(&dir)?;
         let record = SandboxRecord {
             spec: SandboxSpec {
                 storage_mode: Some(StorageMode::Replicated),
@@ -114,19 +126,20 @@ impl KrucibleBackend {
             backing,
             deleting: false,
             volume_prepared: false,
+            admitted_bytes: Some(bytes),
         };
         // The intent is durable BEFORE requesting any remote allocation.
-        self.persist_record(&dir, &record)?;
-        std::fs::File::open(&self.cfg.data_dir)?.sync_all()?;
         self.lock().sandboxes.insert(
             spec.name.clone(),
             LiveRec {
                 record: record.clone(),
-                dir,
+                dir: dir.clone(),
                 worker: None,
                 needs_resume: false,
             },
         );
+        self.persist_record(&dir, &record)?;
+        std::fs::File::open(&self.cfg.data_dir)?.sync_all()?;
         // A failed/ambiguous prepare is retained as an accounted Failed record;
         // destroy can delete its known ID, start retries idempotent preparation.
         if let Err(e) = self.start_replicated(&spec.name) {
@@ -164,7 +177,7 @@ impl KrucibleBackend {
         self.save_replica(id, record.clone())?;
         // prepare is idempotent: it must never reimport an existing volume.
         if !record.volume_prepared {
-            service.prepare(volume, &record.backing, &dir)?;
+            service.prepare(volume, &record.backing, &dir, record.admitted_bytes)?;
             record.volume_prepared = true;
             self.save_replica(id, record.clone())?;
         }
@@ -305,7 +318,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(root.join("base"), b"fixture").unwrap();
+        std::fs::File::create(root.join("base"))
+            .unwrap()
+            .set_len(65536)
+            .unwrap();
         let mut cfg = KrucibleConfig::new(
             "/usr/bin/true".into(),
             root.join("base"),
@@ -338,6 +354,9 @@ mod tests {
                     .unwrap();
                 let request: serde_json::Value = serde_json::from_str(&line).unwrap();
                 assert_eq!(request["operation"], expected);
+                if expected == "prepare" {
+                    assert_eq!(request["logical_bytes"], 65536);
+                }
                 ids.push(request["volume_id"].as_str().unwrap().to_string());
                 writeln!(
                     stream,
@@ -349,6 +368,27 @@ mod tests {
             ids
         })
     }
+    #[test]
+    fn admission_refusal_precedes_any_disk_effect() {
+        let cfg = config("admission");
+        let be = KrucibleBackend::open(cfg.clone()).unwrap();
+        let mut called = false;
+        let error = be
+            .create_with_storage_admission(&spec(), &mut |id, bytes| {
+                called = true;
+                crate::replicated::validate_volume(id).unwrap();
+                assert_eq!(bytes, 65536);
+                assert!(!cfg.data_dir.join("probe").exists());
+                Err(Error::Conflict("quota".into()))
+            })
+            .unwrap_err();
+        assert!(called);
+        assert!(matches!(error, Error::Conflict(_)));
+        assert!(!cfg.data_dir.join("probe").exists());
+        assert!(be.list().unwrap().is_empty());
+        std::fs::remove_dir_all(cfg.data_dir.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn ambiguous_create_retains_id_and_prepared_restart_never_reimports() {
         let cfg = config("prepare");
@@ -366,6 +406,14 @@ mod tests {
         let (_, record) = be.replicated_record("probe").unwrap();
         assert_eq!(record.info.state, State::Failed);
         assert!(!record.volume_prepared);
+        assert_eq!(record.admitted_bytes, Some(65536));
+        // Retry must send the original admission even if the backing changes.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&cfg.base_image)
+            .unwrap()
+            .set_len(131072)
+            .unwrap();
         assert!(be.create(&spec()).is_err());
         assert!(be.start("probe").is_err());
         assert!(be.replicated_record("probe").unwrap().1.volume_prepared);
@@ -434,6 +482,40 @@ mod tests {
         std::fs::remove_dir_all(cfg.data_dir.parent().unwrap()).unwrap();
     }
     #[test]
+    fn retirement_removes_only_known_interrupted_create_debris() {
+        let cfg = config("retire-debris");
+        let be = KrucibleBackend::open(cfg.clone()).unwrap();
+        let dir = cfg.data_dir.join("probe");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("unknown"), b"preserve").unwrap();
+        let volume = "a".repeat(64);
+        assert!(matches!(
+            be.reclaim_replicated_volume("probe", &volume, 65536),
+            Err(Error::Conflict(_))
+        ));
+        assert!(dir.join("unknown").exists());
+        std::fs::remove_file(dir.join("unknown")).unwrap();
+        std::fs::write(dir.join("sandbox.json.tmp"), b"interrupted write").unwrap();
+        let listener = UnixListener::bind(&cfg.replicated.as_ref().unwrap().socket).unwrap();
+        let task = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let q: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(q["operation"], "retire");
+            writeln!(stream, "{}", serde_json::json!({"ok":true,"volume_id":q["volume_id"],"reclamation_complete":false})).unwrap();
+        });
+        assert!(!be
+            .reclaim_replicated_volume("probe", &volume, 65536)
+            .unwrap());
+        assert!(!dir.exists());
+        task.join().unwrap();
+        std::fs::remove_dir_all(cfg.data_dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn failed_delete_survives_reopen_and_blocks_resurrection() {
         let cfg = config("delete");
         let task = replies(
@@ -471,6 +553,7 @@ mod tests {
             backing: cfg.base_image.clone(),
             deleting: false,
             volume_prepared: false,
+            admitted_bytes: None,
         };
         assert!(validate_storage_record(&rec).is_err());
         rec.spec.storage_mode = None;

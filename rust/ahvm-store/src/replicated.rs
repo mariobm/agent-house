@@ -31,6 +31,18 @@ fn usage(conn: &Connection, owner: &str) -> Result<ReplicatedUsage> {
     )?)
 }
 impl Store {
+    /// Host-global name fence, including disks whose sandbox row is gone.
+    pub fn check_replicated_name_available(&self, sandbox: &str) -> Result<()> {
+        let occupied: bool = self.with_conn(|conn| Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM replicated_reservations WHERE sandbox_id=?1 AND state!='reclaimed')",
+            [sandbox], |r| r.get(0),
+        )?))?;
+        if occupied {
+            return Err(Error::Conflict("sandbox storage cleanup is pending".into()));
+        }
+        Ok(())
+    }
+
     /// Host-internal admission. Obtain owner from authenticated context and size
     /// from the validated image, not from a user-supplied accounting claim. Mint
     /// the immutable volume ID before import and persist this reservation first.
