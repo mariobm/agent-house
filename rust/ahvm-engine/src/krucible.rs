@@ -257,6 +257,16 @@ fn verified(w: &Worker) -> bool {
     }
 }
 
+// Explicit unlock also releases a lock briefly inherited by another thread's
+// concurrent fork before that child execs and closes CLOEXEC descriptors.
+#[derive(Debug)]
+struct DirectoryLock(std::fs::File);
+impl Drop for DirectoryLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 /// Real krucible backend. Synchronous and blocking (the daemon dispatches
 /// off its async core); internally a single map lock with take-operate-
 /// reinsert discipline so long worker waits never hold the lock.
@@ -266,6 +276,7 @@ pub struct KrucibleBackend {
     cfg: KrucibleConfig,
     inner: Mutex<Inner>,
     reservations: Mutex<HashSet<String>>,
+    _directory_lock: DirectoryLock,
 }
 
 impl KrucibleBackend {
@@ -285,6 +296,18 @@ impl KrucibleBackend {
             resources.validate()?;
         }
         std::fs::create_dir_all(&cfg.data_dir)?;
+        // One engine controls this persisted tree, including surviving workers.
+        // Keep the lock file across restarts; unlinking would split the lock.
+        let directory_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(cfg.data_dir.join(".engine.lock"))?;
+        directory_lock
+            .try_lock()
+            .map_err(|_| Error::Conflict("engine data directory already in use".into()))?;
+        let directory_lock = DirectoryLock(directory_lock);
         if cfg.storage.is_some() && cfg.data_dir.join("snapshots").exists() {
             return Err(Error::InvalidState(
                 "quota mode requires an empty named-snapshot registry".into(),
@@ -470,6 +493,7 @@ impl KrucibleBackend {
             }
         }
         Ok(Self {
+            _directory_lock: directory_lock,
             networks,
             cfg,
             inner: Mutex::new(inner),
@@ -2326,6 +2350,22 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn directory_has_one_controller_until_drop() {
+        let dir = crate::test_scratch("controller-lock");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        assert!(matches!(
+            KrucibleBackend::open(cfg(&dir)),
+            Err(Error::Conflict(_))
+        ));
+        drop(be);
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        drop(be);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn cfg(dir: &Path) -> KrucibleConfig {
         KrucibleConfig {
             vmm_bin: dir.join("vmm"),
@@ -2510,6 +2550,7 @@ mod tests {
             version: "1.0".to_string(),
         };
         stored_bad.write_to(&reg).unwrap();
+        drop(be);
         let be = KrucibleBackend::open(cfg(&dir)).unwrap();
         let mut caller = snap.clone();
         caller.snapshot_id = "tampered".to_string();
@@ -2523,6 +2564,7 @@ mod tests {
         let mut stored_other = snap.clone();
         stored_other.snapshot_id = "nope".to_string();
         stored_other.write_to(&reg2).unwrap();
+        drop(be);
         let be = KrucibleBackend::open(cfg(&dir)).unwrap();
         let mut caller2 = snap.clone();
         caller2.snapshot_id = "mismatch".to_string();
@@ -2706,6 +2748,7 @@ mod tests {
         // remove its state.json first so destroy takes the no-worker path.
         // (Adopted terminate sends SIGTERM; never point it at yourself.)
         let _ = std::fs::remove_file(live.join("state.json"));
+        drop(be);
         let be = KrucibleBackend::open(cfg(&dir)).unwrap();
         be.destroy("live-vm").unwrap();
         assert!(matches!(be.status("live-vm"), Err(Error::NotFound(_))));

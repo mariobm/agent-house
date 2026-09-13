@@ -68,6 +68,42 @@ fn replicated_engine_lifecycle() {
     }
     be.start("replica").unwrap();
     assert_eq!(command(&be, "cat /root/engine-proof"), "persisted");
+    if let Ok(hook) = std::env::var("AHVM_VOLUME_RECOVERY_HOOK") {
+        let invoke = |operation: &str| {
+            assert!(std::process::Command::new(&hook)
+                .arg(operation)
+                .status()
+                .unwrap()
+                .success());
+        };
+        let before = Worker::load(data.join("replica/state.json")).unwrap().pid;
+        invoke("restart");
+        assert_eq!(command(&be, "cat /root/engine-proof"), "persisted");
+        assert_eq!(
+            Worker::load(data.join("replica/state.json")).unwrap().pid,
+            before
+        );
+        // A live consumer prevents detach and replacement even after the NBD
+        // worker has died. Only the recorded test VM is killed to recover.
+        invoke("busy-detach");
+        invoke("kill-storage");
+        assert_eq!(be.status("replica").unwrap().state, State::Failed);
+        assert!(be.start("replica").is_err());
+        invoke("busy-attach");
+        #[allow(unsafe_code)]
+        unsafe {
+            assert_eq!(libc::kill(before as i32, libc::SIGKILL), 0);
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::path::Path::new(&format!("/proc/{before}")).exists() {
+            let _ = be.status("replica");
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        be.start("replica").unwrap();
+        assert_eq!(command(&be, "cat /root/engine-proof"), "persisted");
+        println!("PASS supervisor adoption and dead-storage fencing/recovery");
+    }
     let pid = Worker::load(data.join("replica/state.json")).unwrap().pid;
     drop(be); // workers and storage service survive engine restart
     cfg.default_storage_mode = StorageMode::Local;
