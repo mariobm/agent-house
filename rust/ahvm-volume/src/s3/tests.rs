@@ -224,3 +224,48 @@ fn credential_file_requires_private_permissions_and_is_bounded() {
     assert!(matches!(Config::from_file(&path), Err(Error::InvalidInput)));
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn reclamation_lists_only_exact_volume_chunks_and_signs_delete() {
+    let hash = "a".repeat(64);
+    let xml = format!("<ListBucketResult><Prefix>qualification/disk/chunks/</Prefix><IsTruncated>true</IsTruncated><Contents><Key>qualification/disk/chunks/{hash}</Key></Contents></ListBucketResult>");
+    let (store, worker) = server(vec![
+        response("200 OK", "", xml.as_bytes()),
+        response("204 No Content", "", &[]),
+    ]);
+    assert_eq!(store.list_chunks("disk", 1).unwrap(), vec![hash.clone()]);
+    store.delete_chunk("disk", &hash).unwrap();
+    let r = worker.join().unwrap();
+    assert!(r[0].contains("list-type=2"));
+    assert!(r[0].contains("prefix=qualification%2Fdisk%2Fchunks%2F"));
+    assert!(r[0].contains("max-keys=1"));
+    assert!(r[1].starts_with(&format!(
+        "DELETE /test-bucket/qualification/disk/chunks/{hash} "
+    )));
+    assert!(r[1].contains("AWS4-HMAC-SHA256"));
+}
+#[test]
+fn reclamation_rejects_foreign_keys_and_ambiguous_empty_pages() {
+    for body in [
+        "<ListBucketResult><Prefix>qualification/disk/chunks/</Prefix><IsTruncated>false</IsTruncated><Contents><Key>qualification/peer/chunks/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</Key></Contents></ListBucketResult>",
+        "<ListBucketResult><Prefix>qualification/disk/chunks/</Prefix><IsTruncated>true</IsTruncated></ListBucketResult>",
+        "<ListBucketResult><Prefix>qualification/peer/chunks/</Prefix><IsTruncated>false</IsTruncated></ListBucketResult>",
+        "<ListBucketResult></ListBucketResult>",
+    ] {
+        let (store, worker) = server(vec![response("200 OK", "", body.as_bytes())]);
+        assert!(store.list_chunks("disk", 16).is_err()); worker.join().unwrap();
+    }
+}
+
+#[test]
+fn reclamation_permission_and_delete_failures_are_not_completion() {
+    let (store, worker) = server(vec![
+        response("403 Forbidden", "", &[]),
+        response("500 Internal Server Error", "", &[]),
+        response("404 Not Found", "", &[]),
+    ]);
+    assert!(store.list_chunks("disk", 16).is_err());
+    assert!(store.delete_chunk("disk", &"a".repeat(64)).is_err());
+    store.delete_chunk("disk", &"a".repeat(64)).unwrap();
+    worker.join().unwrap();
+}

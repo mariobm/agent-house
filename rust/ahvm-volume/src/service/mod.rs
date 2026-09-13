@@ -62,6 +62,8 @@ struct Record {
     device: PathBuf,
     prepared: bool,
     deleted: bool,
+    #[serde(default)]
+    reclaimed: bool,
     desired: bool,
     worker: Option<Process>,
     client: Option<Process>,
@@ -87,6 +89,7 @@ struct Request {
 struct Service {
     executable: PathBuf,
     admission_failed: AtomicBool,
+    reclamation: Mutex<()>,
     config: Config,
     entries: Mutex<BTreeMap<String, Arc<Mutex<Entry>>>>,
     _locks: Vec<Lock>,
@@ -194,8 +197,16 @@ impl Service {
                 return Err("unaccounted volume directory".into());
             }
             let r: Record = read(&item.path().join("record.json"))?;
-            usage.add(r.logical_bytes)?;
-            if r.id != id
+            if !r.reclaimed {
+                usage.add(r.logical_bytes)?;
+            }
+            if (r.reclaimed
+                && (!r.deleted
+                    || r.desired
+                    || r.worker.is_some()
+                    || r.client.is_some()
+                    || r.vm.is_some()))
+                || r.id != id
                 || !config.devices.contains(&r.device)
                 || r.sandbox.parent() != Some(config.engine_root.as_path())
             {
@@ -226,6 +237,7 @@ impl Service {
         Ok(Arc::new(Self {
             executable: std::env::current_exe()?,
             admission_failed: AtomicBool::new(false),
+            reclamation: Mutex::new(()),
             config,
             entries: Mutex::new(entries),
             _locks: locks,
@@ -301,7 +313,9 @@ impl Service {
                     .join(id)
                     .join("record.json"),
             )?;
-            usage.add(r.logical_bytes)?;
+            if !r.reclaimed {
+                usage.add(r.logical_bytes)?;
+            }
             if !r.deleted || r.worker.is_some() || r.client.is_some() {
                 used.insert(r.device);
             }
@@ -326,6 +340,7 @@ impl Service {
             device,
             prepared: false,
             deleted: false,
+            reclaimed: false,
             desired: false,
             worker: None,
             client: None,
@@ -362,7 +377,9 @@ impl Service {
                     .join(id)
                     .join("record.json"),
             )?;
-            usage.add(r.logical_bytes)?;
+            if !r.reclaimed {
+                usage.add(r.logical_bytes)?;
+            }
         }
         Ok(usage)
     }
@@ -683,19 +700,26 @@ impl Service {
             self.binding(&r.id, &r.sandbox)?;
         }
         if q.operation == "usage" {
+            let mut usage = accounting::volume_usage(&self.dir(r), r.logical_bytes)?;
+            if r.reclaimed {
+                usage.reservation = Usage::default();
+            }
             return Ok(serde_json::json!({
                 "ok": true, "volume_id": r.id,
-                "usage": accounting::volume_usage(&self.dir(r), r.logical_bytes)?,
+                "usage": usage, "reclamation_complete": r.reclaimed,
                 "limits": self.config.limits,
                 "host_reservations": self.usage()?,
             }));
         }
         let mut status = None;
         if q.operation == "delete" {
+            let first = !r.deleted;
             r.deleted = true;
             r.desired = false;
             self.persist(r)?;
-            self.detach(r)?;
+            if first || r.worker.is_some() || r.client.is_some() || r.vm.is_some() {
+                self.detach(r)?;
+            }
         } else {
             if r.deleted {
                 return Err("volume deleted".into());
@@ -754,11 +778,39 @@ impl Service {
             serde_json::json!({"ok":true,"volume_id":r.id,"device":if r.worker.is_some(){Some(&r.device)}else{None},"status":status}),
         )
     }
+    fn reclaim(&self, r: &mut Record) -> Result<()> {
+        let raw: Arc<dyn ObjectStore> = Arc::new(S3Store::with_timeout(
+            S3Config::from_file(&self.config.credentials)?,
+            Duration::from_secs(3),
+        )?);
+        self.reclaim_with_store(r, raw)
+    }
+    fn reclaim_with_store(&self, r: &mut Record, raw: Arc<dyn ObjectStore>) -> Result<()> {
+        if !r.deleted || r.desired || r.worker.is_some() || r.client.is_some() || r.vm.is_some() {
+            return Err("volume is not detached and deleted".into());
+        }
+        // Bound object-store cleanup concurrency independently of guest I/O.
+        let _collector = self.reclamation.try_lock().map_err(|_| "collector busy")?;
+        let owner = self.dir(r).join("owner");
+        private_dir(&owner)?;
+        OwnedDisk::retire(raw.clone(), &r.id, &owner)?;
+        let progress = crate::reclaim::sweep(raw.as_ref(), &r.id, 16)?;
+        if progress.complete {
+            fs::remove_dir_all(&owner)?;
+            File::open(self.dir(r))?.sync_all()?;
+            r.reclaimed = true;
+            self.persist(r)?;
+        }
+        Ok(())
+    }
     fn recover(&self, e: &mut Entry) -> Result<()> {
         let r = &mut e.record;
         if r.deleted || !r.desired {
             if r.worker.is_some() || r.client.is_some() {
                 self.detach(r)?;
+            }
+            if r.deleted {
+                self.reclaim(r)?;
             }
             return Ok(());
         }
@@ -828,7 +880,10 @@ pub fn run() -> Result<()> {
             let Ok(mut e) = entry.try_lock() else {
                 continue;
             };
-            if (!e.record.desired && e.record.worker.is_none() && e.record.client.is_none())
+            if (!e.record.deleted
+                && !e.record.desired
+                && e.record.worker.is_none()
+                && e.record.client.is_none())
                 || Instant::now() < e.retry_at
             {
                 continue;
@@ -856,7 +911,14 @@ pub fn run() -> Result<()> {
                 match result {
                     Ok(()) => {
                         e.failures = 0;
-                        e.retry_at = Instant::now() + Duration::from_secs(2);
+                        e.retry_at = Instant::now()
+                            + Duration::from_secs(if e.record.reclaimed {
+                                3600
+                            } else if e.record.deleted {
+                                1
+                            } else {
+                                2
+                            });
                     }
                     Err(error) => {
                         eprintln!("volume {} recovery: {error}", e.record.id);
