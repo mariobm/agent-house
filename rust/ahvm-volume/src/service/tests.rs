@@ -760,3 +760,36 @@ fn image_hash_cache_reuses_unchanged_files_and_rechecks_changed_size() {
     assert_ne!(changed, first);
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn health_inspection_waits_for_concurrent_probe_without_cancelling_collection() {
+    let dir = temp();
+    let slot = Arc::new(Slot::new(Entry {
+        record: record(&"a".repeat(64), &dir),
+        failures: 0,
+        mark: None,
+        retry_at: Instant::now(),
+    }));
+    let held = slot.lock().unwrap();
+    let waiter = slot.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread = thread::spawn(move || {
+        let result = waiter
+            .foreground(false)
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        tx.send(result).unwrap();
+    });
+    assert!(
+        matches!(
+            rx.recv_timeout(Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
+        "inspection rejected temporary contention"
+    );
+    drop(held);
+    rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+    thread.join().unwrap();
+    assert_eq!(slot.cancellation.load(Ordering::SeqCst), 0);
+    fs::remove_dir_all(dir).unwrap();
+}
