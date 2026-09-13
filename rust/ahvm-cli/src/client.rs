@@ -78,6 +78,18 @@ impl Api {
         Ok(self)
     }
 
+    /// Refresh short-lived Cloud credentials before resuming a long shell.
+    pub fn renew_stream_auth(mut self) -> Result<Self> {
+        if self.cloud {
+            let (endpoint, token) = crate::cloud::connection()?;
+            if Url::parse(&endpoint)? != self.base {
+                return Err("cloud endpoint changed; reconnect explicitly".into());
+            }
+            self.token = token;
+        }
+        Ok(self)
+    }
+
     pub fn stream_request(
         &self,
         id: &str,

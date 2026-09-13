@@ -160,7 +160,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(self.requests[0][1],'/v1/sandboxes/other%2Fstop%3Fx=1')
     @unittest.skipUnless(os.name == 'posix', 'requires a terminal')
     def test_pty_restores_terminal_on_handshake_error(self):
-        import fcntl, pty, termios
+        import fcntl, pty, termios, threading
         master, slave = pty.openpty()
         before = termios.tcgetattr(master)
         self.reply({'error':'unauthorized'},401)
@@ -172,11 +172,84 @@ class ClientTests(unittest.TestCase):
         try:
             p=subprocess.Popen([BINARY,'--endpoint',self.endpoint,'session','attach','box','sid'],
                 stdin=slave,stdout=slave,stderr=subprocess.PIPE,env=env,preexec_fn=setup)
-            _,error=p.communicate(timeout=10)
+            # Drain PTY output like a terminal emulator. macOS can wait for
+            # pending output before restoring termios.
+            output = bytearray()
+            done = threading.Event()
+            def drain():
+                import select
+                while not done.is_set():
+                    if select.select([master], [], [], 0.05)[0]:
+                        try:
+                            chunk = os.read(master, 65536)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        output.extend(chunk)
+            reader = threading.Thread(target=drain, daemon=True)
+            reader.start()
+            try:
+                _,error=p.communicate(timeout=10)
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                    p.communicate()
+                done.set()
+                reader.join(timeout=1)
             self.assertEqual(p.returncode,1,error)
             self.assertEqual(termios.tcgetattr(master),before)
+            self.assertIn(b'\x1b[?1003l', output)
+            self.assertIn(b'\x1b[?1049l', output)
+            self.assertIn(b'\x1b[?25h', output)
         finally:
             os.close(master);os.close(slave)
+
+    @unittest.skipUnless(os.name == 'posix', 'requires a terminal')
+    def test_pty_reconnects_from_delivered_cursor(self):
+        import fcntl, pty, termios, socketserver, hashlib, select
+        paths=[]
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                line=self.rfile.readline().decode()
+                headers={}
+                while raw:=self.rfile.readline().strip():
+                    k,v=raw.decode().split(':',1);headers[k.lower()]=v.strip()
+                if not line.startswith('GET '):
+                    self.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}');return
+                paths.append(line.split()[1])
+                key=base64.b64encode(hashlib.sha1((headers['sec-websocket-key']+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest())
+                self.wfile.write(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+key+b'\r\n\r\n')
+                last=len(paths)==2
+                payload=json.dumps({'data_b64':base64.b64encode(b'AFTER-RESET' if last else b'BEFORE-RESET').decode(),
+                    'next_seq':211 if last else 200,'eof':last,'exit_code':0,'truncated':False}).encode()
+                self.wfile.write(b'\x81\x7e'+len(payload).to_bytes(2,'big')+payload)
+                self.wfile.flush()
+                # Return without a close handshake, just like a proxy reset.
+        server=socketserver.ThreadingTCPServer(('127.0.0.1',0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        master,slave=pty.openpty();before=termios.tcgetattr(master)
+        env={k:v for k,v in os.environ.items() if not k.startswith('AHVM_')};env['AHVM_TOKEN']='test'
+        def setup():
+            os.setsid();fcntl.ioctl(0,termios.TIOCSCTTY,0)
+        p=subprocess.Popen([BINARY,'--endpoint',f'http://127.0.0.1:{server.server_address[1]}','session','attach','box','sid'],
+            stdin=slave,stdout=slave,stderr=slave,env=env,preexec_fn=setup)
+        output=bytearray()
+        try:
+            import time
+            deadline=time.monotonic()+15
+            while time.monotonic()<deadline:
+                if select.select([master],[],[],.05)[0]:output.extend(os.read(master,65536))
+                if p.poll() is not None:break
+            self.assertEqual(p.poll(),0,output)
+            self.assertEqual(len(paths),2)
+            self.assertTrue(paths[1].endswith('from_seq=200'),paths)
+            self.assertEqual(output.count(b'BEFORE-RESET'),1)
+            self.assertEqual(output.count(b'AFTER-RESET'),1)
+            self.assertEqual(termios.tcgetattr(master),before)
+        finally:
+            if p.poll() is None:p.kill();p.wait()
+            os.close(master);os.close(slave);server.shutdown();server.server_close();thread.join()
 
     def test_bad_preview_origin_does_not_rotate(self):
         p=self.run_cli('preview','access','box','80','--base-url','http://example.com')

@@ -24,8 +24,9 @@ and returns to your terminal; it does not delete or stop the VM. Ctrl-] detaches
 while leaving the session running.
 
 The standard daemon stops idle VMs after 3600 seconds, checked every 60 seconds
-(AHVM_IDLE_SECS and AHVM_SWEEP_SECS). Active operations defer stop. An open but
-silent terminal does not keep a VM running indefinitely. Wake currently requires
+(AHVM_IDLE_SECS and AHVM_SWEEP_SECS). Active operations and connected shells defer idle stop, including a quiet
+shell waiting for an agent. After the last shell disconnects, the idle timer
+starts again. Wake currently requires
 "ahvm start dev".
 
 ## Local storage
