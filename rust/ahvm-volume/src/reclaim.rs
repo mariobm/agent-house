@@ -1,4 +1,4 @@
-//! Reclamation of permanently retired disks. Never collects a live disk's history.
+//! Reclamation of retired disks and exclusive offline collection for retained disks.
 //! Keep the small tombstone forever: removing it would permit identity reuse.
 use crate::{Error, Head, ObjectStore, Result};
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,15 @@ pub fn sweep(store: &dyn ObjectStore, id: &str, limit: usize) -> Result<Progress
         deleted_objects: hashes.len(),
         complete: hashes.is_empty(),
     })
+}
+
+/// An empty page completes a cycle. Resume by last key, never by list offset.
+#[derive(Debug, Serialize)]
+pub struct Collection {
+    pub scanned_objects: usize,
+    pub deleted_objects: usize,
+    pub complete: bool,
+    pub next_after: Option<String>,
 }
 
 #[cfg(test)]
