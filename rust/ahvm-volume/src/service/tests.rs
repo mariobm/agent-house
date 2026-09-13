@@ -50,7 +50,7 @@ fn service(root: &Path) -> Service {
         executable: "/unused".into(),
         admission_failed: AtomicBool::new(false),
         reclamation: Mutex::new(()),
-        imports: Mutex::new(()),
+        imports: Mutex::new(BTreeMap::new()),
         config: Config {
             client_uid: 0,
             resources: None,
@@ -61,6 +61,7 @@ fn service(root: &Path) -> Service {
                 max_cache_bytes: 1 << 30,
             },
             image_roots: vec![],
+            local_base_reads: true,
             socket_dir: None,
             root: root.into(),
             engine_root: root.into(),
@@ -725,5 +726,37 @@ fn admitted_size_refuses_changed_reservation_on_retry() {
         .unwrap_err()
         .to_string()
         .contains("sizing mismatch"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn image_hash_cache_reuses_unchanged_files_and_rechecks_changed_size() {
+    use std::io::{Seek, Write};
+    let dir = temp();
+    let path = dir.join("image");
+    fs::write(&path, b"first").unwrap();
+    let mut cache = BTreeMap::new();
+    let mut bytes = vec![0; 64];
+    let first =
+        Service::hash_image(&mut File::open(&path).unwrap(), &mut cache, &mut bytes).unwrap();
+    let mut same = File::open(&path).unwrap();
+    assert_eq!(
+        Service::hash_image(&mut same, &mut cache, &mut bytes).unwrap(),
+        first
+    );
+    assert_eq!(
+        same.stream_position().unwrap(),
+        0,
+        "unchanged image needs no scan"
+    );
+    File::options()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"new")
+        .unwrap();
+    let changed =
+        Service::hash_image(&mut File::open(&path).unwrap(), &mut cache, &mut bytes).unwrap();
+    assert_ne!(changed, first);
     fs::remove_dir_all(dir).unwrap();
 }

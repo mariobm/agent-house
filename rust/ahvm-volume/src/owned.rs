@@ -225,6 +225,15 @@ impl Store {
     }
 }
 impl ObjectStore for Store {
+    fn prefetch_base(&self, image: &str, hashes: &[String]) {
+        if let Ok(_active) = self.active() {
+            self.raw.prefetch_base(image, hashes);
+        }
+    }
+    fn base_chunk(&self, image: &str, hash: &str, offset: Option<u64>) -> Result<Vec<u8>> {
+        let _active = self.active()?;
+        self.raw.base_chunk(image, hash, offset)
+    }
     fn prefetch(&self, id: &str, digests: &[String]) {
         if let Ok(_active) = self.active() {
             if id == self.id {
@@ -278,7 +287,7 @@ impl ObjectStore for Store {
             manifest: manifest.into(),
         };
         let mut e = decode(self.raw.clone(), id, &h)?;
-        // The inner indexed layer publishes formats 2/3 only. The opaque outer
+        // The inner indexed layer publishes ordinary or base-backed disk maps. The opaque outer
         // revision makes data and ownership replacement ONE conditional write.
         if e.epoch != 0 {
             return Err(Error::InvalidInput);
@@ -349,7 +358,7 @@ impl OwnedDisk {
             }
             let v: serde_json::Value =
                 serde_json::from_slice(&h.manifest).map_err(|_| Error::Corrupt)?;
-            if v["format"] != 2 {
+            if v["format"] != 2 && v["format"] != 6 {
                 let envelope = decode(raw.clone(), id, h)?;
                 if envelope.epoch != 0 && envelope.owner.is_none() {
                     // Explicit release already fenced the old owner. Compete

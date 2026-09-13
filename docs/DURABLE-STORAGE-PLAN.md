@@ -486,3 +486,24 @@ backup/recovery procedure also needs to include the installed volume-service sta
 Then finish automatic wake and user/admin dashboard visibility, followed by the
 invited-user end-to-end gate and release. Local-mode Cloud remains available while
 these requirements are completed.
+
+
+### Shared base images and local reads
+
+Shared immutable image catalogs now back new replicated disks. A root-only warm
+command publishes a base once through the bounded supervisor. New VMs pin its
+catalog and store only private changes. Local host images serve verified base
+blocks, with remote fallback when absent or changed. Per-VM collection no longer
+scans the full image. Existing volumes keep their format and ownership semantics.
+
+See [shared base images](SHARED-BASE-IMAGES.md) for protocol, operator workflow and
+qualification. This is part of Cloud storage qualification, not dashboard work.
+Bases remain operator-retained until reference-aware base deletion is implemented.
+A bounded prebooted pool is a later create-latency optimization; it is not required
+for shared image storage. Automatic wake and dashboards remain pending.
+
+Planned prebooted pool: start with Ubuntu without a desktop, keep the number of
+clean unassigned VMs configurable and bounded, and account for their host resources.
+Allocate tenant ownership atomically when an image/resource profile matches.
+Never recycle a previously assigned VM's tenant state into the pool. This remains
+a later optimization after shared-base qualification and automatic Cloud wake.

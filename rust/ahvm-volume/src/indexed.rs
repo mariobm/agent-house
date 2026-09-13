@@ -1,6 +1,7 @@
 //! Format 2: bounded root -> immutable pages -> immutable 64-KiB data chunks.
 //! Format 1 remains separate; there is no implicit format/mode migration.
 use crate::{
+    base::{BaseRef, Catalog},
     digest, publication_error, valid_id, Error, ObjectStore, Result, CHUNK_BYTES,
     MAX_MANIFEST_BYTES,
 };
@@ -28,6 +29,8 @@ struct Root {
     pages: BTreeMap<u64, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     replication: Option<Replication>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base: Option<BaseRef>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -38,6 +41,7 @@ pub(crate) struct Replication {
 pub struct IndexedVolume {
     store: Arc<dyn ObjectStore>,
     root: Root,
+    base: Option<Catalog>,
     revision: String,
     dirty: BTreeMap<u64, Arc<Vec<u8>>>,
     poisoned: bool,
@@ -84,6 +88,67 @@ fn slot(page: &[u8], index: u64) -> Option<String> {
     }
 }
 impl IndexedVolume {
+    /// Pin a verified completed image catalog. The supplied store must address
+    /// the base namespace; this never publishes a mutable reference into a VM.
+    pub fn export_base(&self) -> Result<BaseRef> {
+        if !self.root.ready
+            || self.root.base.is_some()
+            || self.root.replication.is_some()
+            || !self.dirty.is_empty()
+            || self.poisoned
+        {
+            return Err(Error::InvalidInput);
+        }
+        decode(&self.root.volume)?;
+        let catalog = Catalog {
+            size: self.root.size,
+            pages: self.root.pages.clone(),
+        };
+        let bytes = catalog.encode(&self.root.volume)?;
+        let hash = digest(&bytes);
+        self.store.put_chunk(&self.root.volume, &hash, &bytes)?;
+        Ok(BaseRef {
+            image: self.root.volume.clone(),
+            catalog: hash,
+        })
+    }
+    /// New VM contains a private map and writes; the immutable image is shared.
+    pub fn create_from_base(
+        store: Arc<dyn ObjectStore>,
+        id: &str,
+        reference: BaseRef,
+    ) -> Result<Self> {
+        if !valid_id(id) {
+            return Err(Error::InvalidInput);
+        }
+        let base = Catalog::load(store.as_ref(), &reference)?;
+        let root = Root {
+            format: 6,
+            volume: id.into(),
+            size: base.size,
+            generation: 0,
+            ready: true,
+            pages: base.pages.clone(),
+            replication: None,
+            base: Some(reference),
+        };
+        let bytes = serde_json::to_vec(&root).map_err(|_| Error::Corrupt)?;
+        if bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(Error::Corrupt);
+        }
+        let revision = store.publish(id, None, &bytes).map_err(publication_error)?;
+        if revision.is_empty() {
+            return Err(Error::Uncertain);
+        }
+        Ok(Self {
+            store,
+            root,
+            base: Some(base),
+            revision,
+            dirty: BTreeMap::new(),
+            poisoned: false,
+        })
+    }
     pub fn size(&self) -> u64 {
         self.root.size
     }
@@ -109,6 +174,7 @@ impl IndexedVolume {
             ready,
             pages: BTreeMap::new(),
             replication: None,
+            base: None,
         };
         let bytes = serde_json::to_vec(&root).map_err(|_| Error::Corrupt)?;
         let revision = store.publish(id, None, &bytes).map_err(publication_error)?;
@@ -118,6 +184,7 @@ impl IndexedVolume {
         Ok(Self {
             store,
             root,
+            base: None,
             revision,
             dirty: BTreeMap::new(),
             poisoned: false,
@@ -147,8 +214,9 @@ impl IndexedVolume {
             return Err(Error::Corrupt);
         }
         let root: Root = serde_json::from_slice(&head.manifest).map_err(|_| Error::Corrupt)?;
-        if !matches!(root.format, 2 | 3)
-            || (root.format == 3) != root.replication.is_some()
+        if !matches!(root.format, 2 | 3 | 6 | 7)
+            || matches!(root.format, 3 | 7) != root.replication.is_some()
+            || matches!(root.format, 6 | 7) != root.base.is_some()
             || root
                 .replication
                 .as_ref()
@@ -166,9 +234,18 @@ impl IndexedVolume {
         if ready && !root.ready {
             return Err(Error::NotReady);
         }
+        let base = root
+            .base
+            .as_ref()
+            .map(|b| Catalog::load(store.as_ref(), b))
+            .transpose()?;
+        if base.as_ref().is_some_and(|b| b.size != root.size) {
+            return Err(Error::Corrupt);
+        }
         Ok(Self {
             store,
             root,
+            base,
             revision: head.revision,
             dirty: BTreeMap::new(),
             poisoned: false,
@@ -199,10 +276,18 @@ impl IndexedVolume {
         }
         Ok(())
     }
-    fn page(&self, index: u64) -> Result<Vec<u8>> {
+    fn page_from(&self, index: u64, hash: Option<&String>, base: bool) -> Result<Vec<u8>> {
         let mut bytes = vec![0; CHUNK_BYTES];
-        if let Some(hash) = self.root.pages.get(&index) {
-            bytes = self.store.chunk(&self.root.volume, hash)?;
+        if let Some(hash) = hash {
+            bytes = if base {
+                self.store.base_chunk(
+                    &self.root.base.as_ref().ok_or(Error::Corrupt)?.image,
+                    hash,
+                    None,
+                )?
+            } else {
+                self.store.chunk(&self.root.volume, hash)?
+            };
             if bytes.len() != CHUNK_BYTES
                 || digest(&bytes) != *hash
                 || &bytes[..8] != MAGIC
@@ -211,7 +296,6 @@ impl IndexedVolume {
             {
                 return Err(Error::Corrupt);
             }
-            // A last partial page must not claim data beyond the logical disk.
             let valid = (self.root.size / CHUNK_BYTES as u64 - index * SLOTS).min(SLOTS) as usize;
             if bytes[16 + valid * 32..16 + SLOTS as usize * 32]
                 .iter()
@@ -225,6 +309,22 @@ impl IndexedVolume {
         }
         Ok(bytes)
     }
+    fn base_page(&self, index: u64) -> Result<Vec<u8>> {
+        self.page_from(
+            index,
+            self.base.as_ref().and_then(|b| b.pages.get(&index)),
+            true,
+        )
+    }
+    fn page(&self, index: u64) -> Result<Vec<u8>> {
+        let hash = self.root.pages.get(&index);
+        let inherited = hash.is_some()
+            && self
+                .base
+                .as_ref()
+                .is_some_and(|b| b.pages.get(&index) == hash);
+        self.page_from(index, hash, inherited)
+    }
     /// Full validated reference graph for offline collection. Includes metadata
     /// pages as well as data hashes; never fetches all data blocks. A missing or
     /// corrupt page aborts marking before any deletion can begin.
@@ -234,11 +334,26 @@ impl IndexedVolume {
             if cancel() {
                 return Err(Error::Deadline);
             }
+            // Immutable base pages/data are retained separately, never swept
+            // under the VM namespace. No full-image mark scan on every stop.
+            if self
+                .base
+                .as_ref()
+                .is_some_and(|b| b.pages.get(index) == Some(hash))
+            {
+                continue;
+            }
             let page = self.page(*index)?;
+            let base_page = self.base_page(*index)?;
             live.push(decode(hash)?);
-            for hash in page[16..16 + SLOTS as usize * 32].as_chunks::<32>().0 {
+            for (slot, hash) in page[16..16 + SLOTS as usize * 32]
+                .as_chunks::<32>()
+                .0
+                .iter()
+                .enumerate()
+            {
                 let hash = *hash;
-                if hash != [0; 32] {
+                if hash != [0; 32] && hash != base_page[16 + slot * 32..16 + (slot + 1) * 32] {
                     live.push(hash);
                 }
             }
@@ -258,19 +373,53 @@ impl IndexedVolume {
         let Some(hash) = slot(&page, index) else {
             return Ok(vec![0; CHUNK_BYTES]);
         };
-        let bytes = if let Some(bytes) = self.store.cached_chunk(&self.root.volume, &hash) {
+        let base_page = self
+            .base
+            .as_ref()
+            .map(|_| self.base_page(index / SLOTS))
+            .transpose()?;
+        let inherited = base_page
+            .as_ref()
+            .is_some_and(|p| slot(p, index).as_ref() == Some(&hash));
+        let cached = if inherited {
+            None
+        } else {
+            self.store.cached_chunk(&self.root.volume, &hash)
+        };
+        if prefetch && cached.is_none() {
+            let end = (index + 8)
+                .min((index / SLOTS + 1) * SLOTS)
+                .min(self.size() / CHUNK_BYTES as u64);
+            let mut private = Vec::new();
+            let mut shared = Vec::new();
+            for i in index + 1..end {
+                if let Some(next) = slot(&page, i).filter(|h| h != &hash) {
+                    if base_page
+                        .as_ref()
+                        .is_some_and(|p| slot(p, i).as_ref() == Some(&next))
+                    {
+                        shared.push(next);
+                    } else {
+                        private.push(next);
+                    }
+                }
+            }
+            // One shared seven-request admission budget in the cache, including
+            // mixed pages with both base blocks and private filesystem metadata.
+            self.store.prefetch(&self.root.volume, &private);
+            if let Some(base) = &self.root.base {
+                self.store.prefetch_base(&base.image, &shared);
+            }
+        }
+        let bytes = if inherited {
+            self.store.base_chunk(
+                &self.root.base.as_ref().unwrap().image,
+                &hash,
+                Some(index * CHUNK_BYTES as u64),
+            )?
+        } else if let Some(bytes) = cached {
             bytes
         } else {
-            if prefetch {
-                let end = (index + 8)
-                    .min((index / SLOTS + 1) * SLOTS)
-                    .min(self.size() / CHUNK_BYTES as u64);
-                let hashes: Vec<_> = (index + 1..end)
-                    .filter_map(|i| slot(&page, i))
-                    .filter(|h| h != &hash)
-                    .collect();
-                self.store.prefetch(&self.root.volume, &hashes);
-            }
             self.store.chunk(&self.root.volume, &hash)?
         };
         if bytes.len() != CHUNK_BYTES || digest(&bytes) != hash {
@@ -358,6 +507,7 @@ impl IndexedVolume {
         Ok(Self {
             store: self.store.clone(),
             root: self.root.clone(),
+            base: self.base.clone(),
             revision: self.revision.clone(),
             dirty: BTreeMap::new(),
             poisoned: false,
@@ -412,7 +562,7 @@ impl IndexedVolume {
         deadline(end)?;
         let mut next = self.root.clone();
         if let Some(mark) = mark {
-            next.format = 3;
+            next.format = if next.base.is_some() { 7 } else { 3 };
             next.replication = Some(mark);
         }
         next.generation = next.generation.checked_add(1).ok_or(Error::Corrupt)?;
@@ -436,7 +586,11 @@ impl IndexedVolume {
                 // to resolve a duplicate-object conditional failure.
                 if page[at..at + 32] != raw {
                     page[at..at + 32].copy_from_slice(&raw);
-                    uploads.entry(hash).or_insert_with(|| bytes.clone());
+                    let inherited = self.base.is_some()
+                        && slot(&self.base_page(page_index)?, index).as_ref() == Some(&hash);
+                    if !inherited {
+                        uploads.entry(hash).or_insert_with(|| bytes.clone());
+                    }
                 }
             }
         }
@@ -448,7 +602,13 @@ impl IndexedVolume {
                 let hash = digest(&page);
                 if self.root.pages.get(&index) != Some(&hash) {
                     next.pages.insert(index, hash.clone());
-                    uploads.insert(hash, Arc::new(page));
+                    if !self
+                        .base
+                        .as_ref()
+                        .is_some_and(|b| b.pages.get(&index) == Some(&hash))
+                    {
+                        uploads.insert(hash, Arc::new(page));
+                    }
                 }
             }
         }
