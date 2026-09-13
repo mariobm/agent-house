@@ -10,7 +10,9 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod base;
 pub mod batched;
+pub use base::BaseRef;
 pub mod cache;
 pub mod indexed;
 #[cfg(unix)]
@@ -69,6 +71,13 @@ pub struct Head {
 /// queued locally. `None` means create only if absent, never unconditional PUT.
 /// A lost publication response must return an error, never fabricated success.
 pub trait ObjectStore: std::fmt::Debug + Send + Sync {
+    /// Immutable operator-published image object, separate from tenant volumes.
+    /// An optional byte offset allows a verified local image read for data blocks.
+    fn base_chunk(&self, _image: &str, _hash: &str, _offset: Option<u64>) -> Result<Vec<u8>> {
+        Err(Error::InvalidInput)
+    }
+    /// Bounded speculative reads within an immutable base namespace.
+    fn prefetch_base(&self, _image: &str, _digests: &[String]) {}
     /// Optional best-effort immutable read-ahead. Must be bounded and nonblocking.
     fn prefetch(&self, _volume: &str, _digests: &[String]) {}
     /// Optional disposable cache lookup. Callers still validate returned bytes.

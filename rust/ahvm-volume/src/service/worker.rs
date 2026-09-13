@@ -12,7 +12,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> super::Result<()> {
         sync::Arc,
         time::Duration,
     };
-    if args.len() != 4 {
+    if args.len() != 6 {
         return Err("invalid worker arguments".into());
     }
     let mut go = [0];
@@ -20,13 +20,29 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> super::Result<()> {
     if go != *b"G" {
         return Err("launch cancelled".into());
     }
-    let store = Arc::new(CachedStore::new(
+    let mut cache = CachedStore::new(
         Arc::new(S3Store::with_timeout(
             Config::from_file(Path::new(&args[0]))?,
             Duration::from_secs(3),
         )?),
         super::accounting::CACHE_BYTES as usize,
-    )?);
+    )?;
+    // Host images are an optional verified read cache; remote-only recovery must
+    // still work if the image has been removed from this host.
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(&args[5])
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = file.metadata()?;
+        if meta.is_file() && meta.uid() == 0 && meta.mode() & 0o022 == 0 {
+            cache = cache
+                .with_local_base(args[4].to_str().ok_or("invalid image hash")?.into(), file)?;
+        }
+    }
+    let store = Arc::new(cache);
     let socket_path = std::path::PathBuf::from(&args[3]);
     let socket = socket_path.as_path();
     let parent = socket.parent().ok_or("private directory required")?;

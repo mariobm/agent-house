@@ -31,6 +31,7 @@ mod resources;
 use accounting::{Limits, Usage, CACHE_BYTES};
 #[cfg(test)]
 mod tests;
+mod warm;
 mod worker;
 use host::*;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -45,6 +46,8 @@ struct Config {
     limits: Limits,
     #[serde(default)]
     image_roots: Vec<PathBuf>,
+    #[serde(default = "local_base_default")]
+    local_base_reads: bool,
     #[serde(default)]
     socket_dir: Option<PathBuf>,
     root: PathBuf,
@@ -52,6 +55,9 @@ struct Config {
     credentials: PathBuf,
     nbd_client: PathBuf,
     devices: Vec<PathBuf>,
+}
+fn local_base_default() -> bool {
+    true
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -160,12 +166,14 @@ struct Request {
     #[serde(default)]
     logical_bytes: Option<u64>,
 }
+// Device, inode, size, mtime/ns, ctime/ns of a trusted image file.
+type ImageIdentity = (u64, u64, u64, i64, i64, i64, i64);
 #[derive(Debug)]
 struct Service {
     executable: PathBuf,
     admission_failed: AtomicBool,
     reclamation: Mutex<()>,
-    imports: Mutex<()>,
+    imports: Mutex<BTreeMap<ImageIdentity, String>>,
     config: Config,
     entries: Mutex<BTreeMap<String, Arc<Slot>>>,
     _locks: Vec<Lock>,
@@ -330,7 +338,7 @@ impl Service {
             executable: std::env::current_exe()?,
             admission_failed: AtomicBool::new(false),
             reclamation: Mutex::new(()),
-            imports: Mutex::new(()),
+            imports: Mutex::new(BTreeMap::new()),
             config,
             entries: Mutex::new(entries),
             _locks: locks,
@@ -654,7 +662,7 @@ impl Service {
         }
         // Bound the supervisor's upload threads across simultaneous creates.
         // Other volumes' live I/O and recovery do not take this lock.
-        let _import = self.imports.lock().map_err(|_| "import lock poisoned")?;
+        let mut imports = self.imports.lock().map_err(|_| "import lock poisoned")?;
         use sha2::{Digest, Sha256};
         let mut file = File::open(&r.image)?;
         let metadata = file.metadata()?;
@@ -667,17 +675,8 @@ impl Service {
         {
             return Err("invalid raw image size/type".into());
         }
-        let mut hasher = Sha256::new();
-        // One bounded import batch reduces repeated page reads and root CAS calls.
         let mut bytes = vec![0; crate::indexed::WRITE_LIMIT];
-        loop {
-            let n = file.read(&mut bytes)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&bytes[..n]);
-        }
-        let hash = format!("{:x}", hasher.finalize());
+        let hash = Self::hash_image(&mut file, &mut imports, &mut bytes)?;
         if r.image_hash.is_empty() {
             r.image_hash = hash;
             self.persist(r)?;
@@ -686,7 +685,11 @@ impl Service {
         }
         let store = self.store()?;
         let mut disk = match store.head(&r.id)? {
-            None => Some(IndexedVolume::create_import(store.clone(), &r.id, size)?),
+            None => {
+                let reference = self.import_base(&mut file, &r.image_hash, size, &mut bytes)?;
+                IndexedVolume::create_from_base(store.clone(), &r.id, reference)?;
+                None
+            }
             Some(h) => {
                 let v: serde_json::Value = serde_json::from_slice(&h.manifest)?;
                 if v["format"] == 4 || v["ready"] == true {
@@ -717,6 +720,57 @@ impl Service {
         OwnedDisk::enroll(store, &r.id)?;
         r.prepared = true;
         self.persist(r)
+    }
+    fn import_base(
+        &self,
+        file: &mut File,
+        image: &str,
+        size: u64,
+        bytes: &mut [u8],
+    ) -> Result<crate::BaseRef> {
+        use sha2::{Digest, Sha256};
+        use std::io::{Seek, SeekFrom};
+        let bases: Arc<dyn ObjectStore> = Arc::new(CachedStore::new(
+            Arc::new(
+                S3Store::with_timeout(
+                    S3Config::from_file(&self.config.credentials)?,
+                    Duration::from_secs(3),
+                )?
+                .bases()?,
+            ),
+            CACHE_BYTES as usize,
+        )?);
+        let mut disk = match IndexedVolume::open(bases.clone(), image) {
+            Ok(disk) => {
+                if disk.size() != size {
+                    return Err("base image size mismatch".into());
+                }
+                return Ok(disk.export_base()?);
+            }
+            Err(crate::Error::NotFound) => {
+                IndexedVolume::create_import(bases.clone(), image, size)?
+            }
+            Err(crate::Error::NotReady) => {
+                IndexedVolume::resume_import(bases.clone(), image, size)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        file.seek(SeekFrom::Start(0))?;
+        let mut check = Sha256::new();
+        let mut at = 0;
+        while at < size {
+            let n = bytes.len().min((size - at) as usize);
+            file.read_exact(&mut bytes[..n])?;
+            check.update(&bytes[..n]);
+            disk.write(at, &bytes[..n])?;
+            disk.commit_import()?;
+            at += n as u64;
+        }
+        if format!("{:x}", check.finalize()) != image {
+            return Err("base image changed during import".into());
+        }
+        disk.finish_import()?;
+        Ok(disk.export_base()?)
     }
     fn control(&self, r: &Record, op: &str) -> Result<crate::local::Status> {
         let worker = r.worker.as_ref().ok_or("worker unavailable")?;
@@ -922,6 +976,12 @@ impl Service {
                 .arg(&r.id)
                 .arg(&dir)
                 .arg(self.socket(r))
+                .arg(&r.image_hash)
+                .arg(if self.config.local_base_reads {
+                    r.image.as_os_str()
+                } else {
+                    std::ffi::OsStr::new("")
+                })
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -1216,6 +1276,9 @@ impl Service {
 
 pub fn run() -> Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|a| a == "warm") {
+        return warm::client(&args[1..]);
+    }
     if args.first().is_some_and(|a| a == "_worker") {
         return worker::run(&args[1..]);
     }
@@ -1359,6 +1422,12 @@ pub fn run() -> Result<()> {
                     return Err("invalid request".into());
                 }
                 let q: Request = serde_json::from_str(&line)?;
+                if q.operation == "warm-base" {
+                    if uid != 0 || q.version != 1 {
+                        return Err("root-only image preparation".into());
+                    }
+                    return service.warm_base(q.image.as_deref().ok_or("missing image")?);
+                }
                 let id = q.volume_id.clone();
                 Ok(service.request(q).unwrap_or_else(|error| {
                     eprintln!("volume {id}: {error}");
