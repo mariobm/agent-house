@@ -31,7 +31,9 @@ output contains the volume ID, logical size and disk SHA-256 only.
 The command reads one immutable disk map, checks every data hash, and refuses
 success if the remote head changes during capture. Missing or corrupt objects and
 output failures fail the attempt. It does not retry against a newer generation.
-It allocates one 64-KiB data buffer plus bounded indexed metadata/transport buffers.
+It allocates one 64-KiB data buffer, a 16-MiB cache and bounded indexed
+metadata/transport buffers. The cache reuses metadata pages and provides bounded
+read-ahead, avoiding repeated R2 requests while exporting adjacent blocks.
 Zero-filled disk regions are sparse holes, but changed/nonzero data still needs
 local space. Use a bounded staging filesystem and budget up to the logical disk
 size. No unlimited staging allocation, automatic retention or schedule is implied.
