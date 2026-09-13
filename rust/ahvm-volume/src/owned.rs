@@ -81,6 +81,61 @@ fn decode(store: Arc<dyn ObjectStore>, id: &str, h: &Head) -> Result<Envelope> {
     )?;
     Ok(e)
 }
+/// Export the last published disk state without claiming or changing its owner.
+/// The caller must sync first if pending local writes need to be included.
+/// Partial output on error is not a recovery point. Callers publish only after
+/// success, durable output and their own consistency checks across volumes.
+pub fn export_remote(
+    raw: Arc<dyn ObjectStore>,
+    id: &str,
+    output: &mut impl Write,
+) -> Result<ExportReport> {
+    use sha2::{Digest, Sha256};
+    if !crate::valid_id(id) {
+        return Err(Error::InvalidInput);
+    }
+    let head = raw.head(id)?.ok_or(Error::NotFound)?;
+    let envelope = decode(raw.clone(), id, &head)?;
+    let disk = IndexedVolume::from_head(
+        raw.clone(),
+        id,
+        Head {
+            revision: head.revision.clone(),
+            manifest: serde_json::to_vec(&envelope.manifest).map_err(|_| Error::Corrupt)?,
+        },
+    )?;
+    let mut bytes = vec![0; crate::CHUNK_BYTES];
+    let mut hasher = Sha256::new();
+    let mut offset = 0;
+    while offset < disk.size() {
+        disk.read(offset, &mut bytes)?;
+        hasher.update(&bytes);
+        err(output.write_all(&bytes))?;
+        offset += bytes.len() as u64;
+    }
+    // A writer, collector or deletion racing capture invalidates the attempt.
+    // We never retry with a different root and never mix two generations.
+    let current = raw.head(id)?.ok_or(Error::Conflict)?;
+    if current.revision != head.revision || current.manifest != head.manifest {
+        return Err(Error::Conflict);
+    }
+    Ok(ExportReport {
+        format: 1,
+        volume: id.into(),
+        logical_bytes: disk.size(),
+        sha256: format!("{:x}", hasher.finalize()),
+    })
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportReport {
+    pub format: u32,
+    pub volume: String,
+    pub logical_bytes: u64,
+    pub sha256: String,
+}
+
 struct Store {
     raw: Arc<dyn ObjectStore>,
     id: String,
@@ -688,6 +743,100 @@ mod tests {
             );
             Ok(revision)
         }
+    }
+
+    #[test]
+    fn remote_export_survives_source_retirement_and_preserves_ownership() {
+        let store = Arc::new(Memory::default());
+        let mut disk =
+            IndexedVolume::create(store.clone(), "export", 2 * crate::CHUNK_BYTES as u64).unwrap();
+        disk.write(0, b"marker A").unwrap();
+        disk.commit().unwrap();
+        OwnedDisk::enroll(store.clone(), "export").unwrap();
+        let directory = Directory::new();
+        let owner = OwnedDisk::open(store.clone(), "export", &directory.0).unwrap();
+        let before = store.head("export").unwrap().unwrap();
+        let mut bytes = Vec::new();
+        let report = export_remote(store.clone(), "export", &mut bytes).unwrap();
+        assert_eq!(report.logical_bytes as usize, bytes.len());
+        assert_eq!(report.sha256, crate::digest(&bytes));
+        assert_eq!(&bytes[..8], b"marker A");
+        assert!(bytes[8..].iter().all(|b| *b == 0));
+        assert_eq!(
+            before.manifest,
+            store.head("export").unwrap().unwrap().manifest
+        );
+        assert_eq!(
+            before.revision,
+            store.head("export").unwrap().unwrap().revision
+        );
+        drop(owner);
+        OwnedDisk::retire(store.clone(), "export", &directory.0).unwrap();
+        store.chunks.lock().unwrap().clear();
+        assert_eq!(&bytes[..8], b"marker A");
+        assert_eq!(report.sha256, crate::digest(&bytes));
+        assert!(export_remote(store, "export", &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn remote_export_refuses_missing_or_corrupt_data() {
+        for corrupt in [false, true] {
+            let store = Arc::new(Memory::default());
+            let mut disk =
+                IndexedVolume::create(store.clone(), "export", crate::CHUNK_BYTES as u64).unwrap();
+            disk.write(0, b"data").unwrap();
+            disk.commit().unwrap();
+            if corrupt {
+                for bytes in store.chunks.lock().unwrap().values_mut() {
+                    bytes[0] ^= 1;
+                }
+            } else {
+                store.chunks.lock().unwrap().clear();
+            }
+            assert!(export_remote(store, "export", &mut Vec::new()).is_err());
+        }
+    }
+
+    #[test]
+    fn remote_export_rejects_generation_change_during_capture() {
+        struct RacingWriter(Arc<Memory>);
+        impl Write for RacingWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .heads
+                    .lock()
+                    .unwrap()
+                    .get_mut("export")
+                    .unwrap()
+                    .revision = "changed".into();
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let store = Arc::new(Memory::default());
+        IndexedVolume::create(store.clone(), "export", crate::CHUNK_BYTES as u64).unwrap();
+        assert!(matches!(
+            export_remote(store.clone(), "export", &mut RacingWriter(store)),
+            Err(Error::Conflict)
+        ));
+    }
+
+    #[test]
+    fn remote_export_propagates_output_failure() {
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("full"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let store = Arc::new(Memory::default());
+        IndexedVolume::create(store.clone(), "export", crate::CHUNK_BYTES as u64).unwrap();
+        assert!(export_remote(store, "export", &mut Full).is_err());
     }
     use std::sync::atomic::{AtomicBool, Ordering};
     struct Directory(std::path::PathBuf);
