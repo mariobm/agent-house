@@ -69,6 +69,24 @@ class ClientTests(unittest.TestCase):
         self.assertNotEqual(self.run_cli('create','bad','--storage','typo').returncode,0)
         self.assertEqual(len(self.requests),before)
 
+    def test_create_sizing_defaults_and_overrides(self):
+        for args, cpus, memory in [
+            ([], 1, 2048),
+            (['--memory', '1024'], 1, 1024),
+            (['--desktop'], 2, 4096),
+            (['--image', 'omarchy-desktop'], 4, 8192),
+            (['--desktop', '--memory', '6144'], 2, 6144),
+        ]:
+            with self.subTest(args=args):
+                if '--desktop' in args or '--image' in args:
+                    self.reply({'features': ['desktop-v1', 'omarchy-desktop-v1'],
+                                'desktop_images': {'ubuntu-desktop': True, 'omarchy-desktop': True}})
+                self.reply({'id': 'box'})
+                p = self.run_cli('create', 'box', *args)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertEqual(self.requests[-1][3]['memory_mb'], memory)
+                self.assertEqual(self.requests[-1][3]['cpus'], cpus)
+
     def test_storage_status_and_sync_contract(self):
         for command, method, path in [('status','GET','/v1/sandboxes/box/storage'), ('sync','POST','/v1/sandboxes/box/storage/sync')]:
             self.reply({'features':['replicated-storage-v1']})

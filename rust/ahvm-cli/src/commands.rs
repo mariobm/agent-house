@@ -69,6 +69,7 @@ enum Command {
         image: Option<String>,
         #[arg(long)]
         cpus: Option<u8>,
+        /// RAM in MiB (default: 2048; Ubuntu desktop: 4096; Omarchy: 8192).
         #[arg(long)]
         memory: Option<u32>,
     },
@@ -391,7 +392,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             } else if desktop {
                 4096
             } else {
-                512
+                2048
             });
             if cpus == 0 || memory < 128 {
                 return Err("use at least 1 CPU and 128 MiB RAM".into());
