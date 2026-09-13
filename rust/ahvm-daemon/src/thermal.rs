@@ -657,10 +657,17 @@ mod tests {
             &self,
             _id: &str,
             _session_id: &str,
-            _from_seq: u64,
+            from_seq: u64,
             _budget: Duration,
         ) -> ahvm_engine::Result<ahvm_engine::SessionChunk> {
-            Err(ahvm_engine::Error::NotFound("gate".into()))
+            std::thread::sleep(Duration::from_millis(20));
+            Ok(ahvm_engine::SessionChunk {
+                data: vec![],
+                eof: false,
+                exit_code: None,
+                next_seq: from_seq,
+                truncated: false,
+            })
         }
         fn session_input(
             &self,
@@ -677,7 +684,12 @@ mod tests {
             Err(ahvm_engine::Error::NotFound("gate".into()))
         }
         fn session_list(&self, _id: &str) -> ahvm_engine::Result<Vec<ahvm_engine::SessionInfo>> {
-            Err(ahvm_engine::Error::NotFound("gate".into()))
+            Ok(vec![ahvm_engine::SessionInfo {
+                id: "shell".into(),
+                argv: vec!["bash".into()],
+                running: true,
+                started_at: 0,
+            }])
         }
         fn session_resize(
             &self,
@@ -688,6 +700,68 @@ mod tests {
         ) -> ahvm_engine::Result<()> {
             Err(ahvm_engine::Error::NotFound("gate".into()))
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connected_quiet_shell_blocks_idle_stop_until_disconnect() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let mut st = state();
+        owner(&st.store);
+        st.store
+            .create_sandbox(&row("attached", "running", "hot"))
+            .unwrap();
+        st.backend = Arc::new(GateBackend::new().0);
+        let router = axum::Router::new()
+            .route(
+                "/v1/sandboxes/{id}/sessions/{sid}/stream",
+                axum::routing::get(crate::sessions::stream),
+            )
+            .layer(axum::Extension(crate::auth::UserId("u".into())))
+            .with_state(st.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+            "ws://{address}/v1/sandboxes/attached/sessions/shell/stream"
+        ))
+        .await
+        .unwrap();
+        let message = tokio::time::timeout(Duration::from_secs(2), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(message, Message::Ping(_)));
+        socket.flush().await.unwrap();
+        st.activity
+            .touch_at("attached", Instant::now() - Duration::from_secs(7200));
+        assert!(
+            st.activity
+                .begin_stop_if_idle("attached", Instant::now(), 3600)
+                .is_none(),
+            "attached shell was idle-stopped"
+        );
+        socket.close(None).await.unwrap();
+        drop(socket);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if st
+                    .activity
+                    .begin_stop_if_idle("attached", Instant::now(), 0)
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(st.activity.last("attached").unwrap().elapsed() < Duration::from_secs(2));
+        server.abort();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

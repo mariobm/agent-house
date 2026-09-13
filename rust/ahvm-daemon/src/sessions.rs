@@ -207,7 +207,10 @@ pub async fn stream(
     ws: WebSocketUpgrade,
 ) -> ApiResult<axum::response::Response> {
     owned(&state, &user.0, &id).await?;
-    state.activity.touch(&id);
+    let activity_guard = state
+        .activity
+        .begin(&id)
+        .ok_or_else(|| ApiError::Conflict("sandbox is stopping; retry later".into()))?;
     let stream_guard = state
         .ops
         .try_stream(&id)
@@ -230,11 +233,10 @@ pub async fn stream(
         .max_message_size(256 * 1024)
         .max_frame_size(256 * 1024)
         .on_upgrade(move |socket| async move {
-            let _ = tokio::time::timeout(
-                Duration::from_secs(3600),
-                bridge(state, id, sid, q.from_seq, socket, stream_guard),
-            )
-            .await;
+            // A connected shell is user activity, including while its TUI is
+            // waiting for an agent. Release admission only on disconnect.
+            let _activity = activity_guard;
+            bridge(state, id, sid, q.from_seq, socket, stream_guard).await;
         }))
 }
 
@@ -253,7 +255,12 @@ async fn bridge(
     // Dropping a blocking-task handle cannot cancel the guest RPC, so never
     // restart it merely because input arrived.
     let budget = Duration::from_millis(1000);
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
+    let mut last_peer = tokio::time::Instant::now();
     'outer: loop {
+        if last_peer.elapsed() > Duration::from_secs(90) {
+            break;
+        }
         let backend = state.backend.clone();
         let (read_id, read_sid) = (id.clone(), sid.clone());
         let read_guard = stream_guard.clone();
@@ -264,7 +271,12 @@ async fn bridge(
         let chunk = loop {
             tokio::select! {
                 chunk = &mut output => break chunk,
+                _ = heartbeat.tick() => {
+                    if last_peer.elapsed() > Duration::from_secs(90) { break 'outer; }
+                    if !send_frame(&mut tx, Message::Ping(Vec::new().into())).await { break 'outer; }
+                }
                 incoming = rx.next() => {
+                    if matches!(&incoming, Some(Ok(_))) { last_peer = tokio::time::Instant::now(); }
                     if let (Some(transfer), Some(Ok(message))) = (&transfer, &incoming) {
                         let len = match message {
                             Message::Text(t) => t.len(),
@@ -318,11 +330,18 @@ async fn bridge(
         };
         let chunk = match chunk {
             Ok(Ok(c)) => c,
-            _ => break,
+            Ok(Err(error)) => {
+                eprintln!("session stream {id}/{sid}: output RPC failed: {error}");
+                break;
+            }
+            Err(error) => {
+                eprintln!("session stream {id}/{sid}: output task failed: {error}");
+                break;
+            }
         };
         seq = chunk.next_seq;
         if !chunk.data.is_empty() || chunk.eof {
-            // An idle terminal must not keep its VM awake.
+            // Also record data activity for the normal post-disconnect idle window.
             state.activity.touch(&id);
             use base64::Engine;
             let frame = serde_json::json!({
