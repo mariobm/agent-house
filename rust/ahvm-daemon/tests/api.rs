@@ -1399,3 +1399,148 @@ async fn delete_keeps_replicated_capacity_until_service_confirms_cleanup() {
         65536
     );
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn replicated_create_admits_before_import_and_retains_failed_charge() {
+    let root = std::env::temp_dir().join(format!("ahvm-api-storage-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let image = root.join("image");
+    std::fs::File::create(&image)
+        .unwrap()
+        .set_len(2 * 1024 * 1024)
+        .unwrap();
+    let mut config = ahvm_engine::KrucibleConfig::new(
+        "/usr/bin/true".into(),
+        image,
+        root.join("sandboxes"),
+        String::new(),
+    );
+    config.default_storage_mode = ahvm_engine::StorageMode::Replicated;
+    // Deliberately absent socket. A quota refusal must precede any RPC, while
+    // an admitted create must preserve its charge after this service failure.
+    config.replicated = Some(ahvm_engine::ReplicatedConfig {
+        socket: root.join("absent.sock"),
+    });
+    let mut state = test_state();
+    state.backend = Arc::new(ahvm_engine::KrucibleBackend::open(config).unwrap());
+    let mut alice = state.store.get_user("alice").unwrap();
+    alice.max_volumes_mb = 1;
+    state.store.upsert_user(&alice).unwrap();
+    let router = build_router(state.clone());
+    let body = serde_json::json!({"name":"disk","cpus":1,"memory_mb":512});
+    let (status, error) = call(
+        router.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    assert_eq!(
+        state.store.replicated_usage("alice").unwrap().logical_bytes,
+        0
+    );
+    assert!(!root.join("sandboxes/disk").exists());
+
+    alice.max_volumes_mb = 2;
+    state.store.upsert_user(&alice).unwrap();
+    let (status, _) = call(
+        router.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(body.clone()),
+    )
+    .await;
+    assert!(status.is_server_error());
+    let reservation = state
+        .store
+        .replicated_for_sandbox("alice", "disk")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reservation.state, "deleting");
+    assert_eq!(reservation.logical_bytes, 2 * 1024 * 1024);
+    assert_eq!(
+        state.store.replicated_usage("alice").unwrap().logical_bytes,
+        2 * 1024 * 1024
+    );
+    assert!(state.store.get_sandbox("disk").is_err());
+    // Even another tenant cannot claim a name awaiting storage cleanup.
+    let (status, _) = call(router, Some(TOKEN_B), "POST", "/v1/sandboxes", Some(body)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        state.store.replicated_usage("bob").unwrap().logical_bytes,
+        0
+    );
+    // A disconnected client cannot drop the admission lock underneath a
+    // blocked import and make the reservation look like a recoverable orphan.
+    alice.max_volumes_mb = 4;
+    state.store.upsert_user(&alice).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(root.join("absent.sock")).unwrap();
+    let (entered, observed) = tokio::sync::oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Write};
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["operation"], "prepare");
+        entered.send(()).unwrap();
+        wait.recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        drop(listener);
+        writeln!(
+            stream,
+            "{}",
+            serde_json::json!({"ok":false,"volume_id":request["volume_id"]})
+        )
+        .unwrap();
+    });
+    let router = build_router(state.clone());
+    let pending = tokio::spawn(call(
+        router,
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"cancelled","cpus":1,"memory_mb":512})),
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(5), observed)
+        .await
+        .unwrap()
+        .unwrap();
+    pending.abort();
+    assert!(pending.await.unwrap_err().is_cancelled());
+    assert!(state.lifecycle.try_lock("cancelled").is_none());
+    assert_eq!(
+        state
+            .store
+            .replicated_for_sandbox("alice", "cancelled")
+            .unwrap()
+            .unwrap()
+            .state,
+        "reserved"
+    );
+    release.send(()).unwrap();
+    let _finished = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.lifecycle.lock("cancelled"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        state
+            .store
+            .replicated_for_sandbox("alice", "cancelled")
+            .unwrap()
+            .unwrap()
+            .state,
+        "deleting"
+    );
+    server.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}

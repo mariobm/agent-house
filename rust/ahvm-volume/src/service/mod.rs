@@ -432,6 +432,11 @@ impl Service {
         }
         let metadata = fs::metadata(&image)?;
         let logical_bytes = metadata.len();
+        if q.logical_bytes
+            .is_some_and(|expected| expected != logical_bytes)
+        {
+            return Err("admitted image sizing mismatch".into());
+        }
         if !metadata.is_file() {
             return Err("image must be a regular file".into());
         }
@@ -948,6 +953,12 @@ impl Service {
         let r = &mut e.record;
         if q.sandbox_dir != r.sandbox {
             return Err("sandbox binding mismatch".into());
+        }
+        if q.operation == "prepare"
+            && q.logical_bytes
+                .is_some_and(|expected| expected != r.logical_bytes)
+        {
+            return Err("admitted image sizing mismatch".into());
         }
         if q.operation == "retire" && q.logical_bytes != Some(r.logical_bytes) {
             return Err("retirement sizing mismatch".into());
