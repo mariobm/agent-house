@@ -77,16 +77,17 @@ budgets, not per-tenant cloud quotas or measurements of object-store consumption
 Before import performs any remote writes, admission reserves the source image's
 logical size under the registry lock and persists it as `logical_bytes` in the
 volume record. Sparse image holes still count toward logical capacity. The source
-cannot grow past that reservation on an import retry. Each record also reserves
+cannot grow past that reservation on an import retry. Each locally resident record also reserves
 512 MiB for journals (a 256-MiB log plus its simultaneous compaction replacement)
 and 64 MiB of clean-cache payload. These values share the worker's actual bounds.
 
-Failed imports, stopped disks and deleted-but-not-yet-reclaimed records remain
-charged. Retries do not charge twice. Deleted volumes release reservations only
+Failed imports and deleted-but-not-yet-reclaimed records remain charged. Stopped
+disks release local journal/cache reservations after safe eviction, but retain
+the logical capacity charge for their remote disk. Retries do not charge twice. Deleted volumes release reservations only
 after an empty remote chunk listing and successful local journal removal. Failed
 cleanup retains the reservation and retries. Raising a budget requires an explicit
 config change and service restart. Do not remove owner/journal records to evade the budget. A reservation
-write failure freezes further imports until restart reconstructs the durable
+write failure freezes further imports and cold reactivation until restart reconstructs the durable
 registry. Lowering a budget preserves existing disks and blocks new admission
 while over budget; it does not kill workers or discard pending writes.
 
@@ -141,16 +142,17 @@ there is no silent production migration or enabled service change.
 - Import binds a SHA-256 of the source. Unfinished unowned imports can resume;
   every byte is rewritten and verified before publication as ready. Changed
   sources fail. Ready or owned disks are never overwritten by a retry.
-- Stop/detach retain remote ownership and the private journal for restart.
+- Stop/detach retain remote ownership; safe background eviction removes the
+  synchronized journal while keeping the small private owner identity.
   Delete records intent before cleanup. Background reclamation retires the
   remote identity, removes its chunks and then its local owner/journal directory.
   Small local records and remote retirement markers remain to prevent identity
   reuse. No scheduled backups, automatic cross-host takeover or implicit mode
   conversion is added.
 
-The service exclusively locks its configured device pool. Currently one slot is
-reserved per non-deleted volume, including stopped volumes; successful logical
-delete frees the device slot. The pool is bounded to 32 devices, the registry to
+The service exclusively locks its configured device pool. One slot is reserved per locally resident,
+non-deleted volume. Successful local eviction or logical deletion frees the slot;
+starting a cold volume must reserve a free slot again. The pool is bounded to 32 devices, the registry to
 1,024 records including tombstones, and concurrent API handlers to 16. These are
 service bounds, not tenant quotas. Per-tenant journal/cache/disk accounting is
 still required before offering replicated storage to cloud users.
@@ -304,9 +306,10 @@ across batches. A publication invalidates it. The set uses a sorted vector of
 32-byte hashes, at most 1,049,600 entries (about 32.03 MiB) for the maximum 64-GiB
 disk; it is dropped on a mutating foreground operation or cycle completion. It is
 disposable and never serialized as authority to delete data. Partial cycles retry
-after one second; completed cycles are checked again after one hour or restart.
+after one second. On completion the supervisor attempts local eviction. Cold
+disks skip maintenance until reactivated; failed eviction retries with backoff.
 The private `usage` reply includes `last_collection_unix` for the last completed
-cycle. A still-existing disk retains its capacity/journal reservation.
+cycle. The remote disk keeps its logical capacity reservation.
 
 Foreground mutations cancel an admitted collector between bounded store requests.
 They wait up to ten seconds for it to yield before returning a retryable busy
@@ -316,8 +319,8 @@ deleted and stopped disks. No per-I/O accounting work is added to running guests
 A large first metadata walk and per-object deletes can still be slow; bulk delete
 and metadata throughput optimization remain separate work.
 
-This is not online collection for VMs that never stop, idle eviction, checkpoint
-creation or checkpoint expiry. Checkpoint metadata requires a format/reference
+This is not online collection for VMs that never stop, checkpoint creation or
+checkpoint expiry. Local eviction follows a completed collection cycle as below. Checkpoint metadata requires a format/reference
 extension that this strict collector understands before it can be enabled. Age
 alone never authorizes deletion. Here, exclusive offline ownership and an empty
 backlog provide the safety boundary instead of a wall-clock grace period.
@@ -347,3 +350,50 @@ Validation for this continuation: Linux has 88 ordinary volume tests, seven
 explicit root-only tests and the launch test passing. Formatting and clippy with
 warnings denied pass. CI also runs the ordinary suite unprivileged, followed by
 the privileged service tests, so root-only coverage is not silently skipped.
+
+
+## Idle local eviction
+
+After an explicit detach (including a daemon idle stop), the supervisor completes
+stopped-disk collection, confirms remote sync, and removes the local journal.
+There is no second idle timer here: the daemon decides when an inactive VM stops.
+No running VM is interrupted for eviction. Sync/ownership/cleanup failures keep
+local reservations and retry; pending writes are never treated as disposable cache.
+
+The owner file lock covers remote sync and journal removal. A durable local intent
+allows interrupted removal to finish before journal replay on restart. The small
+owner identity remains on this host, so eviction does not release ownership or
+permit another host to take over. The current disk remains in R2 indefinitely
+until explicitly deleted; eviction is not checkpoint expiration or a backup.
+
+Only after local deletion is durable does the record become `evicted`. That frees
+its NBD slot, 512-MiB journal reservation and 64-MiB clean-cache reservation. Remote
+logical capacity stays charged. The old device path is historical and cannot be
+used by cold detach/delete/inspect operations to affect a subsequent slot owner.
+The private `usage` response exposes `local_evicted` and the remaining reservations.
+
+Attach reserves a free device and local budgets under the registry lock, persists
+the reservation, then lazily opens the remote disk using the retained identity.
+It does not reimport the source image. Insufficient local capacity returns a
+retryable admission error with the remote disk unchanged. A private sync request
+also requires local readmission. Cold disks do not repeatedly recreate journals
+for background collection. No public storage flag or cloud default is enabled yet.
+
+### Local eviction qualification
+
+On agent_house, an isolated R2 probe used two 128-KiB disks and one NBD slot, with
+no VMs. It wrote and remotely synced a marker through the real block device,
+evicted the first disk, reused the slot for the second, and refused first-disk
+readmission while capacity was occupied. Both disks became cold, the supervisor
+restarted, the original image was removed, and the first disk lazily reopened with
+its marker intact. Cold deletion then reclaimed both disks and released every
+reservation. Two tiny remote retirement markers remain; test chunks were reclaimed.
+
+Regression coverage includes repeated eviction/reopen, exclusive owner refusal,
+remote failure retaining pending journal data, crash recovery from partially
+removed journal files, local capacity readmission without double charging, and
+cold deletion. Linux: 91 ordinary tests, eight explicit root-only tests and the
+launch test pass. macOS: 79 volume tests pass. Formatting and clippy with warnings
+denied pass. Temporary service files, credentials and NBD module were removed;
+installed AHVM services stayed active. This is a small correctness probe, not a
+large-disk eviction or boot-time benchmark.

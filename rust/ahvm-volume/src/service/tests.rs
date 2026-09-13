@@ -32,6 +32,7 @@ fn record(id: &str, root: &Path) -> Record {
         image_hash: String::new(),
         logical_bytes: crate::CHUNK_BYTES as u64,
         device: "/dev/nbd0".into(),
+        evicted: false,
         prepared: false,
         deleted: false,
         reclaimed: false,
@@ -524,5 +525,82 @@ fn foreground_waits_for_offline_collector_to_yield() {
     drop(collection);
     drop(held);
     thread.join().unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
+fn cold_disks_release_local_capacity_and_reacquire_without_double_charging() {
+    use crate::nbd::Disk;
+    let dir = temp();
+    let mut s = budget_service(&dir);
+    s.config.devices.truncate(1);
+    s.config.limits.max_logical_bytes = 2 * crate::CHUNK_BYTES as u64;
+    s.config.limits.max_journal_bytes = accounting::JOURNAL_BYTES;
+    s.config.limits.max_cache_bytes = CACHE_BYTES;
+    let raw = Arc::new(crate::reclaim::tests::Memory::default());
+    let a = prepare_request(&s, 'a');
+    let b = prepare_request(&s, 'b');
+    let entry = s.entry(&a).unwrap();
+    let mut e = entry.lock().unwrap();
+    let r = &mut e.record;
+    IndexedVolume::create(raw.clone(), &r.id, r.logical_bytes).unwrap();
+    OwnedDisk::enroll(raw.clone(), &r.id).unwrap();
+    r.prepared = true;
+    r.gc_eligible = true;
+    let owner = s.dir(r).join("owner");
+    private_dir(&owner).unwrap();
+    let mut disk = OwnedDisk::open(raw.clone(), &r.id, &owner).unwrap();
+    disk.write(0, b"keep").unwrap();
+    disk.flush().unwrap();
+    drop(disk);
+    s.persist(r).unwrap();
+    assert!(s.entry(&b).is_err());
+    s.evict_with_store(r, raw.clone()).unwrap();
+    let usage = s.usage().unwrap();
+    assert_eq!(usage.logical_bytes, r.logical_bytes);
+    assert_eq!(usage.journal_reserved_bytes, 0);
+    assert_eq!(usage.cache_reserved_bytes, 0);
+    assert!(!owner.join("journal").exists());
+    let peer = s.entry(&b).unwrap();
+    assert!(s.reserve_residency(r).is_err());
+    assert!(r.evicted);
+    assert_eq!(s.usage().unwrap().retained_volumes, 2);
+    // The cold record's historical device path must not affect its new owner.
+    s.detach(r).unwrap();
+    assert!(s.attach(r).is_err());
+    assert!(!peer.lock().unwrap().record.evicted);
+    {
+        let mut peer = peer.lock().unwrap();
+        peer.record.deleted = true;
+        peer.record.reclaimed = true;
+        s.persist(&peer.record).unwrap();
+    }
+    // Simulate reopening the durable record after a service restart.
+    *r = read(&s.dir(r).join("record.json")).unwrap();
+    s.reserve_residency(r).unwrap();
+    assert!(!r.evicted);
+    let usage = s.usage().unwrap();
+    assert_eq!(usage.logical_bytes, r.logical_bytes);
+    assert_eq!(usage.journal_reserved_bytes, accounting::JOURNAL_BYTES);
+    assert_eq!(usage.cache_reserved_bytes, CACHE_BYTES);
+    s.reserve_residency(r).unwrap(); // Idempotent admission.
+    let mut disk = OwnedDisk::open(raw.clone(), &r.id, &owner).unwrap();
+    let mut data = [0; 4];
+    disk.read(0, &mut data).unwrap();
+    assert_eq!(&data, b"keep");
+    drop(disk);
+    s.evict_with_store(r, raw.clone()).unwrap();
+    r.deleted = true;
+    s.persist(r).unwrap();
+    for _ in 0..4 {
+        s.reclaim_with_store(r, raw.clone()).unwrap();
+        if r.reclaimed {
+            break;
+        }
+    }
+    assert!(r.reclaimed);
+    assert_eq!(s.usage().unwrap().logical_bytes, 0);
+    drop(e);
     fs::remove_dir_all(dir).unwrap();
 }

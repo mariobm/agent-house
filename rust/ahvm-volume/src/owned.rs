@@ -387,11 +387,55 @@ impl OwnedDisk {
         .map_err(crate::publication_error)?;
         Ok(())
     }
+    /// Discard only a remotely synchronized journal, retaining writer identity.
+    /// Caller must prove VM/NBD are stopped. The owner lock excludes other disk
+    /// handles throughout sync and removal. A durable intent makes partial local
+    /// deletion recoverable before any subsequent journal replay.
+    pub fn evict_local(raw: Arc<dyn ObjectStore>, id: &str, dir: &Path) -> Result<()> {
+        let disk = Self::open(raw, id, dir)?;
+        disk.sync_remote()?;
+        let Self { disk, store, phase } = disk;
+        drop(disk);
+        drop(phase);
+        let marker = dir.join("eviction");
+        let temporary = dir.join("eviction.tmp");
+        let mut file = err(OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary))?;
+        err(file.write_all(b"synced-v1"))?;
+        err(file.sync_all())?;
+        err(fs::rename(temporary, marker))?;
+        err(err(File::open(dir))?.sync_all())?;
+        Self::finish_eviction(dir)?;
+        drop(store); // Keep the exclusive owner lock until deletion is durable.
+        Ok(())
+    }
+    fn finish_eviction(dir: &Path) -> Result<()> {
+        let marker = dir.join("eviction");
+        match fs::read(&marker) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Ok(bytes) if bytes == b"synced-v1" => (),
+            _ => return Err(Error::Corrupt),
+        }
+        match fs::remove_dir_all(dir.join("journal")) {
+            Ok(()) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(_) => return Err(Error::Store),
+        }
+        err(err(File::open(dir))?.sync_all())?;
+        err(fs::remove_file(marker))?;
+        err(err(File::open(dir))?.sync_all())?;
+        Ok(())
+    }
     pub fn open(raw: Arc<dyn ObjectStore>, id: &str, dir: &Path) -> Result<Self> {
         if !dir.is_absolute() {
             return Err(Error::InvalidInput);
         }
         let store = Store::open(raw, id, dir)?;
+        Self::finish_eviction(dir)?;
         let journal = dir.join("journal");
         if !journal.exists() {
             err(fs::create_dir(&journal))?;
@@ -693,6 +737,63 @@ mod tests {
         IndexedVolume::create(s.clone(), "owned", 4 * crate::CHUNK_BYTES as u64).unwrap();
         OwnedDisk::enroll(s.clone(), "owned").unwrap();
         s
+    }
+    #[test]
+    fn local_eviction_drains_writes_and_reopens_without_releasing_ownership() {
+        let s = fixture();
+        let a = Directory::new();
+        let foreign = Directory::new();
+        for value in [b"first", b"later"] {
+            let mut disk = OwnedDisk::open(s.clone(), "owned", &a.0).unwrap();
+            disk.write(0, value).unwrap();
+            disk.flush().unwrap();
+            assert!(OwnedDisk::evict_local(s.clone(), "owned", &a.0).is_err());
+            drop(disk);
+            OwnedDisk::evict_local(s.clone(), "owned", &a.0).unwrap();
+            assert!(!a.0.join("journal").exists());
+            assert!(a.0.join("owner.json").exists());
+            assert!(OwnedDisk::open(s.clone(), "owned", &foreign.0).is_err());
+            let mut disk = OwnedDisk::open(s.clone(), "owned", &a.0).unwrap();
+            let mut data = [0; 5];
+            disk.read(0, &mut data).unwrap();
+            assert_eq!(&data, value);
+        }
+    }
+    #[test]
+    fn failed_eviction_preserves_unsynchronized_journal() {
+        let s = fixture();
+        let a = Directory::new();
+        let mut disk = OwnedDisk::open(s.clone(), "owned", &a.0).unwrap();
+        disk.write(0, b"pending").unwrap();
+        disk.flush().unwrap();
+        drop(disk);
+        s.offline.store(true, Ordering::SeqCst);
+        assert!(OwnedDisk::evict_local(s.clone(), "owned", &a.0).is_err());
+        assert!(a.0.join("journal").exists());
+        assert!(!a.0.join("eviction").exists());
+        s.offline.store(false, Ordering::SeqCst);
+        let mut disk = OwnedDisk::open(s.clone(), "owned", &a.0).unwrap();
+        let mut data = [0; 7];
+        disk.read(0, &mut data).unwrap();
+        assert_eq!(&data, b"pending");
+    }
+    #[test]
+    fn interrupted_eviction_finishes_before_journal_replay() {
+        let s = fixture();
+        let a = Directory::new();
+        let mut disk = OwnedDisk::open(s.clone(), "owned", &a.0).unwrap();
+        disk.write(0, b"remote").unwrap();
+        disk.sync_remote().unwrap();
+        drop(disk);
+        // Crash after durable intent and partial deletion. Remaining journal is
+        // deliberately invalid: it must never be replayed after the intent.
+        fs::write(a.0.join("eviction"), b"synced-v1").unwrap();
+        fs::write(a.0.join("journal/journal"), b"partial").unwrap();
+        let mut disk = OwnedDisk::open(s, "owned", &a.0).unwrap();
+        let mut data = [0; 6];
+        disk.read(0, &mut data).unwrap();
+        assert_eq!(&data, b"remote");
+        assert!(!a.0.join("eviction").exists());
     }
     #[test]
     fn handoff_drains_data_and_revokes_all_old_handles() {

@@ -60,6 +60,9 @@ pub(super) struct Usage {
 }
 impl Usage {
     pub fn add(&mut self, size: u64) -> Result<()> {
+        self.add_residency(size, true)
+    }
+    pub fn add_residency(&mut self, size: u64, resident: bool) -> Result<()> {
         valid_size(size)?;
         fn add(a: u64, b: u64) -> Result<u64> {
             a.checked_add(b)
@@ -68,8 +71,14 @@ impl Usage {
         let next = Self {
             retained_volumes: add(self.retained_volumes, 1)?,
             logical_bytes: add(self.logical_bytes, size)?,
-            journal_reserved_bytes: add(self.journal_reserved_bytes, JOURNAL_BYTES)?,
-            cache_reserved_bytes: add(self.cache_reserved_bytes, CACHE_BYTES)?,
+            journal_reserved_bytes: add(
+                self.journal_reserved_bytes,
+                if resident { JOURNAL_BYTES } else { 0 },
+            )?,
+            cache_reserved_bytes: add(
+                self.cache_reserved_bytes,
+                if resident { CACHE_BYTES } else { 0 },
+            )?,
         };
         *self = next;
         Ok(())
