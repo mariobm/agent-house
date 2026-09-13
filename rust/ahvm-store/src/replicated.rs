@@ -129,6 +129,19 @@ impl Store {
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
+    pub fn replicated_for_sandbox(
+        &self,
+        owner: &str,
+        sandbox: &str,
+    ) -> Result<Option<ReplicatedReservation>> {
+        self.with_conn(|conn| {
+            let id: Option<String> = conn.query_row(
+                "SELECT volume_id FROM replicated_reservations WHERE owner_user_id=?1 AND sandbox_id=?2 AND state!='reclaimed'",
+                params![owner, sandbox], |r| r.get(0),
+            ).optional()?;
+            match id { Some(id) => find(conn, &id), None => Ok(None) }
+        })
+    }
     /// Owner-scoped lookup: foreign IDs are indistinguishable from missing IDs.
     pub fn replicated_reservation(
         &self,

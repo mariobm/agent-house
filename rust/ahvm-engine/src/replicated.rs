@@ -52,6 +52,8 @@ struct Reply {
     device: Option<PathBuf>,
     #[serde(default)]
     status: Option<ReplicationStatus>,
+    #[serde(default)]
+    reclamation_complete: Option<bool>,
 }
 
 pub(crate) fn validate_volume(id: &str) -> Result<()> {
@@ -81,11 +83,22 @@ impl ReplicatedConfig {
         image: Option<&Path>,
         sandbox: &Path,
     ) -> Result<Reply> {
+        self.request_sized(operation, id, image, sandbox, None)
+    }
+    fn request_sized(
+        &self,
+        operation: &str,
+        id: &str,
+        image: Option<&Path>,
+        sandbox: &Path,
+        logical_bytes: Option<u64>,
+    ) -> Result<Reply> {
         validate_volume(id)?;
         let mut conn = UnixStream::connect(&self.socket)?;
         let seconds = match operation {
             "prepare" => 600,
             "status" => 3,
+            "retire" => 30,
             _ => 300,
         };
         conn.set_read_timeout(Some(Duration::from_secs(seconds)))?;
@@ -93,7 +106,7 @@ impl ReplicatedConfig {
         serde_json::to_writer(
             &mut conn,
             &serde_json::json!({
-                "version": 1, "operation": operation, "volume_id": id, "image": image, "sandbox_dir": sandbox,
+                "version": 1, "operation": operation, "volume_id": id, "image": image, "sandbox_dir": sandbox, "logical_bytes":logical_bytes,
             }),
         )?;
         conn.write_all(b"\n")?;
@@ -114,6 +127,13 @@ impl ReplicatedConfig {
             }
         }
         Ok(reply)
+    }
+    /// Host-only retirement handshake. False acknowledges intent, not cleanup.
+    /// A missing proof or protocol failure must keep the tenant's reservation.
+    pub fn retire(&self, id: &str, sandbox: &Path, logical_bytes: u64) -> Result<bool> {
+        self.request_sized("retire", id, None, sandbox, Some(logical_bytes))?
+            .reclamation_complete
+            .ok_or_else(|| Error::Control("missing reclamation confirmation".into()))
     }
     pub(crate) fn prepare(&self, id: &str, image: &Path, sandbox: &Path) -> Result<()> {
         self.request("prepare", id, Some(image), sandbox)
@@ -204,6 +224,36 @@ mod tests {
         });
         task.join().unwrap();
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn retirement_acknowledgement_is_not_reclamation() {
+        let id = "a".repeat(64);
+        for (tag, value, expected) in [
+            (
+                "pending",
+                serde_json::json!({"ok":true,"volume_id":id,"reclamation_complete":false}),
+                Some(false),
+            ),
+            (
+                "complete",
+                serde_json::json!({"ok":true,"volume_id":id,"reclamation_complete":true}),
+                Some(true),
+            ),
+            (
+                "missing-proof",
+                serde_json::json!({"ok":true,"volume_id":id}),
+                None,
+            ),
+            (
+                "wrong-proof-id",
+                serde_json::json!({"ok":true,"volume_id":"b".repeat(64),"reclamation_complete":true}),
+                None,
+            ),
+        ] {
+            reply(tag, value, |c| {
+                assert_eq!(c.retire(&id, Path::new("/tmp/test"), 65536).ok(), expected)
+            });
+        }
     }
     #[test]
     fn rejects_mismatched_identity_and_impossible_watermark() {

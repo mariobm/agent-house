@@ -235,6 +235,11 @@ pub(crate) async fn destroy_operation(
     let _lc = state.lifecycle.lock(&id).await;
     state.store.check_lifecycle_fence(&id, operation)?;
     owned(&state, &user.0, &id).await?;
+    if let Some(reservation) = state.store.replicated_for_sandbox(&user.0, &id)? {
+        state
+            .store
+            .delete_replicated_reservation(&user.0, &reservation.volume_id, unix_now())?;
+    }
     let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
     let owned_id = id.clone();

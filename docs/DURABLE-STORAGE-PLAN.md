@@ -339,3 +339,32 @@ Validation: store tests cover independent-connection contention, database reopen
 owner isolation, immutable identity/size, reduced/invalid quotas, shared existing
 volume capacity, delayed reclamation and bounded recovery pagination. No VM or
 object-store operations are needed for this foundation.
+
+### Tenant deletion and reclamation integration
+
+Daemon deletion now marks a matching replicated reservation as deleting before
+calling the backend. A separate background task reconciles one bounded page every
+60 seconds, respecting lifecycle fences/locks and operation permits. It retains
+the charge on pending cleanup, missing proof, unknown ownership and RPC failure.
+Only explicit supervisor confirmation permits removing leftover sandbox metadata
+and confirming reclamation in the ledger. No disk I/O path gains database work.
+
+The new host-only retirement handshake also covers a reservation whose create
+never reached volume-service registration. It records deletion without importing
+an image or taking an NBD slot, then uses the same ownership-fenced remote
+retirement and chunk collector. An absent service record alone is not proof of
+cleanup. Existing live/retained backend disks and mismatched identities are
+refused. A previously failed destroy can finish through this handshake.
+
+`AHVM_VOLUME_SOCKET` explicitly configures this service connection on the daemon;
+it does not enable replicated creation or change the local default. The remaining
+create-side work must reserve identity and trusted sizing before remote import,
+carry that sizing through retries, and reconcile failed/ambiguous creates. Public
+storage selection/status/sync, automatic Cloud selection and wake remain pending.
+
+Qualification on agent_house used an isolated daemon, volume service and R2 with
+one 64-KiB logical reservation and no VM. A never-registered disk became a permanent
+remote retirement marker; the daemon retained its charge after the acknowledgement
+and released it after restart and explicit cleanup confirmation. The probe took
+1.11 seconds; this is an empty-disk correctness check, not deletion throughput or
+cold-boot timing. One small retirement marker remains, with no data chunks.

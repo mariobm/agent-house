@@ -154,6 +154,8 @@ struct Request {
     sandbox_dir: PathBuf,
     #[serde(default)]
     image: Option<PathBuf>,
+    #[serde(default)]
+    logical_bytes: Option<u64>,
 }
 #[derive(Debug)]
 struct Service {
@@ -277,7 +279,7 @@ impl Service {
                     || r.client.is_some()
                     || r.vm.is_some()))
                 || (r.evicted
-                    && (!r.prepared
+                    && ((!r.prepared && !r.deleted)
                         || r.desired
                         || r.worker.is_some()
                         || r.client.is_some()
@@ -353,14 +355,67 @@ impl Service {
         // Deletion can be retried after engine record removal, but only from
         // the original sandbox path and only for an already tombstoned record.
         let mut map = self.entries.lock().map_err(|_| "registry poisoned")?;
-        if q.operation == "prepare" && self.admission_failed.load(Ordering::SeqCst) {
+        if matches!(q.operation.as_str(), "prepare" | "retire")
+            && self.admission_failed.load(Ordering::SeqCst)
+        {
             return Err("reservation persistence failed; restart required before importing".into());
         }
         if let Some(e) = map.get(&q.volume_id) {
             return Ok(e.clone());
         }
-        if q.operation != "prepare" || map.len() >= 1024 {
+        if !matches!(q.operation.as_str(), "prepare" | "retire") || map.len() >= 1024 {
             return Err("unknown volume or record limit".into());
+        }
+        if q.operation == "retire" {
+            // A ledger may precede service registration. Persist retirement
+            // intent without importing an image or borrowing an active device.
+            let bytes = q.logical_bytes.ok_or("missing retirement sizing")?;
+            let mut checked = Usage::default();
+            checked.add_residency(bytes, false)?;
+            if q.sandbox_dir.parent() != Some(self.config.engine_root.as_path()) {
+                return Err("sandbox outside configured engine root".into());
+            }
+            let r = Record {
+                id: q.volume_id.clone(),
+                sandbox: q.sandbox_dir.clone(),
+                image: PathBuf::new(),
+                image_hash: String::new(),
+                logical_bytes: bytes,
+                device: self
+                    .config
+                    .devices
+                    .first()
+                    .ok_or("empty device pool")?
+                    .clone(),
+                evicted: true,
+                prepared: false,
+                deleted: true,
+                reclaimed: false,
+                gc_after: None,
+                gc_eligible: false,
+                gc_last_completed: None,
+                desired: false,
+                worker: None,
+                client: None,
+                vm: None,
+            };
+            private_dir(&self.dir(&r))?;
+            let entry = Arc::new(Slot::new(Entry {
+                record: r.clone(),
+                failures: 0,
+                mark: None,
+                retry_at: Instant::now(),
+            }));
+            map.insert(r.id.clone(), entry.clone());
+            if let Err(error) = (|| -> Result<()> {
+                self.persist(&r)?;
+                File::open(self.config.root.join("volumes"))?.sync_all()?;
+                Ok(())
+            })() {
+                self.admission_failed.store(true, Ordering::SeqCst);
+                return Err(error);
+            }
+            return Ok(entry);
         }
         self.binding(&q.volume_id, &q.sandbox_dir)?;
         let image = q.image.as_ref().ok_or("missing image")?.canonicalize()?;
@@ -894,7 +949,10 @@ impl Service {
         if q.sandbox_dir != r.sandbox {
             return Err("sandbox binding mismatch".into());
         }
-        if !r.deleted {
+        if q.operation == "retire" && q.logical_bytes != Some(r.logical_bytes) {
+            return Err("retirement sizing mismatch".into());
+        }
+        if !r.deleted && q.operation != "retire" {
             self.binding(&r.id, &r.sandbox)?;
         }
         if q.operation == "usage" {
@@ -915,7 +973,7 @@ impl Service {
             }));
         }
         let mut status = None;
-        if q.operation == "delete" {
+        if matches!(q.operation.as_str(), "delete" | "retire") {
             let first = !r.deleted;
             r.deleted = true;
             r.desired = false;
@@ -983,6 +1041,11 @@ impl Service {
         e.failures = 0;
         e.retry_at = Instant::now();
         let r = &e.record;
+        if q.operation == "retire" {
+            return Ok(
+                serde_json::json!({"ok":true,"volume_id":r.id,"reclamation_complete":r.reclaimed}),
+            );
+        }
         Ok(
             serde_json::json!({"ok":true,"volume_id":r.id,"device":if r.worker.is_some(){Some(&r.device)}else{None},"status":status}),
         )

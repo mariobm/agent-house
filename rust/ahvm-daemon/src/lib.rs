@@ -21,6 +21,7 @@ pub mod files;
 pub mod operations;
 pub mod previews;
 pub mod quotas;
+pub mod replicated;
 pub mod routes;
 pub mod sandboxes;
 pub mod scheduler;
