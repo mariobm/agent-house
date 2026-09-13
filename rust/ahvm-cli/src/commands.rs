@@ -58,6 +58,9 @@ enum Command {
     Image(crate::images::Images),
     Health,
     Create {
+        /// Disk persistence mode; self-hosted default is local.
+        #[arg(long, value_parser = ["local", "replicated"])]
+        storage: Option<String>,
         name: Option<String>,
         /// Use the Ubuntu desktop image (XFCE, terminal and browser).
         #[arg(long)]
@@ -76,6 +79,9 @@ enum Command {
         #[arg(long)]
         viewer: Option<PathBuf>,
     },
+    /// Inspect replication or wait for remote durability (self-hosted).
+    #[command(subcommand)]
+    Storage(Storage),
     List,
     Get {
         id: String,
@@ -110,6 +116,14 @@ enum Command {
     Snapshot(Snapshot),
     #[command(subcommand)]
     Preview(Preview),
+}
+
+#[derive(Subcommand)]
+enum Storage {
+    /// Show disk mode, admitted capacity and replication health.
+    Status { id: String },
+    /// Wait for remote durability; stop the replicated VM first.
+    Sync { id: String },
 }
 
 #[derive(Subcommand)]
@@ -220,6 +234,16 @@ enum Preview {
     },
 }
 
+fn require_storage_api(health: &Value) -> Result<()> {
+    if !health["features"]
+        .as_array()
+        .is_some_and(|features| features.iter().any(|v| v == "replicated-storage-v1"))
+    {
+        return Err("server does not advertise replicated-storage-v1; upgrade the server before using storage options".into());
+    }
+    Ok(())
+}
+
 fn show(v: &Value) -> Result<()> {
     if !v.is_null() {
         writeln!(io::stdout(), "{}", serde_json::to_string_pretty(v)?)?;
@@ -239,6 +263,18 @@ pub fn decoded(v: &Value) -> Result<Vec<u8>> {
 }
 
 pub fn run(cli: Cli) -> Result<i32> {
+    if cli.cloud
+        && matches!(
+            &cli.command,
+            Command::Storage(_)
+                | Command::Create {
+                    storage: Some(_),
+                    ..
+                }
+        )
+    {
+        return Err("cloud storage is managed by the service; storage selection and sync are not available in Cloud yet".into());
+    }
     if matches!(cli.command, Command::License) {
         print!(
             "{}\n{}\n{}",
@@ -318,7 +354,23 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Desktop { id, viewer } => return crate::desktop::launch(&api, &id, viewer),
         Command::Health => api.call(Method::GET, &["healthz"], &[], None)?,
+        Command::Storage(command) => {
+            let health = api.call(Method::GET, &["healthz"], &[], None)?;
+            require_storage_api(&health)?;
+            match command {
+                Storage::Status { id } => {
+                    api.call(Method::GET, &["sandboxes", &id, "storage"], &[], None)?
+                }
+                Storage::Sync { id } => api.call(
+                    Method::POST,
+                    &["sandboxes", &id, "storage", "sync"],
+                    &[],
+                    None,
+                )?,
+            }
+        }
         Command::Create {
+            storage,
             name,
             desktop,
             image,
@@ -382,12 +434,14 @@ pub fn run(cli: Cli) -> Result<i32> {
                     }
                 }
             }
-            api.call(
-                Method::POST,
-                &["sandboxes"],
-                &[],
-                Some(json!({"name":name,"cpus":cpus,"memory_mb":memory,"image":image,"desktop":desktop})),
-            )?
+            let mut body =
+                json!({"name":name,"cpus":cpus,"memory_mb":memory,"image":image,"desktop":desktop});
+            if let Some(storage) = storage {
+                let health = api.call(Method::GET, &["healthz"], &[], None)?;
+                require_storage_api(&health)?;
+                body["storage_mode"] = json!(storage);
+            }
+            api.call(Method::POST, &["sandboxes"], &[], Some(body))?
         }
         Command::List => {
             let mut all = Vec::new();

@@ -50,6 +50,37 @@ class ClientTests(unittest.TestCase):
         env['AHVM_TOKEN'] = 'secret-for-test'
         return subprocess.run([BINARY, '--endpoint', self.endpoint, *args], env=env, capture_output=True, timeout=10, **kw)
     def reply(self, body, status=200, **headers): self.replies.append((status, body, headers))
+    def test_storage_create_preserves_default_and_checks_server(self):
+        self.reply({'id':'box'})
+        p=self.run_cli('create','box')
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertNotIn('storage_mode',self.requests[-1][3])
+        self.reply({'features':['replicated-storage-v1']})
+        self.reply({'id':'disk'})
+        p=self.run_cli('create','disk','--storage','replicated')
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertEqual(self.requests[-1][3]['storage_mode'],'replicated')
+        self.reply({'features':[]})
+        p=self.run_cli('create','old','--storage','replicated')
+        self.assertNotEqual(p.returncode,0)
+        self.assertEqual(self.requests[-1][1],'/v1/healthz')
+        self.assertNotIn('old',str([r[3] for r in self.requests]))
+        before=len(self.requests)
+        self.assertNotEqual(self.run_cli('create','bad','--storage','typo').returncode,0)
+        self.assertEqual(len(self.requests),before)
+
+    def test_storage_status_and_sync_contract(self):
+        for command, method, path in [('status','GET','/v1/sandboxes/box/storage'), ('sync','POST','/v1/sandboxes/box/storage/sync')]:
+            self.reply({'features':['replicated-storage-v1']})
+            self.reply({'mode':'replicated','replication':{'pending_bytes':0}})
+            p=self.run_cli('--json','storage',command,'box')
+            self.assertEqual(p.returncode,0,p.stderr)
+            self.assertEqual(json.loads(p.stdout)['mode'],'replicated')
+            self.assertEqual(self.requests[-1][:2],(method,path))
+        self.reply({'features':['replicated-storage-v1']})
+        self.reply({'message':'remote unavailable'},503)
+        self.assertNotEqual(self.run_cli('storage','sync','box').returncode,0)
+
     def test_exec_argv_and_status(self):
         self.reply({'stdout':'hello\n','stderr':'problem\n','exit_code':42,'truncated':True})
         p=self.run_cli('exec','box','--','sh','-c',"printf '%s' '$HOME'",'--json')

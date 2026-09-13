@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 pub struct CreateBody {
     pub name: String,
     #[serde(default)]
+    pub storage_mode: Option<ahvm_engine::StorageMode>,
+    #[serde(default)]
     pub desktop: bool,
     #[serde(default)]
     pub image: Option<String>,
@@ -111,7 +113,7 @@ pub(crate) async fn create_operation(
         resolve_image(body.image.as_deref())?
     };
     let spec = ahvm_engine::SandboxSpec {
-        storage_mode: None,
+        storage_mode: body.storage_mode,
         name: body.name.clone(),
         cpus: body.cpus,
         memory_mb: body.memory_mb,
@@ -165,6 +167,7 @@ pub async fn list(
             cpus: row.cpus,
             memory_mb: row.memory_mb,
             ip: row.ip.clone(),
+            storage: None,
         })
         .collect();
     Ok(Json(ListResponse {

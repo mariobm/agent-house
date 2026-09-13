@@ -163,6 +163,9 @@ pub struct SandboxView {
     pub cpus: i64,
     pub memory_mb: i64,
     pub ip: String,
+    /// List uses stored metadata only; get/lifecycle responses include live storage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage: Option<ahvm_engine::SandboxStorage>,
 }
 
 impl SandboxView {
@@ -175,6 +178,7 @@ impl SandboxView {
             cpus: row.cpus,
             memory_mb: row.memory_mb,
             ip: live.ip.clone(),
+            storage: Some(live.storage.clone()),
         }
     }
 }
@@ -233,6 +237,11 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/sandboxes/{id}/stop",
             axum::routing::post(sandboxes::stop),
+        )
+        .route("/v1/sandboxes/{id}/storage", get(replicated::status))
+        .route(
+            "/v1/sandboxes/{id}/storage/sync",
+            axum::routing::post(replicated::sync),
         )
         .route("/v1/sandboxes/{id}/desktop/stream", get(desktop::stream))
         .route(
@@ -306,7 +315,7 @@ async fn healthz() -> Json<serde_json::Value> {
     let custom = std::env::var_os("AHVM_DESKTOP_IMAGE").is_some();
     Json(serde_json::json!({
         "status": "ok", "version": env!("CARGO_PKG_VERSION"),
-        "features": ["lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
+        "features": ["replicated-storage-v1", "lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
         "desktop_images": {
             "ubuntu-desktop": sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
             "omarchy-desktop": sandboxes::resolve_image(Some("omarchy-desktop")).is_ok(),
