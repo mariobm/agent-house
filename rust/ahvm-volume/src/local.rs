@@ -46,7 +46,8 @@ struct State {
     failed: bool,
     replication_failed: bool,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Status {
     pub local_failed: bool,
     pub local_sequence: u64,

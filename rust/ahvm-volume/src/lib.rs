@@ -1,10 +1,10 @@
-//! Experimental durable-volume protocol, not connected to the daemon or VMM.
+//! Replicated-volume protocol and opt-in Linux host storage service.
 //!
 //! IndexedVolume writes are volatile until `commit` succeeds. The Unix LocalDisk
 //! adapter separately provides local fsync with eventual remote replication. The store must make immutable
 //! chunks durable before atomically replacing the volume head. Opening a volume
 //! reads that head; data is fetched and verified on demand. No local cache is
-//! needed for recovery. This bounded model is not a production block device.
+//! needed for recovery. Cloud rollout still requires tenant accounting and GC.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -19,6 +19,8 @@ pub mod nbd;
 #[cfg(unix)]
 pub mod owned;
 pub mod s3;
+#[cfg(target_os = "linux")]
+pub mod service;
 
 pub const CHUNK_BYTES: usize = 64 * 1024;
 /// Deliberately small for protocol qualification; not a product disk limit.

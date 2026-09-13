@@ -1,7 +1,7 @@
 //! Host-only replicated-volume service seam. No object-store credentials cross it.
 //!
 //! The service owns attachment/journal lifetime independently of the engine.
-//! This interface is experimental; multi-host writer fencing is a separate gate.
+//! The service validates sandbox/VM bindings and owns writer fencing/recovery.
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -74,7 +74,13 @@ pub(crate) fn new_volume() -> Result<String> {
 }
 
 impl ReplicatedConfig {
-    fn request(&self, operation: &str, id: &str, image: Option<&Path>) -> Result<Reply> {
+    fn request(
+        &self,
+        operation: &str,
+        id: &str,
+        image: Option<&Path>,
+        sandbox: &Path,
+    ) -> Result<Reply> {
         validate_volume(id)?;
         let mut conn = UnixStream::connect(&self.socket)?;
         let seconds = match operation {
@@ -87,7 +93,7 @@ impl ReplicatedConfig {
         serde_json::to_writer(
             &mut conn,
             &serde_json::json!({
-                "version": 1, "operation": operation, "volume_id": id, "image": image,
+                "version": 1, "operation": operation, "volume_id": id, "image": image, "sandbox_dir": sandbox,
             }),
         )?;
         conn.write_all(b"\n")?;
@@ -109,17 +115,18 @@ impl ReplicatedConfig {
         }
         Ok(reply)
     }
-    pub(crate) fn prepare(&self, id: &str, image: &Path) -> Result<()> {
-        self.request("prepare", id, Some(image)).map(|_| ())
+    pub(crate) fn prepare(&self, id: &str, image: &Path, sandbox: &Path) -> Result<()> {
+        self.request("prepare", id, Some(image), sandbox)
+            .map(|_| ())
     }
-    pub(crate) fn attach(&self, id: &str) -> Result<PathBuf> {
-        self.device("attach", id)
+    pub(crate) fn attach(&self, id: &str, sandbox: &Path) -> Result<PathBuf> {
+        self.device("attach", id, sandbox)
     }
-    pub(crate) fn inspect(&self, id: &str) -> Result<PathBuf> {
-        self.device("inspect", id)
+    pub(crate) fn inspect(&self, id: &str, sandbox: &Path) -> Result<PathBuf> {
+        self.device("inspect", id, sandbox)
     }
-    fn device(&self, operation: &str, id: &str) -> Result<PathBuf> {
-        let reply = self.request(operation, id, None)?;
+    fn device(&self, operation: &str, id: &str, sandbox: &Path) -> Result<PathBuf> {
+        let reply = self.request(operation, id, None, sandbox)?;
         if reply.status.as_ref().is_none_or(|s| s.local_failed) {
             return Err(Error::Control("replicated device unavailable".into()));
         }
@@ -138,14 +145,17 @@ impl ReplicatedConfig {
         }
         Ok(device)
     }
-    pub(crate) fn status(&self, id: &str) -> Result<ReplicationStatus> {
-        self.request("status", id, None)?
+    pub(crate) fn bind(&self, id: &str, sandbox: &Path) -> Result<()> {
+        self.request("bind", id, None, sandbox).map(|_| ())
+    }
+    pub(crate) fn status(&self, id: &str, sandbox: &Path) -> Result<ReplicationStatus> {
+        self.request("status", id, None, sandbox)?
             .status
             .ok_or_else(|| Error::Control("missing volume status".into()))
     }
-    pub(crate) fn sync(&self, id: &str) -> Result<ReplicationStatus> {
+    pub(crate) fn sync(&self, id: &str, sandbox: &Path) -> Result<ReplicationStatus> {
         let status = self
-            .request("sync", id, None)?
+            .request("sync", id, None, sandbox)?
             .status
             .ok_or_else(|| Error::Control("missing volume status".into()))?;
         if status.local_failed
@@ -159,11 +169,11 @@ impl ReplicatedConfig {
         }
         Ok(status)
     }
-    pub(crate) fn detach(&self, id: &str) -> Result<()> {
-        self.request("detach", id, None).map(|_| ())
+    pub(crate) fn detach(&self, id: &str, sandbox: &Path) -> Result<()> {
+        self.request("detach", id, None, sandbox).map(|_| ())
     }
-    pub(crate) fn delete(&self, id: &str) -> Result<()> {
-        self.request("delete", id, None).map(|_| ())
+    pub(crate) fn delete(&self, id: &str, sandbox: &Path) -> Result<()> {
+        self.request("delete", id, None, sandbox).map(|_| ())
     }
 }
 
@@ -201,12 +211,12 @@ mod tests {
         reply(
             "id",
             serde_json::json!({"ok":true,"volume_id":"b".repeat(64)}),
-            |c| assert!(c.delete(&id).is_err()),
+            |c| assert!(c.delete(&id, Path::new("/tmp/test")).is_err()),
         );
         reply(
             "watermark",
             serde_json::json!({"ok":true,"volume_id":id,"status":{"local_sequence":1,"remote_sequence":2,"pending_bytes":0,"local_failed":false,"replication_failed":false}}),
-            |c| assert!(c.status(&id).is_err()),
+            |c| assert!(c.status(&id, Path::new("/tmp/test")).is_err()),
         );
     }
     #[test]
@@ -216,12 +226,12 @@ mod tests {
         reply(
             "backlog",
             serde_json::json!({"ok":true,"volume_id":id,"status":status}),
-            |c| assert!(c.sync(&id).is_err()),
+            |c| assert!(c.sync(&id, Path::new("/tmp/test")).is_err()),
         );
         reply(
             "file",
             serde_json::json!({"ok":true,"volume_id":id,"device":"/etc/passwd","status":status}),
-            |c| assert!(c.attach(&id).is_err()),
+            |c| assert!(c.attach(&id, Path::new("/tmp/test")).is_err()),
         );
     }
 }
