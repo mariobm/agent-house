@@ -1,5 +1,8 @@
 # Replicated storage: engine integration
 
+The opt-in Rust supervisor is now documented in [VOLUME-SERVICE.md](../../docs/VOLUME-SERVICE.md).
+The Python adapter below remains historical qualification tooling.
+
 Phase 4, first PR. The Rust engine now supports a persisted local/replicated
 selection and a host volume-service interface. This is an opt-in integration
 for qualification, not an installed cloud backend or a released CLI flag.

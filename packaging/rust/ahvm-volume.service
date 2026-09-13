@@ -1,0 +1,24 @@
+[Unit]
+Description=AHVM replicated volume service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+StateDirectory=ahvm-volume
+StateDirectoryMode=0700
+RuntimeDirectory=ahvm-volume
+RuntimeDirectoryMode=0711
+ExecStart=/opt/ahvm-rust/bin/ahvm-volumed /etc/ahvm-rust/volume-service.json
+Restart=on-failure
+RestartSec=2
+# Workers deliberately outlive supervisor restart. Stop/destroy VMs through
+# the engine before maintenance; stopping this unit does not stop their disks.
+KillMode=process
+TimeoutStopSec=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

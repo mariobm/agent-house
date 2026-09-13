@@ -157,10 +157,9 @@ throughput and persistent clean caching remain before rollout.
 
 The [engine integration](../experiments/durable-storage/ENGINE.md) adds immutable
 mode/volume identity, a host service seam, cold replicated lifecycle and status.
-Local mode remains the public default. An isolated NBD/R2 adapter exercises the
-engine; it is not installed or exposed through the daemon/CLI. Ownership fencing,
-service supervision/restart and storage accounting remain required before the
-full phase-4 gate or cloud activation.
+Local mode remains the public default. The opt-in Rust NBD/R2 service now
+implements ownership, supervision and restart recovery. Tenant accounting,
+remote reclamation and daemon/CLI selection remain before cloud activation.
 
 The [ownership core](../experiments/durable-storage/OWNERSHIP.md) adds a format-4
 head envelope that atomically publishes the owner epoch and disk map. It supports
@@ -169,9 +168,10 @@ Concurrent/lost-response cases and independent-process R2 handoff are qualified.
 The isolated engine supervisor now uses this ownership core. Supervisor restart
 adopts the surviving worker; dead-worker replacement refuses while a VM holds
 the disk open. The original identity/journal are reused after observed VM death.
-There is deliberately no timed or forced takeover. Production supervision,
-attachment-to-engine/VM binding, ownership release/deletion and accounting remain
-before rollout; the single-volume adapter is not an installed service.
+There is deliberately no timed or forced takeover. The Rust service below adds
+production supervision and engine/VM binding; the Python adapter is historical
+qualification tooling. Ownership release/deletion and tenant accounting still
+need rollout integration.
 
 ## Qualification measurements
 
@@ -200,3 +200,12 @@ files. Use at most one small VM in the initial spike and two for isolation check
 
 R2 is the first qualified provider, not a hard dependency of AHVM. A self-hosted
 object store on the same physical machine does not provide host-loss protection.
+
+### Rust service integration
+
+[`ahvm-volumed`](VOLUME-SERVICE.md) replaces the single-volume Python adapter with
+a multi-volume Rust supervisor, durable gated child launch, explicit sandbox/VM
+binding and automatic storage recovery after verified VM termination. It ships
+as an opt-in server binary/unit, not an enabled cloud default. Tenant accounting,
+remote reclamation/ownership release, and daemon/API configuration remain before
+rollout. Local mode remains the default.

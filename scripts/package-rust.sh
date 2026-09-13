@@ -22,7 +22,7 @@ export LD_LIBRARY_PATH="$FW_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export CC_LINUX=${CC_LINUX:-cc}
 export BUILD_JOBS=${BUILD_JOBS:-2}
 cargo build --manifest-path rust/Cargo.toml --release --locked -j "${BUILD_JOBS:-2}" \
-    -p ahvm-cli -p ahvm-daemon -p ahvm-vmm -p ahvm-netd
+    -p ahvm-cli -p ahvm-daemon -p ahvm-vmm -p ahvm-netd -p ahvm-volume
 cargo build --manifest-path rust/Cargo.toml --release --locked -j "${BUILD_JOBS:-2}" \
     -p ahvm-forge --target x86_64-unknown-linux-musl
 # Keep the standard worker free of graphics dependencies.
@@ -37,7 +37,7 @@ mkdir -p "$(dirname "$OUT")"
 STAGE=$(mktemp -d "${OUT}.build.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE"/{bin,lib,share,packaging}
-for name in ahvm ahvm-daemon ahvm-vmm ahvm-netd; do
+for name in ahvm ahvm-daemon ahvm-vmm ahvm-netd ahvm-volumed; do
     install -m755 "rust/target/release/$name" "$STAGE/bin/$name"
     patchelf --set-rpath '$ORIGIN/../lib' "$STAGE/bin/$name"
 done
@@ -88,16 +88,17 @@ else
     "${elevate[@]}" env FORGE_BIN="$STAGE/bin/ahvm-forge" "$PWD/scripts/ubuntu-dev-rootfs.sh" "$STAGE/share/base.ext4"
 fi
 if [[ -f $STAGE/share/base.ext4 ]]; then chmod 644 "$STAGE/share/base.ext4"; fi
+cp packaging/rust/ahvm-volume.service "$STAGE/packaging/"
 cp packaging/rust/ahvm-rust.service.in "$STAGE/packaging/"
 cp scripts/install-rust.sh "$STAGE/install.sh"
 cp docs/RUST-INSTALL.md "$STAGE/README.md"
-cp docs/NETWORK-ACCESS.md docs/NETWORK-QUALIFICATION.md docs/FILE-UPLOADS.md docs/LICENSING.md docs/DEVELOPMENT-IMAGE.md docs/REMOTE-HOSTS.md LICENSE NOTICE "$STAGE/"
+cp docs/NETWORK-ACCESS.md docs/NETWORK-QUALIFICATION.md docs/FILE-UPLOADS.md docs/LICENSING.md docs/DEVELOPMENT-IMAGE.md docs/REMOTE-HOSTS.md docs/VOLUME-SERVICE.md LICENSE NOTICE "$STAGE/"
 mkdir -p "$STAGE/licenses"
 cp -R licenses/. "$STAGE/licenses/"
 printf 'platform=linux-x86_64\nglibc=%s\nsource=%s\nfork=%s\n' \
     "$(getconf GNU_LIBC_VERSION)" "${AHVM_SOURCE_REV:-$(git rev-parse HEAD 2>/dev/null || echo source-archive)}" \
     "${AHVM_FORK_REV:-$(git -C libkrucible rev-parse HEAD 2>/dev/null || echo source-archive)}" > "$STAGE/BUILD.txt"
-(cd "$STAGE" && find bin lib gpu share packaging licenses -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum install.sh README.md NETWORK-ACCESS.md NETWORK-QUALIFICATION.md FILE-UPLOADS.md LICENSING.md DEVELOPMENT-IMAGE.md REMOTE-HOSTS.md LICENSE NOTICE BUILD.txt >> SHA256SUMS)
+(cd "$STAGE" && find bin lib gpu share packaging licenses -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum install.sh README.md NETWORK-ACCESS.md NETWORK-QUALIFICATION.md FILE-UPLOADS.md LICENSING.md DEVELOPMENT-IMAGE.md REMOTE-HOSTS.md VOLUME-SERVICE.md LICENSE NOTICE BUILD.txt >> SHA256SUMS)
 chmod 755 "$STAGE"
 mv "$STAGE" "$OUT"
 echo "Built $OUT. Install with: sudo $OUT/install.sh $OUT"

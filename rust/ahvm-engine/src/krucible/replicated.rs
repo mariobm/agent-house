@@ -155,7 +155,7 @@ impl KrucibleBackend {
             alive
         };
         if alive {
-            service.inspect(volume)?;
+            service.inspect(volume, &dir)?;
             self.ready(&dir)?;
             record.info.state = State::Running;
             return self.save_replica(id, record);
@@ -164,25 +164,25 @@ impl KrucibleBackend {
         self.save_replica(id, record.clone())?;
         // prepare is idempotent: it must never reimport an existing volume.
         if !record.volume_prepared {
-            service.prepare(volume, &record.backing)?;
+            service.prepare(volume, &record.backing, &dir)?;
             record.volume_prepared = true;
             self.save_replica(id, record.clone())?;
         }
-        let device = service.attach(volume)?;
+        let device = service.attach(volume, &dir)?;
         let mut worker = match self.boot_worker(&dir, &device, &record.spec, None) {
             Ok(w) => w,
             Err(e) => {
-                let _ = service.detach(volume);
+                let _ = service.detach(volume, &dir);
                 return Err(e);
             }
         };
-        if let Err(e) = self.ready(&dir) {
+        if let Err(e) = self.ready(&dir).and_then(|_| service.bind(volume, &dir)) {
             // Keep the handle if termination fails; never detach a live VM disk.
             if worker.terminate().is_err() {
                 self.lock().sandboxes.get_mut(id).unwrap().worker =
                     Some(WorkerHandle::Owned(worker));
             } else {
-                let _ = service.detach(volume);
+                let _ = service.detach(volume, &dir);
                 if let Some(net) = &self.networks {
                     let _ = net.remove(&dir);
                 }
@@ -238,8 +238,8 @@ impl KrucibleBackend {
         let volume = record.info.storage.volume_id.as_deref().unwrap();
         // Stop has a stronger promise than guest fsync: drain before detaching.
         // Failure leaves the same journal tracked and stop/destroy retryable.
-        let status = self.replica()?.sync(volume)?;
-        self.replica()?.detach(volume)?;
+        let status = self.replica()?.sync(volume, &dir)?;
+        self.replica()?.detach(volume, &dir)?;
         let _ = std::fs::remove_file(dir.join("state.json"));
         record.info.state = State::Stopped;
         record.info.thermal = Thermal::Cold;
@@ -257,18 +257,18 @@ impl KrucibleBackend {
         }
         // Idempotent service deletion tombstones the ID. GC is a later phase.
         self.replica()?
-            .delete(record.info.storage.volume_id.as_deref().unwrap())?;
+            .delete(record.info.storage.volume_id.as_deref().unwrap(), &dir)?;
         self.remove_storage(&dir)?;
         std::fs::File::open(&self.cfg.data_dir)?.sync_all()?;
         self.lock().sandboxes.remove(id);
         Ok(())
     }
     pub(super) fn replicated_status(&self, id: &str) -> Result<SandboxInfo> {
-        let (_, record) = self.replicated_record(id)?;
+        let (dir, record) = self.replicated_record(id)?;
         let mut info = record.info;
         let service = self.replica()?;
         info.storage.replication = service
-            .status(info.storage.volume_id.as_deref().unwrap())
+            .status(info.storage.volume_id.as_deref().unwrap(), &dir)
             .ok();
         let alive = self
             .lock()

@@ -221,6 +221,8 @@ class Service:
             elif operation == 'attach':
                 assert self.record['prepared']
                 self.record['status'] = self.attach()
+            elif operation == 'bind':
+                self.inspect()
             elif operation == 'inspect':
                 self.record['status'] = self.inspect()
             elif operation == 'status':
