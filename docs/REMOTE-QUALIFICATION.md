@@ -36,7 +36,8 @@ connection, using one 2-CPU / 4-GiB VM:
 These are observed wall-clock samples, not a guaranteed latency SLA. The patch
 admits input while output is pending, returns the first available output frame,
 and enables TCP_NODELAY. It keeps one output read in flight per connection,
-retains the idle-read budget, and does not make idle shells pin VMs. Guest
+retains the idle-read budget. This historical run predates the connected-shell
+keep-awake policy: an attached shell now defers idle stop. Guest
 thread counts settled at the expected baseline plus persistent PTY sessions.
 `scripts/test-shell-latency.py` checks Bash, real character echoes and clean
 detach against one existing sandbox; the default p95 ceiling is 200 ms.
