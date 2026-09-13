@@ -19,6 +19,12 @@ RestartSec=2
 KillMode=process
 TimeoutStopSec=10
 NoNewPrivileges=yes
+# Import and reclamation run here; worker caps live in a separate persistent unit.
+# Operators can override these finite supervisor ceilings with a systemd drop-in.
+CPUQuota=100%
+MemoryMax=1G
+MemorySwapMax=0
+TasksMax=256
 
 [Install]
 WantedBy=multi-user.target

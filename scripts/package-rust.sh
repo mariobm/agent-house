@@ -89,6 +89,7 @@ else
 fi
 if [[ -f $STAGE/share/base.ext4 ]]; then chmod 644 "$STAGE/share/base.ext4"; fi
 cp packaging/rust/ahvm-volume.service "$STAGE/packaging/"
+cp packaging/rust/ahvm-volume-workers.service "$STAGE/packaging/"
 cp packaging/rust/ahvm-rust.service.in "$STAGE/packaging/"
 cp scripts/install-rust.sh "$STAGE/install.sh"
 cp docs/RUST-INSTALL.md "$STAGE/README.md"

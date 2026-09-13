@@ -47,10 +47,11 @@ replicated logical capacity. Local disks do not support remote sync.
 
 This is an experimental, operator-configured Linux capability. The standard
 installer does not enable it. Configure the [volume service](VOLUME-SERVICE.md)
-and AHVM_VOLUME_SOCKET on a dedicated qualification host. The engine still
-rejects replicated mode when the existing cgroup or local-storage quota services
-are configured: host resource integration is a separate prerequisite for Cloud.
-Do not remove production resource controls to bypass this restriction.
+and AHVM_VOLUME_SOCKET on a dedicated qualification host. When VM cgroups or the local project-quota broker are configured, the engine
+requires explicit confirmation that the volume supervisor and its separate
+worker pool have finite CPU, RAM and task limits. Configure those limits rather
+than removing resource controls. Cloud deployment and full rollout qualification
+remain separate steps.
 
     ahvm create durable-dev --storage replicated
     ahvm get durable-dev
@@ -101,5 +102,5 @@ successful acknowledgements. The API does not return object-store credentials.
 This change does not switch AHVM Cloud to replicated storage or automatic wake.
 The CLI rejects Cloud storage overrides and storage subcommands until the Cloud
 integration is ready. Cloud will choose replicated storage automatically after
-host resource integration and rollout qualification, without user bucket setup.
+Cloud deployment and rollout qualification, without user bucket setup.
 Dashboard storage visibility is the next website application change.

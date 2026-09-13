@@ -70,13 +70,6 @@ impl KrucibleBackend {
                 "replicated storage requires Linux krucible and valid sizing".into(),
             ));
         }
-        // Resource/quota accounting for the external sidecar is a later host
-        // service integration. Never imply that the VM's quota covers it.
-        if self.cfg.resources.is_some() || self.cfg.storage.is_some() {
-            return Err(Error::InvalidState(
-                "replicated service resource accounting is not integrated".into(),
-            ));
-        }
         if self.lock().sandboxes.contains_key(&spec.name) {
             return Err(Error::Conflict("sandbox already exists".into()));
         }
@@ -100,8 +93,15 @@ impl KrucibleBackend {
             return Err(Error::InvalidState("invalid replicated image size".into()));
         }
         let volume_id = crate::replicated::new_volume()?;
+        if self.cfg.resources.is_some() || self.cfg.storage.is_some() {
+            self.replica()?.verify_resources(&volume_id, &dir)?;
+        }
         admit(&volume_id, bytes)?;
-        std::fs::create_dir(&dir)?;
+        if let Some(storage) = &self.cfg.storage {
+            storage.request("prepare", &dir)?;
+        } else {
+            std::fs::create_dir(&dir)?;
+        }
         let record = SandboxRecord {
             spec: SandboxSpec {
                 storage_mode: Some(StorageMode::Replicated),
@@ -158,6 +158,12 @@ impl KrucibleBackend {
         let service = self.replica()?;
         let volume_id = record.info.storage.volume_id.clone().unwrap();
         let volume = volume_id.as_str();
+        if self.cfg.resources.is_some() || self.cfg.storage.is_some() {
+            service.verify_resources(volume, &dir)?;
+        }
+        if let Some(storage) = &self.cfg.storage {
+            storage.request("verify", &dir)?;
+        }
         let alive = {
             let mut inner = self.lock();
             let rec = inner.sandboxes.get_mut(id).unwrap();
@@ -271,6 +277,9 @@ impl KrucibleBackend {
         // Idempotent service deletion tombstones the ID. GC is a later phase.
         self.replica()?
             .delete(record.info.storage.volume_id.as_deref().unwrap(), &dir)?;
+        if let Some(resources) = &self.cfg.resources {
+            resources.remove(id)?;
+        }
         self.remove_storage(&dir)?;
         std::fs::File::open(&self.cfg.data_dir)?.sync_all()?;
         self.lock().sandboxes.remove(id);
@@ -512,6 +521,74 @@ mod tests {
             .unwrap());
         assert!(!dir.exists());
         task.join().unwrap();
+        std::fs::remove_dir_all(cfg.data_dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn replicated_metadata_uses_quota_broker_and_requires_service_limits() {
+        let mut cfg = config("metadata-quota");
+        cfg.data_dir = cfg
+            .data_dir
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .join("vms");
+        let quota_socket = cfg.data_dir.parent().unwrap().join("quota.sock");
+        let quota = UnixListener::bind(&quota_socket).unwrap();
+        cfg.storage = Some(crate::StorageConfig {
+            socket: quota_socket,
+        });
+        let vm_dir = cfg.data_dir.join("probe");
+        let expected_dir = vm_dir.clone();
+        let quota_task = std::thread::spawn(move || {
+            for action in ["prepare", "verify", "release"] {
+                let (mut stream, _) = quota.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let q: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(q["action"], action);
+                if action == "prepare" {
+                    std::fs::create_dir(&expected_dir).unwrap();
+                }
+                if action == "release" {
+                    std::fs::remove_dir(&expected_dir).unwrap();
+                }
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({"ok":true,"path":expected_dir})
+                )
+                .unwrap();
+            }
+        });
+        let service = UnixListener::bind(&cfg.replicated.as_ref().unwrap().socket).unwrap();
+        let service_task = std::thread::spawn(move || {
+            for operation in ["resources", "resources", "prepare", "delete"] {
+                let (mut stream, _) = service.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let q: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(q["operation"], operation);
+                let mut reply =
+                    serde_json::json!({"ok":operation != "prepare","volume_id":q["volume_id"]});
+                if operation == "resources" {
+                    reply["resources_enforced"] = serde_json::json!(true);
+                }
+                writeln!(stream, "{reply}").unwrap();
+            }
+        });
+        let be = KrucibleBackend::open(cfg.clone()).unwrap();
+        assert!(be.create(&spec()).is_err());
+        assert!(vm_dir.join("sandbox.json").exists());
+        be.destroy("probe").unwrap();
+        assert!(!vm_dir.exists());
+        quota_task.join().unwrap();
+        service_task.join().unwrap();
         std::fs::remove_dir_all(cfg.data_dir.parent().unwrap()).unwrap();
     }
 

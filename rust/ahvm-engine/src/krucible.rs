@@ -395,9 +395,10 @@ impl KrucibleBackend {
             if record.info.storage.mode == crate::StorageMode::Replicated
                 && (cfg.resources.is_some() || cfg.storage.is_some())
             {
-                return Err(Error::InvalidState(
-                    "replicated service resource accounting is not integrated".into(),
-                ));
+                cfg.replicated
+                    .as_ref()
+                    .unwrap()
+                    .verify_resources(record.info.storage.volume_id.as_deref().unwrap(), &dir)?;
             }
             if worker.is_some() && record.info.storage.mode == crate::StorageMode::Replicated {
                 let volume = record.info.storage.volume_id.as_deref().unwrap();
@@ -1324,6 +1325,9 @@ impl Backend for KrucibleBackend {
             if let Some(net) = &self.networks {
                 net.remove(&dir)?;
             }
+            if let Some(resources) = &self.cfg.resources {
+                resources.remove(sandbox)?;
+            }
             self.remove_storage(&dir)?;
             std::fs::File::open(&self.cfg.data_dir)?.sync_all()?;
             self.lock().sandboxes.remove(sandbox);
@@ -1333,8 +1337,22 @@ impl Backend for KrucibleBackend {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
                 Err(e) => return Err(e.into()),
             }
-            std::fs::remove_dir(&dir)?;
+            if let Some(storage) = &self.cfg.storage {
+                storage.remove(&dir)?;
+            } else {
+                std::fs::remove_dir(&dir)?;
+            }
+            if let Some(resources) = &self.cfg.resources {
+                resources.remove(sandbox)?;
+            }
             std::fs::File::open(&self.cfg.data_dir)?.sync_all()?;
+        } else {
+            if let Some(storage) = &self.cfg.storage {
+                storage.request("release", &dir)?;
+            }
+            if let Some(resources) = &self.cfg.resources {
+                resources.remove(sandbox)?;
+            }
         }
         Ok(complete)
     }
