@@ -16,6 +16,8 @@ pub mod indexed;
 #[cfg(unix)]
 pub mod local;
 pub mod nbd;
+#[cfg(unix)]
+pub mod owned;
 pub mod s3;
 
 pub const CHUNK_BYTES: usize = 64 * 1024;

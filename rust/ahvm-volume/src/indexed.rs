@@ -128,6 +128,13 @@ impl IndexedVolume {
             return Err(Error::InvalidInput);
         }
         let head = store.head(id)?.ok_or(Error::NotFound)?;
+        Self::from_head(store, id, head)
+    }
+    pub(crate) fn from_head(
+        store: Arc<dyn ObjectStore>,
+        id: &str,
+        head: crate::Head,
+    ) -> Result<Self> {
         if head.manifest.len() > MAX_MANIFEST_BYTES || head.revision.is_empty() {
             return Err(Error::Corrupt);
         }

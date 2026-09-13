@@ -162,6 +162,13 @@ engine; it is not installed or exposed through the daemon/CLI. Ownership fencing
 service supervision/restart and storage accounting remain required before the
 full phase-4 gate or cloud activation.
 
+The [ownership core](../experiments/durable-storage/OWNERSHIP.md) adds a format-4
+head envelope that atomically publishes the owner epoch and disk map. It supports
+explicit drain/release and same-identity journal recovery after process death.
+Concurrent/lost-response cases and independent-process R2 handoff are qualified.
+It is not wired into the engine service yet. There is deliberately no timed or
+forced takeover; supervising the VM and service identity remains the next gate.
+
 ## Qualification measurements
 
 Before setting a production default, measure cold reads/boot, hot reads, small
