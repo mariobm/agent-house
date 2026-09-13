@@ -34,6 +34,7 @@ fn record(id: &str, root: &Path) -> Record {
         device: "/dev/nbd0".into(),
         prepared: false,
         deleted: false,
+        reclaimed: false,
         desired: false,
         worker: None,
         client: None,
@@ -44,6 +45,7 @@ fn service(root: &Path) -> Service {
     Service {
         executable: "/unused".into(),
         admission_failed: AtomicBool::new(false),
+        reclamation: Mutex::new(()),
         config: Config {
             client_uid: 0,
             limits: Limits {
@@ -421,5 +423,43 @@ fn lower_budgets_preserve_existing_identity_and_usage_includes_tombstones() {
         crate::CHUNK_BYTES
     );
     assert!(reply["usage"]["local_file_bytes"].as_u64().unwrap() > 0);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
+fn reclamation_releases_budget_only_after_remote_and_local_cleanup() {
+    assert!(rustix::process::geteuid().is_root());
+    let dir = temp();
+    let s = budget_service(&dir);
+    let a = prepare_request(&s, 'a');
+    let b = prepare_request(&s, 'b');
+    let entry = s.entry(&a).unwrap();
+    let raw = Arc::new(crate::reclaim::tests::Memory::default());
+    let bytes = vec![1; crate::CHUNK_BYTES];
+    raw.put_chunk(&a.volume_id, &crate::digest(&bytes), &bytes)
+        .unwrap();
+    let mut e = entry.lock().unwrap();
+    assert!(s.reclaim_with_store(&mut e.record, raw.clone()).is_err());
+    e.record.deleted = true;
+    s.persist(&e.record).unwrap();
+    let owner = s.dir(&e.record).join("owner");
+    private_dir(&owner).unwrap();
+    fs::write(owner.join("pending-journal"), b"local").unwrap();
+    s.reclaim_with_store(&mut e.record, raw.clone()).unwrap();
+    assert!(!e.record.reclaimed); // First batch removed chunks, no empty listing yet.
+    assert!(owner.exists());
+    assert!(s.entry(&b).is_err());
+    s.reclaim_with_store(&mut e.record, raw.clone()).unwrap();
+    assert!(e.record.reclaimed);
+    assert!(!owner.exists());
+    assert_eq!(s.usage().unwrap().retained_volumes, 0);
+    let persisted: Record = read(&s.dir(&e.record).join("record.json")).unwrap();
+    assert!(persisted.reclaimed);
+    assert!(s.entry(&b).is_ok());
+    // An hourly recheck is idempotent and leaves no owner directory behind.
+    s.reclaim_with_store(&mut e.record, raw).unwrap();
+    assert!(!owner.exists());
+    drop(e);
     fs::remove_dir_all(dir).unwrap();
 }

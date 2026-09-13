@@ -18,6 +18,8 @@ pub mod local;
 pub mod nbd;
 #[cfg(unix)]
 pub mod owned;
+#[cfg(unix)]
+pub mod reclaim;
 pub mod s3;
 #[cfg(target_os = "linux")]
 pub mod service;
@@ -72,6 +74,15 @@ pub trait ObjectStore: std::fmt::Debug + Send + Sync {
     /// Optional disposable cache lookup. Callers still validate returned bytes.
     fn cached_chunk(&self, _volume: &str, _digest: &str) -> Option<Vec<u8>> {
         None
+    }
+    /// Maintenance only: bounded first page within this volume's chunk namespace.
+    /// Adapters without reclamation support fail closed.
+    fn list_chunks(&self, _volume: &str, _limit: usize) -> Result<Vec<String>> {
+        Err(Error::InvalidInput)
+    }
+    /// Only the reclamation protocol may call this after permanent retirement.
+    fn delete_chunk(&self, _volume: &str, _digest: &str) -> Result<()> {
+        Err(Error::InvalidInput)
     }
     fn head(&self, volume: &str) -> Result<Option<Head>>;
     fn chunk(&self, volume: &str, digest: &str) -> Result<Vec<u8>>;

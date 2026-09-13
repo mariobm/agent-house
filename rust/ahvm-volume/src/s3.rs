@@ -238,6 +238,83 @@ fn valid_hash(hash: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 impl ObjectStore for S3Store {
+    fn list_chunks(&self, volume: &str, limit: usize) -> Result<Vec<String>> {
+        if !valid_id(volume) || !(1..=128).contains(&limit) {
+            return Err(Error::InvalidInput);
+        }
+        let prefix = format!("{}/{}/chunks/", self.config.prefix, volume);
+        let mut url = Url::parse(&format!(
+            "{}/{}",
+            self.config.endpoint.trim_end_matches('/'),
+            self.config.bucket
+        ))
+        .map_err(|_| Error::InvalidInput)?;
+        url.query_pairs_mut()
+            .append_pair("list-type", "2")
+            .append_pair("prefix", &prefix)
+            .append_pair("max-keys", &limit.to_string());
+        let response = self.request(Method::GET, url.as_str(), None, &[])?;
+        if response.status() != StatusCode::OK {
+            return Err(Error::Store);
+        }
+        const MAX_LIST: u64 = 256 * 1024;
+        if response.content_length().is_some_and(|n| n > MAX_LIST) {
+            return Err(Error::Corrupt);
+        }
+        let mut body = Vec::new();
+        response
+            .take(MAX_LIST + 1)
+            .read_to_end(&mut body)
+            .map_err(|_| Error::Store)?;
+        if body.len() as u64 > MAX_LIST {
+            return Err(Error::Corrupt);
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Listing {
+            prefix: String,
+            is_truncated: bool,
+            #[serde(default)]
+            contents: Vec<Item>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Item {
+            key: String,
+        }
+        let list: Listing =
+            quick_xml::de::from_reader(body.as_slice()).map_err(|_| Error::Corrupt)?;
+        if list.prefix != prefix
+            || list.contents.len() > limit
+            || (list.is_truncated && list.contents.is_empty())
+        {
+            return Err(Error::Corrupt);
+        }
+        let mut hashes = std::collections::BTreeSet::new();
+        for item in list.contents {
+            let hash = item.key.strip_prefix(&prefix).ok_or(Error::Corrupt)?;
+            if !valid_hash(hash) || !hashes.insert(hash.to_string()) {
+                return Err(Error::Corrupt);
+            }
+        }
+        Ok(hashes.into_iter().collect())
+    }
+    fn delete_chunk(&self, volume: &str, hash: &str) -> Result<()> {
+        if !valid_hash(hash) {
+            return Err(Error::InvalidInput);
+        }
+        let response = self.request(
+            Method::DELETE,
+            &self.key(volume, &format!("chunks/{hash}"))?,
+            None,
+            &[],
+        )?;
+        match response.status() {
+            StatusCode::NO_CONTENT | StatusCode::NOT_FOUND => Ok(()),
+            _ => Err(Error::Store),
+        }
+    }
+
     fn head(&self, volume: &str) -> Result<Option<Head>> {
         Ok(self
             .get(&self.key(volume, "head.json")?, MAX_MANIFEST_BYTES)?

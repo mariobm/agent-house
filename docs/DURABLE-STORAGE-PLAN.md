@@ -243,3 +243,34 @@ storage flag. Self-hosted operators configure their own S3-compatible storage;
 mode remains immutable at creation. Keep these commands separate from manual
 control-plane backups. Breaking experimental changes are allowed where they
 simplify correctness; no compatibility migration is required for test records.
+
+
+### Phase 5 first slice: deleted-volume reclamation
+
+The Rust supervisor now automatically reclaims deleted, detached volumes. It
+publishes a permanent format-5 retirement marker using the head CAS, refuses a
+live/foreign owner, deletes bounded batches of volume-scoped chunks, and releases
+host reservations after confirmed remote and local cleanup. Interrupted work is
+retryable. Tiny identity markers remain; running volumes and their obsolete
+historical blocks are not collected by this first slice. See
+[reclamation details](VOLUME-SERVICE.md#deleted-volume-reclamation).
+
+Next: reference-aware collection of obsolete blocks for still-existing volumes,
+then idle local eviction after remote sync, tenant accounting and API/CLI rollout.
+Do not conflate remote chunk deletion with evicting a disposable local cache.
+
+### Checkpoint expiration decision
+
+Checkpoints will support a configurable retention duration recorded as an absolute
+`expires_at`, with a finite cloud default chosen before enabling checkpoints.
+Expiration removes a retained historical root; it never expires the current disk.
+The collector may delete a block only when no current disk, unexpired checkpoint,
+active publication or other supported reference needs it. Expiration and reader/
+restore admission must be serialized so an admitted restore retains its source.
+Cleanup failures delay physical deletion and do not revive an expired checkpoint.
+Do not implement this as a bucket-wide object age rule. Checkpoint metadata and
+the new root/reference format must land together with a collector that understands
+them; the deleted-volume-only collector must not silently process newer formats.
+CLI syntax such as `ahvm checkpoint create dev --expires-in 7d` is illustrative,
+not an implemented command or a selected seven-day policy. No scheduled backups
+or checkpoint creation are introduced by retention support.
