@@ -26,6 +26,20 @@ CREATE TABLE IF NOT EXISTS users (
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
+-- Replicated root disks outlive sandbox rows and remain charged until cleanup.
+CREATE TABLE IF NOT EXISTS replicated_reservations (
+    volume_id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    sandbox_id TEXT NOT NULL,
+    logical_bytes INTEGER NOT NULL CHECK(logical_bytes > 0),
+    state TEXT NOT NULL CHECK(state IN ('reserved','deleting','reclaimed')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS replicated_reservations_owner
+    ON replicated_reservations(owner_user_id, state);
+CREATE UNIQUE INDEX IF NOT EXISTS replicated_reservations_sandbox
+    ON replicated_reservations(sandbox_id) WHERE state != 'reclaimed';
 CREATE TABLE IF NOT EXISTS sandboxes (
     id              TEXT PRIMARY KEY,
     owner_user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

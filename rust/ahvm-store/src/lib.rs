@@ -8,8 +8,10 @@
 mod entities;
 mod events;
 mod operations;
+mod replicated;
 mod schema;
 pub use operations::LifecycleOperation;
+pub use replicated::{ReplicatedReservation, ReplicatedUsage};
 #[cfg(test)]
 mod tests;
 
