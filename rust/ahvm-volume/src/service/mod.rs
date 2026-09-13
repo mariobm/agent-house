@@ -26,6 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod accounting;
+mod export;
 mod host;
 mod resources;
 use accounting::{Limits, Usage, CACHE_BYTES};
@@ -1278,6 +1279,9 @@ pub fn run() -> Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.first().is_some_and(|a| a == "warm") {
         return warm::client(&args[1..]);
+    }
+    if args.first().is_some_and(|a| a == "export-remote") {
+        return export::client(&args[1..]);
     }
     if args.first().is_some_and(|a| a == "_worker") {
         return worker::run(&args[1..]);

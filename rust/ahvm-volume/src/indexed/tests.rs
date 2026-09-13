@@ -568,3 +568,40 @@ fn pinned_catalog_rejects_validly_hashed_malformed_metadata() {
         ));
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn remote_export_materializes_base_and_private_changes_for_independent_restore() {
+    let store = Arc::new(Store::default());
+    let image = "a".repeat(64);
+    let mut base =
+        IndexedVolume::create_import(store.clone(), &image, 3 * CHUNK_BYTES as u64).unwrap();
+    base.write(0, &vec![6; 3 * CHUNK_BYTES]).unwrap();
+    base.finish_import().unwrap();
+    let mut disk =
+        IndexedVolume::create_from_base(store.clone(), "export", base.export_base().unwrap())
+            .unwrap();
+    disk.write(0, b"marker A").unwrap();
+    disk.write(CHUNK_BYTES as u64, &vec![0; CHUNK_BYTES])
+        .unwrap();
+    disk.commit().unwrap();
+    crate::owned::OwnedDisk::enroll(store.clone(), "export").unwrap();
+    let mut bytes = Vec::new();
+    let report = crate::owned::export_remote(store.clone(), "export", &mut bytes).unwrap();
+    assert_eq!(&bytes[..8], b"marker A");
+    assert!(bytes[CHUNK_BYTES..2 * CHUNK_BYTES].iter().all(|b| *b == 0));
+    assert!(bytes[2 * CHUNK_BYTES..].iter().all(|b| *b == 6));
+    store.objects.lock().unwrap().clear();
+    store.heads.lock().unwrap().clear();
+    // Restore into a fresh namespace with no source ownership or base dependency.
+    let target = Arc::new(Store::default());
+    let mut restored =
+        IndexedVolume::create_import(target.clone(), "restored", report.logical_bytes).unwrap();
+    restored.write(0, &bytes).unwrap();
+    restored.finish_import().unwrap();
+    let restored = IndexedVolume::open(target, "restored").unwrap();
+    let mut recovered = vec![0; bytes.len()];
+    restored.read(0, &mut recovered).unwrap();
+    assert_eq!(crate::digest(&recovered), report.sha256);
+    assert_eq!(recovered, bytes);
+}
