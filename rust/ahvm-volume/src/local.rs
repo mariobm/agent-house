@@ -19,7 +19,7 @@ use std::{
 };
 const MAGIC: &[u8; 8] = b"AHVMWL01";
 const RECORD: usize = 16 + CHUNK_BYTES + 64;
-const LOG_LIMIT: u64 = 256 * 1024 * 1024;
+pub(crate) const LOG_LIMIT: u64 = 256 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Header {

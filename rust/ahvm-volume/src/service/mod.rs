@@ -19,13 +19,15 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
 };
+mod accounting;
 mod host;
+use accounting::{Limits, Usage, CACHE_BYTES};
 #[cfg(test)]
 mod tests;
 mod worker;
@@ -37,6 +39,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 struct Config {
     #[serde(default)]
     client_uid: u32,
+    limits: Limits,
     #[serde(default)]
     image_roots: Vec<PathBuf>,
     #[serde(default)]
@@ -54,6 +57,8 @@ struct Record {
     sandbox: PathBuf,
     image: PathBuf,
     image_hash: String,
+    /// Reserved before import; never inferred from mutable source on restart.
+    logical_bytes: u64,
     device: PathBuf,
     prepared: bool,
     deleted: bool,
@@ -81,6 +86,7 @@ struct Request {
 #[derive(Debug)]
 struct Service {
     executable: PathBuf,
+    admission_failed: AtomicBool,
     config: Config,
     entries: Mutex<BTreeMap<String, Arc<Mutex<Entry>>>>,
     _locks: Vec<Lock>,
@@ -93,6 +99,7 @@ fn valid_id(id: &str) -> bool {
 }
 impl Service {
     fn open(config: Config) -> Result<Arc<Self>> {
+        config.limits.validate()?;
         private_dir(&config.root)?;
         if config.root.join("record.json").exists() {
             return Err("legacy qualification root requires explicit migration".into());
@@ -163,6 +170,7 @@ impl Service {
         File::open(&config.root)?.sync_all()?;
         let mut entries = BTreeMap::new();
         let mut assigned = std::collections::BTreeSet::new();
+        let mut usage = Usage::default();
         for item in fs::read_dir(&volumes)? {
             let item = item?;
             let id = item.file_name().to_string_lossy().to_string();
@@ -186,6 +194,7 @@ impl Service {
                 return Err("unaccounted volume directory".into());
             }
             let r: Record = read(&item.path().join("record.json"))?;
+            usage.add(r.logical_bytes)?;
             if r.id != id
                 || !config.devices.contains(&r.device)
                 || r.sandbox.parent() != Some(config.engine_root.as_path())
@@ -206,6 +215,8 @@ impl Service {
                 })),
             );
         }
+        // Lowering a budget must not interrupt existing disks. Validate persisted
+        // sizes but enforce the new budget only on admission.
         // Never take an already attached pool device absent from our records.
         for dev in &config.devices {
             if nbd_pid(dev)?.is_some() && !assigned.contains(dev) {
@@ -214,6 +225,7 @@ impl Service {
         }
         Ok(Arc::new(Self {
             executable: std::env::current_exe()?,
+            admission_failed: AtomicBool::new(false),
             config,
             entries: Mutex::new(entries),
             _locks: locks,
@@ -251,6 +263,9 @@ impl Service {
         // Deletion can be retried after engine record removal, but only from
         // the original sandbox path and only for an already tombstoned record.
         let mut map = self.entries.lock().map_err(|_| "registry poisoned")?;
+        if q.operation == "prepare" && self.admission_failed.load(Ordering::SeqCst) {
+            return Err("reservation persistence failed; restart required before importing".into());
+        }
         if let Some(e) = map.get(&q.volume_id) {
             return Ok(e.clone());
         }
@@ -270,6 +285,12 @@ impl Service {
             }
             trusted_image_path(&image)?;
         }
+        let metadata = fs::metadata(&image)?;
+        let logical_bytes = metadata.len();
+        if !metadata.is_file() {
+            return Err("image must be a regular file".into());
+        }
+        let mut usage = Usage::default();
         let mut used = std::collections::BTreeSet::new();
         for id in map.keys() {
             let r: Record = read(
@@ -280,10 +301,12 @@ impl Service {
                     .join(id)
                     .join("record.json"),
             )?;
+            usage.add(r.logical_bytes)?;
             if !r.deleted || r.worker.is_some() || r.client.is_some() {
                 used.insert(r.device);
             }
         }
+        self.config.limits.admit(&usage, logical_bytes)?;
         let device = self
             .config
             .devices
@@ -299,6 +322,7 @@ impl Service {
             sandbox: q.sandbox_dir.clone(),
             image,
             image_hash: String::new(),
+            logical_bytes,
             device,
             prepared: false,
             deleted: false,
@@ -308,15 +332,39 @@ impl Service {
             vm: None,
         };
         private_dir(&self.dir(&r))?;
-        self.persist(&r)?;
-        File::open(self.config.root.join("volumes"))?.sync_all()?;
         let e = Arc::new(Mutex::new(Entry {
-            record: r,
+            record: r.clone(),
             failures: 0,
             retry_at: Instant::now(),
         }));
         map.insert(q.volume_id.clone(), e.clone());
+        // A failed fsync/rename can still leave a durable reservation. Freeze
+        // imports until startup reconstructs the registry from disk.
+        if let Err(error) = (|| -> Result<()> {
+            self.persist(&r)?;
+            File::open(self.config.root.join("volumes"))?.sync_all()?;
+            Ok(())
+        })() {
+            self.admission_failed.store(true, Ordering::SeqCst);
+            return Err(error);
+        }
         Ok(e)
+    }
+    fn usage(&self) -> Result<Usage> {
+        let map = self.entries.lock().map_err(|_| "registry poisoned")?;
+        let mut usage = Usage::default();
+        for id in map.keys() {
+            let r: Record = read(
+                &self
+                    .config
+                    .root
+                    .join("volumes")
+                    .join(id)
+                    .join("record.json"),
+            )?;
+            usage.add(r.logical_bytes)?;
+        }
+        Ok(usage)
     }
     fn store(&self) -> Result<Arc<dyn ObjectStore>> {
         Ok(Arc::new(CachedStore::new(
@@ -324,7 +372,7 @@ impl Service {
                 S3Config::from_file(&self.config.credentials)?,
                 Duration::from_secs(3),
             )?),
-            64 * 1024 * 1024,
+            CACHE_BYTES as usize,
         )?))
     }
     fn prepare(&self, r: &mut Record) -> Result<()> {
@@ -336,6 +384,7 @@ impl Service {
         let metadata = file.metadata()?;
         let size = metadata.len();
         if !metadata.is_file()
+            || size != r.logical_bytes
             || size == 0
             || size > 64 * 1024 * 1024 * 1024
             || !size.is_multiple_of(crate::CHUNK_BYTES as u64)
@@ -632,6 +681,14 @@ impl Service {
         }
         if !r.deleted {
             self.binding(&r.id, &r.sandbox)?;
+        }
+        if q.operation == "usage" {
+            return Ok(serde_json::json!({
+                "ok": true, "volume_id": r.id,
+                "usage": accounting::volume_usage(&self.dir(r), r.logical_bytes)?,
+                "limits": self.config.limits,
+                "host_reservations": self.usage()?,
+            }));
         }
         let mut status = None;
         if q.operation == "delete" {

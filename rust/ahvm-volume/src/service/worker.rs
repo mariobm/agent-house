@@ -25,7 +25,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> super::Result<()> {
             Config::from_file(Path::new(&args[0]))?,
             Duration::from_secs(3),
         )?),
-        64 * 1024 * 1024,
+        super::accounting::CACHE_BYTES as usize,
     )?);
     let socket_path = std::path::PathBuf::from(&args[3]);
     let socket = socket_path.as_path();
