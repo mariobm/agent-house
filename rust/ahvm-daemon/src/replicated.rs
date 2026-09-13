@@ -2,6 +2,64 @@
 use crate::{unix_now, AppState};
 use ahvm_store::{Error, ReplicatedReservation, Store};
 
+/// Authenticated disk details. Missing replication state means unavailable,
+/// never a successful remote durability acknowledgement.
+#[derive(Debug, serde::Serialize)]
+pub struct StorageView {
+    pub mode: ahvm_engine::StorageMode,
+    pub logical_bytes: Option<i64>,
+    pub replication: Option<ahvm_engine::ReplicationStatus>,
+}
+
+pub async fn status(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::UserId>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> crate::ApiResult<axum::Json<StorageView>> {
+    let lifecycle = state.lifecycle.lock(&id).await;
+    crate::routes::owned(&state, &user.0, &id).await?;
+    let bytes = state
+        .store
+        .replicated_for_sandbox(&user.0, &id)?
+        .map(|r| r.logical_bytes);
+    let info = crate::blocking(move || {
+        let _lifecycle = lifecycle;
+        state.backend.status(&id)
+    })
+    .await?;
+    Ok(axum::Json(StorageView {
+        mode: info.storage.mode,
+        logical_bytes: bytes,
+        replication: info.storage.replication,
+    }))
+}
+
+pub async fn sync(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::UserId>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> crate::ApiResult<axum::Json<StorageView>> {
+    let lifecycle = state.lifecycle.lock(&id).await;
+    state.store.check_lifecycle_fence(&id, None)?;
+    crate::routes::owned(&state, &user.0, &id).await?;
+    let bytes = state
+        .store
+        .replicated_for_sandbox(&user.0, &id)?
+        .map(|r| r.logical_bytes);
+    let permit = state.ops.acquire().await;
+    let replication = crate::blocking(move || {
+        let _lifecycle = lifecycle;
+        let _permit = permit;
+        state.backend.sync_remote(&id)
+    })
+    .await?;
+    Ok(axum::Json(StorageView {
+        mode: ahvm_engine::StorageMode::Replicated,
+        logical_bytes: bytes,
+        replication: Some(replication),
+    }))
+}
+
 /// Caller holds the lifecycle lock and operation permit through the commit,
 /// including when the requesting HTTP client disconnects.
 pub(crate) fn create(
