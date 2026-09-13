@@ -31,7 +31,7 @@ fn default_cpus() -> u8 {
     1
 }
 fn default_mem() -> u32 {
-    512
+    2048
 }
 
 #[derive(Debug, Serialize)]

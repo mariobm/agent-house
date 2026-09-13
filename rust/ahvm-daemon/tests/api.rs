@@ -223,6 +223,8 @@ async fn ownership_isolation_is_404_both_ways() {
         Some(serde_json::json!({ "name": "private" })),
     )
     .await;
+    assert_eq!(created["memory_mb"], 2048);
+    assert_eq!(created["cpus"], 1);
     let id = created["id"].as_str().unwrap();
     // Bob sees nothing: get, exec, and delete are all 404 (never 403).
     for (method, uri) in [
@@ -670,7 +672,7 @@ async fn start_enforces_resources_without_double_counting_sandbox() {
             Some(TOKEN_A),
             "POST",
             "/v1/sandboxes",
-            Some(serde_json::json!({"name":"first"})),
+            Some(serde_json::json!({"name":"first","memory_mb":512})),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
@@ -695,7 +697,7 @@ async fn start_enforces_resources_without_double_counting_sandbox() {
                 Some(TOKEN_A),
                 "POST",
                 "/v1/sandboxes",
-                Some(serde_json::json!({"name":"second"})),
+                Some(serde_json::json!({"name":"second","memory_mb":512})),
             )
             .await;
             assert_eq!(status, StatusCode::CREATED);
