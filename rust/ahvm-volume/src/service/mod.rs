@@ -165,6 +165,7 @@ struct Service {
     executable: PathBuf,
     admission_failed: AtomicBool,
     reclamation: Mutex<()>,
+    imports: Mutex<()>,
     config: Config,
     entries: Mutex<BTreeMap<String, Arc<Slot>>>,
     _locks: Vec<Lock>,
@@ -329,6 +330,7 @@ impl Service {
             executable: std::env::current_exe()?,
             admission_failed: AtomicBool::new(false),
             reclamation: Mutex::new(()),
+            imports: Mutex::new(()),
             config,
             entries: Mutex::new(entries),
             _locks: locks,
@@ -650,6 +652,9 @@ impl Service {
         if r.prepared {
             return Ok(());
         }
+        // Bound the supervisor's upload threads across simultaneous creates.
+        // Other volumes' live I/O and recovery do not take this lock.
+        let _import = self.imports.lock().map_err(|_| "import lock poisoned")?;
         use sha2::{Digest, Sha256};
         let mut file = File::open(&r.image)?;
         let metadata = file.metadata()?;
@@ -663,7 +668,8 @@ impl Service {
             return Err("invalid raw image size/type".into());
         }
         let mut hasher = Sha256::new();
-        let mut bytes = vec![0; 8 * 1024 * 1024];
+        // One bounded import batch reduces repeated page reads and root CAS calls.
+        let mut bytes = vec![0; crate::indexed::WRITE_LIMIT];
         loop {
             let n = file.read(&mut bytes)?;
             if n == 0 {
@@ -700,7 +706,7 @@ impl Service {
                 file.read_exact(&mut bytes[..n])?;
                 check.update(&bytes[..n]);
                 disk.write(at, &bytes[..n])?;
-                disk.commit()?;
+                disk.commit_import()?;
                 at += n as u64;
             }
             if format!("{:x}", check.finalize()) != r.image_hash {

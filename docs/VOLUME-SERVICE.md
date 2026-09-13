@@ -482,3 +482,35 @@ It uses transient units, no VM, NBD attachment or cloud access, and removes its
 units afterward. The standard root filesystem gate remains test-volume-root.py.
 The cgroup probe passed on agent_house with a 1.9-MiB supervisor peak in its initial
 run; this tiny helper test is not a storage-worker performance measurement.
+
+
+## Full developer-image deployment qualification
+
+The Cloud deployment exposed two host-layout requirements: resolve the sandbox
+root to its canonical path before constructing the engine, and have the quota
+broker provision the engine lock inside its root-owned sandbox parent. Preserve
+the lock inode across broker restarts and charge it to the metadata quota.
+
+Initial import uses 32-MiB batches and up to 32 immutable upload workers. Imports
+are serialized per supervisor to bound aggregate resource use; ordinary background
+replication retains eight workers. The engine allows one hour for preparation,
+with lifecycle receipts remaining pollable. This is not a new exec timeout.
+Transient immutable chunk PUT failures receive at most three attempts with backoff.
+Existing-object responses still require a content check; uncertain root publication
+is never retried by that policy.
+
+On agent_house, the bounded Cloud services imported the Ubuntu developer image
+(16-GiB logical, about 2.2-GiB allocated) into one 1-vCPU/1-GiB VM. Create took
+594.28 seconds, and stop took 2.10 seconds. Guest writes survived both volume
+supervisor restart and daemon restart/adoption; stopped remote sync succeeded.
+The original 180-second local eviction wait was insufficient: the collector was
+still advancing through the image's remote objects. Eviction completed about
+9 minutes 24 seconds after stop. The same VM then cold-started in **13.47 seconds**
+and read the saved file successfully. Delete acknowledged in 0.24 seconds. The
+retired test volume's chunks were bulk-removed by the operator after verifying
+retirement; native full-image deletion throughput was not qualified. These are full-image results,
+not replacements for the earlier small-image timings.
+
+Cloud replicated placement remains disabled pending reusable base-image import
+and acceptable full-image lifecycle latency. The volume service is installed for
+qualification; this is not a public release or automatic-wake activation.

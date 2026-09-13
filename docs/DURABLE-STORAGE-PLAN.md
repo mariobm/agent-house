@@ -1,7 +1,8 @@
 # Local and durable storage
 
-Status: phases 1–3 foundation qualified; phase 4 engine integration in progress.
-Large-backlog performance and rollout qualification remain outstanding.
+Status: engine integration, storage controls and host resource accounting are
+implemented. Full-image Cloud qualification is in progress; automatic placement,
+wake and dashboard visibility are not yet enabled.
 Owner-approved contract updated 2026-09-13: local durable writes with eventual
 object-store replication. Host-disk loss may lose unreplicated changes. No Jira
 ticket was supplied; this document is the scoped work item until one exists.
@@ -459,3 +460,29 @@ This prepares activation; it does not switch the live Cloud host. After merging,
 install the bounded pool and scoped production credentials, qualify one real guest
 through create/write/stop/evict/start/delete, then activate replicated placement.
 Authenticated automatic wake and dashboard replication status remain next.
+
+
+### Live Cloud deployment qualification
+
+The pilot now has a private bucket, scoped host credentials, a bounded 8-GiB
+volume-state filesystem, two NBD slots and separate capped supervisor/worker
+services. The control-plane storage-mode migration is deployed, with the host
+still selecting local storage. Quota-broker lock provisioning, canonical engine
+paths and supervisor restart dependencies were corrected during deployment.
+
+The full Ubuntu developer-image test demonstrated guest writes, volume supervisor
+restart, daemon adoption and stopped remote sync. Initial create took 594.28 seconds;
+stop took 2.10 seconds. Unlike the earlier small-image tests, remote collection
+exceeded the initial three-minute eviction wait and finished about 9 minutes
+24 seconds after stop. Cold start then took 13.47 seconds and preserved the file.
+Retired test chunks received verified operator bulk cleanup; native full-image
+deletion throughput remains unqualified. See the volume-service guide and private
+deployment runbook for qualification evidence.
+
+Before activating automatic replicated Cloud storage, implement reusable verified
+base images so every new VM does not upload the full developer image. Measure
+full-image eviction and cold-start latency separately. The independent operator
+backup/recovery procedure also needs to include the installed volume-service state.
+Then finish automatic wake and user/admin dashboard visibility, followed by the
+invited-user end-to-end gate and release. Local-mode Cloud remains available while
+these requirements are completed.

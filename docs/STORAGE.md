@@ -99,16 +99,13 @@ successful acknowledgements. The API does not return object-store credentials.
 
 ## Cloud rollout
 
-This change does not switch AHVM Cloud to replicated storage or automatic wake.
-The CLI rejects Cloud storage overrides and storage subcommands until the Cloud
-integration is ready. Cloud will choose replicated storage automatically after
-Cloud deployment and rollout qualification, without user bucket setup.
-Dashboard storage visibility is the next website application change.
-
-### Cloud rollout
-
 Cloud placement can select replicated storage automatically after the operator
 qualifies a host. The choice is saved with each create operation, including when
-its HTTP reply is lost. Existing local VMs keep their storage mode. This rollout
-is still pending on the live pilot; users do not supply S3 credentials or a Cloud
-storage flag. Automatic wake is a separate follow-up.
+its HTTP reply is lost. Existing local VMs keep their storage mode; users do not
+supply S3 credentials or a Cloud storage flag.
+
+The pilot volume service is installed, but Cloud placement remains local. A real
+Ubuntu developer-image create took 594 seconds because the image is imported into
+each volume. Reusing a verified base image is a prerequisite for activation.
+Automatic wake, Cloud CLI storage commands and dashboard storage visibility remain
+follow-ups. Self-hosted defaults are unchanged.
