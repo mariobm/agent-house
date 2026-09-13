@@ -328,6 +328,58 @@ impl OwnedDisk {
         }
         Ok(())
     }
+    /// Permanently retire a deleted disk. Caller must stop the VM, detach NBD,
+    /// and serialize against import. Does not flush data the user chose to delete.
+    /// The local owner lock and remote CAS prevent retiring another live owner.
+    pub fn retire(raw: Arc<dyn ObjectStore>, id: &str, dir: &Path) -> Result<()> {
+        if !crate::valid_id(id) || !dir.is_absolute() {
+            return Err(Error::InvalidInput);
+        }
+        let head = raw.head(id)?;
+        if let Some(h) = &head {
+            if crate::reclaim::retired(id, h)? {
+                return Ok(());
+            }
+            let v: serde_json::Value =
+                serde_json::from_slice(&h.manifest).map_err(|_| Error::Corrupt)?;
+            if v["format"] != 2 {
+                let envelope = decode(raw.clone(), id, h)?;
+                if envelope.epoch != 0 && envelope.owner.is_none() {
+                    // Explicit release already fenced the old owner. Compete
+                    // with any new acquisition through the same conditional head.
+                    raw.publish(id, Some(&h.revision), &crate::reclaim::tombstone(id)?)
+                        .map_err(crate::publication_error)?;
+                    return Ok(());
+                }
+                let store = Store::open(raw.clone(), id, dir)?;
+                let mut active = store.active.write().map_err(|_| Error::ReopenRequired)?;
+                *active = false;
+                let h = raw.head(id)?.ok_or(Error::NotFound)?;
+                let e = decode(raw.clone(), id, &h)?;
+                if !store.matches(&e) {
+                    return Err(Error::Conflict);
+                }
+                raw.publish(id, Some(&h.revision), &crate::reclaim::tombstone(id)?)
+                    .map_err(crate::publication_error)?;
+                return Ok(());
+            }
+            // Incomplete imports have no owned worker. Validate their identity
+            // and format before retiring under the supervisor operation lock.
+            if v["ready"] == true {
+                IndexedVolume::from_head(raw.clone(), id, h.clone())?;
+            } else {
+                let size = v["size"].as_u64().ok_or(Error::Corrupt)?;
+                IndexedVolume::resume_import(raw.clone(), id, size)?;
+            }
+        }
+        raw.publish(
+            id,
+            head.as_ref().map(|h| h.revision.as_str()),
+            &crate::reclaim::tombstone(id)?,
+        )
+        .map_err(crate::publication_error)?;
+        Ok(())
+    }
     pub fn open(raw: Arc<dyn ObjectStore>, id: &str, dir: &Path) -> Result<Self> {
         if !dir.is_absolute() {
             return Err(Error::InvalidInput);

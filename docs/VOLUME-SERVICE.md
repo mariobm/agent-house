@@ -7,7 +7,7 @@ local; no object store is required for self-hosted local disks.
 
 This service replaces the Python qualification adapter. It is included in the
 Linux server bundle but **not enabled by the installer**. Quota integration,
-remote reclamation and daemon/API selection must land before cloud activation.
+live-disk reclamation and daemon/API selection must land before cloud activation.
 The Python adapter remains only for reproducing the earlier qualification gate.
 
 ## Configuration and installation
@@ -81,10 +81,11 @@ cannot grow past that reservation on an import retry. Each record also reserves
 512 MiB for journals (a 256-MiB log plus its simultaneous compaction replacement)
 and 64 MiB of clean-cache payload. These values share the worker's actual bounds.
 
-Failed imports, stopped disks and deleted-but-retained records remain charged.
-Retries do not charge twice. Until reclamation lands, repeated create/delete can
-exhaust a budget; raising it requires an explicit config change and service
-restart. Do not remove owner/journal records to evade the budget. A reservation
+Failed imports, stopped disks and deleted-but-not-yet-reclaimed records remain
+charged. Retries do not charge twice. Deleted volumes release reservations only
+after an empty remote chunk listing and successful local journal removal. Failed
+cleanup retains the reservation and retries. Raising a budget requires an explicit
+config change and service restart. Do not remove owner/journal records to evade the budget. A reservation
 write failure freezes further imports until restart reconstructs the durable
 registry. Lowering a budget preserves existing disks and blocks new admission
 while over budget; it does not kill workers or discard pending writes.
@@ -92,7 +93,7 @@ while over budget; it does not kill workers or discard pending writes.
 This is conservative admission accounting, not filesystem preallocation. Keep
 headroom for metadata, other applications and filesystem overhead. The cache
 budget is not a process RSS cap: dirty buffers, maps, in-flight requests and other
-allocations are additional. Remote historical objects remain unbounded until GC.
+allocations are additional. Historical objects of still-existing disks remain unbounded until live-disk GC.
 The per-volume journal/backlog limits already enforce write backpressure; no
 remote request or host-wide accounting lock is added to guest I/O.
 
@@ -141,9 +142,11 @@ there is no silent production migration or enabled service change.
   every byte is rewritten and verified before publication as ready. Changed
   sources fail. Ready or owned disks are never overwritten by a retry.
 - Stop/detach retain remote ownership and the private journal for restart.
-  Delete records a tombstone before cleanup. **Remote objects, tombstones and
-  owner directories are retained** until the accounting/GC phase. No scheduled
-  backups, automatic cross-host takeover or implicit mode conversion is added.
+  Delete records intent before cleanup. Background reclamation retires the
+  remote identity, removes its chunks and then its local owner/journal directory.
+  Small local records and remote retirement markers remain to prevent identity
+  reuse. No scheduled backups, automatic cross-host takeover or implicit mode
+  conversion is added.
 
 The service exclusively locks its configured device pool. Currently one slot is
 reserved per non-deleted volume, including stopped volumes; successful logical
@@ -214,3 +217,62 @@ no cloud access or VMs are needed. Production root-directory checks are unchange
 The ordinary Linux volume suite runs 69 tests, and the privileged step runs six;
 both must pass. Earlier agent_house validation ran the combined suite as root,
 which did not expose the unprivileged CI fixture mismatch.
+
+
+## Deleted-volume reclamation
+
+Deletion acknowledges local intent and detachment; it does not wait for R2.
+The supervisor picks up deleted records automatically. It permanently retires the
+remote head with a conditional write before removing any chunks. A current owned
+volume requires the private owner lock and matching remote identity; another live
+owner is refused. Incomplete or ready-but-not-enrolled imports are also covered.
+Retirement intentionally discards unsynced writes to a disk the user deleted.
+
+Format 5 is a strict permanent retirement marker. Older indexed/owned readers
+reject it, and normal create cannot overwrite its existing head. Keep this tiny
+marker indefinitely, along with the local deletion record. Never delete it as
+part of chunk cleanup. Unknown formats/fields fail closed. This collector supports
+volumes without checkpoints only; adding checkpoints requires a new compatible
+reference/format design before this path may delete checkpoint-backed data.
+
+One collector runs at a time, deleting at most 16 chunks per pass. Each S3
+request is bounded to three seconds. It lists only the exact volume chunk prefix,
+validates every returned key, and deletes individual objects. Each pass restarts
+at the first page of the shrinking listing, so interrupted cleanup cannot skip
+objects via an obsolete pagination offset. Failures retry with the supervisor's
+bounded backoff. Completion requires a subsequent empty listing. Only then are
+local journals removed/fsynced and `reclaimed` persisted, releasing reservations.
+`usage` exposes `reclamation_complete`; the retained metadata remains measurable.
+
+Successful partial passes retry after one second. Reclaimed records are checked
+hourly (and after supervisor restart), collecting any late orphan uploads from
+requests issued before the old worker died. No running volume is scanned or
+paused. This housekeeping does not create backups. Retirement markers/records
+still count toward the existing 1,024-record registry bound; compacting that
+registry and reference-aware reclamation for live disks remain follow-ups.
+
+### Reclamation qualification
+
+`reclaim_probe` creates two fresh one-chunk images in a private qualification
+prefix, refuses retirement of a live owner, reopens the transport after a partial
+cleanup pass, verifies peer reads and refuses reuse of the retired identity.
+The real R2 probe passed in **8.91 seconds** with both chunk sets empty. Two small
+retirement markers were intentionally retained. No VMs or installed services were
+changed. This measures a small cleanup probe, not bulk deletion throughput.
+
+Deterministic tests cover interrupted deletes, lost retirement replies, late
+orphan uploads, malformed markers, failed imports, discarded pending writes,
+foreign listing keys, permission/delete failures, and releasing admission budgets
+only after both remote and local cleanup. The privileged runner discovers the
+root-only tests automatically, including the new cleanup/admission regression.
+
+An isolated `ahvm-volumed` smoke on agent_house imported a 128-KiB image, accepted
+delete, automatically removed its remote chunks/local owner directory and released
+the capacity reservation in **3.52 seconds**. A repeated delete succeeded. It used
+no VM; the temporary NBD module, service, image and copied credential were removed.
+All four installed AHVM services remained active. This probe leaves one additional
+small retirement marker, for three qualification markers total.
+
+Linux validation: 79 ordinary volume tests, seven explicit root-only tests and the
+launch test pass. Clippy with warnings denied and formatting pass. macOS tests
+cover the portable protocol and S3 adapter; no new guest I/O behavior is claimed.
