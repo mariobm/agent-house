@@ -1729,3 +1729,57 @@ async fn replicated_storage_http_reports_backlog_and_requires_confirmed_sync() {
     server.join().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn lifecycle_storage_is_immutable_and_never_falls_back_to_local() {
+    let state = test_state(); // Mock backend supports local disks only.
+    let app = build_router(state.clone());
+    let body = serde_json::json!({"action":"create","sandbox_id":"mode-test",
+        "cpus":1,"memory_mb":512,"storage_mode":"replicated"});
+    let (status, receipt) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/mode-create",
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(receipt["state"], "done");
+    assert_eq!(receipt["status"], 422);
+    assert!(state.store.get_sandbox("mode-test").is_err());
+    let stored = state
+        .store
+        .lifecycle_operation("mode-create", "alice")
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stored.request).unwrap()["storage_mode"],
+        "replicated"
+    );
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/mode-create",
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for mode in [Some("local"), None] {
+        let mut changed = body.clone();
+        if let Some(mode) = mode {
+            changed["storage_mode"] = mode.into();
+        } else {
+            changed.as_object_mut().unwrap().remove("storage_mode");
+        }
+        let (status, _) = call(
+            app.clone(),
+            Some(TOKEN_A),
+            "POST",
+            "/v1/operations/mode-create",
+            Some(changed),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+}

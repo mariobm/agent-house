@@ -19,6 +19,8 @@ pub enum Request {
         cpus: u8,
         memory_mb: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        storage_mode: Option<ahvm_engine::StorageMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         network_bytes_per_sec: Option<u64>,
     },
     Start {
@@ -198,13 +200,14 @@ async fn execute(state: AppState, user: UserId, request: Request, operation_id: 
             sandbox_id,
             cpus,
             memory_mb,
+            storage_mode,
             network_bytes_per_sec,
         } => sandboxes::create_operation(
             s,
             u,
             Json(sandboxes::CreateBody {
                 name: sandbox_id,
-                storage_mode: None,
+                storage_mode,
                 cpus,
                 memory_mb,
                 desktop: false,
