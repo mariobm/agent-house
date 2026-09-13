@@ -11,12 +11,13 @@ initially ubuntu-dev. No R2 or S3 account is required. CLI sizing defaults are:
 
 | Image | vCPUs | RAM (MiB) |
 | --- | ---: | ---: |
-| Ordinary VM | 1 | 512 |
+| Ordinary VM | 1 | 2048 |
 | Ubuntu desktop | 2 | 4096 |
 | Omarchy desktop | 4 | 8192 |
 
 Explicit --cpus and --memory override these. Direct daemon API create requests default
-to 1 vCPU / 512 MiB regardless of image.
+to 1 vCPU / 2048 MiB regardless of image. The Cloud API uses the same default
+when sizing is omitted; explicit values take precedence. Existing VMs keep their sizing.
 
 The interactive shell defaults to /bin/bash. Typing "exit" ends that shell session
 and returns to your terminal; it does not delete or stop the VM. Ctrl-] detaches
