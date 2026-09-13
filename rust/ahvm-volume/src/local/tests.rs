@@ -1,12 +1,14 @@
 use super::*;
 use crate::{indexed::tests::Store, Head};
 use std::io::SeekFrom;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+static DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "ahvm-local-{}-{}",
+            "ahvm-local-{}-{}-{}",
+            DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
