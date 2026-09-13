@@ -128,6 +128,22 @@ impl Slot {
             Err(std::sync::TryLockError::WouldBlock) => (),
         }
         if !mutating {
+            // Live guest input/output performs health inspections concurrently.
+            // A brief collision with another inspection is not a disk failure.
+            // Stay within the status RPC's three-second timeout, and do not
+            // cancel or wait behind offline collection just for a read.
+            let end = Instant::now() + Duration::from_secs(2);
+            while !self.collecting.load(Ordering::SeqCst) && Instant::now() < end {
+                match self.operation.try_lock() {
+                    Ok(guard) => return Ok(guard),
+                    Err(std::sync::TryLockError::Poisoned(_)) => {
+                        return Err("volume poisoned".into())
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        thread::sleep(Duration::from_millis(1))
+                    }
+                }
+            }
             return Err("volume busy".into());
         }
         self.cancellation.fetch_add(1, Ordering::SeqCst);
