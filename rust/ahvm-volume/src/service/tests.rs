@@ -50,6 +50,7 @@ fn service(root: &Path) -> Service {
         executable: "/unused".into(),
         admission_failed: AtomicBool::new(false),
         reclamation: Mutex::new(()),
+        imports: Mutex::new(()),
         config: Config {
             client_uid: 0,
             resources: None,

@@ -375,7 +375,11 @@ impl IndexedVolume {
         }
         // Remote replication is off the guest's fsync path. Allow a full bounded
         // backlog more time than the strict synchronous experiment.
-        self.commit_inner(Instant::now() + Duration::from_secs(120), Some(mark))
+        self.commit_inner(
+            Instant::now() + Duration::from_secs(120),
+            Some(mark),
+            WORKERS,
+        )
     }
     pub fn commit(&mut self) -> Result<u64> {
         self.commit_until(Instant::now() + BUDGET)
@@ -384,9 +388,23 @@ impl IndexedVolume {
         if self.root.replication.is_some() {
             return Err(Error::InvalidInput);
         }
-        self.commit_inner(end, None)
+        self.commit_inner(end, None, WORKERS)
     }
-    fn commit_inner(&mut self, end: Instant, mark: Option<Replication>) -> Result<u64> {
+    /// Initial image import has no guest latency to protect. Use bounded extra
+    /// parallelism for its many immutable objects; ordinary replication stays at 8.
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn commit_import(&mut self) -> Result<u64> {
+        if self.root.ready || self.root.replication.is_some() {
+            return Err(Error::InvalidInput);
+        }
+        self.commit_inner(Instant::now() + Duration::from_secs(120), None, 32)
+    }
+    fn commit_inner(
+        &mut self,
+        end: Instant,
+        mark: Option<Replication>,
+        concurrency: usize,
+    ) -> Result<u64> {
         self.check(0, 0)?;
         if self.dirty.is_empty() && mark.is_none() {
             return Ok(self.root.generation);
@@ -441,13 +459,13 @@ impl IndexedVolume {
         }
         let objects: Vec<_> = uploads.into_iter().collect();
         std::thread::scope(|scope| -> Result<()> {
-            let workers: Vec<_> = (0..WORKERS.min(objects.len()))
+            let workers: Vec<_> = (0..concurrency.min(objects.len()))
                 .map(|worker| {
                     let objects = &objects;
                     let store = &self.store;
                     let id = &self.root.volume;
                     scope.spawn(move || -> Result<()> {
-                        for i in (worker..objects.len()).step_by(WORKERS) {
+                        for i in (worker..objects.len()).step_by(concurrency) {
                             deadline(end)?;
                             store.put_chunk(id, &objects[i].0, &objects[i].1)?;
                         }

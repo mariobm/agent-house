@@ -183,7 +183,15 @@ impl S3Store {
         for (name, value) in instructions.headers() {
             request = request.header(name, value);
         }
-        request.send().map_err(|_| Error::Store)
+        request.send().map_err(|error| {
+            // Never log the signed URL, headers, credentials or response body.
+            eprintln!(
+                "volume S3 transport failure: timeout={}, connect={}",
+                error.is_timeout(),
+                error.is_connect()
+            );
+            Error::Store
+        })
     }
     fn get(&self, url: &str, limit: usize) -> Result<Option<(String, Vec<u8>)>> {
         let response = self.request(Method::GET, url, None, &[])?;
@@ -354,24 +362,47 @@ impl ObjectStore for S3Store {
         if bytes.len() != CHUNK_BYTES || !valid_hash(hash) || digest(bytes) != hash {
             return Err(Error::InvalidInput);
         }
-        let response = self.request(
-            Method::PUT,
-            &self.key(volume, &format!("chunks/{hash}"))?,
-            Some(("if-none-match", "*")),
-            bytes,
-        )?;
-        match response.status() {
-            StatusCode::OK => Ok(()),
-            StatusCode::PRECONDITION_FAILED => {
-                // A matching key alone is not proof that the existing bytes are valid.
-                if self.chunk(volume, hash)? != bytes {
-                    return Err(Error::Corrupt);
+        // Immutable, content-addressed PUTs are safe to retry, including a lost
+        // successful reply. A 412 still requires reading and verifying the bytes.
+        // Never apply this policy to root CAS publication (outcome can be unknown).
+        for attempt in 0..3 {
+            let response = self.request(
+                Method::PUT,
+                &self.key(volume, &format!("chunks/{hash}"))?,
+                Some(("if-none-match", "*")),
+                bytes,
+            );
+            match response {
+                Ok(response) if response.status() == StatusCode::OK => return Ok(()),
+                Ok(response) if response.status() == StatusCode::PRECONDITION_FAILED => {
+                    match self.chunk(volume, hash) {
+                        Ok(existing) if existing == bytes => return Ok(()),
+                        Ok(_) | Err(Error::Corrupt) => return Err(Error::Corrupt),
+                        Err(Error::Store) => (),
+                        Err(error) => return Err(error),
+                    }
                 }
-                Ok(())
+                Ok(response)
+                    if response.status().is_server_error()
+                        || response.status() == StatusCode::TOO_MANY_REQUESTS
+                        || response.status() == StatusCode::REQUEST_TIMEOUT => {}
+                Ok(response) => {
+                    eprintln!(
+                        "volume S3 immutable upload HTTP {}",
+                        response.status().as_u16()
+                    );
+                    return Err(Error::Store);
+                }
+                Err(Error::Store) => (),
+                Err(error) => return Err(error),
             }
-            _ => Err(Error::Store),
+            if attempt < 2 {
+                std::thread::sleep(Duration::from_millis(1100 << attempt));
+            }
         }
+        Err(Error::Store)
     }
+
     fn publish(&self, volume: &str, expected: Option<&str>, manifest: &[u8]) -> Result<String> {
         if manifest.is_empty()
             || manifest.len() > MAX_MANIFEST_BYTES

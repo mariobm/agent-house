@@ -47,6 +47,13 @@ async fn main() {
     }
     let store_path = data_dir.join("daemon.db");
     let sandbox_dir = data_dir.join("sandboxes");
+    // Quota deployments may link this directory into a separate filesystem.
+    // The volume service binds identities to canonical sandbox paths, including
+    // admission probes before the individual sandbox directory exists.
+    std::fs::create_dir_all(&sandbox_dir).expect("create sandbox root");
+    let sandbox_dir = sandbox_dir
+        .canonicalize()
+        .expect("canonicalize sandbox root");
 
     let store = ahvm_store::Store::open(&store_path).unwrap_or_else(|e| {
         eprintln!("ahvm-daemon: open store {}: {e}", store_path.display());
