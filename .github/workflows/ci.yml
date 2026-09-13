@@ -29,6 +29,8 @@ jobs:
         run: make check
       - name: Test and CLI contracts
         run: make test
+      - name: Privileged volume admission tests
+        run: make test-volume-root
       - name: Shell syntax
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done

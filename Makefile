@@ -1,4 +1,4 @@
-.PHONY: build test check vmm forge netd volume bundle
+.PHONY: build test test-volume-root check vmm forge netd volume bundle
 
 # Portable tools and unit tests do not need the native VMM or a hypervisor.
 build:
@@ -11,6 +11,10 @@ test:
 	python3 scripts/test-host-cli.py rust/target/debug/ahvm
 	python3 scripts/test-client-bundle.py
 	python3 scripts/test-server-upgrade.py
+
+# Compiles as the caller; only the isolated root-only unit tests run via sudo.
+test-volume-root:
+	python3 scripts/test-volume-root.py
 
 check:
 	cargo fmt --manifest-path rust/Cargo.toml --all --check
