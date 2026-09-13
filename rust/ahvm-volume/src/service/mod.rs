@@ -60,6 +60,9 @@ struct Record {
     /// Reserved before import; never inferred from mutable source on restart.
     logical_bytes: u64,
     device: PathBuf,
+    /// Cold records retain this historical path but do not own that device.
+    #[serde(default)]
+    evicted: bool,
     prepared: bool,
     deleted: bool,
     #[serde(default)]
@@ -265,7 +268,7 @@ impl Service {
             }
             let r: Record = read(&item.path().join("record.json"))?;
             if !r.reclaimed {
-                usage.add(r.logical_bytes)?;
+                usage.add_residency(r.logical_bytes, !r.evicted)?;
             }
             if (r.reclaimed
                 && (!r.deleted
@@ -273,6 +276,12 @@ impl Service {
                     || r.worker.is_some()
                     || r.client.is_some()
                     || r.vm.is_some()))
+                || (r.evicted
+                    && (!r.prepared
+                        || r.desired
+                        || r.worker.is_some()
+                        || r.client.is_some()
+                        || r.vm.is_some()))
                 || r.gc_after.as_deref().is_some_and(|h| !valid_id(h))
                 || r.id != id
                 || !config.devices.contains(&r.device)
@@ -280,7 +289,7 @@ impl Service {
             {
                 return Err("invalid persisted volume binding".into());
             }
-            if (!r.deleted || r.worker.is_some() || r.client.is_some())
+            if ((!r.deleted && !r.evicted) || r.worker.is_some() || r.client.is_some())
                 && !assigned.insert(r.device.clone())
             {
                 return Err("duplicate device assignment".into());
@@ -383,9 +392,9 @@ impl Service {
                     .join("record.json"),
             )?;
             if !r.reclaimed {
-                usage.add(r.logical_bytes)?;
+                usage.add_residency(r.logical_bytes, !r.evicted)?;
             }
-            if !r.deleted || r.worker.is_some() || r.client.is_some() {
+            if (!r.deleted && !r.evicted) || r.worker.is_some() || r.client.is_some() {
                 used.insert(r.device);
             }
         }
@@ -407,6 +416,7 @@ impl Service {
             image_hash: String::new(),
             logical_bytes,
             device,
+            evicted: false,
             prepared: false,
             deleted: false,
             reclaimed: false,
@@ -438,6 +448,103 @@ impl Service {
         }
         Ok(e)
     }
+    fn reserve_residency(&self, r: &mut Record) -> Result<()> {
+        if !r.evicted {
+            return Ok(());
+        }
+        let map = self.entries.lock().map_err(|_| "registry poisoned")?;
+        if self.admission_failed.load(Ordering::SeqCst) {
+            return Err("reservation persistence failed; restart required".into());
+        }
+        let mut usage = Usage::default();
+        let mut used = std::collections::BTreeSet::new();
+        for id in map.keys() {
+            let other: Record = read(
+                &self
+                    .config
+                    .root
+                    .join("volumes")
+                    .join(id)
+                    .join("record.json"),
+            )?;
+            if !other.reclaimed && other.id != r.id {
+                usage.add_residency(other.logical_bytes, !other.evicted)?;
+            }
+            if (!other.deleted && !other.evicted)
+                || other.worker.is_some()
+                || other.client.is_some()
+            {
+                used.insert(other.device);
+            }
+        }
+        self.config.limits.admit(&usage, r.logical_bytes)?;
+        let device = self
+            .config
+            .devices
+            .iter()
+            .find(|d| !used.contains(*d))
+            .ok_or("volume device slots exhausted")?
+            .clone();
+        if nbd_pid(&device)?.is_some() {
+            return Err("device in use".into());
+        }
+        let mut next = r.clone();
+        next.device = device;
+        next.evicted = false;
+        // A previous detached record may be resumed by sync without attach.
+        next.gc_after = None;
+        if let Err(error) = self.persist(&next) {
+            self.admission_failed.store(true, Ordering::SeqCst);
+            return Err(error);
+        }
+        *r = next;
+        Ok(())
+    }
+    fn evict(&self, r: &mut Record) -> Result<()> {
+        if r.evicted {
+            return Ok(());
+        }
+        if r.deleted
+            || !r.prepared
+            || !r.gc_eligible
+            || r.desired
+            || r.worker.is_some()
+            || r.client.is_some()
+            || self.vm(r)?.is_some()
+            || nbd_pid(&r.device)?.is_some()
+        {
+            return Err("volume is not eligible for local eviction".into());
+        }
+        unused(&r.device)?;
+        let raw: Arc<dyn ObjectStore> = Arc::new(S3Store::with_timeout(
+            S3Config::from_file(&self.config.credentials)?,
+            Duration::from_secs(3),
+        )?);
+        self.evict_with_store(r, raw)
+    }
+    fn evict_with_store(&self, r: &mut Record, raw: Arc<dyn ObjectStore>) -> Result<()> {
+        if r.deleted
+            || !r.prepared
+            || !r.gc_eligible
+            || r.desired
+            || r.worker.is_some()
+            || r.client.is_some()
+            || r.vm.is_some()
+        {
+            return Err("volume is not detached for eviction".into());
+        }
+        OwnedDisk::evict_local(raw, &r.id, &self.dir(r).join("owner"))?;
+        // Publish the released device/budgets only after durable local removal.
+        let _map = self.entries.lock().map_err(|_| "registry poisoned")?;
+        let mut next = r.clone();
+        next.evicted = true;
+        if let Err(error) = self.persist(&next) {
+            self.admission_failed.store(true, Ordering::SeqCst);
+            return Err(error);
+        }
+        *r = next;
+        Ok(())
+    }
     fn usage(&self) -> Result<Usage> {
         let map = self.entries.lock().map_err(|_| "registry poisoned")?;
         let mut usage = Usage::default();
@@ -451,7 +558,7 @@ impl Service {
                     .join("record.json"),
             )?;
             if !r.reclaimed {
-                usage.add(r.logical_bytes)?;
+                usage.add_residency(r.logical_bytes, !r.evicted)?;
             }
         }
         Ok(usage)
@@ -559,6 +666,9 @@ impl Service {
         Ok(serde_json::from_slice(&data).map_err(|_| "invalid worker reply")?)
     }
     fn inspect(&self, r: &Record) -> Result<crate::local::Status> {
+        if r.evicted {
+            return Err("local disk evicted".into());
+        }
         if nbd_pid(&r.device)? != r.client.as_ref().map(|p| p.pid) || r.client.is_none() {
             return Err("attachment unavailable".into());
         }
@@ -582,6 +692,9 @@ impl Service {
         Ok(())
     }
     fn vm(&self, r: &Record) -> Result<Option<Process>> {
+        if r.evicted {
+            return Ok(None);
+        }
         if let Some(vm) = &r.vm {
             if vm.alive()? {
                 self.check_vm_uid(vm)?;
@@ -612,6 +725,9 @@ impl Service {
         Ok(Some(p))
     }
     fn detach(&self, r: &mut Record) -> Result<()> {
+        if r.evicted {
+            return Ok(());
+        }
         if self.vm(r)?.is_some() {
             return Err("VM still running".into());
         }
@@ -684,6 +800,9 @@ impl Service {
         result
     }
     fn attach(&self, r: &mut Record) -> Result<crate::local::Status> {
+        if r.evicted {
+            return Err("local resources are not reserved".into());
+        }
         if let Ok(status) = self.inspect(r) {
             return Ok(status);
         }
@@ -780,12 +899,16 @@ impl Service {
         }
         if q.operation == "usage" {
             let mut usage = accounting::volume_usage(&self.dir(r), r.logical_bytes)?;
+            if r.evicted {
+                usage.reservation.journal_reserved_bytes = 0;
+                usage.reservation.cache_reserved_bytes = 0;
+            }
             if r.reclaimed {
                 usage.reservation = Usage::default();
             }
             return Ok(serde_json::json!({
                 "ok": true, "volume_id": r.id,
-                "usage": usage, "reclamation_complete": r.reclaimed,
+                "usage": usage, "reclamation_complete": r.reclaimed, "local_evicted": r.evicted,
                 "last_collection_unix": r.gc_last_completed,
                 "limits": self.config.limits,
                 "host_reservations": self.usage()?,
@@ -818,6 +941,7 @@ impl Service {
                     if self.vm(r)?.is_some() {
                         return Err("VM already bound".into());
                     }
+                    self.reserve_residency(r)?;
                     r.desired = true;
                     r.gc_eligible = false;
                     r.gc_after = None;
@@ -836,6 +960,7 @@ impl Service {
                     if !r.prepared {
                         return Err("not prepared".into());
                     }
+                    self.reserve_residency(r)?;
                     self.attach(r)?;
                     status = Some(self.control(r, "sync")?);
                     if !r.desired {
@@ -933,8 +1058,11 @@ impl Service {
             }
             if r.deleted {
                 self.reclaim(r)?;
-            } else if r.prepared && r.gc_eligible {
-                self.collect_offline(e, cancel)?;
+            } else if r.prepared && r.gc_eligible && !r.evicted {
+                self.collect_offline(e, &cancel)?;
+                if e.record.gc_after.is_none() && !cancel() {
+                    self.evict(&mut e.record)?;
+                }
             }
             return Ok(());
         }
@@ -1007,11 +1135,12 @@ pub fn run() -> Result<()> {
             let Ok(mut e) = entry.try_lock() else {
                 continue;
             };
-            if (!e.record.deleted
-                && !e.record.gc_eligible
-                && !e.record.desired
-                && e.record.worker.is_none()
-                && e.record.client.is_none())
+            if (!e.record.deleted && e.record.evicted)
+                || (!e.record.deleted
+                    && !e.record.gc_eligible
+                    && !e.record.desired
+                    && e.record.worker.is_none()
+                    && e.record.client.is_none())
                 || Instant::now() < e.retry_at
             {
                 continue;

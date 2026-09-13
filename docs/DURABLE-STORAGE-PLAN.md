@@ -291,3 +291,18 @@ expiry are not implemented. Next is idle local eviction after confirmed remote
 sync, keeping the disk remotely persistent, followed by tenant accounting and
 normal API/CLI rollout. Checkpoint support must extend the retained-root format and
 collector together before activation; a TTL must never expire the current disk.
+
+
+### Phase 5 continuation: idle local eviction
+
+Stopped replicated disks now finish offline collection and remote sync, then evict
+the local journal and release journal/cache/device reservations. The current R2
+disk and a small host owner identity remain. Attach atomically readmits local
+resources and lazily fetches data, without reimporting the source image. Interrupted
+removal is recoverable; failed sync keeps pending data and reservations. See
+[idle local eviction](VOLUME-SERVICE.md#idle-local-eviction).
+
+Next: tenant accounting and normal daemon/API/CLI rollout, with cloud selecting
+replicated storage automatically and self-hosted local storage unchanged. Named
+checkpoint roots/expiration remain a separate format+collector extension. Current
+remote logical capacity accounting remains conservative, not measured R2 usage.
