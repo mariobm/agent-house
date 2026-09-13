@@ -687,7 +687,7 @@ fn unknown_retirement_cannot_claim_a_foreign_owned_disk() {
 }
 
 #[test]
-fn admitted_size_refuses_growth_before_registration_and_on_retry() {
+fn admitted_size_refuses_growth_before_registration() {
     let dir = temp();
     let s = budget_service(&dir);
     let mut q = prepare_request(&s, 'a');
@@ -700,6 +700,21 @@ fn admitted_size_refuses_growth_before_registration_and_on_retry() {
         .contains("sizing mismatch"));
     assert!(s.entries.lock().unwrap().is_empty());
     assert_eq!(fs::read_dir(dir.join("volumes")).unwrap().count(), 0);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
+fn admitted_size_refuses_changed_reservation_on_retry() {
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run make test-volume-root"
+    );
+    let dir = temp();
+    let s = budget_service(&dir);
+    let mut q = prepare_request(&s, 'a');
+    // Successful registration persists a root-owned service directory. Keep
+    // that real permission check and exercise it in the privileged CI gate.
     q.logical_bytes = Some(crate::CHUNK_BYTES as u64);
     s.entry(&q).unwrap();
     q.logical_bytes = Some(crate::CHUNK_BYTES as u64 * 2);
