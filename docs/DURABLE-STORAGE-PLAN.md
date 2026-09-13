@@ -507,3 +507,14 @@ clean unassigned VMs configurable and bounded, and account for their host resour
 Allocate tenant ownership atomically when an image/resource profile matches.
 Never recycle a previously assigned VM's tenant state into the pool. This remains
 a later optimization after shared-base qualification and automatic Cloud wake.
+
+### Portable recovery export
+
+The root-only `export-remote` command materializes one published disk into a
+standalone raw image with a SHA-256 manifest. It verifies base/private chunks,
+refuses concurrent head changes and never changes ownership. Independent restore
+is tested after removal of all source objects. See [export guide](REPLICATED-EXPORT.md).
+This supplies the disk portion of intentional recovery; the Cloud backup guard
+remains until metadata capture and real-guest restore are integrated. Automatic
+wake and dashboards follow; further boot-performance and desktop qualification
+are deferred as requested.
