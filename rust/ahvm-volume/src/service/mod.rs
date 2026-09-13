@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -64,6 +64,12 @@ struct Record {
     deleted: bool,
     #[serde(default)]
     reclaimed: bool,
+    #[serde(default)]
+    gc_after: Option<String>,
+    #[serde(default)]
+    gc_eligible: bool,
+    #[serde(default)]
+    gc_last_completed: Option<u64>,
     desired: bool,
     worker: Option<Process>,
     client: Option<Process>,
@@ -73,7 +79,68 @@ struct Record {
 struct Entry {
     record: Record,
     failures: u32,
+    mark: Option<crate::owned::OfflineMark>,
     retry_at: Instant,
+}
+#[derive(Debug)]
+struct Slot {
+    operation: Mutex<Entry>,
+    cancellation: AtomicU64,
+    collecting: AtomicBool,
+}
+impl Slot {
+    fn new(entry: Entry) -> Self {
+        Self {
+            operation: Mutex::new(entry),
+            cancellation: AtomicU64::new(0),
+            collecting: AtomicBool::new(false),
+        }
+    }
+}
+struct CollectionGuard<'a>(&'a AtomicBool);
+impl Drop for CollectionGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+impl Slot {
+    fn collection(&self) -> CollectionGuard<'_> {
+        self.collecting.store(true, Ordering::SeqCst);
+        CollectionGuard(&self.collecting)
+    }
+    fn foreground(&self, mutating: bool) -> Result<std::sync::MutexGuard<'_, Entry>> {
+        match self.operation.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err("volume poisoned".into()),
+            Err(std::sync::TryLockError::WouldBlock) => (),
+        }
+        if !mutating {
+            return Err("volume busy".into());
+        }
+        self.cancellation.fetch_add(1, Ordering::SeqCst);
+        if !self.collecting.load(Ordering::SeqCst) {
+            return Err("volume busy".into());
+        }
+        // A collector yields between bounded store requests. Briefly wait so a
+        // normal start does not fail just because maintenance was in progress.
+        let end = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < end {
+            match self.operation.try_lock() {
+                Ok(guard) => return Ok(guard),
+                Err(std::sync::TryLockError::Poisoned(_)) => return Err("volume poisoned".into()),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    thread::sleep(Duration::from_millis(10))
+                }
+            }
+        }
+        Err("volume busy after collection cancellation".into())
+    }
+}
+impl std::ops::Deref for Slot {
+    type Target = Mutex<Entry>;
+    fn deref(&self) -> &Self::Target {
+        &self.operation
+    }
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -91,7 +158,7 @@ struct Service {
     admission_failed: AtomicBool,
     reclamation: Mutex<()>,
     config: Config,
-    entries: Mutex<BTreeMap<String, Arc<Mutex<Entry>>>>,
+    entries: Mutex<BTreeMap<String, Arc<Slot>>>,
     _locks: Vec<Lock>,
 }
 fn valid_id(id: &str) -> bool {
@@ -206,6 +273,7 @@ impl Service {
                     || r.worker.is_some()
                     || r.client.is_some()
                     || r.vm.is_some()))
+                || r.gc_after.as_deref().is_some_and(|h| !valid_id(h))
                 || r.id != id
                 || !config.devices.contains(&r.device)
                 || r.sandbox.parent() != Some(config.engine_root.as_path())
@@ -219,9 +287,10 @@ impl Service {
             }
             entries.insert(
                 id,
-                Arc::new(Mutex::new(Entry {
+                Arc::new(Slot::new(Entry {
                     record: r,
                     failures: 0,
+                    mark: None,
                     retry_at: Instant::now(),
                 })),
             );
@@ -268,7 +337,7 @@ impl Service {
         }
         Ok(())
     }
-    fn entry(&self, q: &Request) -> Result<Arc<Mutex<Entry>>> {
+    fn entry(&self, q: &Request) -> Result<Arc<Slot>> {
         if q.version != 1 || !valid_id(&q.volume_id) {
             return Err("invalid request".into());
         }
@@ -341,15 +410,19 @@ impl Service {
             prepared: false,
             deleted: false,
             reclaimed: false,
+            gc_after: None,
+            gc_eligible: false,
+            gc_last_completed: None,
             desired: false,
             worker: None,
             client: None,
             vm: None,
         };
         private_dir(&self.dir(&r))?;
-        let e = Arc::new(Mutex::new(Entry {
+        let e = Arc::new(Slot::new(Entry {
             record: r.clone(),
             failures: 0,
+            mark: None,
             retry_at: Instant::now(),
         }));
         map.insert(q.volume_id.clone(), e.clone());
@@ -691,7 +764,13 @@ impl Service {
     }
     fn request(&self, q: Request) -> Result<serde_json::Value> {
         let entry = self.entry(&q)?;
-        let mut e = entry.try_lock().map_err(|_| "volume busy")?;
+        let mut e = entry.foreground(!matches!(
+            q.operation.as_str(),
+            "usage" | "status" | "inspect"
+        ))?;
+        if !matches!(q.operation.as_str(), "usage" | "status" | "inspect") {
+            e.mark = None;
+        }
         let r = &mut e.record;
         if q.sandbox_dir != r.sandbox {
             return Err("sandbox binding mismatch".into());
@@ -707,6 +786,7 @@ impl Service {
             return Ok(serde_json::json!({
                 "ok": true, "volume_id": r.id,
                 "usage": usage, "reclamation_complete": r.reclaimed,
+                "last_collection_unix": r.gc_last_completed,
                 "limits": self.config.limits,
                 "host_reservations": self.usage()?,
             }));
@@ -739,6 +819,8 @@ impl Service {
                         return Err("VM already bound".into());
                     }
                     r.desired = true;
+                    r.gc_eligible = false;
+                    r.gc_after = None;
                     self.persist(r)?;
                     status = Some(self.attach(r)?);
                 }
@@ -767,6 +849,8 @@ impl Service {
                     r.desired = false;
                     self.persist(r)?;
                     self.detach(r)?;
+                    r.gc_eligible = true;
+                    self.persist(r)?;
                 }
                 _ => return Err("unknown operation".into()),
             }
@@ -803,7 +887,45 @@ impl Service {
         }
         Ok(())
     }
-    fn recover(&self, e: &mut Entry) -> Result<()> {
+    fn collect_offline(&self, e: &mut Entry, cancel: impl Fn() -> bool) -> Result<()> {
+        let r = &mut e.record;
+        if r.deleted
+            || !r.gc_eligible
+            || !r.prepared
+            || r.desired
+            || r.worker.is_some()
+            || r.client.is_some()
+            || self.vm(r)?.is_some()
+            || nbd_pid(&r.device)?.is_some()
+        {
+            return Err("offline collection requires a stopped detached disk".into());
+        }
+        unused(&r.device)?;
+        let _collector = self.reclamation.try_lock().map_err(|_| "collector busy")?;
+        if cancel() {
+            return Err("collection yielded to foreground operation".into());
+        }
+        let raw: Arc<dyn ObjectStore> = Arc::new(S3Store::with_timeout(
+            S3Config::from_file(&self.config.credentials)?,
+            Duration::from_secs(3),
+        )?);
+        let owner = self.dir(r).join("owner");
+        private_dir(&owner)?;
+        let disk = OwnedDisk::open(raw, &r.id, &owner)?;
+        let progress =
+            disk.collect_offline_cached(r.gc_after.as_deref(), 128, cancel, &mut e.mark)?;
+        if progress.complete {
+            e.mark = None;
+            r.gc_last_completed = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs(),
+            );
+        }
+        r.gc_after = progress.next_after;
+        self.persist(r)
+    }
+    fn recover(&self, e: &mut Entry, cancel: impl Fn() -> bool) -> Result<()> {
         let r = &mut e.record;
         if r.deleted || !r.desired {
             if r.worker.is_some() || r.client.is_some() {
@@ -811,6 +933,8 @@ impl Service {
             }
             if r.deleted {
                 self.reclaim(r)?;
+            } else if r.prepared && r.gc_eligible {
+                self.collect_offline(e, cancel)?;
             }
             return Ok(());
         }
@@ -877,10 +1001,14 @@ pub fn run() -> Result<()> {
             .cloned()
             .collect();
         for entry in entries {
+            // Sample before taking the operation lock, so a failed foreground
+            // admission cannot be lost between job admission and cancellation.
+            let ticket = entry.cancellation.load(Ordering::SeqCst);
             let Ok(mut e) = entry.try_lock() else {
                 continue;
             };
             if (!e.record.deleted
+                && !e.record.gc_eligible
                 && !e.record.desired
                 && e.record.worker.is_none()
                 && e.record.client.is_none())
@@ -903,10 +1031,18 @@ pub fn run() -> Result<()> {
                     e.retry_at = Instant::now() + Duration::from_secs(2);
                     return;
                 }
+                let _collection = if !e.record.deleted && e.record.gc_eligible && !e.record.desired
+                {
+                    Some(entry.collection())
+                } else {
+                    None
+                };
                 let result = if healthy {
                     Ok(())
                 } else {
-                    service.recover(&mut e)
+                    service.recover(&mut e, || {
+                        entry.cancellation.load(Ordering::SeqCst) != ticket
+                    })
                 };
                 match result {
                     Ok(()) => {
@@ -916,6 +1052,12 @@ pub fn run() -> Result<()> {
                                 3600
                             } else if e.record.deleted {
                                 1
+                            } else if !e.record.desired && e.record.prepared {
+                                if e.record.gc_after.is_some() {
+                                    1
+                                } else {
+                                    3600
+                                }
                             } else {
                                 2
                             });

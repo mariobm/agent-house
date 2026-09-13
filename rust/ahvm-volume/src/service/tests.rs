@@ -35,6 +35,9 @@ fn record(id: &str, root: &Path) -> Record {
         prepared: false,
         deleted: false,
         reclaimed: false,
+        gc_after: None,
+        gc_eligible: false,
+        gc_last_completed: None,
         desired: false,
         worker: None,
         client: None,
@@ -75,9 +78,10 @@ fn busy_volume_does_not_block_other_volume_lookup() {
     for id in [&a, &b] {
         s.entries.lock().unwrap().insert(
             id.clone(),
-            Arc::new(Mutex::new(Entry {
+            Arc::new(Slot::new(Entry {
                 record: record(id, &dir),
                 failures: 0,
+                mark: None,
                 retry_at: Instant::now(),
             })),
         );
@@ -102,9 +106,10 @@ fn copied_sandbox_path_cannot_reuse_attachment() {
     let id = "a".repeat(64);
     s.entries.lock().unwrap().insert(
         id.clone(),
-        Arc::new(Mutex::new(Entry {
+        Arc::new(Slot::new(Entry {
             record: record(&id, &dir),
             failures: 0,
+            mark: None,
             retry_at: Instant::now(),
         })),
     );
@@ -270,9 +275,10 @@ fn failed_import_and_tombstone_keep_durable_reservation() {
     let persisted: Record = read(&s.dir(&record).join("record.json")).unwrap();
     s.entries.lock().unwrap().insert(
         record.id.clone(),
-        Arc::new(Mutex::new(Entry {
+        Arc::new(Slot::new(Entry {
             record: persisted,
             failures: 0,
+            mark: None,
             retry_at: Instant::now(),
         })),
     );
@@ -461,5 +467,62 @@ fn reclamation_releases_budget_only_after_remote_and_local_cleanup() {
     s.reclaim_with_store(&mut e.record, raw).unwrap();
     assert!(!owner.exists());
     drop(e);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn busy_foreground_admission_cancels_an_already_admitted_collector() {
+    let dir = temp();
+    let s = service(&dir);
+    let id = "a".repeat(64);
+    let slot = Arc::new(Slot::new(Entry {
+        record: record(&id, &dir),
+        failures: 0,
+        mark: None,
+        retry_at: Instant::now(),
+    }));
+    s.entries.lock().unwrap().insert(id.clone(), slot.clone());
+    let ticket = slot.cancellation.load(Ordering::SeqCst);
+    let held = slot.lock().unwrap();
+    let err = s
+        .request(Request {
+            version: 1,
+            operation: "attach".into(),
+            volume_id: id,
+            sandbox_dir: dir.join("sandbox"),
+            image: None,
+        })
+        .unwrap_err();
+    assert_eq!(err.to_string(), "volume busy");
+    assert_ne!(slot.cancellation.load(Ordering::SeqCst), ticket);
+    drop(held);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn foreground_waits_for_offline_collector_to_yield() {
+    let dir = temp();
+    let slot = Arc::new(Slot::new(Entry {
+        record: record(&"a".repeat(64), &dir),
+        failures: 0,
+        mark: None,
+        retry_at: Instant::now(),
+    }));
+    let ticket = slot.cancellation.load(Ordering::SeqCst);
+    let held = slot.lock().unwrap();
+    let collection = slot.collection();
+    // Read-only polling must not continually cancel background maintenance.
+    assert!(slot.foreground(false).is_err());
+    assert_eq!(slot.cancellation.load(Ordering::SeqCst), ticket);
+    let waiter = slot.clone();
+    let thread = thread::spawn(move || drop(waiter.foreground(true).unwrap()));
+    let end = Instant::now() + Duration::from_secs(2);
+    while slot.cancellation.load(Ordering::SeqCst) == ticket {
+        assert!(Instant::now() < end);
+        thread::yield_now();
+    }
+    drop(collection);
+    drop(held);
+    thread.join().unwrap();
     fs::remove_dir_all(dir).unwrap();
 }

@@ -64,7 +64,7 @@ fn deadline(end: Instant) -> Result<()> {
         Ok(())
     }
 }
-fn decode(s: &str) -> Result<[u8; 32]> {
+pub(crate) fn decode(s: &str) -> Result<[u8; 32]> {
     if !valid_hash(s) {
         return Err(Error::Corrupt);
     }
@@ -224,6 +224,31 @@ impl IndexedVolume {
             bytes[8..16].copy_from_slice(&index.to_be_bytes());
         }
         Ok(bytes)
+    }
+    /// Full validated reference graph for offline collection. Includes metadata
+    /// pages as well as data hashes; never fetches all data blocks. A missing or
+    /// corrupt page aborts marking before any deletion can begin.
+    pub(crate) fn references(&self, cancel: &impl Fn() -> bool) -> Result<Vec<[u8; 32]>> {
+        let mut live = Vec::with_capacity(self.root.pages.len() * (SLOTS as usize + 1));
+        for (index, hash) in &self.root.pages {
+            if cancel() {
+                return Err(Error::Deadline);
+            }
+            let page = self.page(*index)?;
+            live.push(decode(hash)?);
+            for hash in page[16..16 + SLOTS as usize * 32].as_chunks::<32>().0 {
+                let hash = *hash;
+                if hash != [0; 32] {
+                    live.push(hash);
+                }
+            }
+        }
+        if cancel() {
+            return Err(Error::Deadline);
+        }
+        live.sort_unstable();
+        live.dedup();
+        Ok(live)
     }
     fn load(&self, index: u64, prefetch: bool) -> Result<Vec<u8>> {
         if let Some(b) = self.dirty.get(&index) {

@@ -7,7 +7,7 @@ local; no object store is required for self-hosted local disks.
 
 This service replaces the Python qualification adapter. It is included in the
 Linux server bundle but **not enabled by the installer**. Quota integration,
-live-disk reclamation and daemon/API selection must land before cloud activation.
+checkpoint-aware reclamation and daemon/API selection must land before cloud activation.
 The Python adapter remains only for reproducing the earlier qualification gate.
 
 ## Configuration and installation
@@ -93,7 +93,7 @@ while over budget; it does not kill workers or discard pending writes.
 This is conservative admission accounting, not filesystem preallocation. Keep
 headroom for metadata, other applications and filesystem overhead. The cache
 budget is not a process RSS cap: dirty buffers, maps, in-flight requests and other
-allocations are additional. Historical objects of still-existing disks remain unbounded until live-disk GC.
+allocations are additional. Obsolete objects on continuously running disks remain until a stopped collection window.
 The per-volume journal/backlog limits already enforce write backpressure; no
 remote request or host-wide accounting lock is added to guest I/O.
 
@@ -276,3 +276,74 @@ small retirement marker, for three qualification markers total.
 Linux validation: 79 ordinary volume tests, seven explicit root-only tests and the
 launch test pass. Clippy with warnings denied and formatting pass. macOS tests
 cover the portable protocol and S3 adapter; no new guest I/O behavior is claimed.
+
+
+## Obsolete blocks on stopped disks
+
+The supervisor now collects obsolete blocks from **existing, stopped disks**.
+It does not pause running VMs for collection. A volume becomes eligible only after
+an explicit successful detach; prepare alone never schedules collection, so
+initial creation is not delayed by housekeeping. Attach disables eligibility and
+resets the scan cursor. Existing service records default to ineligible until their
+next explicit detach.
+
+Each pass proves the VM is dead, NBD detached and the device unused, then opens
+the same private owner/journal under the exclusive owner lock. Pending journal
+writes refuse collection. The collector never treats unreplicated data as
+throwaway cache and does not release remote ownership between passes. The pass
+holds the sandbox operation lock and excludes guest I/O and publication through
+the owned-disk guard. It marks the full validated current root, metadata pages and
+data references before deleting any unreferenced object. Missing/corrupt pages,
+changed ownership or unknown checkpoint metadata fail closed.
+
+Passes scan at most 128 ordered keys using an exclusive `start-after` key. The
+last successfully scanned key is persisted; interrupted work rechecks references
+before retrying. An empty page completes the cycle. A marked reference set is
+cached only for the exact volume/head revision, avoiding repeated metadata GETs
+across batches. A publication invalidates it. The set uses a sorted vector of
+32-byte hashes, at most 1,049,600 entries (about 32.03 MiB) for the maximum 64-GiB
+disk; it is dropped on a mutating foreground operation or cycle completion. It is
+disposable and never serialized as authority to delete data. Partial cycles retry
+after one second; completed cycles are checked again after one hour or restart.
+The private `usage` reply includes `last_collection_unix` for the last completed
+cycle. A still-existing disk retains its capacity/journal reservation.
+
+Foreground mutations cancel an admitted collector between bounded store requests.
+They wait up to ten seconds for it to yield before returning a retryable busy
+error. Competing ordinary lifecycle operations still fail fast. Read-only polling
+does not continually cancel collection. One collector runs at a time across both
+deleted and stopped disks. No per-I/O accounting work is added to running guests.
+A large first metadata walk and per-object deletes can still be slow; bulk delete
+and metadata throughput optimization remain separate work.
+
+This is not online collection for VMs that never stop, idle eviction, checkpoint
+creation or checkpoint expiry. Checkpoint metadata requires a format/reference
+extension that this strict collector understands before it can be enabled. Age
+alone never authorizes deletion. Here, exclusive offline ownership and an empty
+backlog provide the safety boundary instead of a wall-clock grace period.
+
+### Stopped-disk qualification
+
+On agent_house, `live_reclaim_probe` overwrote a one-chunk disk, rejected collection
+while writes were pending, resumed collection after reopening its owner, and
+reduced **four immutable objects to two**. Current and peer reads remained correct.
+The small R2 collection probe took **3.74 seconds**. Its test disks were subsequently
+deleted through the retired-volume collector; two tiny retirement markers remain.
+
+An isolated supervisor probe imported a 128-KiB image, verified no collection raced
+prepare, explicitly detached it, and observed automatic collection in **3.83
+seconds**, with the current disk and reservation retained. Deletion then cleaned
+its data and released the reservation. No VM was created. Temporary service/NBD
+module/files/copied credentials were removed, and installed services were unchanged.
+This probe retains one additional tiny retirement marker.
+
+Tests cover stale reference-cache invalidation, missing metadata, unknown
+checkpoint fields, pending journal refusal, zeroed disks, failed-delete/restart
+recovery, cursor advancement past retained objects, peer isolation, cancellation
+and foreground waiting. These timings qualify small scenarios, not bulk storage
+throughput or a VM boot-time promise.
+
+Validation for this continuation: Linux has 88 ordinary volume tests, seven
+explicit root-only tests and the launch test passing. Formatting and clippy with
+warnings denied pass. CI also runs the ordinary suite unprivileged, followed by
+the privileged service tests, so root-only coverage is not silently skipped.
