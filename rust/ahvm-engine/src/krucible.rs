@@ -139,6 +139,8 @@ struct SandboxRecord {
     deleting: bool,
     #[serde(default)]
     volume_prepared: bool,
+    #[serde(default)]
+    admitted_bytes: Option<u64>,
 }
 
 /// A supervised worker handle: owned (we spawned it, we reap it) or
@@ -1183,6 +1185,7 @@ impl KrucibleBackend {
                     backing: self.cfg.base_image.clone(),
                     deleting: false,
                     volume_prepared: false,
+                    admitted_bytes: None,
                 };
                 if let Err(e) = self.persist_record(&dir, &record) {
                     let mut w = worker;
@@ -1301,6 +1304,19 @@ impl Backend for KrucibleBackend {
             }
         };
         let dir = self.cfg.data_dir.join(sandbox);
+        // A crash before the record rename can leave only an empty directory
+        // or its temporary record. Never remove arbitrary untracked contents.
+        if !existing && dir.try_exists()? {
+            if !std::fs::symlink_metadata(&dir)?.file_type().is_dir() {
+                return Err(Error::Conflict("untracked sandbox path".into()));
+            }
+            for entry in std::fs::read_dir(&dir)? {
+                let entry = entry?;
+                if entry.file_name() != "sandbox.json.tmp" || !entry.file_type()?.is_file() {
+                    return Err(Error::Conflict("untracked sandbox contents".into()));
+                }
+            }
+        }
         let complete = self.replica()?.retire(volume, &dir, bytes)?;
         if existing {
             // A prior destroy may have failed before service registration. The
@@ -1311,10 +1327,25 @@ impl Backend for KrucibleBackend {
             self.remove_storage(&dir)?;
             std::fs::File::open(&self.cfg.data_dir)?.sync_all()?;
             self.lock().sandboxes.remove(sandbox);
+        } else if dir.try_exists()? {
+            match std::fs::remove_file(dir.join("sandbox.json.tmp")) {
+                Ok(()) => (),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                Err(e) => return Err(e.into()),
+            }
+            std::fs::remove_dir(&dir)?;
+            std::fs::File::open(&self.cfg.data_dir)?.sync_all()?;
         }
         Ok(complete)
     }
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo> {
+        self.create_with_storage_admission(spec, &mut |_, _| Ok(()))
+    }
+    fn create_with_storage_admission(
+        &self,
+        spec: &SandboxSpec,
+        admit: &mut dyn FnMut(&str, u64) -> Result<()>,
+    ) -> Result<SandboxInfo> {
         if spec.network_bytes_per_sec.is_some_and(|v| {
             self.networks.is_none() || (v != 0 && !(65536..=1_000_000_000).contains(&v))
         }) {
@@ -1336,7 +1367,7 @@ impl Backend for KrucibleBackend {
         if spec.storage_mode.unwrap_or(self.cfg.default_storage_mode)
             == crate::StorageMode::Replicated
         {
-            return self.create_replicated(spec);
+            return self.create_replicated(spec, admit);
         }
         let mut inner = self.lock();
         if inner.sandboxes.contains_key(&spec.name) {
@@ -1398,6 +1429,7 @@ impl Backend for KrucibleBackend {
                     backing,
                     deleting: false,
                     volume_prepared: false,
+                    admitted_bytes: None,
                 };
                 if let Err(e) = self.persist_record(&dir, &record) {
                     let mut w = worker;
@@ -2349,6 +2381,7 @@ mod tests {
             backing: root.join("base.ext4"),
             deleting: false,
             volume_prepared: false,
+            admitted_bytes: None,
         };
         std::fs::write(
             root.join("data/vm/sandbox.json"),
@@ -2459,6 +2492,7 @@ mod tests {
             backing: PathBuf::from("/tmp/kvm/rust-guest.ext4"),
             deleting: false,
             volume_prepared: false,
+            admitted_bytes: None,
         };
         let d = dir.join("data").join(id);
         std::fs::create_dir_all(&d).unwrap();

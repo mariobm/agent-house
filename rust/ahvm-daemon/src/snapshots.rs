@@ -137,6 +137,7 @@ pub async fn restore(
     // → boot → record) is one critical section for the new id.
     crate::routes::reserved_owner(&state, &user.0, &body.new_id)?;
     let _lc = state.lifecycle.lock(&body.new_id).await;
+    state.store.check_replicated_name_available(&body.new_id)?;
     let backend = state.backend.clone();
     let manifest = blocking({
         let backend = backend.clone();

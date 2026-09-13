@@ -368,3 +368,36 @@ remote retirement marker; the daemon retained its charge after the acknowledgeme
 and released it after restart and explicit cleanup confirmation. The probe took
 1.11 seconds; this is an empty-disk correctness check, not deletion throughput or
 cold-boot timing. One small retirement marker remains, with no data chunks.
+
+### Create-time tenant admission
+
+The daemon now uses a backend admission callback before replicated import. The
+engine validates the image, mints its immutable volume ID and supplies the logical
+size; the daemon reserves that capacity for the authenticated owner in SQLite.
+Quota refusal returns HTTP 403 without creating a sandbox directory or contacting
+the volume service. The admitted size is persisted in the engine record and sent
+on preparation retries; the service refuses changed sizing before allocation.
+This adds one admission transaction per create, not per disk read or write.
+
+The lifecycle lock, operation permit, resource hold and sandbox-row commit remain
+with the blocking create task if its HTTP client disconnects. Failed creates mark
+their reservation deleting; crashes before the sandbox-row commit are recovered
+by the bounded reservation sweep. Both remain charged until the existing explicit
+reclamation proof arrives. Cleanup checks the engine's immutable volume identity.
+A retained disk also blocks reuse of its sandbox name by any owner, including
+local create and snapshot restore. Recovery removes only known early-create
+temporary metadata; unrecognized contents remain untouched.
+
+Validation uses small local image files, without creating VMs or uploading images:
+engine admission refusal and retry sizing, volume-service size mismatch before
+registration and on retry, HTTP quota refusal and charged failed creation, orphan
+versus committed-row reconciliation, and interrupted-create directory cleanup.
+Linux ordinary suites, privileged volume-service tests and clippy run on
+agent_house; installed services are unchanged.
+
+Next: expose storage mode, replication status and explicit sync in the daemon and
+CLI; finish host resource integration before enabling automatic replicated mode
+for Cloud, then authenticated automatic wake. Follow with dashboard disk/status
+visibility and admin storage/cleanup controls in the private site repository.
+Local storage remains the default here. Named checkpoint expiry is still a
+separate collector/format extension. No new release or deployment in this slice.
