@@ -239,6 +239,17 @@ fn valid_hash(hash: &str) -> bool {
 }
 impl ObjectStore for S3Store {
     fn list_chunks(&self, volume: &str, limit: usize) -> Result<Vec<String>> {
+        self.list_chunks_after(volume, None, limit)
+    }
+    fn list_chunks_after(
+        &self,
+        volume: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        if after.is_some_and(|h| !valid_hash(h)) {
+            return Err(Error::InvalidInput);
+        }
         if !valid_id(volume) || !(1..=128).contains(&limit) {
             return Err(Error::InvalidInput);
         }
@@ -253,6 +264,10 @@ impl ObjectStore for S3Store {
             .append_pair("list-type", "2")
             .append_pair("prefix", &prefix)
             .append_pair("max-keys", &limit.to_string());
+        if let Some(hash) = after {
+            url.query_pairs_mut()
+                .append_pair("start-after", &format!("{prefix}{hash}"));
+        }
         let response = self.request(Method::GET, url.as_str(), None, &[])?;
         if response.status() != StatusCode::OK {
             return Err(Error::Store);
@@ -293,7 +308,10 @@ impl ObjectStore for S3Store {
         let mut hashes = std::collections::BTreeSet::new();
         for item in list.contents {
             let hash = item.key.strip_prefix(&prefix).ok_or(Error::Corrupt)?;
-            if !valid_hash(hash) || !hashes.insert(hash.to_string()) {
+            if !valid_hash(hash)
+                || after.is_some_and(|a| hash <= a)
+                || !hashes.insert(hash.to_string())
+            {
                 return Err(Error::Corrupt);
             }
         }

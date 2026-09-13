@@ -294,6 +294,13 @@ enum Phase {
     Closing,
     Released,
 }
+/// Disposable marking cache, valid only for this exact immutable head revision.
+#[derive(Debug)]
+pub(crate) struct OfflineMark {
+    id: String,
+    revision: String,
+    live: Vec<[u8; 32]>,
+}
 /// Private owner directory must be retained with the journal for service restart.
 /// Another host uses its own fresh directory only AFTER explicit release.
 #[derive(Clone)]
@@ -434,6 +441,97 @@ impl OwnedDisk {
         self.store.release()?;
         *phase = Phase::Released;
         Ok(())
+    }
+    /// Caller must hold the sandbox operation lock and prove its VM/NBD are
+    /// detached. This handle holds the exclusive owner lock throughout marking
+    /// and deletion; no background replication task may be started for it.
+    /// Pending local writes are a refusal, never disposable cache.
+    pub fn collect_offline(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+        cancel: impl Fn() -> bool,
+    ) -> Result<crate::reclaim::Collection> {
+        self.collect_offline_cached(after, limit, cancel, &mut None)
+    }
+    pub(crate) fn collect_offline_cached(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+        cancel: impl Fn() -> bool,
+        mark: &mut Option<OfflineMark>,
+    ) -> Result<crate::reclaim::Collection> {
+        if !(1..=128).contains(&limit) || after.is_some_and(|s| !hash(s)) {
+            return Err(Error::InvalidInput);
+        }
+        let phase = self.phase.write().map_err(|_| Error::ReopenRequired)?;
+        if *phase != Phase::Active {
+            return Err(Error::ReopenRequired);
+        }
+        if cancel() {
+            return Err(Error::Deadline);
+        }
+        let status = self.disk.status();
+        if status.local_failed {
+            return Err(Error::ReopenRequired);
+        }
+        if status.pending_bytes != 0 {
+            return Err(Error::Backpressure);
+        }
+        let head = self.store.head(&self.store.id)?.ok_or(Error::NotFound)?;
+        if mark
+            .as_ref()
+            .is_none_or(|m| m.id != self.store.id || m.revision != head.revision)
+        {
+            // Do not retain a stale large graph while allocating its replacement.
+            *mark = None;
+            let disk = IndexedVolume::from_head(self.store.clone(), &self.store.id, head.clone())?;
+            *mark = Some(OfflineMark {
+                id: self.store.id.clone(),
+                revision: head.revision.clone(),
+                live: disk.references(&cancel)?,
+            });
+        }
+        let live = &mark.as_ref().unwrap().live;
+        let hashes = self
+            .store
+            .raw
+            .list_chunks_after(&self.store.id, after, limit)?;
+        if hashes.len() > limit
+            || hashes.windows(2).any(|w| w[0] >= w[1])
+            || hashes
+                .iter()
+                .any(|h| !hash(h) || after.is_some_and(|a| h.as_str() <= a))
+        {
+            return Err(Error::Corrupt);
+        }
+        if cancel() {
+            return Err(Error::Deadline);
+        }
+        // Defense in depth: this pass must still own exactly the marked head.
+        if self
+            .store
+            .head(&self.store.id)?
+            .is_none_or(|h| h.revision != head.revision)
+        {
+            return Err(Error::Conflict);
+        }
+        let mut deleted = 0;
+        for hash in &hashes {
+            if cancel() {
+                return Err(Error::Deadline);
+            }
+            if live.binary_search(&crate::indexed::decode(hash)?).is_err() {
+                self.store.raw.delete_chunk(&self.store.id, hash)?;
+                deleted += 1;
+            }
+        }
+        Ok(crate::reclaim::Collection {
+            scanned_objects: hashes.len(),
+            deleted_objects: deleted,
+            complete: hashes.is_empty(),
+            next_after: hashes.last().cloned(),
+        })
     }
     pub fn background(&self) -> Background {
         let (tx, rx) = mpsc::channel();

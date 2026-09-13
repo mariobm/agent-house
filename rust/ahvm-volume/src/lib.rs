@@ -80,7 +80,19 @@ pub trait ObjectStore: std::fmt::Debug + Send + Sync {
     fn list_chunks(&self, _volume: &str, _limit: usize) -> Result<Vec<String>> {
         Err(Error::InvalidInput)
     }
-    /// Only the reclamation protocol may call this after permanent retirement.
+    /// Ordered maintenance page after an exclusive hash. Empty means exhausted.
+    fn list_chunks_after(
+        &self,
+        volume: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        if after.is_some() {
+            return Err(Error::InvalidInput);
+        }
+        self.list_chunks(volume, limit)
+    }
+    /// Maintenance only, after retirement or under exclusive offline ownership.
     fn delete_chunk(&self, _volume: &str, _digest: &str) -> Result<()> {
         Err(Error::InvalidInput)
     }

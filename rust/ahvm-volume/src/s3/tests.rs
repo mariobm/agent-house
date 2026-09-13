@@ -269,3 +269,23 @@ fn reclamation_permission_and_delete_failures_are_not_completion() {
     store.delete_chunk("disk", &"a".repeat(64)).unwrap();
     worker.join().unwrap();
 }
+
+#[test]
+fn offline_listing_uses_exclusive_start_after_and_rejects_regression() {
+    let a = "a".repeat(64);
+    let b = "b".repeat(64);
+    let xml = |hash: &str| {
+        format!("<ListBucketResult><Prefix>qualification/disk/chunks/</Prefix><IsTruncated>false</IsTruncated><Contents><Key>qualification/disk/chunks/{hash}</Key></Contents></ListBucketResult>")
+    };
+    let (store, worker) = server(vec![
+        response("200 OK", "", xml(&b).as_bytes()),
+        response("200 OK", "", xml(&a).as_bytes()),
+    ]);
+    assert_eq!(
+        store.list_chunks_after("disk", Some(&a), 16).unwrap(),
+        vec![b]
+    );
+    assert!(store.list_chunks_after("disk", Some(&a), 16).is_err());
+    let r = worker.join().unwrap();
+    assert!(r[0].contains(&format!("start-after=qualification%2Fdisk%2Fchunks%2F{a}")));
+}

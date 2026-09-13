@@ -274,3 +274,20 @@ them; the deleted-volume-only collector must not silently process newer formats.
 CLI syntax such as `ahvm checkpoint create dev --expires-in 7d` is illustrative,
 not an implemented command or a selected seven-day policy. No scheduled backups
 or checkpoint creation are introduced by retention support.
+
+
+### Phase 5 continuation: stopped-disk reference collection
+
+Existing disks now receive reference-aware cleanup during explicit stopped/detached
+windows. The collector keeps current metadata/data, refuses pending journals and
+unknown checkpoint schemas, and holds exclusive ownership through each pass.
+Generation-bound marking avoids re-reading metadata for every batch. Foreground
+mutations cancel collection and briefly wait for it to yield; running VMs are not
+paused. See [stopped-disk collection](VOLUME-SERVICE.md#obsolete-blocks-on-stopped-disks).
+
+The current disk-only reclamation path is now present for deleted disks and
+stopped existing disks. Continuous online collection and actual checkpoint roots/
+expiry are not implemented. Next is idle local eviction after confirmed remote
+sync, keeping the disk remotely persistent, followed by tenant accounting and
+normal API/CLI rollout. Checkpoint support must extend the retained-root format and
+collector together before activation; a TTL must never expire the current disk.
