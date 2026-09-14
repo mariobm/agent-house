@@ -10,8 +10,6 @@ jobs:
         include:
           - runner: macos-15
             platform: darwin-aarch64
-          - runner: macos-15-intel
-            platform: darwin-x86_64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
@@ -30,11 +28,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/client/bin"
           cp -R desktop-viewer/dist "$RUNNER_TEMP/client/desktop"
           cp rust/target/release/ahvm "$RUNNER_TEMP/client/bin/"
-          VERSION=$(rust/target/release/ahvm --version | cut -d' ' -f2)
-          python3 scripts/package-distribution.py "$RUNNER_TEMP/client" dist "$VERSION" "$PLATFORM"
+          # Signing happens on the release Mac. Never export its private key to CI.
+          # Tar preserves executable permissions through upload-artifact.
+          mkdir -p dist
+          tar -czf "dist/unsigned-client-$PLATFORM.tar.gz" -C "$RUNNER_TEMP/client" .
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: client-${{ matrix.platform }}
+          name: unsigned-client-${{ matrix.platform }}
           path: dist/*
   server:
     # The native VMM builder remains an explicitly provisioned Linux host.

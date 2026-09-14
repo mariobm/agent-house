@@ -1,6 +1,6 @@
 # Remote hosts, images and upgrades
 
-The standalone client runs on macOS (Apple Silicon or Intel) and Linux x86_64.
+The standalone client runs on macOS (Apple Silicon only) and Linux x86_64.
 The VM server requires Linux x86_64, KVM and systemd. The server API stays on
 loopback; normal client commands open an authenticated OpenSSH tunnel.
 
@@ -99,20 +99,21 @@ subsequent updates enforce the public key embedded in the installed client.
 
 ## Publishing a release
 
-Build assets through the manual `Build release assets` workflow, or run
-`scripts/package-distribution.py` on each qualified platform. It emits separate
+Build assets through the manual `Build release assets` workflow. Its macOS
+artifacts are unsigned build inputs: follow [macOS signing and notarization](MACOS-RELEASE.md)
+on the release Mac before packaging them. `scripts/package-distribution.py` emits separate
 client downloads, a server-only archive, and per-platform metadata. The Linux
 packager refuses dependencies requiring glibc newer than 2.35. Guest images are
 built and qualified separately, then published under immutable R2 keys.
 
-After merging and qualification, download the three workflow artifacts into one
-directory and run:
+After merging, qualification, macOS signing and notarization, collect the final
+packages and per-platform metadata into one directory and run on the release Mac:
 
 ```sh
 scripts/publish-release.py /path/to/dist 0.2.1 FULL_QUALIFIED_COMMIT_SHA
 ```
 
-The publisher checks artifact hashes, creates the GitHub release, signs and
+The publisher checks artifact hashes and macOS signatures/notarization, creates the GitHub release, signs and
 publishes the update catalog, and updates the Homebrew tap through a PR. It uses
 local GitHub authentication, `~/.config/ahvm-release/signing-key.pem`, and the
 bucket-scoped `r2-publisher.json` in the same private directory. Never commit

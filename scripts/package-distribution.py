@@ -12,9 +12,19 @@ import shutil
 import sys
 import tarfile
 import tempfile
+from macos_signing import verify_bundle
 
 bundle, output = map(Path, sys.argv[1:3])
 version, platform = sys.argv[3:5]
+if platform not in {'darwin-aarch64', 'linux-x86_64'}:
+    raise SystemExit('Supported release platforms: darwin-aarch64 and linux-x86_64')
+if platform.startswith('darwin-'):
+    if sys.argv[5:] == ['--allow-unsigned']:
+        print('WARNING: development-only unsigned package; publication will reject it', file=sys.stderr)
+    elif sys.argv[5:]:
+        raise SystemExit('Unexpected packaging arguments')
+    else:
+        verify_bundle(bundle)
 output.mkdir(parents=True, exist_ok=True)
 
 def digest(path):
