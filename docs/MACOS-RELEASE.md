@@ -30,14 +30,14 @@ the Apple Account password revokes its app-specific passwords.
 ## Build, sign, notarize, package
 
 GitHub's **Build release assets** workflow produces
-`unsigned-client-darwin-aarch64` and `unsigned-client-darwin-x86_64` artifacts.
-Each contains a tar archive preserving executable permissions. These are build
-inputs, not public release assets. The Linux job still produces release packages.
+the `unsigned-client-darwin-aarch64` artifact for Apple Silicon Macs. Intel Macs
+are not supported. It contains a tar archive preserving executable permissions.
+This is a build input, not a public release asset. The Linux job still produces release packages.
 Download artifacts only from the qualified commit's successful workflow run.
 
-On the release Mac, extract each unsigned archive into its own bundle directory.
-The layout is `bin/ahvm`, `desktop/ahvm-desktop`, and the desktop notices. For each
-architecture, run (replace paths, version and platform with the qualified values):
+On the release Mac, extract the unsigned archive into its own bundle directory.
+The layout is `bin/ahvm`, `desktop/ahvm-desktop`, and the desktop notices.
+Run (replace paths and version with the qualified values):
 
 ```bash
 python3 scripts/macos_signing.py sign /path/to/bundle

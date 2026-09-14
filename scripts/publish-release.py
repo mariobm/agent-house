@@ -28,7 +28,7 @@ def run(*args, **kwargs):
 def gh_json(*args):
     return json.loads(subprocess.check_output(['gh', *args]))
 
-metadata = [dist / (p + '.json') for p in ['darwin-aarch64', 'darwin-x86_64', 'linux-x86_64']]
+metadata = [dist / (p + '.json') for p in ['darwin-aarch64', 'linux-x86_64']]
 assets = []
 for path in metadata:
     platform = path.stem

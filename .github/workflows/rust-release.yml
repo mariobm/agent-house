@@ -10,8 +10,6 @@ jobs:
         include:
           - runner: macos-15
             platform: darwin-aarch64
-          - runner: macos-15-intel
-            platform: darwin-x86_64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:

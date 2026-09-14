@@ -1,6 +1,6 @@
 # Remote hosts, images and upgrades
 
-The standalone client runs on macOS (Apple Silicon or Intel) and Linux x86_64.
+The standalone client runs on macOS (Apple Silicon only) and Linux x86_64.
 The VM server requires Linux x86_64, KVM and systemd. The server API stays on
 loopback; normal client commands open an authenticated OpenSSH tunnel.
 

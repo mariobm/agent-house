@@ -25,6 +25,9 @@ with tempfile.TemporaryDirectory() as temp:
     rejected = subprocess.run(command, capture_output=True, text=True)
     assert rejected.returncode != 0, 'Release packaging accepted unsigned fixtures'
     assert not output.exists(), 'Rejected package left release artifacts behind'
+    intel = subprocess.run([*command[:-1], 'darwin-x86_64', '--allow-unsigned'], capture_output=True, text=True)
+    assert intel.returncode != 0, 'Intel Mac release packaging should be unsupported'
+    assert not output.exists()
     subprocess.run([*command, '--allow-unsigned'], check=True)
     metadata = json.loads((output/'darwin-aarch64.json').read_text())
     archive = output/Path(metadata['client']['darwin-aarch64']['url']).name
@@ -55,4 +58,8 @@ shutil.copyfile(source,a[a.index('-o')+1])
     legacy = root/'legacy'
     install({'cli': metadata['cli']}, legacy)
     assert (legacy/'ahvm').is_file() and not (legacy/'ahvm-desktop').exists()
+    (mocks/'uname').write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo x86_64;; esac\n')
+    unsupported = root/'intel-install'
+    install(metadata, unsupported, success=False)
+    assert not unsupported.exists(), 'Intel rejection should happen before installation'
 print('client bundle: archive contents, companion install, checksum rejection and legacy install pass')

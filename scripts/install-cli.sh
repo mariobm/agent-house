@@ -8,7 +8,7 @@ main() {
     local dest=${AHVM_BIN_DIR:-$HOME/.local/bin} platform tmp
     case "$(uname -s)-$(uname -m)" in
         Darwin-arm64) platform=darwin-aarch64 ;;
-        Darwin-x86_64) platform=darwin-x86_64 ;;
+        Darwin-x86_64) echo 'AHVM requires an Apple Silicon Mac. Intel Macs are not supported; on Apple Silicon, run from a native terminal rather than Rosetta.' >&2; return 1 ;;
         Linux-x86_64) platform=linux-x86_64 ;;
         *) echo 'No prebuilt AHVM client for this platform.' >&2; return 1 ;;
     esac
