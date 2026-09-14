@@ -7,6 +7,7 @@ The repository documentation describes the current Rust runtime:
 - [Streaming uploads](FILE-UPLOADS.md)
 - [Preview ports and private access](NETWORK-ACCESS.md)
 - [Network qualification](NETWORK-QUALIFICATION.md)
+- [macOS release signing and notarization](MACOS-RELEASE.md)
 
 The `archive/` tree and older design plans preserve development history. They
 may describe retired Go commands or unimplemented proposals. The old ahvm.sh

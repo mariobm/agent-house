@@ -21,7 +21,11 @@ with tempfile.TemporaryDirectory() as temp:
     (bundle/'desktop/ahvm-desktop').chmod(0o755)
     for name in ['AHVM-LICENSE', 'noVNC-LICENSE.txt', 'noVNC-AUTHORS', 'pako-LICENSE']:
         (bundle/'desktop'/name).write_text('test notice\n')
-    subprocess.run(['python3', str(repo/'scripts/package-distribution.py'), str(bundle), str(output), '0.2.1', 'darwin-aarch64'], check=True)
+    command = ['python3', str(repo/'scripts/package-distribution.py'), str(bundle), str(output), '0.2.1', 'darwin-aarch64']
+    rejected = subprocess.run(command, capture_output=True, text=True)
+    assert rejected.returncode != 0, 'Release packaging accepted unsigned fixtures'
+    assert not output.exists(), 'Rejected package left release artifacts behind'
+    subprocess.run([*command, '--allow-unsigned'], check=True)
     metadata = json.loads((output/'darwin-aarch64.json').read_text())
     archive = output/Path(metadata['client']['darwin-aarch64']['url']).name
     with tarfile.open(archive) as tar:
