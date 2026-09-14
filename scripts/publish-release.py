@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+from macos_signing import verify_artifact
 
 repo = 'mariobm/agent-house'
 dist = Path(sys.argv[1]).resolve()
@@ -27,10 +28,17 @@ def run(*args, **kwargs):
 def gh_json(*args):
     return json.loads(subprocess.check_output(['gh', *args]))
 
-metadata = [dist / (p + '.json') for p in ['darwin-aarch64', 'darwin-x86_64', 'linux-x86_64']]
+metadata = [dist / (p + '.json') for p in ['darwin-aarch64', 'linux-x86_64']]
 assets = []
 for path in metadata:
-    for group in json.loads(path.read_text()).values():
+    platform = path.stem
+    records = json.loads(path.read_text())
+    if set(records) != {'cli', 'client', 'server'}:
+        raise SystemExit('Release metadata must contain CLI, client and server groups')
+    for kind, group in records.items():
+        expected = set() if kind == 'server' and platform.startswith('darwin-') else {platform}
+        if set(group) != expected:
+            raise SystemExit(f'Incomplete or wrong-platform release metadata: {path.name}/{kind}')
         for artifact in group.values():
             name = artifact['url'].rsplit('/', 1)[-1]
             if artifact['version'] != version or artifact['url'] != f'https://github.com/{repo}/releases/download/{tag}/{name}':
@@ -42,6 +50,8 @@ for path in metadata:
                     digest.update(chunk)
             if digest.hexdigest() != artifact['sha256'] or file.stat().st_size != artifact['size']:
                 raise SystemExit('Artifact does not match metadata: ' + name)
+            if path.name.startswith('darwin-'):
+                verify_artifact(file, kind)
             assets.append(file)
 with tempfile.TemporaryDirectory() as temp:
     temp = Path(temp)

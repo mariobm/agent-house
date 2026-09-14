@@ -21,7 +21,14 @@ with tempfile.TemporaryDirectory() as temp:
     (bundle/'desktop/ahvm-desktop').chmod(0o755)
     for name in ['AHVM-LICENSE', 'noVNC-LICENSE.txt', 'noVNC-AUTHORS', 'pako-LICENSE']:
         (bundle/'desktop'/name).write_text('test notice\n')
-    subprocess.run(['python3', str(repo/'scripts/package-distribution.py'), str(bundle), str(output), '0.2.1', 'darwin-aarch64'], check=True)
+    command = ['python3', str(repo/'scripts/package-distribution.py'), str(bundle), str(output), '0.2.1', 'darwin-aarch64']
+    rejected = subprocess.run(command, capture_output=True, text=True)
+    assert rejected.returncode != 0, 'Release packaging accepted unsigned fixtures'
+    assert not output.exists(), 'Rejected package left release artifacts behind'
+    intel = subprocess.run([*command[:-1], 'darwin-x86_64', '--allow-unsigned'], capture_output=True, text=True)
+    assert intel.returncode != 0, 'Intel Mac release packaging should be unsupported'
+    assert not output.exists()
+    subprocess.run([*command, '--allow-unsigned'], check=True)
     metadata = json.loads((output/'darwin-aarch64.json').read_text())
     archive = output/Path(metadata['client']['darwin-aarch64']['url']).name
     with tarfile.open(archive) as tar:
@@ -51,4 +58,8 @@ shutil.copyfile(source,a[a.index('-o')+1])
     legacy = root/'legacy'
     install({'cli': metadata['cli']}, legacy)
     assert (legacy/'ahvm').is_file() and not (legacy/'ahvm-desktop').exists()
+    (mocks/'uname').write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo x86_64;; esac\n')
+    unsupported = root/'intel-install'
+    install(metadata, unsupported, success=False)
+    assert not unsupported.exists(), 'Intel rejection should happen before installation'
 print('client bundle: archive contents, companion install, checksum rejection and legacy install pass')

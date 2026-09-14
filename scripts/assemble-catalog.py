@@ -23,5 +23,8 @@ for path in sys.argv[3:]:
     metadata = json.loads(Path(path).read_bytes())
     for kind in ['cli', 'client', 'server']:
         catalog.setdefault(kind, {}).update(metadata.get(kind, {}))
+# Do not keep advertising the last Intel Mac build from the previous catalog.
+for kind in ['cli', 'client', 'server']:
+    catalog.setdefault(kind, {}).pop('darwin-x86_64', None)
 catalog['expires'] = int(time.time()) + 90*86400
 output.write_text(json.dumps(catalog,indent=2)+'\n')

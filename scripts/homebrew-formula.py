@@ -8,8 +8,10 @@ catalog = json.loads(Path(sys.argv[1]).read_text())
 cli = catalog['cli']
 version = cli['darwin-aarch64']['version']
 lines = ['class Ahvm < Formula', '  desc "Persistent Linux microVMs for coding agents"', '  homepage "https://ahvm.app"', f'  version "{version}"', '  license "LicenseRef-AHVM-Community-1.0"']
-for os, entries in [('macos', [('arm', 'darwin-aarch64'), ('intel', 'darwin-x86_64')]), ('linux', [('intel', 'linux-x86_64')])]:
+for os, entries in [('macos', [('arm', 'darwin-aarch64')]), ('linux', [('intel', 'linux-x86_64')])]:
     lines.append(f'  on_{os} do')
+    if os == 'macos':
+        lines.append('    depends_on arch: :arm64')
     for arch, platform in entries:
         a = catalog.get('client', {}).get(platform, cli[platform])
         lines += [f'    on_{arch} do', f'      url "{a["url"]}"', f'      sha256 "{a["sha256"]}"', '    end']

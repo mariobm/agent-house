@@ -36,7 +36,7 @@ Or use Homebrew:
 brew install mariobm/ahvm/ahvm
 ```
 
-Clients are available for Apple Silicon, Intel Macs and Linux x86_64. The curl
+Clients are available for Apple Silicon Macs and Linux x86_64. The curl
 installer needs curl, gzip and Python 3. You can [inspect the script](https://ahvm.app/install.sh)
 before running it.
 
