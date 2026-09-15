@@ -12,7 +12,7 @@ with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     ssh = root / 'ssh'
     ssh.write_text('''#!/usr/bin/env python3
-import http.server,json,os,sys,threading
+import http.server,json,os,socketserver,sys,threading
 from pathlib import Path
 a=sys.argv[1:]
 with (Path(os.environ['AHVM_CONFIG_DIR']).parent/'ssh-trace').open('a') as trace:
@@ -33,7 +33,9 @@ if '-M' in a:
    (cache.parent/'last-create').write_text(json.dumps(body))
    self.send_response(200);self.end_headers()
    self.wfile.write(json.dumps({'id':body.get('name','test'),'state':'Running','stdout':'ok','stderr':'','exit_code':0}).encode())
- server=http.server.HTTPServer(('127.0.0.1',port),Handler)
+ # HTTPServer.server_bind does reverse DNS before publishing readiness.
+ # The fixture needs only loopback TCP; hostname lookup can stall on CI.
+ server=socketserver.TCPServer(('127.0.0.1',port),Handler)
  Path(a[a.index('-S')+1]).touch()
  threading.Thread(target=server.serve_forever,daemon=True).start()
  sys.stdin.read()
