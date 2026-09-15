@@ -53,7 +53,7 @@ pub const KRUCIBLE_VMM_NAME: &str = "krucible";
 pub const KRUCIBLE_VMM_VERSION: &str = "libkrun-2.0.0-dev";
 pub const KRUCIBLE_KERNEL_DIGEST: &str = "bundled:libkrunfw.so.5";
 
-/// One forge RPC round trip (readiness probes; execution waits longer).
+/// Default forge transport budget; user execution waits longer.
 const RPC_TIMEOUT: Duration = Duration::from_secs(15);
 /// Connect-retry budget for one exec (the bridge either exists or the
 /// worker is dead; liveness reconciliation owns the rest).
@@ -679,24 +679,105 @@ fn forge_b64(v: &serde_json::Value, k: &str) -> Result<Vec<u8>> {
         .map_err(|e| Error::Control(format!("forge {k} not base64: {e}")))
 }
 
-fn wait_ready(sock: &Path, timeout: Duration) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    let probe = vec!["/bin/true".to_string()];
-    loop {
-        // Short per-attempt budget: readiness is a poll loop, and a hung
-        // worker must surface at the outer deadline, not per attempt.
-        match rpc_exec(sock, &probe, RPC_TIMEOUT) {
-            Ok(r) if r.exit_code == 0 => return Ok(()),
-            _ => {
-                if Instant::now() > deadline {
-                    return Err(Error::Control(format!(
-                        "agent not ready within {timeout:?}"
-                    )));
+// Readiness is safe to retry: only the fixed /bin/true probe is sent. Ordinary
+// exec/session requests keep their existing budgets and are never replayed here.
+struct ProbeIo {
+    socket: socket2::Socket,
+    deadline: Instant,
+}
+impl ProbeIo {
+    fn remaining(&self) -> std::io::Result<Duration> {
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "readiness deadline"))
+    }
+}
+impl std::io::Read for ProbeIo {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            let remaining = self.remaining()?;
+            match std::io::Read::read(&mut self.socket, bytes) {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(remaining.min(Duration::from_millis(5)))
                 }
-                std::thread::sleep(Duration::from_millis(500));
+                result => return result,
             }
         }
     }
+}
+impl std::io::Write for ProbeIo {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        loop {
+            let remaining = self.remaining()?;
+            match std::io::Write::write(&mut self.socket, bytes) {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(remaining.min(Duration::from_millis(5)))
+                }
+                result => return result,
+            }
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+fn ready_probe(path: &Path, deadline: Instant) -> Result<()> {
+    let mut io = ProbeIo {
+        socket: socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?,
+        deadline,
+    };
+    io.socket
+        .connect_timeout(&socket2::SockAddr::unix(path)?, io.remaining()?)?;
+    // Nonblocking I/O keeps a trickled/partial response inside one deadline.
+    // It also avoids changing socket timeouts after a peer has closed (macOS).
+    io.socket.set_nonblocking(true)?;
+    write_frame(
+        &mut io,
+        &Frame {
+            msg_type: FrameType::ExecReq,
+            payload: br#"{"argv":["/bin/true"]}"#.to_vec(),
+        },
+    )
+    .map_err(|_| Error::Control("readiness write failed".into()))?;
+    let frame = read_frame(&mut io).map_err(|_| Error::Control("readiness read failed".into()))?;
+    let reply: serde_json::Value = serde_json::from_slice(&frame.payload)
+        .map_err(|_| Error::Control("invalid readiness reply".into()))?;
+    if Instant::now() >= deadline
+        || frame.msg_type != FrameType::ExecResp
+        || reply["exit_code"].as_i64() != Some(0)
+    {
+        return Err(Error::Control("guest not ready".into()));
+    }
+    Ok(())
+}
+fn wait_ready(sock: &Path, timeout: Duration, id: &str) -> Result<()> {
+    let started = Instant::now();
+    let deadline = started + timeout;
+    while Instant::now() < deadline {
+        // Fast local boots should not inherit the slower-disk retry cadence.
+        let attempt_budget = if started.elapsed() < Duration::from_secs(1) {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_millis(250)
+        };
+        let attempt_deadline = deadline.min(Instant::now() + attempt_budget);
+        if ahvm_proto::timing::measure("engine", "ready_probe", id, || {
+            ready_probe(sock, attempt_deadline)
+        })
+        .is_ok()
+        {
+            return Ok(());
+        }
+        std::thread::sleep(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(50)),
+        );
+    }
+    Err(Error::Control(format!(
+        "agent not ready within {timeout:?}"
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -868,11 +949,27 @@ impl KrucibleBackend {
     }
 
     fn ready(&self, dir: &Path) -> Result<()> {
-        wait_ready(&forge_sock(dir), self.cfg.ready_timeout)?;
+        ahvm_proto::timing::measure(
+            "engine",
+            "guest_ready",
+            &dir.file_name().unwrap_or_default().to_string_lossy(),
+            || {
+                wait_ready(
+                    &forge_sock(dir),
+                    self.cfg.ready_timeout,
+                    &dir.file_name().unwrap_or_default().to_string_lossy(),
+                )
+            },
+        )?;
         if self.networks.is_some() {
             let argv = vec!["/bin/sh".into(), "-ec".into(),
                 "ip link set lo up; ip link set eth0 up; ip addr replace 100.64.0.2/24 dev eth0; ip route replace default via 100.64.0.1; printf 'nameserver 100.64.0.1\\n' > /etc/resolv.conf".into()];
-            let r = rpc_exec(&forge_sock(dir), &argv, Duration::from_secs(15))?;
+            let r = ahvm_proto::timing::measure(
+                "engine",
+                "guest_network",
+                &dir.file_name().unwrap_or_default().to_string_lossy(),
+                || rpc_exec(&forge_sock(dir), &argv, Duration::from_secs(15)),
+            )?;
             if r.exit_code != 0 {
                 return Err(Error::Control(
                     "guest network setup failed (requires ip and /bin/sh)".into(),
@@ -2374,6 +2471,99 @@ impl KrucibleBackend {
 mod tests {
     use super::*;
     use crate::VmmId;
+
+    #[test]
+    fn readiness_retries_a_stalled_connection_without_waiting_for_it_to_close() {
+        use std::os::unix::net::UnixListener;
+        let path =
+            std::env::temp_dir().join(format!("ahvm-ready-retry-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stalled, _) = listener.accept().unwrap();
+            read_frame(&mut stalled).unwrap();
+            // Keep the first connection open until the new probe succeeds.
+            let (mut next, _) = listener.accept().unwrap();
+            let request = read_frame(&mut next).unwrap();
+            assert_eq!(request.msg_type, FrameType::ExecReq);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&request.payload).unwrap()["argv"],
+                serde_json::json!(["/bin/true"])
+            );
+            write_frame(
+                &mut next,
+                &Frame {
+                    msg_type: FrameType::ExecResp,
+                    payload: br#"{"exit_code":0}"#.to_vec(),
+                },
+            )
+            .unwrap();
+            drop(stalled);
+        });
+        let result = wait_ready(&path, Duration::from_secs(2), "test");
+        assert!(result.is_ok(), "{result:?}");
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn readiness_partial_reply_cannot_extend_attempt_deadline() {
+        use std::io::Write;
+        use std::os::unix::net::UnixListener;
+        let path =
+            std::env::temp_dir().join(format!("ahvm-ready-trickle-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            read_frame(&mut conn).unwrap();
+            // A byte arrives repeatedly, but the complete header arrives too late.
+            for byte in [0, 0, 0, 16] {
+                if conn.write_all(&[byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(80));
+            }
+        });
+        let start = Instant::now();
+        assert!(ready_probe(&path, start + Duration::from_millis(150)).is_err());
+        assert!(start.elapsed() < Duration::from_secs(1));
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn readiness_missing_socket_obeys_outer_deadline() {
+        let path =
+            std::env::temp_dir().join(format!("ahvm-ready-absent-{}.sock", std::process::id()));
+        let start = Instant::now();
+        assert!(wait_ready(&path, Duration::from_millis(100), "test").is_err());
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn readiness_rejects_unsuccessful_exec() {
+        use std::os::unix::net::UnixListener;
+        let path =
+            std::env::temp_dir().join(format!("ahvm-ready-error-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            read_frame(&mut conn).unwrap();
+            write_frame(
+                &mut conn,
+                &Frame {
+                    msg_type: FrameType::ExecResp,
+                    payload: br#"{"exit_code":127}"#.to_vec(),
+                },
+            )
+            .unwrap();
+        });
+        assert!(ready_probe(&path, Instant::now() + Duration::from_secs(1)).is_err());
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn quota_release_failure_keeps_destroy_retryable() {

@@ -1,5 +1,6 @@
 use super::*;
 use crate::{SandboxStorage, StorageMode};
+use ahvm_proto::timing::measure;
 
 pub(super) fn validate_storage_record(record: &SandboxRecord) -> Result<()> {
     let storage = &record.info.storage;
@@ -183,19 +184,28 @@ impl KrucibleBackend {
         self.save_replica(id, record.clone())?;
         // prepare is idempotent: it must never reimport an existing volume.
         if !record.volume_prepared {
-            service.prepare(volume, &record.backing, &dir, record.admitted_bytes)?;
+            measure("engine", "volume_prepare", id, || {
+                service.prepare(volume, &record.backing, &dir, record.admitted_bytes)
+            })?;
             record.volume_prepared = true;
             self.save_replica(id, record.clone())?;
         }
-        let device = service.attach(volume, &dir)?;
-        let mut worker = match self.boot_worker(&dir, &device, &record.spec, None) {
+        let device = measure("engine", "volume_attach", id, || {
+            service.attach(volume, &dir)
+        })?;
+        let mut worker = match measure("engine", "worker_boot", id, || {
+            self.boot_worker(&dir, &device, &record.spec, None)
+        }) {
             Ok(w) => w,
             Err(e) => {
                 let _ = service.detach(volume, &dir);
                 return Err(e);
             }
         };
-        if let Err(e) = self.ready(&dir).and_then(|_| service.bind(volume, &dir)) {
+        if let Err(e) = self
+            .ready(&dir)
+            .and_then(|_| measure("engine", "volume_bind", id, || service.bind(volume, &dir)))
+        {
             // Keep the handle if termination fails; never detach a live VM disk.
             if worker.terminate().is_err() {
                 self.lock().sandboxes.get_mut(id).unwrap().worker =

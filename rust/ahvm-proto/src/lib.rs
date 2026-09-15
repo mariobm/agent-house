@@ -10,6 +10,7 @@
 //! this transport are both redesigned, similar in spirit to v1 where it was
 //! good, better where it wasn't.
 
+pub mod timing;
 pub mod v2;
 
 pub use v2::{read_frame, write_frame, Frame, FrameType, MAX_FRAME_SIZE, PROTOCOL_VERSION};
