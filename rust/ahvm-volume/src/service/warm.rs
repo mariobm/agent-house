@@ -1,26 +1,74 @@
 //! Explicit operator prewarming runs inside the already bounded supervisor.
 use super::*;
+#[derive(Serialize, Deserialize)]
+struct Digests {
+    boot: String,
+    entries: Vec<(ImageIdentity, String)>,
+}
+fn identity(file: &File) -> Result<ImageIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let m = file.metadata()?;
+    Ok((
+        m.dev(),
+        m.ino(),
+        m.len(),
+        m.mtime(),
+        m.mtime_nsec(),
+        m.ctime(),
+        m.ctime_nsec(),
+    ))
+}
 impl Service {
+    // A disposable cache in the supervisor's root-only state directory. Scope
+    // it to one host boot so inode reuse across reboot cannot produce a hit.
+    pub(super) fn cached_image_hash(
+        &self,
+        file: &mut File,
+        imports: &mut BTreeMap<ImageIdentity, String>,
+        bytes: &mut [u8],
+    ) -> Result<String> {
+        let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+        let path = self.config.root.join("image-digests.json");
+        if imports.is_empty() {
+            if let Ok(saved) = read::<Digests>(&path) {
+                if saved.boot == boot && saved.entries.len() <= 64 {
+                    imports.extend(
+                        saved
+                            .entries
+                            .into_iter()
+                            .filter(|(_, hash)| crate::indexed::decode(hash).is_ok()),
+                    );
+                }
+            }
+        }
+        let old = identity(file)?;
+        let hit = imports.contains_key(&old);
+        let hash = Self::hash_image(file, imports, bytes)?;
+        if !hit {
+            // Cache failures must not prevent a correctly verified image boot.
+            let _ = save(
+                &path,
+                &Digests {
+                    boot,
+                    entries: imports.iter().map(|(k, v)| (*k, v.clone())).collect(),
+                },
+            );
+        }
+        Ok(hash)
+    }
+
     pub(super) fn hash_image(
         file: &mut File,
         imports: &mut BTreeMap<ImageIdentity, String>,
         bytes: &mut [u8],
     ) -> Result<String> {
         use sha2::{Digest, Sha256};
-        use std::os::unix::fs::MetadataExt;
-        let metadata = file.metadata()?;
-        let identity = (
-            metadata.dev(),
-            metadata.ino(),
-            metadata.len(),
-            metadata.mtime(),
-            metadata.mtime_nsec(),
-            metadata.ctime(),
-            metadata.ctime_nsec(),
-        );
+        let identity = identity(file)?;
         if let Some(hash) = imports.get(&identity) {
             return Ok(hash.clone());
         }
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(0))?;
         let mut hasher = Sha256::new();
         loop {
             let n = file.read(bytes)?;
@@ -28,6 +76,9 @@ impl Service {
                 break;
             }
             hasher.update(&bytes[..n]);
+        }
+        if identity != self::identity(file)? {
+            return Err("image changed during verification".into());
         }
         let hash = format!("{:x}", hasher.finalize());
         if imports.len() >= 64 {
@@ -60,7 +111,7 @@ impl Service {
         }
         let mut imports = self.imports.lock().map_err(|_| "import lock poisoned")?;
         let mut bytes = vec![0; crate::indexed::WRITE_LIMIT];
-        let hash = Self::hash_image(&mut file, &mut imports, &mut bytes)?;
+        let hash = self.cached_image_hash(&mut file, &mut imports, &mut bytes)?;
         let reference = self.import_base(&mut file, &hash, size, &mut bytes)?;
         Ok(serde_json::json!({"ok":true,"base":reference,"logical_bytes":size}))
     }

@@ -4,6 +4,8 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
 };
+#[cfg(target_os = "linux")]
+mod metadata;
 type Key = (String, String);
 #[derive(Default)]
 struct State {
@@ -12,6 +14,8 @@ struct State {
     pending: HashSet<Key>,
 }
 pub struct CachedStore {
+    #[cfg(target_os = "linux")]
+    metadata: Option<metadata::MetadataCache>,
     inner: Arc<dyn ObjectStore>,
     capacity: usize,
     #[cfg(unix)]
@@ -34,6 +38,8 @@ impl CachedStore {
         }
         Ok(Self {
             inner,
+            #[cfg(target_os = "linux")]
+            metadata: None,
             #[cfg(unix)]
             local_base: None,
             #[cfg(unix)]
@@ -41,6 +47,13 @@ impl CachedStore {
             capacity: bytes / CHUNK_BYTES,
             state: Arc::new(Mutex::new(State::default())),
         })
+    }
+    /// Shared, bounded cache of immutable base metadata. Mutable heads and
+    /// private volume objects always follow their normal consistency path.
+    #[cfg(target_os = "linux")]
+    pub fn with_metadata_cache(mut self, path: &std::path::Path) -> Result<Self> {
+        self.metadata = Some(metadata::MetadataCache::open(path)?);
+        Ok(self)
     }
     /// The image is only a cache. Every read is checked against the immutable
     /// remote map, so a stale/replaced host image cannot change guest data.
@@ -143,6 +156,13 @@ impl ObjectStore for CachedStore {
         if let Some(bytes) = self.cached_chunk(&key, hash) {
             return Ok(bytes);
         }
+        #[cfg(target_os = "linux")]
+        if offset.is_none() {
+            if let Some(bytes) = self.metadata.as_ref().and_then(|cache| cache.get(hash)) {
+                self.insert(&key, hash, &bytes)?;
+                return Ok(bytes);
+            }
+        }
         #[cfg(unix)]
         if let (Some(offset), Some((local_image, file))) = (offset, &self.local_base) {
             use std::os::unix::fs::FileExt;
@@ -167,6 +187,12 @@ impl ObjectStore for CachedStore {
             image,
             || self.inner.base_chunk(image, hash, offset),
         )?;
+        #[cfg(target_os = "linux")]
+        if offset.is_none() {
+            if let Some(cache) = &self.metadata {
+                cache.put(hash, &bytes);
+            }
+        }
         self.insert(&key, hash, &bytes)?;
         Ok(bytes)
     }

@@ -211,6 +211,7 @@ impl Service {
         }
         File::open(config.root.parent().ok_or("missing state parent")?)?.sync_all()?;
         private_dir(&config.root.join("s"))?;
+        private_dir(&config.root.join("base-metadata"))?;
         if config.root.as_os_str().len() > 70 {
             return Err("service root too long for Unix sockets".into());
         }
@@ -666,13 +667,16 @@ impl Service {
         Ok(usage)
     }
     fn store(&self) -> Result<Arc<dyn ObjectStore>> {
-        Ok(Arc::new(CachedStore::new(
-            Arc::new(S3Store::with_timeout(
-                S3Config::from_file(&self.config.credentials)?,
-                Duration::from_secs(3),
-            )?),
-            CACHE_BYTES as usize,
-        )?))
+        Ok(Arc::new(
+            CachedStore::new(
+                Arc::new(S3Store::with_timeout(
+                    S3Config::from_file(&self.config.credentials)?,
+                    Duration::from_secs(3),
+                )?),
+                CACHE_BYTES as usize,
+            )?
+            .with_metadata_cache(&self.config.root.join("base-metadata"))?,
+        ))
     }
     fn prepare(&self, r: &mut Record) -> Result<()> {
         if r.prepared {
@@ -695,7 +699,7 @@ impl Service {
         }
         let mut bytes = vec![0; crate::indexed::WRITE_LIMIT];
         let hash = measure("volume", "image_hash", &r.id, || {
-            Self::hash_image(&mut file, &mut imports, &mut bytes)
+            self.cached_image_hash(&mut file, &mut imports, &mut bytes)
         })?;
         if r.image_hash.is_empty() {
             r.image_hash = hash;
@@ -1008,6 +1012,7 @@ impl Service {
                 } else {
                     std::ffi::OsStr::new("")
                 })
+                .arg(self.config.root.join("base-metadata"))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(if ahvm_proto::timing::enabled() {

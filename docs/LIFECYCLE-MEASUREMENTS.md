@@ -196,3 +196,74 @@ had a larger local-create penalty; the final early 100-ms window reduces it.
 Further event-driven readiness can avoid this retry-cadence tradeoff. The final
 series used the final binary and no concurrent builds. All qualification VMs
 were deleted and replicated volumes reclaimed before stopping the isolated services.
+
+## Reusable startup caches
+
+The next change removes repeated work in the volume supervisor and workers:
+
+- Verified image digests are saved in root-only supervisor state, with a maximum
+  of 64 entries. A hit requires the same host boot ID, device, inode, size, mtime
+  and ctime (including nanoseconds). Image changes or host reboot force a fresh
+  verification; ordinary supervisor restarts can reuse it. Hashing also checks
+  that the image did not change during the scan. Missing/invalid cache records
+  cause a scan, and a cache write failure does not fail image preparation.
+- Immutable base metadata is shared between workers through a disposable cache
+  under `base-metadata` in the supervisor root. It has 256 direct-mapped 64-KiB
+  slots, at most 16 MiB per supervisor, independent of the number of VMs. Every
+  hit is checked against its requested SHA-256; collisions, incomplete writes or
+  corrupt bytes become remote fetches. No temporary files accumulate on crashes.
+  Mutable remote heads and private VM objects are never served from this cache.
+
+These caches do not change replication durability, disk formats, idle policy or
+shell protection. A never-prepared image still needs its first full scan; after
+host reboot, operators can move that scan out of the first create with the
+existing `ahvm-volumed warm CONFIG.json IMAGE.ext4` preparation command.
+The metadata cache is image-independent, including larger desktop images, but
+replicated Omarchy still needs separate end-to-end desktop qualification.
+
+### Cache qualification on agent_house
+
+Five sequential samples per mode, one 1-CPU / 2-GiB VM at a time, using
+host-loopback HTTP and the released v0.3.3 CLI through the same PTY marker test.
+The final replicated series ran after builds and tests finished. Reclamation
+completed between replicated samples, outside the timing interval.
+
+| Operation | Median | p95 (maximum of five) |
+| --- | ---: | ---: |
+| Replicated create + working shell | 2.038 s | 2.310 s |
+| Replicated cold start + working shell | 3.827 s | 3.937 s |
+| Local create + working shell | 0.392 s | 0.402 s |
+| Local stop/start + working shell | 0.744 s | 0.802 s |
+
+Compared with the preceding readiness-only series, replicated create-to-shell
+fell from 3.695 s to 2.038 s (about 45%); cold start-to-shell fell from 4.829 s
+to 3.827 s (about 21%). Local-mode timings remained similar. These are small
+host-side samples, not public Cloud latency guarantees. An earlier exploratory
+five-sample cache series included a 5.020-s cold start; tail latency remains work.
+
+With entirely empty caches, first create-to-shell took 13.615 s, including
+9.245 s hashing the image. After a supervisor restart with saved caches, digest
+lookup took 0.090 ms and create-to-shell took 2.117 s. The first worker fetched
+20 metadata objects plus one supervisor catalog fetch. Subsequent observed
+workers needed no remote base-metadata fetches. New images and host reboots
+still incur verification unless explicitly prepared before the user request.
+
+Validation: 94 macOS volume tests and 113 Linux volume tests passed, with clippy
+and formatting clean. Regression coverage includes supervisor-restart reuse,
+same-size edits with restored mtime, reboot invalidation, corrupt cache fallback,
+symlink refusal, bounded disk use, reuse across independent worker caches, and
+exclusion of mutable/private objects. A separate live replicated VM passed Bash,
+HTTPS, stop/start, persisted-file verification and deletion/reclamation.
+Production services and user VMs were not modified for these measurements.
+
+### Remaining improvement sequence
+
+1. Measure and merge the reusable caches above.
+2. Interactive create opens a shell by default, with an explicit no-shell option
+   for scripts; compare usable-prompt timing rather than API receipt timing.
+3. Implement and qualify lightweight idle pause/resume. A connected shell stays
+   protected; pausing must remain distinct from disk eviction and cold start.
+4. Experiment with a small bounded prebooted Ubuntu pool, with clean VM identity,
+   private writable storage and accounted resources before assigning a VM.
+5. Qualify desktop images with replicated storage, including desktop reconnect,
+   disk persistence and recovery, before enabling them in Cloud.
