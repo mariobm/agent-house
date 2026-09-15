@@ -12,7 +12,7 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> super::Result<()> {
         sync::Arc,
         time::Duration,
     };
-    if args.len() != 6 {
+    if args.len() != 7 {
         return Err("invalid worker arguments".into());
     }
     let mut go = [0];
@@ -26,7 +26,8 @@ pub(super) fn run(args: &[std::ffi::OsString]) -> super::Result<()> {
             Duration::from_secs(3),
         )?),
         super::accounting::CACHE_BYTES as usize,
-    )?;
+    )?
+    .with_metadata_cache(Path::new(&args[6]))?;
     // Host images are an optional verified read cache; remote-only recovery must
     // still work if the image has been removed from this host.
     use std::os::unix::fs::OpenOptionsExt;

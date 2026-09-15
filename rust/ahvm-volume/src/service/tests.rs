@@ -793,3 +793,65 @@ fn health_inspection_waits_for_concurrent_probe_without_cancelling_collection() 
     assert_eq!(slot.cancellation.load(Ordering::SeqCst), 0);
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn image_digest_survives_supervisor_restart_and_invalidates_changes() {
+    use std::io::{Seek, SeekFrom};
+    let dir = temp();
+    let path = dir.join("image");
+    fs::write(&path, b"first").unwrap();
+    let s = service(&dir);
+    let mut bytes = [0; 64];
+    let mut imports = BTreeMap::new();
+    let first = s
+        .cached_image_hash(&mut File::open(&path).unwrap(), &mut imports, &mut bytes)
+        .unwrap();
+    // New supervisor, no in-memory entries, no image scan.
+    let s = service(&dir);
+    let mut file = File::open(&path).unwrap();
+    assert_eq!(
+        s.cached_image_hash(&mut file, &mut BTreeMap::new(), &mut bytes)
+            .unwrap(),
+        first
+    );
+    assert_eq!(file.stream_position().unwrap(), 0);
+    // Same length, same inode, restored mtime must still invalidate via ctime.
+    let old = file.metadata().unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(2));
+    fs::write(&path, b"other").unwrap();
+    File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let changed = s
+        .cached_image_hash(
+            &mut File::open(&path).unwrap(),
+            &mut BTreeMap::new(),
+            &mut bytes,
+        )
+        .unwrap();
+    assert_ne!(changed, first);
+    // Different boot and corrupt cache both force a fresh scan.
+    let cache = dir.join("image-digests.json");
+    let mut value: serde_json::Value = read(&cache).unwrap();
+    value["boot"] = "different boot".into();
+    save(&cache, &value).unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
+    assert_eq!(
+        s.cached_image_hash(&mut file, &mut BTreeMap::new(), &mut bytes)
+            .unwrap(),
+        changed
+    );
+    assert_eq!(file.stream_position().unwrap(), 5);
+    fs::write(&cache, b"invalid").unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
+    assert_eq!(
+        s.cached_image_hash(&mut file, &mut BTreeMap::new(), &mut bytes)
+            .unwrap(),
+        changed
+    );
+    assert_eq!(file.stream_position().unwrap(), 5);
+    fs::remove_dir_all(dir).unwrap();
+}
