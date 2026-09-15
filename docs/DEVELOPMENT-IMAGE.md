@@ -51,8 +51,7 @@ filesystems or snapshots.
 
 ```sh
 ahvm create dev --cpus 2 --memory 4096
-ahvm shell dev
-# Inside the guest:
+# Inside the automatically opened guest shell:
 ahvm-dev
 node --version
 bun --version

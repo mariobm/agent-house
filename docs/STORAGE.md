@@ -35,7 +35,7 @@ Local disks remain on the host. For ordinary non-desktop VMs, stop saves a local
 memory/disk checkpoint and start resumes it. Desktop VMs use disk-only stop/start.
 Checkpoints are not off-host backups; host-disk loss can lose local state.
 
-    ahvm create dev --storage local
+    ahvm create dev --storage local --no-shell
     ahvm get dev
     ahvm storage status dev
     ahvm stop dev
@@ -55,7 +55,7 @@ worker pool have finite CPU, RAM and task limits. Configure those limits rather
 than removing resource controls. Cloud deployment and full rollout qualification
 remain separate steps.
 
-    ahvm create durable-dev --storage replicated
+    ahvm create durable-dev --storage replicated --no-shell
     ahvm get durable-dev
     ahvm storage status durable-dev
     ahvm stop durable-dev
