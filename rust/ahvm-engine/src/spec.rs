@@ -95,11 +95,13 @@ pub struct SandboxSpec {
 pub enum State {
     Creating,
     Running,
+    /// Live worker with vCPUs paused; RAM and disk remain resident.
+    Paused,
     Stopped,
     Failed,
 }
 
-/// Thermal tier: `Hot` is a live worker, `Warm` was restored from a
+/// Thermal tier: `Hot` is a live worker, `Warm` is resident-paused or was restored from a
 /// snapshot bundle, `Cold` is stopped-to-disk (relaunch restores it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -107,7 +107,7 @@ impl Registry {
             if row.state != "failed" {
                 count += 1;
             }
-            if row.state == "running" || row.state == "creating" {
+            if matches!(row.state.as_str(), "running" | "creating" | "paused") {
                 cpu_sum += row.cpus;
                 mem_sum += row.memory_mb;
             }
@@ -409,6 +409,29 @@ mod tests {
         assert!(reg.reserve_start(&store, &roomy, "b").is_ok());
         drop(a);
     }
+    #[test]
+    fn paused_vm_still_charges_resident_cpu_and_ram() {
+        let store = ahvm_store::Store::open_in_memory().unwrap();
+        let reg = Registry::new();
+        let u = user("u", 3, 1, 512, 1);
+        store.upsert_user(&u).unwrap();
+        store
+            .create_sandbox(&sandbox_row("u", "a", "paused", 1, 512))
+            .unwrap();
+        store
+            .create_sandbox(&sandbox_row("u", "b", "stopped", 1, 512))
+            .unwrap();
+        assert!(matches!(
+            reg.reserve_start(&store, &u, "b"),
+            Err(ApiError::Forbidden(_))
+        ));
+        assert!(matches!(
+            reg.reserve_sandbox(&store, &u, "c", 1, 512),
+            Err(ApiError::Forbidden(_))
+        ));
+        assert!(reg.reserve_start(&store, &u, "a").is_ok());
+    }
+
     #[test]
     fn concurrent_starts_and_create_share_one_resource_budget() {
         let store = ahvm_store::Store::open_in_memory().unwrap();

@@ -95,6 +95,33 @@ fn kvm_backend_lifecycle_and_recovery() {
     );
     be.session_delete(&info.id, &live).unwrap();
 
+    // Resident idle pause preserves both worker identity and guest memory.
+    let data = std::env::temp_dir().join(format!("ahvm-kvm-be-{}", std::process::id()));
+    let worker_before = std::fs::read(data.join("be-1/state.json")).unwrap();
+    let boot_before = be
+        .exec(&info.id, &sh("cat /proc/sys/kernel/random/boot_id"))
+        .unwrap()
+        .stdout;
+    for _ in 0..3 {
+        be.pause(&info.id).unwrap();
+        assert_eq!(be.status(&info.id).unwrap().state, State::Paused);
+        assert!(be.exec(&info.id, &sh("true")).is_err());
+        assert_eq!(
+            be.resume_paused(&info.id).unwrap().unwrap().state,
+            State::Running
+        );
+        assert_eq!(
+            be.exec(&info.id, &sh("cat /proc/sys/kernel/random/boot_id"))
+                .unwrap()
+                .stdout,
+            boot_before
+        );
+        assert_eq!(
+            std::fs::read(data.join("be-1/state.json")).unwrap(),
+            worker_before
+        );
+    }
+
     // Slow exec: a valid reply arriving after the old 15s readiness
     // timeout must be waited out, not abandoned (forge allows 300s).
     let r = be.exec(&info.id, &sh("sleep 16; printf slow")).unwrap();

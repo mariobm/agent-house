@@ -184,10 +184,7 @@ async fn proxy(
     let permit = CONNECTIONS
         .try_acquire()
         .map_err(|_| ApiError::Conflict("preview capacity exhausted".into()))?;
-    let guard = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| ApiError::Conflict("sandbox stopping".into()))?;
+    let guard = crate::routes::guest(&state, &id).await?;
     let backend = state.backend.clone();
     let connect_id = id.clone();
     let raw = blocking(move || backend.preview_connect(&connect_id, port)).await?;

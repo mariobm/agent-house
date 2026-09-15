@@ -311,7 +311,7 @@ impl KrucibleBackend {
             .as_mut()
             .is_some_and(|w| w.alive());
         if record.deleting
-            || (info.state == State::Running
+            || (matches!(info.state, State::Running | State::Paused)
                 && (!alive
                     || info
                         .storage

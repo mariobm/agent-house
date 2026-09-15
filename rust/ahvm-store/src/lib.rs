@@ -114,6 +114,23 @@ impl Store {
         })
     }
 
+    pub fn pause_after_secs(&self) -> Result<Option<u64>> {
+        self.with_conn(|c| {
+            use rusqlite::OptionalExtension;
+            Ok(c.query_row(
+                "SELECT value FROM host_settings WHERE key='pause_after_secs'",
+                [],
+                |r| r.get::<_, u32>(0).map(u64::from),
+            )
+            .optional()?)
+        })
+    }
+    pub fn set_pause_after_secs(&self, value: u64) -> Result<()> {
+        self.with_conn(|c| {
+            c.execute("INSERT INTO host_settings(key,value) VALUES('pause_after_secs',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [i64::try_from(value).map_err(|_| Error::Conflict("pause timeout too large".into()))?])?;
+            Ok(())
+        })
+    }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
         Self::from_conn(conn)

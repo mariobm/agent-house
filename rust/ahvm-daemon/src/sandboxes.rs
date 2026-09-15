@@ -332,16 +332,16 @@ pub async fn exec(
         return Err(ApiError::Invalid("argv must not be empty".to_string()));
     }
     owned(&state, &user.0, &id).await?;
-    // Attempt marks activity (keep idle_secs comfortably above the exec
-    // budget so long runs are never reaped mid-flight). In-flight guard
-    // holds across the call so the sweep skips instead of racing it.
+    // Keep the activity guard inside the backend task, even if the HTTP
+    // caller disconnects before the guest command finishes.
     state.activity.touch(&id);
-    let _flight = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
+    let _flight = crate::routes::guest(&state, &id).await?;
     let backend = state.backend.clone();
-    let out = blocking(move || backend.exec(&id, &body.argv)).await?;
+    let out = blocking(move || {
+        let _flight = _flight;
+        backend.exec(&id, &body.argv)
+    })
+    .await?;
     Ok(Json(out))
 }
 

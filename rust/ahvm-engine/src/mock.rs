@@ -159,6 +159,40 @@ impl Backend for MockBackend {
         Ok(())
     }
 
+    fn supports_pause(&self, id: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .sandboxes
+            .get(id)
+            .is_some_and(|(spec, _)| !spec.desktop)
+    }
+    fn pause(&self, id: &str) -> Result<()> {
+        let mut inner = self.lock();
+        let (_, info) = inner
+            .sandboxes
+            .get_mut(id)
+            .ok_or_else(|| Error::NotFound(id.into()))?;
+        if !matches!(info.state, State::Running | State::Paused) {
+            return Err(Error::InvalidState("pause requires running VM".into()));
+        }
+        info.state = State::Paused;
+        info.thermal = Thermal::Warm;
+        Ok(())
+    }
+    fn resume_paused(&self, id: &str) -> Result<Option<SandboxInfo>> {
+        let mut inner = self.lock();
+        let (_, info) = inner
+            .sandboxes
+            .get_mut(id)
+            .ok_or_else(|| Error::NotFound(id.into()))?;
+        if info.state != State::Paused {
+            return Ok(None);
+        }
+        info.state = State::Running;
+        info.thermal = Thermal::Hot;
+        Ok(Some(info.clone()))
+    }
     fn stop(&self, id: &str) -> Result<()> {
         let mut inner = self.lock();
         let (_, info) = inner

@@ -1,4 +1,4 @@
-//! Thermal manager: idle Hot/running sandboxes go Cold/stopped, and
+//! Thermal manager: idle running sandboxes pause, then stop later, and
 //! store rows reconcile with backend truth.
 //!
 //! Runs as a background task calling [`sweep_once`] on a cadence.
@@ -17,10 +17,12 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Default)]
 pub struct ActivityTracker {
     inner: Arc<Mutex<TrackerInner>>,
+    policy_updates: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Default)]
 struct TrackerInner {
+    pause_after_secs: u64,
     last: HashMap<String, Instant>,
     inflight: HashMap<String, (u64, usize)>,
     next_generation: u64,
@@ -32,6 +34,13 @@ struct TrackerInner {
 impl ActivityTracker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn pause_after_secs(&self) -> u64 {
+        self.inner.lock().unwrap().pause_after_secs
+    }
+    pub fn set_pause_after_secs(&self, seconds: u64) {
+        self.inner.lock().unwrap().pause_after_secs = seconds;
     }
 
     /// Record activity now.
@@ -94,7 +103,24 @@ impl ActivityTracker {
         now: Instant,
         idle_secs: u64,
     ) -> Option<StopGuard<'_>> {
+        self.begin_idle_transition(id, now, idle_secs, false)
+    }
+
+    fn begin_pause_if_idle(&self, id: &str, now: Instant, seconds: u64) -> Option<StopGuard<'_>> {
+        self.begin_idle_transition(id, now, seconds, true)
+    }
+
+    fn begin_idle_transition(
+        &self,
+        id: &str,
+        now: Instant,
+        idle_secs: u64,
+        pause: bool,
+    ) -> Option<StopGuard<'_>> {
         let mut inner = self.inner.lock().ok()?;
+        if pause && (idle_secs == 0 || inner.pause_after_secs != idle_secs) {
+            return None;
+        }
         if inner.stopping.contains(id)
             || inner.inflight.get(id).map(|(_, count)| *count).unwrap_or(0) > 0
         {
@@ -190,6 +216,7 @@ impl Default for ThermalConfig {
 pub struct SweepStats {
     pub checked: usize,
     pub stopped: usize,
+    pub paused: usize,
     pub reconciled: usize,
     /// Idle rows skipped because all op permits were busy (retried next sweep).
     pub deferred: usize,
@@ -264,7 +291,10 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
                 );
                 stats.reconciled += 1;
             }
-            if live.state != ahvm_engine::State::Running {
+            if !matches!(
+                live.state,
+                ahvm_engine::State::Running | ahvm_engine::State::Paused
+            ) {
                 continue;
             }
             let last = match state.activity.last(&row.id) {
@@ -276,7 +306,15 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
                     continue;
                 }
             };
-            if now.duration_since(last).as_secs() > cfg.idle_secs {
+            let pause_secs = state.activity.pause_after_secs();
+            let stop = now.duration_since(last).as_secs() > cfg.idle_secs;
+            let pause = !stop
+                && pause_secs > 0
+                && live.state == ahvm_engine::State::Running
+                && now.duration_since(last).as_secs() > pause_secs
+                && state.backend.supports_pause(&row.id);
+            if stop || pause {
+                let threshold = if stop { cfg.idle_secs } else { pause_secs };
                 // Share the op bound with foreground work: stopping snapshots.
                 // Non-blocking take — a busy scheduler defers this row to the
                 // next sweep instead of head-of-line blocking the whole pass.
@@ -289,29 +327,44 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
                 // is only a fast path to skip the commit attempt; the
                 // commit itself rechecks atomically below.
                 let fresh = state.activity.last(&row.id);
-                if fresh.is_some_and(|t| now.duration_since(t).as_secs() <= cfg.idle_secs) {
+                if fresh.is_some_and(|t| now.duration_since(t).as_secs() <= threshold) {
                     continue;
                 }
                 // Atomic stop commit (idle timestamp + in-flight + flag in
                 // one acquisition): a short op that ran to completion after
                 // the stale read above still blocks the commit here.
-                let Some(_stop) = state
-                    .activity
-                    .begin_stop_if_idle(&row.id, now, cfg.idle_secs)
-                else {
+                let transition = if stop {
+                    state.activity.begin_stop_if_idle(&row.id, now, threshold)
+                } else {
+                    state.activity.begin_pause_if_idle(&row.id, now, threshold)
+                };
+                let Some(_stop) = transition else {
                     stats.deferred += 1;
                     continue;
                 };
                 let backend = state.backend.clone();
                 let id = row.id.clone();
-                let stopped = tokio::task::spawn_blocking(move || backend.stop(&id)).await;
+                let stopped = tokio::task::spawn_blocking(move || {
+                    if stop {
+                        backend.stop(&id)
+                    } else {
+                        backend.pause(&id)
+                    }
+                })
+                .await;
                 match stopped {
                     Ok(Ok(())) => {
-                        let _ =
-                            state
-                                .store
-                                .set_sandbox_state(&row.id, "stopped", "cold", unix_now());
-                        stats.stopped += 1;
+                        let _ = state.store.set_sandbox_state(
+                            &row.id,
+                            if stop { "stopped" } else { "paused" },
+                            if stop { "cold" } else { "warm" },
+                            unix_now(),
+                        );
+                        if stop {
+                            stats.stopped += 1;
+                        } else {
+                            stats.paused += 1;
+                        }
                     }
                     Ok(Err(e)) => eprintln!("thermal: stop {}: {e}", row.id),
                     Err(e) => eprintln!("thermal: stop task {}: {e}", row.id),
@@ -326,12 +379,12 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
 /// activity rebuilds, records persist per-op).
 pub async fn run(state: AppState, cfg: ThermalConfig) -> ! {
     loop {
-        tokio::time::sleep(Duration::from_secs(cfg.sweep_secs)).await;
+        tokio::time::sleep(Duration::from_secs(cfg.sweep_secs.clamp(1, 5))).await;
         let stats = sweep_once(&state, cfg, Instant::now()).await;
-        if stats.stopped + stats.reconciled > 0 {
+        if stats.stopped + stats.paused + stats.reconciled > 0 {
             eprintln!(
-                "thermal: sweep checked={} stopped={} reconciled={}",
-                stats.checked, stats.stopped, stats.reconciled
+                "thermal: sweep checked={} stopped={} paused={} reconciled={}",
+                stats.checked, stats.stopped, stats.paused, stats.reconciled
             );
         }
     }
@@ -377,6 +430,85 @@ mod tests {
         // ...meanwhile a short op runs to completion, refreshing activity.
         t.touch_at("a", now);
         assert!(t.begin_stop_if_idle("a", now, 10).is_none());
+    }
+
+    #[tokio::test]
+    async fn pause_preserves_residency_guest_resumes_and_stop_still_expires() {
+        let st = state();
+        owner(&st.store);
+        st.activity.set_pause_after_secs(30);
+        let id = live_pair(&st, "pause");
+        let now = Instant::now();
+        let cfg = ThermalConfig {
+            idle_secs: 3600,
+            sweep_secs: 5,
+        };
+        st.activity.touch_at(&id, now - Duration::from_secs(31));
+        let attached = st.activity.begin(&id).unwrap();
+        assert_eq!(sweep_once(&st, cfg, now).await.paused, 0);
+        assert_eq!(st.backend.status(&id).unwrap().state, State::Running);
+        drop(attached);
+        st.activity.touch_at(&id, now - Duration::from_secs(31));
+        assert_eq!(sweep_once(&st, cfg, now).await.paused, 1);
+        assert_eq!(st.store.get_sandbox(&id).unwrap().state, "paused");
+        assert_eq!(st.backend.status(&id).unwrap().state, State::Paused);
+        assert_eq!(sweep_once(&st, cfg, now).await.paused, 0);
+        assert_eq!(st.backend.status(&id).unwrap().state, State::Paused);
+        let guest = crate::routes::guest(&st, &id).await.unwrap();
+        assert_eq!(st.backend.status(&id).unwrap().state, State::Running);
+        assert_eq!(st.store.get_sandbox(&id).unwrap().state, "running");
+        drop(guest);
+        st.activity.touch_at(&id, now - Duration::from_secs(31));
+        assert_eq!(sweep_once(&st, cfg, now).await.paused, 1);
+        st.activity.touch_at(&id, now - Duration::from_secs(3601));
+        assert_eq!(sweep_once(&st, cfg, now).await.stopped, 1);
+        assert_eq!(st.backend.status(&id).unwrap().state, State::Stopped);
+    }
+
+    #[test]
+    fn changed_policy_invalidates_pending_pause_commit() {
+        let activity = ActivityTracker::new();
+        let now = Instant::now();
+        activity.touch_at("vm", now - Duration::from_secs(100));
+        activity.set_pause_after_secs(30);
+        activity.set_pause_after_secs(0);
+        assert!(activity.begin_pause_if_idle("vm", now, 30).is_none());
+        activity.set_pause_after_secs(60);
+        assert!(activity.begin_pause_if_idle("vm", now, 30).is_none());
+        let guard = activity.begin_pause_if_idle("vm", now, 60).unwrap();
+        assert!(activity.begin("vm").is_none());
+        drop(guard);
+        assert!(activity.begin("vm").is_some());
+    }
+
+    #[tokio::test]
+    async fn idle_policy_is_admin_only_validated_and_persisted() {
+        use axum::{extract::State as Extract, Extension, Json};
+        let st = state();
+        let call = |user: &str, seconds| {
+            set_policy(
+                Extract(st.clone()),
+                Extension(crate::auth::UserId(user.into())),
+                Json(IdlePolicy {
+                    pause_after_secs: seconds,
+                }),
+            )
+        };
+        assert!(matches!(
+            call("u", 30).await,
+            Err(crate::ApiError::Forbidden(_))
+        ));
+        for seconds in [1, 4, 86401, u64::MAX] {
+            assert!(matches!(
+                call("admin", seconds).await,
+                Err(crate::ApiError::Invalid(_))
+            ));
+        }
+        for seconds in [30, 60, 0] {
+            let _ = call("admin", seconds).await.unwrap();
+            assert_eq!(st.store.pause_after_secs().unwrap(), Some(seconds));
+            assert_eq!(st.activity.pause_after_secs(), seconds);
+        }
     }
 
     fn state() -> AppState {
@@ -856,4 +988,43 @@ fn stale_stream_completion_does_not_touch_recreated_sandbox() {
     assert!(tracker.last("id").is_none());
     drop(new);
     assert!(!tracker.in_flight("id"));
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdlePolicy {
+    pub pause_after_secs: u64,
+}
+pub async fn policy(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::UserId>,
+) -> crate::ApiResult<axum::Json<IdlePolicy>> {
+    if user.0 != "admin" {
+        return Err(crate::ApiError::Forbidden(
+            "host administrator required".into(),
+        ));
+    }
+    Ok(axum::Json(IdlePolicy {
+        pause_after_secs: state.activity.pause_after_secs(),
+    }))
+}
+pub async fn set_policy(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::UserId>,
+    axum::Json(policy): axum::Json<IdlePolicy>,
+) -> crate::ApiResult<axum::Json<IdlePolicy>> {
+    if user.0 != "admin" {
+        return Err(crate::ApiError::Forbidden(
+            "host administrator required".into(),
+        ));
+    }
+    if policy.pause_after_secs != 0 && !(5..=86400).contains(&policy.pause_after_secs) {
+        return Err(crate::ApiError::Invalid(
+            "pause_after_secs must be 0 (disabled) or 5..86400".into(),
+        ));
+    }
+    let _update = state.activity.policy_updates.lock().await;
+    state.store.set_pause_after_secs(policy.pause_after_secs)?;
+    state.activity.set_pause_after_secs(policy.pause_after_secs);
+    Ok(axum::Json(policy))
 }

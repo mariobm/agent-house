@@ -74,14 +74,15 @@ pub async fn create(
     let _hold = state
         .quotas
         .reserve_snapshot(&state.store, &me, &snap_name)?;
-    let _permit = state.ops.acquire().await;
     state.activity.touch(&id);
     // Guard across the guest-paused snapshot (minutes on big RAM).
-    let _flight = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
-    let manifest = blocking(move || backend.create_snapshot(&owned_id, &snap_name)).await?;
+    let _flight = crate::routes::guest(&state, &id).await?;
+    let _permit = state.ops.acquire().await;
+    let manifest = blocking(move || {
+        let (_flight, _permit) = (_flight, _permit);
+        backend.create_snapshot(&owned_id, &snap_name)
+    })
+    .await?;
     let now = unix_now();
     let row = ahvm_store::Snapshot {
         id: manifest.snapshot_id.clone(),

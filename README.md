@@ -76,7 +76,9 @@ and redirected stdin or stdout also return without opening a shell.
 Type `exit` to end Bash and return to your local terminal. Your VM and files
 remain. Press `Ctrl-]` instead to detach while keeping the shell session alive.
 Run `ahvm shell dev` to open a new shell, or `ahvm start dev` first if the VM
-has stopped automatically while idle.
+has stopped automatically while idle. Ordinary VMs first pause after 30 seconds
+without activity and resume automatically on guest work; connected shells stay
+awake. See [idle pause](docs/IDLE-PAUSE.md) for configuration and stop behavior.
 
 ## 4. Files and checkpoints
 
