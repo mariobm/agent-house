@@ -12,9 +12,11 @@ with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     ssh = root / 'ssh'
     ssh.write_text('''#!/usr/bin/env python3
-import http.server,json,os,sys,threading
+import http.server,json,os,socketserver,sys,threading
 from pathlib import Path
 a=sys.argv[1:]
+with (Path(os.environ['AHVM_CONFIG_DIR']).parent/'ssh-trace').open('a') as trace:
+ trace.write(repr(a)+'\\n')
 cache=Path(os.environ['AHVM_CONFIG_DIR']).parent/'image-cache'
 if '-O' in a: sys.exit(0)
 if '-M' in a:
@@ -31,7 +33,9 @@ if '-M' in a:
    (cache.parent/'last-create').write_text(json.dumps(body))
    self.send_response(200);self.end_headers()
    self.wfile.write(json.dumps({'id':body.get('name','test'),'state':'Running','stdout':'ok','stderr':'','exit_code':0}).encode())
- server=http.server.HTTPServer(('127.0.0.1',port),Handler)
+ # HTTPServer.server_bind does reverse DNS before publishing readiness.
+ # The fixture needs only loopback TCP; hostname lookup can stall on CI.
+ server=socketserver.TCPServer(('127.0.0.1',port),Handler)
  Path(a[a.index('-S')+1]).touch()
  threading.Thread(target=server.serve_forever,daemon=True).start()
  sys.stdin.read()
@@ -44,8 +48,14 @@ else: print('a'*64)
     for key in ['AHVM_HOST', 'AHVM_ENDPOINT', 'AHVM_TOKEN_FILE', 'AHVM_TOKEN']:
         env.pop(key, None)
     def run(*args, ok=True):
-        result = subprocess.run([binary, *args], env=env, capture_output=True, text=True, timeout=15)
-        assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr)
+        # Let the CLI's 30-second SSH setup deadline report its own error.
+        # A busy macOS runner may also spend time starting the Python SSH fixture.
+        try:
+            result = subprocess.run([binary, *args], env=env, capture_output=True, text=True, timeout=45)
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError((args, 'host CLI exceeded 45 seconds', error.stdout, error.stderr)) from error
+        trace = root / 'ssh-trace'
+        assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr, trace.read_text() if trace.exists() else 'SSH fixture never invoked')
         return result
     run('host', 'add', 'home', '--ssh', 'root@192.168.1.2')
     run('host', 'add', 'other', '--ssh', 'other')
