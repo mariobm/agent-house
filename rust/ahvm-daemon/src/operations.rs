@@ -18,6 +18,9 @@ pub enum Request {
         sandbox_id: String,
         cpus: u8,
         memory_mb: u32,
+        /// Pin the installed Ubuntu development image for private pool preparation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image_digest: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         storage_mode: Option<ahvm_engine::StorageMode>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +100,24 @@ pub async fn submit(
 ) -> ApiResult<Response> {
     if !valid_id(&id) || !valid_id(request.sandbox_id()) {
         return Err(ApiError::Invalid("invalid operation or sandbox id".into()));
+    }
+    if let Request::Create {
+        image_digest: Some(digest),
+        ..
+    } = &request
+    {
+        if user.0 != "admin" {
+            return Err(ApiError::Forbidden(
+                "admin required for pinned image".into(),
+            ));
+        }
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(ApiError::Invalid("invalid image digest".into()));
+        }
     }
     let bandwidth = match &request {
         Request::Create {
@@ -200,6 +221,7 @@ async fn execute(state: AppState, user: UserId, request: Request, operation_id: 
             sandbox_id,
             cpus,
             memory_mb,
+            image_digest,
             storage_mode,
             network_bytes_per_sec,
         } => sandboxes::create_operation(
@@ -215,6 +237,7 @@ async fn execute(state: AppState, user: UserId, request: Request, operation_id: 
             }),
             Some(operation_id),
             network_bytes_per_sec,
+            image_digest.as_deref(),
         )
         .await
         .into_response(),

@@ -64,7 +64,7 @@ pub async fn create(
     Extension(user): Extension<UserId>,
     Json(body): Json<CreateBody>,
 ) -> ApiResult<impl IntoResponse> {
-    create_operation(State(state), Extension(user), Json(body), None, None).await
+    create_operation(State(state), Extension(user), Json(body), None, None, None).await
 }
 
 pub(crate) async fn create_operation(
@@ -73,6 +73,7 @@ pub(crate) async fn create_operation(
     Json(body): Json<CreateBody>,
     operation: Option<&str>,
     network_bytes_per_sec: Option<u64>,
+    image_digest: Option<&str>,
 ) -> ApiResult<impl IntoResponse> {
     if body.name.is_empty() || body.name.len() > 64 {
         return Err(ApiError::Invalid("name must be 1..=64 chars".to_string()));
@@ -100,7 +101,19 @@ pub(crate) async fn create_operation(
             "desktop requires ubuntu-desktop or omarchy-desktop".into(),
         ));
     }
-    let root_image = if desktop {
+    let root_image = if let Some(expected) = image_digest {
+        let path = resolve_image(Some("ubuntu-dev"))?
+            .ok_or_else(|| ApiError::Invalid("Ubuntu image unavailable".into()))?;
+        if std::path::Path::new(&path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            != Some(expected)
+        {
+            return Err(ApiError::Conflict("Ubuntu image generation changed".into()));
+        }
+        // Retain the immutable digest path, not the mutable alias/default symlink.
+        Some(path)
+    } else if desktop {
         // Explicit named images always win over legacy preview overrides.
         match body.image.as_deref() {
             Some(name) => resolve_image(Some(name))?,
