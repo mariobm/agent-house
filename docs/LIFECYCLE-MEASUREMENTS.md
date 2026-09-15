@@ -299,3 +299,9 @@ All disposable VMs were deleted, replicated volumes reclaimed and isolated
 services removed. Production services and user VMs were unchanged. Desktop
 pause remains unqualified. The next experiment is a bounded prebooted Ubuntu
 pool; desktop replicated-storage qualification follows it.
+
+
+The next bounded-pool experiment is recorded in [PREBOOT-POOL.md](PREBOOT-POOL.md):
+prepared running/paused VM claims reached a real shell in roughly 127/143 ms
+on the host. This uses an isolated placement model; production Cloud claims
+and network latency are not included.

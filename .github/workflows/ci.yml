@@ -31,6 +31,8 @@ jobs:
         run: make test
       - name: Privileged volume admission tests
         run: make test-volume-root
+      - name: Preboot pool placement model
+        run: python3 -m unittest discover -s experiments/preboot-pool -v
       - name: Shell syntax
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done

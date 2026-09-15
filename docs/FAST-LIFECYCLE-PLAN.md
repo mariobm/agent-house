@@ -1,6 +1,12 @@
 # Fast create, pause and wake
 
-Status: proposed investigation and implementation sequence, 2026-09-15.
+Status: investigation in progress, 2026-09-15.
+
+Caches, automatic shell after create, and resident idle pause are implemented.
+Current shipped/implemented policy details are in [IDLE-PAUSE.md](IDLE-PAUSE.md);
+the proposed retention/task-lease choices below are not all implemented. The
+[prebooted pool experiment](PREBOOT-POOL.md) now has measured results; Cloud
+ownership integration and rollout remain next.
 This document changes no runtime defaults. Breaking API, CLI and state-format
 changes are allowed; preserving user data and tenant isolation remains required.
 
