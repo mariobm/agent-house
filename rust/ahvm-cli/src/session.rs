@@ -12,6 +12,8 @@ use std::{
 };
 use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 
+type ResizeRequest = tokio::task::JoinHandle<((u16, u16), Result<Value>)>;
+
 struct RawTerminal;
 impl Drop for RawTerminal {
     fn drop(&mut self) {
@@ -69,6 +71,8 @@ pub fn attach(api: &Api, id: &str, sid: &str, seq: u64) -> Result<i32> {
             }
         });
         let mut size=None;
+        let mut pending_resize: Option<ResizeRequest>=None;
+        let mut resize_after=tokio::time::Instant::now();
         let mut resize=tokio::time::interval(Duration::from_millis(250));
         let mut ping=tokio::time::interval(Duration::from_secs(20));
         let mut cursor=seq;
@@ -119,12 +123,23 @@ pub fn attach(api: &Api, id: &str, sid: &str, seq: u64) -> Result<i32> {
                         socket=next;size=None;last_frame=tokio::time::Instant::now();
                     }
                 },
+                result=async {pending_resize.as_mut().unwrap().await}, if pending_resize.is_some()=>{
+                    pending_resize=None;
+                    if let Ok((now,Ok(_)))=result {size=Some(now);}
+                    else {resize_after=tokio::time::Instant::now()+Duration::from_secs(2);}
+                },
                 _=resize.tick()=>{
-                    if let Ok(now)=crossterm::terminal::size() {
-                        if size!=Some(now) {
-                            let api=api.clone(); let id=id.to_owned();let sid=sid.to_owned();
-                            tokio::task::spawn_blocking(move || api.call(Method::POST,&["sandboxes",&id,"sessions",&sid,"resize"],&[],Some(json!({"cols":now.0,"rows":now.1})))).await??;
-                            size=Some(now);
+                    // Geometry is best-effort. Keep at most one bounded request
+                    // in flight, without blocking input/output or disconnecting
+                    // the WebSocket when this separate HTTP request fails.
+                    if pending_resize.is_none() && tokio::time::Instant::now()>=resize_after {
+                        if let Ok(now)=crossterm::terminal::size() {
+                            if now.0>0 && now.1>0 && size!=Some(now) {
+                                let api=api.clone(); let id=id.to_owned();let sid=sid.to_owned();
+                                pending_resize=Some(tokio::task::spawn_blocking(move || (now,api.call_with_timeout(
+                                    Method::POST,&["sandboxes",&id,"sessions",&sid,"resize"],&[],
+                                    Some(json!({"cols":now.0,"rows":now.1})),Some(Duration::from_secs(2))))));
+                            }
                         }
                     }
                 },
