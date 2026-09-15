@@ -198,6 +198,20 @@ async fn main() {
         })),
         lifecycle: ahvm_daemon::scheduler::LifecycleLocks::new(),
     };
+    let pause = state
+        .store
+        .pause_after_secs()
+        .expect("load idle policy")
+        .unwrap_or_else(|| {
+            std::env::var("AHVM_PAUSE_SECS")
+                .map(|v| v.parse().expect("AHVM_PAUSE_SECS must be an integer"))
+                .unwrap_or(30)
+        });
+    assert!(
+        pause == 0 || (5..=86400).contains(&pause),
+        "pause timeout must be 0 or 5..86400"
+    );
+    state.activity.set_pause_after_secs(pause);
     // Thermal sweep (idle stop + reconcile) runs for the daemon lifetime.
     // Shutdown is process exit: activity rebuilds, records persist per-op.
     let thermal_state = state.clone();

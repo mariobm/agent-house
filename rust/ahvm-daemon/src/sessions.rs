@@ -39,12 +39,13 @@ pub async fn create(
     }
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
-    let _flight = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
+    let _flight = crate::routes::guest(&state, &id).await?;
     let backend = state.backend.clone();
-    let session_id = blocking(move || backend.session_create(&id, &body.argv, body.pty)).await?;
+    let session_id = blocking(move || {
+        let _flight = _flight;
+        backend.session_create(&id, &body.argv, body.pty)
+    })
+    .await?;
     Ok(Json(CreateResponse { session_id }))
 }
 
@@ -54,9 +55,15 @@ pub async fn list(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<ahvm_engine::SessionInfo>>> {
     owned(&state, &user.0, &id).await?;
-    state.activity.touch(&id);
+    let _flight = crate::routes::guest_passive(&state, &id).await?;
     let backend = state.backend.clone();
-    Ok(Json(blocking(move || backend.session_list(&id)).await?))
+    Ok(Json(
+        blocking(move || {
+            let _flight = _flight;
+            backend.session_list(&id)
+        })
+        .await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,15 +85,16 @@ pub async fn input(
     use base64::Engine;
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
-    let _flight = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
+    let _flight = crate::routes::guest(&state, &id).await?;
     let data = base64::engine::general_purpose::STANDARD
         .decode(&body.data_b64)
         .map_err(|e| ApiError::Invalid(format!("data_b64 is not base64: {e}")))?;
     let backend = state.backend.clone();
-    let bytes = blocking(move || backend.session_input(&id, &sid, &data)).await?;
+    let bytes = blocking(move || {
+        let _flight = _flight;
+        backend.session_input(&id, &sid, &data)
+    })
+    .await?;
     Ok(Json(InputResponse { bytes }))
 }
 
@@ -96,10 +104,14 @@ pub async fn kill(
     Path((id, sid)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     owned(&state, &user.0, &id).await?;
-    state.activity.touch(&id);
+    let _flight = crate::routes::guest_passive(&state, &id).await?;
     let backend = state.backend.clone();
     let sid_reply = sid.clone();
-    blocking(move || backend.session_kill(&id, &sid)).await?;
+    blocking(move || {
+        let _flight = _flight;
+        backend.session_kill(&id, &sid)
+    })
+    .await?;
     Ok(Json(serde_json::json!({ "killed": sid_reply })))
 }
 
@@ -109,9 +121,13 @@ pub async fn delete(
     Path((id, sid)): Path<(String, String)>,
 ) -> ApiResult<axum::http::StatusCode> {
     owned(&state, &user.0, &id).await?;
-    state.activity.touch(&id);
+    let _flight = crate::routes::guest_passive(&state, &id).await?;
     let backend = state.backend.clone();
-    blocking(move || backend.session_delete(&id, &sid)).await?;
+    blocking(move || {
+        let _flight = _flight;
+        backend.session_delete(&id, &sid)
+    })
+    .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -128,10 +144,14 @@ pub async fn resize(
     Json(body): Json<ResizeBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     owned(&state, &user.0, &id).await?;
-    state.activity.touch(&id);
+    let _flight = crate::routes::guest(&state, &id).await?;
     let backend = state.backend.clone();
     let sid_reply = sid.clone();
-    blocking(move || backend.session_resize(&id, &sid, body.rows, body.cols)).await?;
+    blocking(move || {
+        let _flight = _flight;
+        backend.session_resize(&id, &sid, body.rows, body.cols)
+    })
+    .await?;
     Ok(Json(serde_json::json!({ "resized": sid_reply })))
 }
 
@@ -169,10 +189,7 @@ pub async fn read(
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
     // Guard across the drain: budgets reach 30s, past any small idle window.
-    let _flight = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
+    let _flight = crate::routes::guest_passive(&state, &id).await?;
     let budget = Duration::from_millis(q.budget_ms.clamp(100, 30_000));
     let backend = state.backend.clone();
     let stream_guard = state
@@ -207,10 +224,7 @@ pub async fn stream(
     ws: WebSocketUpgrade,
 ) -> ApiResult<axum::response::Response> {
     owned(&state, &user.0, &id).await?;
-    let activity_guard = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| ApiError::Conflict("sandbox is stopping; retry later".into()))?;
+    let activity_guard = crate::routes::guest(&state, &id).await?;
     let stream_guard = state
         .ops
         .try_stream(&id)

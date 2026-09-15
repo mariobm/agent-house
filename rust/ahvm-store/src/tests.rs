@@ -482,3 +482,30 @@ fn replicated_recovery_scan_and_existing_volume_capacity() {
     assert!(s.retained_replicated_reservations(None, 0).is_err());
     assert!(s.retained_replicated_reservations(None, 1001).is_err());
 }
+
+#[test]
+fn idle_policy_survives_reopen_including_disabled_value() {
+    let dir = std::env::temp_dir().join(format!(
+        "ahvm-policy-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("state.db");
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.pause_after_secs().unwrap(), None);
+    store.set_pause_after_secs(60).unwrap();
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.pause_after_secs().unwrap(), Some(60));
+    store.set_pause_after_secs(0).unwrap();
+    drop(store);
+    assert_eq!(
+        Store::open(&path).unwrap().pause_after_secs().unwrap(),
+        Some(0)
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

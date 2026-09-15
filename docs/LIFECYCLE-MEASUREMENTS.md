@@ -267,3 +267,35 @@ Production services and user VMs were not modified for these measurements.
    private writable storage and accounted resources before assigning a VM.
 5. Qualify desktop images with replicated storage, including desktop reconnect,
    disk persistence and recovery, before enabling them in Cloud.
+
+
+## Resident idle pause qualification
+
+The reusable caches and interactive create-to-shell changes are merged. Step 3
+adds configurable resident pause; [policy and semantics](IDLE-PAUSE.md).
+
+On `agent_house`, one isolated **1-vCPU / 2-GiB** VM at a time, with a five-second
+qualification timeout, direct loopback HTTP resume-to-successful-exec measured:
+
+| Storage | Three samples |
+| --- | --- |
+| Replicated | 33 / 36 / 33 ms |
+| Local | 33 / 30 / 38 ms |
+
+Each sample began with observed `paused` state. All retained the same worker PID
+and guest boot ID. Both modes also passed daemon restart/adoption while paused,
+a quiet connected shell lasting 12 seconds (past the five-second timeout),
+explicit stop from paused, start, and disabling future pause. These timings do
+not include Cloud routing, client network latency or shell attachment. They do
+not measure cold start or imply that paused RAM is freed.
+
+Unit coverage includes atomic idle admission, policy changes racing a pending
+pause decision, admin-only policy validation, persistence across reopen,
+paused CPU/RAM accounting, adoption preserving intentional pause, and resolving
+a lost PAUSE acknowledgement via STATUS. The KVM backend gate now includes
+three pause/resume cycles with worker and guest boot identity checks.
+
+All disposable VMs were deleted, replicated volumes reclaimed and isolated
+services removed. Production services and user VMs were unchanged. Desktop
+pause remains unqualified. The next experiment is a bounded prebooted Ubuntu
+pool; desktop replicated-storage qualification follows it.

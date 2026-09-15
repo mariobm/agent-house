@@ -37,12 +37,13 @@ pub async fn read(
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
     state.activity.touch(&id);
-    let _flight = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
+    let _flight = crate::routes::guest(&state, &id).await?;
     let backend = state.backend.clone();
-    let chunk = blocking(move || backend.file_read(&id, &q.path, q.offset, q.limit)).await?;
+    let chunk = blocking(move || {
+        let _flight = _flight;
+        backend.file_read(&id, &q.path, q.offset, q.limit)
+    })
+    .await?;
     Ok(Json(ReadResponse {
         data_b64: base64_body(&chunk.data),
         eof: chunk.eof,
@@ -71,13 +72,14 @@ pub async fn write(
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
     state.activity.touch(&id);
-    let _flight = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
+    let _flight = crate::routes::guest(&state, &id).await?;
     let data = base64_decode(&body.data_b64)?;
     let backend = state.backend.clone();
-    let bytes = blocking(move || backend.file_write(&id, &body.path, &data)).await?;
+    let bytes = blocking(move || {
+        let _flight = _flight;
+        backend.file_write(&id, &body.path, &data)
+    })
+    .await?;
     Ok(Json(WriteResponse { bytes }))
 }
 
@@ -105,12 +107,13 @@ pub async fn list(
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
     state.activity.touch(&id);
-    let _flight = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| crate::ApiError::Conflict(format!("sandbox {id} is stopping")))?;
+    let _flight = crate::routes::guest(&state, &id).await?;
     let backend = state.backend.clone();
-    let listing = blocking(move || backend.file_list(&id, &q.path, q.offset, q.limit)).await?;
+    let listing = blocking(move || {
+        let _flight = _flight;
+        backend.file_list(&id, &q.path, q.offset, q.limit)
+    })
+    .await?;
     Ok(Json(ListResponse {
         entries: listing
             .entries
@@ -189,15 +192,13 @@ pub async fn upload(
         .ops
         .try_stream(&id)
         .ok_or_else(|| ApiError::Conflict("workspace stream limit reached; retry later".into()))?;
+    let flight = crate::routes::guest(&state, &id).await?;
+    // Admission precedes the global permit, matching lifecycle lock order.
     // Fail fast rather than retaining unbounded waiting HTTP uploads.
     let permit = state
         .ops
         .try_acquire()
         .ok_or_else(|| ApiError::Conflict("upload capacity busy; retry later".into()))?;
-    let flight = state
-        .activity
-        .begin(&id)
-        .ok_or_else(|| ApiError::Conflict(format!("sandbox {id} is stopping")))?;
     let (tx, rx) = tokio::sync::mpsc::channel(2);
     let backend = state.backend.clone();
     let mut worker = tokio::task::spawn_blocking(move || {

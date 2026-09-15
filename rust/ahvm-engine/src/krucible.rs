@@ -26,6 +26,7 @@
 //! as [`State::Failed`](crate::State). Owned children are reaped via
 //! [`LiveWorker`](crate::LiveWorker); adopted ones via pid polling.
 
+mod pause;
 mod replicated;
 use replicated::validate_storage_record;
 
@@ -437,15 +438,22 @@ impl KrucibleBackend {
             // A surviving process may be paused inside an interrupted snapshot.
             // Probe once on adoption; process liveness alone cannot prove that
             // guest commands can run. Desktop workers have no control socket.
-            let needs_resume =
-                worker.is_some() && !record.spec.desktop && recover_control(&dir).is_err();
+            let intentional_pause = worker.is_some() && record.info.state == State::Paused;
+            let paused = intentional_pause
+                && send_ctl(control_sock(&dir), "STATUS").is_ok_and(|s| s == "OK paused");
+            let needs_resume = worker.is_some()
+                && !record.spec.desktop
+                && !paused
+                && recover_control(&dir).is_err();
             if worker.is_some() {
                 info.state = if needs_resume || record.deleting {
                     State::Failed
+                } else if paused {
+                    State::Paused
                 } else {
                     State::Running
                 };
-            } else if info.state == State::Running {
+            } else if matches!(info.state, State::Running | State::Paused) {
                 info.state = State::Failed;
             }
             inner.next_ip_octet = inner.next_ip_octet.max(2);
@@ -1682,6 +1690,9 @@ impl Backend for KrucibleBackend {
         }
         // Both storage modes boot through the same per-VM network policy.
         // Persist/remove the stopped gateway before replicated boot as well.
+        if self.resume_resident(id)? {
+            return Ok(());
+        }
         if self.is_replicated(id)? {
             return self.start_replicated(id);
         }
@@ -1799,9 +1810,39 @@ impl Backend for KrucibleBackend {
         }
     }
 
+    fn supports_pause(&self, id: &str) -> bool {
+        self.lock()
+            .sandboxes
+            .get(id)
+            .is_some_and(|r| !r.record.spec.desktop)
+    }
+    fn pause(&self, id: &str) -> Result<()> {
+        self.pause_resident(id)
+    }
+    fn resume_paused(&self, id: &str) -> Result<Option<SandboxInfo>> {
+        // Fast path: guest operations on running VMs need no control RPC.
+        let paused = self
+            .lock()
+            .sandboxes
+            .get(id)
+            .is_some_and(|r| r.record.info.state == State::Paused);
+        if paused {
+            let _guard = OpGuard::take(self, id)?;
+            if !self.resume_resident(id)? {
+                return Err(Error::InvalidState(
+                    "paused worker died; explicit start required".into(),
+                ));
+            }
+            return Ok(Some(
+                self.lock().sandboxes.get(id).unwrap().record.info.clone(),
+            ));
+        }
+        Ok(None)
+    }
     fn stop(&self, id: &str) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
+        self.resume_resident(id)?;
         if self.is_replicated(id)? {
             return self.stop_replicated(id);
         }
@@ -2934,6 +2975,57 @@ mod tests {
         be.start("vm").unwrap();
         assert_eq!(be.status("vm").unwrap().state, State::Running);
         control.join().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn adoption_keeps_idle_pause_and_lost_pause_ack_is_observed() {
+        let dir = crate::test_scratch("idle-pause-adopt");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        write_record(&dir, "vm", State::Paused);
+        let live = dir.join("data/vm");
+        Worker {
+            id: "vm".into(),
+            pid: std::process::id(),
+            sock_dir: live.clone(),
+            state_path: live.join("state.json"),
+            starttime: crate::process_starttime(std::process::id()),
+        }
+        .persist()
+        .unwrap();
+        std::fs::create_dir_all(sock_dir(&live)).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(control_sock(&live)).unwrap();
+        let control = std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            for (command, reply) in [
+                ("STATUS", "OK paused\n"),
+                ("STATUS", "OK paused\n"),
+                ("RESUME", "OK running\n"),
+                ("PAUSE", ""),
+                ("STATUS", "OK paused\n"),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                assert_eq!(line.trim(), command);
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        assert_eq!(be.status("vm").unwrap().state, State::Paused);
+        assert_eq!(
+            be.resume_paused("vm").unwrap().unwrap().state,
+            State::Running
+        );
+        be.pause("vm").unwrap();
+        assert_eq!(be.status("vm").unwrap().state, State::Paused);
+        control.join().unwrap();
+        // Adopted handles survive backend drop; never destroy our own test PID.
+        std::fs::remove_file(live.join("state.json")).unwrap();
+        drop(be);
     }
 
     #[test]

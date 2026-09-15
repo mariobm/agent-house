@@ -68,6 +68,17 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
         }
         self.start(id)
     }
+    /// Pause a resident headless VM without snapshotting or releasing RAM.
+    fn supports_pause(&self, _id: &str) -> bool {
+        false
+    }
+    fn pause(&self, _id: &str) -> Result<()> {
+        Err(crate::Error::InvalidState("idle pause unavailable".into()))
+    }
+    /// Resume only a paused resident worker; never cold-boot a stopped VM.
+    fn resume_paused(&self, _id: &str) -> Result<Option<SandboxInfo>> {
+        Ok(None)
+    }
     fn stop(&self, id: &str) -> Result<()>;
     fn status(&self, id: &str) -> Result<SandboxInfo>;
     fn list(&self) -> Result<Vec<SandboxInfo>>;

@@ -3,6 +3,7 @@
 //! dashboard event stream.
 
 pub(crate) const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS host_settings (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS lifecycle_operations (
     id TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL,

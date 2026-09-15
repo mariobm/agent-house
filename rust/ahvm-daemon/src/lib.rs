@@ -210,6 +210,10 @@ pub fn build_router(state: AppState) -> Router {
 
     let authed = Router::new()
         .route(
+            "/v1/admin/idle-policy",
+            get(thermal::policy).put(thermal::set_policy),
+        )
+        .route(
             "/v1/operations/{id}",
             get(operations::get).post(operations::submit),
         )
@@ -315,7 +319,7 @@ async fn healthz() -> Json<serde_json::Value> {
     let custom = std::env::var_os("AHVM_DESKTOP_IMAGE").is_some();
     Json(serde_json::json!({
         "status": "ok", "version": env!("CARGO_PKG_VERSION"),
-        "features": ["lifecycle-storage-v1", "replicated-storage-v1", "lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
+        "features": ["idle-pause-v1", "lifecycle-storage-v1", "replicated-storage-v1", "lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
         "desktop_images": {
             "ubuntu-desktop": sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
             "omarchy-desktop": sandboxes::resolve_image(Some("omarchy-desktop")).is_ok(),
