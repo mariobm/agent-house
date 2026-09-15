@@ -7,6 +7,7 @@ use crate::{
     s3::{Config as S3Config, S3Store},
     ObjectStore,
 };
+use ahvm_proto::timing::measure;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -693,7 +694,9 @@ impl Service {
             return Err("invalid raw image size/type".into());
         }
         let mut bytes = vec![0; crate::indexed::WRITE_LIMIT];
-        let hash = Self::hash_image(&mut file, &mut imports, &mut bytes)?;
+        let hash = measure("volume", "image_hash", &r.id, || {
+            Self::hash_image(&mut file, &mut imports, &mut bytes)
+        })?;
         if r.image_hash.is_empty() {
             r.image_hash = hash;
             self.persist(r)?;
@@ -701,10 +704,14 @@ impl Service {
             return Err("import source changed".into());
         }
         let store = self.store()?;
-        let mut disk = match store.head(&r.id)? {
+        let mut disk = match measure("volume", "head", &r.id, || store.head(&r.id))? {
             None => {
-                let reference = self.import_base(&mut file, &r.image_hash, size, &mut bytes)?;
-                IndexedVolume::create_from_base(store.clone(), &r.id, reference)?;
+                let reference = measure("volume", "base_reference", &r.id, || {
+                    self.import_base(&mut file, &r.image_hash, size, &mut bytes)
+                })?;
+                measure("volume", "create_from_base", &r.id, || {
+                    IndexedVolume::create_from_base(store.clone(), &r.id, reference)
+                })?;
                 None
             }
             Some(h) => {
@@ -734,7 +741,9 @@ impl Service {
             }
             disk.finish_import()?;
         }
-        OwnedDisk::enroll(store, &r.id)?;
+        measure("volume", "enroll", &r.id, || {
+            OwnedDisk::enroll(store, &r.id)
+        })?;
         r.prepared = true;
         self.persist(r)
     }
@@ -1001,7 +1010,11 @@ impl Service {
                 })
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(if ahvm_proto::timing::enabled() {
+                    Stdio::inherit()
+                } else {
+                    Stdio::null()
+                })
                 .spawn()?,
         );
         let p = Process::read(child.id())?.ok_or("worker exited")?;

@@ -679,13 +679,15 @@ fn forge_b64(v: &serde_json::Value, k: &str) -> Result<Vec<u8>> {
         .map_err(|e| Error::Control(format!("forge {k} not base64: {e}")))
 }
 
-fn wait_ready(sock: &Path, timeout: Duration) -> Result<()> {
+fn wait_ready(sock: &Path, timeout: Duration, id: &str) -> Result<()> {
     let deadline = Instant::now() + timeout;
     let probe = vec!["/bin/true".to_string()];
     loop {
         // Short per-attempt budget: readiness is a poll loop, and a hung
         // worker must surface at the outer deadline, not per attempt.
-        match rpc_exec(sock, &probe, RPC_TIMEOUT) {
+        match ahvm_proto::timing::measure("engine", "ready_probe", id, || {
+            rpc_exec(sock, &probe, RPC_TIMEOUT)
+        }) {
             Ok(r) if r.exit_code == 0 => return Ok(()),
             _ => {
                 if Instant::now() > deadline {
@@ -868,11 +870,27 @@ impl KrucibleBackend {
     }
 
     fn ready(&self, dir: &Path) -> Result<()> {
-        wait_ready(&forge_sock(dir), self.cfg.ready_timeout)?;
+        ahvm_proto::timing::measure(
+            "engine",
+            "guest_ready",
+            &dir.file_name().unwrap_or_default().to_string_lossy(),
+            || {
+                wait_ready(
+                    &forge_sock(dir),
+                    self.cfg.ready_timeout,
+                    &dir.file_name().unwrap_or_default().to_string_lossy(),
+                )
+            },
+        )?;
         if self.networks.is_some() {
             let argv = vec!["/bin/sh".into(), "-ec".into(),
                 "ip link set lo up; ip link set eth0 up; ip addr replace 100.64.0.2/24 dev eth0; ip route replace default via 100.64.0.1; printf 'nameserver 100.64.0.1\\n' > /etc/resolv.conf".into()];
-            let r = rpc_exec(&forge_sock(dir), &argv, Duration::from_secs(15))?;
+            let r = ahvm_proto::timing::measure(
+                "engine",
+                "guest_network",
+                &dir.file_name().unwrap_or_default().to_string_lossy(),
+                || rpc_exec(&forge_sock(dir), &argv, Duration::from_secs(15)),
+            )?;
             if r.exit_code != 0 {
                 return Err(Error::Control(
                     "guest network setup failed (requires ip and /bin/sh)".into(),

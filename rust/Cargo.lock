@@ -114,6 +114,9 @@ dependencies = [
 [[package]]
 name = "ahvm-proto"
 version = "0.3.2"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "ahvm-store"
@@ -141,6 +144,7 @@ dependencies = [
 name = "ahvm-volume"
 version = "0.3.2"
 dependencies = [
+ "ahvm-proto",
  "aws-credential-types",
  "aws-sigv4",
  "quick-xml",
