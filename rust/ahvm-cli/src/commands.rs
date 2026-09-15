@@ -71,9 +71,10 @@ enum Command {
         desktop: bool,
         #[arg(long)]
         image: Option<String>,
+        /// vCPUs for self-hosted VMs; Cloud sizing is administrator-managed.
         #[arg(long)]
         cpus: Option<u8>,
-        /// RAM in MiB (default: 2048; Ubuntu desktop: 4096; Omarchy: 8192).
+        /// Self-hosted RAM in MiB (default: 2048; Ubuntu desktop: 4096; Omarchy: 8192).
         #[arg(long)]
         memory: Option<u32>,
     },
@@ -271,6 +272,19 @@ pub fn run(cli: Cli) -> Result<i32> {
     if cli.cloud
         && matches!(
             &cli.command,
+            Command::Create { cpus: Some(_), .. }
+                | Command::Create {
+                    memory: Some(_),
+                    ..
+                }
+        )
+    {
+        return Err("Cloud CPU and RAM are managed by the administrator; omit --cpus and --memory (self-hosted only)".into());
+    }
+
+    if cli.cloud
+        && matches!(
+            &cli.command,
             Command::Storage(_)
                 | Command::Create {
                     storage: Some(_),
@@ -440,8 +454,11 @@ pub fn run(cli: Cli) -> Result<i32> {
                     }
                 }
             }
-            let mut body =
-                json!({"name":name,"cpus":cpus,"memory_mb":memory,"image":image,"desktop":desktop});
+            let mut body = json!({"name":name,"image":image,"desktop":desktop});
+            if !cli.cloud {
+                body["cpus"] = json!(cpus);
+                body["memory_mb"] = json!(memory);
+            }
             if let Some(storage) = storage {
                 let health = api.call(Method::GET, &["healthz"], &[], None)?;
                 require_storage_api(&health)?;

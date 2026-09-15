@@ -170,10 +170,10 @@ fn device_login_refresh_whoami_logout_leave_self_hosted_config_untouched() {
             assert!(headers
                 .to_lowercase()
                 .contains("idempotency-key: same-request-key-1234"));
-            assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&body).unwrap()["name"],
-                "dev"
-            );
+            let request: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(request["name"], "dev");
+            assert!(request.get("cpus").is_none());
+            assert!(request.get("memory_mb").is_none());
             if pending {
                 write!(
                     s,

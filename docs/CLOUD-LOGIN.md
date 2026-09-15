@@ -58,7 +58,7 @@ different HTTPS service with `--cloud-endpoint`; HTTP is accepted only for a loc
 The cloud compute commands require v0.2.6 or newer. After your workspace is enabled:
 
 ```sh
-ahvm --cloud create dev --cpus 2 --memory 4096
+ahvm --cloud create dev
 # Bash opens inside the new VM:
 bun --version
 exit
@@ -68,6 +68,11 @@ ahvm --cloud stop dev
 ahvm --cloud start dev
 ahvm --cloud delete dev
 ```
+
+Cloud CPU and RAM are selected by the administrator, initially 1 vCPU and 2048 MiB
+(2 GiB). `--cpus` and `--memory` are self-hosted options only. Changing the Cloud
+profile affects new admissions; existing VMs and retries keep their admitted size.
+Workspace quotas and host capacity still apply. Disk capacity comes from the image.
 
 Interactive creation opens Bash automatically. Use `--no-shell` to return after
 creation; `--json` and redirected stdin/stdout never attach. Later, use
@@ -86,7 +91,7 @@ Lifecycle requests carry an idempotency key. If the response is interrupted or
 pending, the CLI prints the key. Retry the same command with that key:
 
 ```sh
-ahvm --cloud --idempotency-key <printed-key> create dev --cpus 2 --memory 4096
+ahvm --cloud --idempotency-key <printed-key> create dev
 ```
 
 This reads the existing operation instead of creating another VM. Pending or
