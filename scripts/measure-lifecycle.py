@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--cli', required=True)
     parser.add_argument('--mode', choices=['local', 'replicated'], required=True)
     parser.add_argument('--samples', type=int, default=5)
+    parser.add_argument('--volume-root', type=Path, help='isolated supervisor root; wait for reclamation between samples')
     args = parser.parse_args()
     if not 1 <= args.samples <= 20:
         parser.error('samples must be between 1 and 20')
@@ -80,6 +81,7 @@ def main():
         name = 'timing-' + uuid.uuid4().hex[:12]
         path = '/sandboxes/' + name
         print(json.dumps({'sample': sample, 'id': name, 'event': 'begin'}), flush=True)
+        vm = None
         try:
             started = time.monotonic()
             vm = api('/sandboxes', 'POST', dict(name=name, cpus=1, memory_mb=2048,
@@ -106,6 +108,16 @@ def main():
             except urllib.error.HTTPError as error:
                 if error.code != 404:
                     raise
+            if args.volume_root and vm and vm.get('storage', {}).get('volume_id'):
+                volume_id = vm['storage']['volume_id']
+                if len(volume_id) != 64 or any(c not in '0123456789abcdef' for c in volume_id):
+                    raise RuntimeError('invalid volume ID')
+                record = args.volume_root / 'volumes' / volume_id / 'record.json'
+                deadline = time.monotonic() + 180
+                while not json.loads(record.read_text()).get('reclaimed'):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('reclamation deadline; stop before creating another VM')
+                    time.sleep(.5)
 
 
 if __name__ == '__main__':

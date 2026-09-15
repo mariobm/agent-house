@@ -8,8 +8,9 @@ but the normal create path finished at 5.740 seconds after that point. About
 2.7 seconds of that run was avoidable waiting, not necessary guest boot work.
 This warrants investigation before investing in a prepared VM pool.
 
-The same Ubuntu image creates quickly with local storage. We have not changed
-timeouts, storage guarantees, boot behavior or production deployments in this PR.
+The same Ubuntu image creates quickly with local storage. The initial measurements below preceded the readiness fix. The follow-up section
+records the change and new results; storage guarantees and production deployments
+remain unchanged.
 
 ## Method
 
@@ -102,7 +103,7 @@ another reason not to treat these few runs as a reliability qualification.
 
 ## Recommended order from the evidence
 
-1. Fix/prove readiness signaling or bounded connection retry so an early failed
+1. Addressed by the readiness fix below: bounded connection retry so an early failed
    connection cannot hide an already usable guest. Preserve real `/bin/true`
    success as the gate, failure deadlines, and no repeated execution of user work.
 2. Cache/prewarm verified immutable base block maps across worker lifetimes.
@@ -142,6 +143,56 @@ a distributed trace spanning Cloud and host clocks.
 
 Validation: engine unit tests (50 passed), focused cache tests (2 passed), clippy
 with warnings denied, formatting/diff checks, Linux release builds and the live
-measurements above. No production upgrade or behavioral optimization is included. All test VMs were
+measurements above. These validations describe the initial measurement commit. All initial test VMs were
 deleted, all nine replicated test volumes reached reclaimed state, and both
 isolated services were stopped. The temporary test token was removed.
+
+
+## Readiness fix in the same PR
+
+The engine now uses a dedicated, fixed `/bin/true` readiness request with a
+100-ms attempt deadline during the first second, 250 ms thereafter, and up to
+50 ms between attempts. Both connect and the
+whole reply share that deadline, capped by the overall configured readiness
+budget. A stalled early connection is discarded; a new connection can observe
+an already-running guest. Only an ExecResp with exit code zero is accepted.
+Normal user exec/session requests are not retried or given shorter timeouts.
+
+Nonblocking reads/writes check the deadline even for a trickled response. This
+also avoids a macOS race where setting a receive timeout after peer closure
+could return EINVAL despite a buffered successful response. No polling thread
+is spawned per attempt, and every discarded probe socket is dropped.
+
+The measurement harness can now take `--volume-root /path/to/isolated/volumes`
+to wait for reclamation after deletion. An exploratory faster run exhausted the
+fixture's journal reservations because reclamation lagged behind successive
+creates; that run stopped before boot on its third create. The comparison below
+uses a fresh complete series with this wait, not a selectively completed subset.
+Waiting happens outside the timed create/start interval.
+
+
+| Operation, five samples each | Before median / p95 | After median / p95 |
+| --- | ---: | ---: |
+| Replicated create + working CLI shell, digest cached | 7.780 / 7.870 s | 3.695 / 4.577 s |
+| Replicated cold start + working CLI shell | 6.863 / 7.145 s | 4.829 / 6.082 s |
+| Local create + working CLI shell | 0.334 / 0.347 s | 0.395 / 0.403 s |
+| Local stop/start + working CLI shell, start portion | 0.948 / 0.963 s | 0.804 / 0.813 s |
+
+In these host-loopback samples, median create-to-shell improved by about **53%**
+and cold start-to-shell by about **30%**. This does not remove image hashing on a
+fresh supervisor or remote metadata reads. The remaining latency varies instead
+of being hidden behind the old near-constant failed-probe delay. These are small
+sequential samples, not a guarantee of equivalent public Cloud improvements.
+
+Fix validation: 54 engine unit tests on macOS, all four readiness regression tests
+on Linux, five additional repetitions of the stalled-connection regression,
+clippy with warnings denied, and the live create/start/shell measurements. Tests
+cover stalled first connections, the outer deadline with no listener, unsuccessful
+exec replies and a partial reply that must not extend the attempt deadline.
+
+Local create increased by about 61 ms in the final five-sample series, while
+local stop/start improved by about 144 ms. The first 250-ms-only probe prototype
+had a larger local-create penalty; the final early 100-ms window reduces it.
+Further event-driven readiness can avoid this retry-cadence tradeoff. The final
+series used the final binary and no concurrent builds. All qualification VMs
+were deleted and replicated volumes reclaimed before stopping the isolated services.
