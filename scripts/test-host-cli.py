@@ -44,7 +44,12 @@ else: print('a'*64)
     for key in ['AHVM_HOST', 'AHVM_ENDPOINT', 'AHVM_TOKEN_FILE', 'AHVM_TOKEN']:
         env.pop(key, None)
     def run(*args, ok=True):
-        result = subprocess.run([binary, *args], env=env, capture_output=True, text=True, timeout=15)
+        # Let the CLI's 30-second SSH setup deadline report its own error.
+        # A busy macOS runner may also spend time starting the Python SSH fixture.
+        try:
+            result = subprocess.run([binary, *args], env=env, capture_output=True, text=True, timeout=45)
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError((args, 'host CLI exceeded 45 seconds', error.stdout, error.stderr)) from error
         assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr)
         return result
     run('host', 'add', 'home', '--ssh', 'root@192.168.1.2')
