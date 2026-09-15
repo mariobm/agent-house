@@ -6,6 +6,7 @@ license-file.workspace = true
 publish = false
 
 [dependencies]
+ahvm-proto = { path = "../ahvm-proto" }
 quick-xml = { version = "0.41", features = ["serialize"] }
 aws-credential-types = "1.3.0"
 aws-sigv4 = "1.5.1"

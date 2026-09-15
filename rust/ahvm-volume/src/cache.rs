@@ -157,7 +157,16 @@ impl ObjectStore for CachedStore {
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        let bytes = self.inner.base_chunk(image, hash, offset)?;
+        let bytes = ahvm_proto::timing::measure(
+            "volume",
+            if offset.is_none() {
+                "base_metadata_fetch"
+            } else {
+                "base_data_fetch"
+            },
+            image,
+            || self.inner.base_chunk(image, hash, offset),
+        )?;
         self.insert(&key, hash, &bytes)?;
         Ok(bytes)
     }
