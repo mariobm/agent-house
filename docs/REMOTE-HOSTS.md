@@ -9,8 +9,11 @@ curl -fsSL https://ahvm.app/install.sh | bash
 # Or: brew install mariobm/ahvm/ahvm
 ahvm host add home --ssh root@192.168.1.50 --install
 ahvm create dev --cpus 2 --memory 4096
-ahvm exec dev -- bun --version
-ahvm shell dev                  # Bash by default; --shell /bin/sh overrides it
+# Inside the automatically opened Bash shell:
+bun --version
+exit
+# Back on your computer:
+ahvm shell dev                  # --shell /bin/sh overrides Bash
 ```
 
 The curl installer uses `~/.local/bin` (override `AHVM_BIN_DIR`) and prints the
@@ -30,6 +33,10 @@ Sandbox names are scoped to the selected host. `ahvm create` generates a
 `vm-` name; `ahvm create dev` uses `dev` as its name and ID. Explicit
 `--endpoint` / `AHVM_ENDPOINT` selects the direct API instead of a saved default;
 combining an explicit endpoint with `--host` is rejected.
+
+Interactive `create` opens Bash on the same connection. `--no-shell`, `--json`,
+or redirected stdin/stdout keep create-only behavior. Exiting Bash leaves the
+VM and disk available; Ctrl-] detaches without ending the shell session.
 
 ## Images
 

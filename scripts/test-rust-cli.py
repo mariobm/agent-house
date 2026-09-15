@@ -17,6 +17,7 @@ class ClientTests(unittest.TestCase):
     def setUp(self):
         self.requests = []
         self.replies = []
+        self.accept_resize = False
         outer = self
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_): pass
@@ -34,7 +35,20 @@ class ClientTests(unittest.TestCase):
                 else: body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
                 parsed=body if self.headers.get('Content-Type')=='application/octet-stream' else json.loads(body) if body else None
                 outer.requests.append((self.command, self.path, self.headers, parsed))
+                if outer.accept_resize and self.path.endswith('/resize'):
+                    self.send_response(200); self.send_header('Content-Length', '2'); self.end_headers(); self.wfile.write(b'{}'); return
                 status, body, headers = outer.replies.pop(0)
+                if status == 101:
+                    import hashlib
+                    accept = base64.b64encode(hashlib.sha1((self.headers['Sec-WebSocket-Key']+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+                    self.protocol_version="HTTP/1.1"
+                    self.close_connection=True
+                    self.send_response(101)
+                    for k,v in {'Upgrade':'websocket','Connection':'Upgrade','Sec-WebSocket-Accept':accept}.items():self.send_header(k,v)
+                    self.end_headers()
+                    payload=json.dumps(body).encode()
+                    frame=b'\x81'+(bytes([len(payload)]) if len(payload)<126 else b'\x7e'+len(payload).to_bytes(2,'big'))
+                    self.wfile.write(frame+payload);self.wfile.flush();return
                 data = json.dumps(body).encode()
                 self.send_response(status)
                 for key, value in headers.items(): self.send_header(key, value)
@@ -50,6 +64,77 @@ class ClientTests(unittest.TestCase):
         env['AHVM_TOKEN'] = 'secret-for-test'
         return subprocess.run([BINARY, '--endpoint', self.endpoint, *args], env=env, capture_output=True, timeout=10, **kw)
     def reply(self, body, status=200, **headers): self.replies.append((status, body, headers))
+    def run_pty(self, *args, stdin_tty=True, stdout_tty=True):
+        import fcntl, pty, termios, select, time
+        master,slave=pty.openpty()
+        before=termios.tcgetattr(master)
+        env={k:v for k,v in os.environ.items() if not k.startswith('AHVM_')}
+        env['AHVM_TOKEN']='secret-for-test'
+        def setup():
+            os.setsid()
+            if stdin_tty:fcntl.ioctl(0,termios.TIOCSCTTY,0)
+        p=subprocess.Popen([BINARY,'--endpoint',self.endpoint,*args],env=env,
+            stdin=slave if stdin_tty else subprocess.DEVNULL,
+            stdout=slave if stdout_tty else subprocess.PIPE,stderr=subprocess.PIPE,preexec_fn=setup)
+        output=bytearray()
+        try:
+            deadline=time.monotonic()+10
+            while time.monotonic()<deadline:
+                if select.select([master],[],[],.05)[0]:output.extend(os.read(master,65536))
+                if p.poll() is not None:break
+            stdout,error=p.communicate(timeout=1)
+            while select.select([master],[],[],0)[0]:
+                try: chunk=os.read(master,65536)
+                except OSError: break
+                if not chunk: break
+                output.extend(chunk)
+            self.assertEqual(termios.tcgetattr(master),before)
+            return p.returncode,bytes(output) if stdout_tty else stdout,error
+        finally:
+            if p.poll() is None:p.kill();p.communicate()
+            os.close(master);os.close(slave)
+
+    @unittest.skipUnless(os.name == 'posix', 'requires a terminal')
+    def test_interactive_create_opens_returned_id_and_propagates_shell_exit(self):
+        self.accept_resize=True
+        self.reply({'id':'canonical-id'})
+        self.reply({'session_id':'new-session'})
+        self.reply({'eof':True,'exit_code':42,'next_seq':0,'data_b64':''},101)
+        code,out,error=self.run_pty('create')
+        self.assertEqual(code,42,error)
+        self.assertTrue(self.requests[0][3]['name'].startswith('vm-'))
+        self.assertEqual(self.requests[1][1],'/v1/sandboxes/canonical-id/sessions')
+        self.assertEqual(self.requests[1][3],{'argv':['/bin/bash'],'pty':True})
+        self.assertTrue(any(r[1]=='/v1/sandboxes/canonical-id/sessions/new-session/stream?from_seq=0' for r in self.requests))
+        self.assertIn(b'Created canonical-id',error)
+        self.assertEqual(sum(r[1]=='/v1/sandboxes' for r in self.requests),1)
+
+    @unittest.skipUnless(os.name == 'posix', 'requires a terminal')
+    def test_create_does_not_attach_for_opt_out_json_or_either_pipe(self):
+        for args,flags in [(['--no-shell'],{}),(['--json'],{}),([],{"stdin_tty":False}),([],{"stdout_tty":False})]:
+            with self.subTest(args=args,flags=flags):
+                self.requests=[]
+                self.reply({'id':'box'})
+                code,out,error=self.run_pty('create','box',*args,**flags)
+                self.assertEqual(code,0,error)
+                self.assertEqual(json.loads(out),{'id':'box'})
+                self.assertEqual(len(self.requests),1)
+
+    @unittest.skipUnless(os.name == 'posix', 'requires a terminal')
+    def test_create_and_attachment_errors_never_recreate_or_delete(self):
+        self.reply({'error':'quota'},403)
+        code,out,error=self.run_pty('create','box')
+        self.assertEqual(code,1)
+        self.assertEqual(len(self.requests),1)
+        self.assertNotIn(b'Opening Bash',error)
+        self.requests=[]
+        self.reply({'id':'box'})
+        self.reply({'error':'shell unavailable'},503)
+        code,out,error=self.run_pty('create','box')
+        self.assertEqual(code,1)
+        self.assertIn(b'was created and was not deleted',error)
+        self.assertEqual([r[1] for r in self.requests],['/v1/sandboxes','/v1/sandboxes/box/sessions'])
+
     def test_storage_create_preserves_default_and_checks_server(self):
         self.reply({'id':'box'})
         p=self.run_cli('create','box')

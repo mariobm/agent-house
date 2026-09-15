@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use reqwest::Method;
 use serde_json::{json, Value};
 use std::{
-    io::{self, Read, Write},
+    io::{self, IsTerminal, Read, Write},
     path::PathBuf,
 };
 
@@ -57,7 +57,11 @@ enum Command {
     #[command(subcommand)]
     Image(crate::images::Images),
     Health,
+    /// Create a VM and open Bash when running in an interactive terminal.
     Create {
+        /// Return after creation without opening a shell. JSON and pipes also skip it.
+        #[arg(long)]
+        no_shell: bool,
         /// Disk persistence mode; self-hosted default is local.
         #[arg(long, value_parser = ["local", "replicated"])]
         storage: Option<String>,
@@ -371,6 +375,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             }
         }
         Command::Create {
+            no_shell,
             storage,
             name,
             desktop,
@@ -442,7 +447,22 @@ pub fn run(cli: Cli) -> Result<i32> {
                 require_storage_api(&health)?;
                 body["storage_mode"] = json!(storage);
             }
-            api.call(Method::POST, &["sandboxes"], &[], Some(body))?
+            let created = api.call(Method::POST, &["sandboxes"], &[], Some(body))?;
+            if !no_shell && !cli.json && io::stdin().is_terminal() && io::stdout().is_terminal() {
+                let id = field(&created, "id")?;
+                eprintln!("Created {id}. Opening Bash; exit leaves the VM available.");
+                // First-time image preparation may outlive a Cloud access
+                // token. Refresh credentials before creating the shell session.
+                let result = api
+                    .clone()
+                    .renew_stream_auth()
+                    .and_then(|api| open_shell(&api, id, "/bin/bash"));
+                if result.is_err() {
+                    eprintln!("VM {id} was created and was not deleted. Use ahvm shell {id} with the same connection options to reconnect.");
+                }
+                return result;
+            }
+            created
         }
         Command::List => {
             let mut all = Vec::new();
@@ -505,18 +525,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             }
             return exit_code(&v);
         }
-        Command::Shell { id, shell } => {
-            crate::session::require_terminal()?;
-            let v = api.call(
-                Method::POST,
-                &["sandboxes", &id, "sessions"],
-                &[],
-                Some(json!({"argv":[shell],"pty":true})),
-            )?;
-            let sid = field(&v, "session_id")?;
-            eprintln!("Session {sid}; Ctrl-] detaches. Reattach: ahvm session attach {id} {sid}");
-            return crate::session::attach(&api, &id, sid, 0);
-        }
+        Command::Shell { id, shell } => return open_shell(&api, &id, &shell),
         Command::Files(command) => return files(&api, command),
         Command::Session(command) => return session(&api, command, cli.json),
         Command::Snapshot(command) => match command {
@@ -597,6 +606,19 @@ pub fn run(cli: Cli) -> Result<i32> {
     };
     show(&response)?;
     Ok(0)
+}
+
+fn open_shell(api: &Api, id: &str, shell: &str) -> Result<i32> {
+    crate::session::require_terminal()?;
+    let v = api.call(
+        Method::POST,
+        &["sandboxes", id, "sessions"],
+        &[],
+        Some(json!({"argv":[shell],"pty":true})),
+    )?;
+    let sid = field(&v, "session_id")?;
+    eprintln!("Session {sid}; Ctrl-] detaches. Reattach: ahvm session attach {id} {sid} (use the same connection options)");
+    crate::session::attach(api, id, sid, 0)
 }
 
 fn files(api: &Api, command: Files) -> Result<i32> {

@@ -64,11 +64,14 @@ ahvm host use home
 
 ```sh
 ahvm create dev --cpus 2 --memory 4096
-ahvm exec dev -- bun --version
-ahvm shell dev
+# Bash opens inside the VM:
+bun --version
+exit
 ```
 
-Omit the name to let AHVM generate one: `ahvm create`.
+Omit the name to let AHVM generate one: `ahvm create`. Interactive creation
+opens Bash automatically. Use `--no-shell` to create without attaching; `--json`
+and redirected stdin or stdout also return without opening a shell.
 
 Type `exit` to end Bash and return to your local terminal. Your VM and files
 remain. Press `Ctrl-]` instead to detach while keeping the shell session alive.
@@ -125,7 +128,7 @@ The desktop preview adds XFCE, Bash and Firefox to the Ubuntu development image.
 It runs on the same Linux server without a GPU. With a desktop-capable release:
 
 ```bash
-ahvm create dev-desktop --desktop
+ahvm create dev-desktop --desktop --no-shell
 ahvm desktop dev-desktop
 ```
 
@@ -191,7 +194,7 @@ licenses remain valid. See [NOTICE](NOTICE) and the retained
 On a supported Linux GPU host:
 
 ```bash
-ahvm create omarchy --image omarchy-desktop
+ahvm create omarchy --image omarchy-desktop --no-shell
 ahvm desktop omarchy
 ```
 

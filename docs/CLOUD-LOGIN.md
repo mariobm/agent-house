@@ -59,13 +59,19 @@ The cloud compute commands require v0.2.6 or newer. After your workspace is enab
 
 ```sh
 ahvm --cloud create dev --cpus 2 --memory 4096
-ahvm --cloud shell dev
-# exit returns to your computer; the VM keeps running
+# Bash opens inside the new VM:
+bun --version
+exit
+# Back on your computer; the VM remains available:
 ahvm --cloud files put dev ./hello.txt /workspace/hello.txt
 ahvm --cloud stop dev
 ahvm --cloud start dev
 ahvm --cloud delete dev
 ```
+
+Interactive creation opens Bash automatically. Use `--no-shell` to return after
+creation; `--json` and redirected stdin/stdout never attach. Later, use
+`ahvm --cloud shell dev` to open another shell.
 
 `--cloud` explicitly selects your approved workspace, bypassing saved SSH host
 selection. It conflicts with `--host`, `--endpoint` and `--token-file`, including

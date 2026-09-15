@@ -227,8 +227,9 @@ The API/CLI slice implements this self-hosted flow. See [current limits and defa
 ahvm create dev
 
 # Only on a host configured by its operator for replicated storage.
-ahvm create durable-dev --storage replicated
+ahvm create durable-dev --storage replicated --no-shell
 ahvm shell durable-dev
+# Run exit to return to your computer before the following commands.
 ahvm get durable-dev                 # mode, pending bytes, replication health
 ahvm stop durable-dev
 ahvm storage sync durable-dev        # explicit barrier, currently stopped only
