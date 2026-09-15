@@ -15,6 +15,8 @@ with tempfile.TemporaryDirectory() as temp:
 import http.server,json,os,sys,threading
 from pathlib import Path
 a=sys.argv[1:]
+with (Path(os.environ['AHVM_CONFIG_DIR']).parent/'ssh-trace').open('a') as trace:
+ trace.write(repr(a)+'\\n')
 cache=Path(os.environ['AHVM_CONFIG_DIR']).parent/'image-cache'
 if '-O' in a: sys.exit(0)
 if '-M' in a:
@@ -50,7 +52,8 @@ else: print('a'*64)
             result = subprocess.run([binary, *args], env=env, capture_output=True, text=True, timeout=45)
         except subprocess.TimeoutExpired as error:
             raise AssertionError((args, 'host CLI exceeded 45 seconds', error.stdout, error.stderr)) from error
-        assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr)
+        trace = root / 'ssh-trace'
+        assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr, trace.read_text() if trace.exists() else 'SSH fixture never invoked')
         return result
     run('host', 'add', 'home', '--ssh', 'root@192.168.1.2')
     run('host', 'add', 'other', '--ssh', 'other')
