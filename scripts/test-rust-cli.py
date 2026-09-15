@@ -57,6 +57,14 @@ class ClientTests(unittest.TestCase):
         self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever); self.thread.start()
         self.endpoint = 'http://127.0.0.1:'+str(self.server.server_port)
+    def test_cloud_sizing_rejected_before_login(self):
+        for flag in ['--cpus', '--memory']:
+            env = {k:v for k,v in os.environ.items() if not k.startswith('AHVM_')}
+            result = subprocess.run([BINARY, '--cloud', 'create', 'dev', flag, '2'], env=env, capture_output=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'Cloud CPU and RAM are managed by the administrator', result.stderr)
+        self.assertEqual(self.requests, [])
+
     def tearDown(self):
         self.server.shutdown(); self.server.server_close(); self.thread.join()
     def run_cli(self, *args, **kw):
