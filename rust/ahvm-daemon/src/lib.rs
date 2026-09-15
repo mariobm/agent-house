@@ -209,6 +209,7 @@ pub fn build_router(state: AppState) -> Router {
     use axum::middleware;
 
     let authed = Router::new()
+        .route("/v1/admin/pool-profile", get(pool_profile))
         .route(
             "/v1/admin/idle-policy",
             get(thermal::policy).put(thermal::set_policy),
@@ -327,4 +328,22 @@ async fn healthz() -> Json<serde_json::Value> {
         "desktop_image": if custom { None } else { Some("ubuntu-desktop") },
         "desktop_image_installed": custom || sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
     }))
+}
+
+/// The installer owns these immutable image files and atomically updates aliases.
+async fn pool_profile(
+    axum::Extension(user): axum::Extension<auth::UserId>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if user.0 != "admin" {
+        return Err(ApiError::Forbidden("admin required".into()));
+    }
+    let path = sandboxes::resolve_image(Some("ubuntu-dev"))?
+        .ok_or_else(|| ApiError::Invalid("Ubuntu image unavailable".into()))?;
+    let digest = std::path::Path::new(&path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| ApiError::Invalid("invalid image path".into()))?;
+    Ok(Json(
+        serde_json::json!({"image_digest":digest,"protocol":"pool-image-v1"}),
+    ))
 }
