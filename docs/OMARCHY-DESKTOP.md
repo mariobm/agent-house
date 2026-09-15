@@ -8,7 +8,7 @@ process and accesses the host GPU. It does not provide a separate renderer sandb
 ```bash
 ahvm host upgrade home
 ahvm image pull omarchy-desktop
-ahvm create omarchy --image omarchy-desktop
+ahvm create omarchy --image omarchy-desktop --no-shell
 ahvm desktop omarchy
 ```
 
