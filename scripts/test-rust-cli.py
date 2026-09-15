@@ -344,6 +344,76 @@ class ClientTests(unittest.TestCase):
             if p.poll() is None:p.kill();p.wait()
             os.close(master);os.close(slave);server.shutdown();server.server_close();thread.join()
 
+    @unittest.skipUnless(os.name == 'posix', 'requires a terminal')
+    def test_resize_failure_does_not_block_or_disconnect_shell(self):
+        import fcntl, pty, termios, socketserver, hashlib, select, struct, time
+        started=threading.Event();input_seen=threading.Event();recovered=threading.Event()
+        sizes=[]
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                line=self.rfile.readline().decode();headers={}
+                while raw:=self.rfile.readline().strip():
+                    k,v=raw.decode().split(':',1);headers[k.lower()]=v.strip()
+                if line.startswith('POST '):
+                    sizes.append(json.loads(self.rfile.read(int(headers['content-length']))))
+                    if len(sizes)==1:
+                        started.set()
+                        # Only WebSocket input can release the blocked resize.
+                        # A client awaiting resize inside its stream loop fails.
+                        input_seen.wait(4)
+                        self.wfile.write(b'HTTP/1.1 502 Bad Gateway\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}')
+                    else:
+                        recovered.set()
+                        self.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}')
+                    return
+                key=base64.b64encode(hashlib.sha1((headers['sec-websocket-key']+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest())
+                self.wfile.write(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+key+b'\r\n\r\n');self.wfile.flush()
+                self.request.settimeout(10)
+                while not input_seen.is_set():
+                    header=self.rfile.read(2)
+                    if len(header)!=2:return
+                    opcode=header[0]&15;length=header[1]&127
+                    if length==126:length=int.from_bytes(self.rfile.read(2),'big')
+                    elif length==127:length=int.from_bytes(self.rfile.read(8),'big')
+                    mask=self.rfile.read(4);data=self.rfile.read(length)
+                    data=bytes(b^mask[i%4] for i,b in enumerate(data))
+                    if opcode==9:
+                        self.wfile.write(bytes([0x8a,len(data)])+data);self.wfile.flush()
+                    if opcode==2 and b'INPUT-DURING-RESIZE' in data:input_seen.set()
+                if not recovered.wait(8):return
+                payload=json.dumps({'data_b64':base64.b64encode(b'RESIZE-RECOVERED').decode(),
+                    'next_seq':16,'eof':True,'exit_code':0,'truncated':False}).encode()
+                self.wfile.write(b'\x81\x7e'+len(payload).to_bytes(2,'big')+payload);self.wfile.flush()
+        server=socketserver.ThreadingTCPServer(('127.0.0.1',0),Handler)
+        server.daemon_threads=True
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        master,slave=pty.openpty()
+        fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0))
+        before=termios.tcgetattr(master)
+        env={k:v for k,v in os.environ.items() if not k.startswith('AHVM_')};env['AHVM_TOKEN']='test'
+        def setup():
+            os.setsid();fcntl.ioctl(0,termios.TIOCSCTTY,0)
+        p=subprocess.Popen([BINARY,'--endpoint',f'http://127.0.0.1:{server.server_address[1]}','session','attach','box','sid'],
+            stdin=slave,stdout=slave,stderr=slave,env=env,preexec_fn=setup)
+        output=bytearray()
+        try:
+            self.assertTrue(started.wait(5),'resize never started')
+            os.write(master,b'INPUT-DURING-RESIZE')
+            deadline=time.monotonic()+12
+            while time.monotonic()<deadline:
+                if select.select([master],[],[],.05)[0]:output.extend(os.read(master,65536))
+                if p.poll() is not None:break
+            self.assertEqual(p.poll(),0,output)
+            self.assertTrue(input_seen.is_set(),'resize blocked terminal input')
+            self.assertGreaterEqual(len(sizes),2,'failed resize was not retried')
+            self.assertTrue(all(s=={'cols':80,'rows':24} for s in sizes),sizes)
+            self.assertIn(b'RESIZE-RECOVERED',output)
+            self.assertEqual(termios.tcgetattr(master),before)
+        finally:
+            input_seen.set();recovered.set()
+            if p.poll() is None:p.kill();p.wait()
+            os.close(master);os.close(slave);server.shutdown();server.server_close();thread.join()
+
     def test_bad_preview_origin_does_not_rotate(self):
         p=self.run_cli('preview','access','box','80','--base-url','http://example.com')
         self.assertEqual(p.returncode,1); self.assertEqual(self.requests,[])

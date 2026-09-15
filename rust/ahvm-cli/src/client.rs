@@ -164,6 +164,17 @@ impl Api {
         query: &[(&str, String)],
         body: Option<Value>,
     ) -> Result<Value> {
+        self.call_with_timeout(method, path, query, body, None)
+    }
+
+    pub fn call_with_timeout(
+        &self,
+        method: Method,
+        path: &[&str],
+        query: &[(&str, String)],
+        body: Option<Value>,
+        timeout: Option<Duration>,
+    ) -> Result<Value> {
         if self.token.is_empty() && path != ["healthz"] {
             return Err("set AHVM_TOKEN or --token-file to authenticate".into());
         }
@@ -189,6 +200,9 @@ impl Api {
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
         });
         let mut request = self.client.request(method, url);
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
         if let Some(key) = &key {
             request = request.header("Idempotency-Key", key);
         }
