@@ -12,4 +12,6 @@ ln -sf pts/ptmx /dev/ptmx
 mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
 chmod 1777 /tmp
 cd /workspace
+# Group-writable agent uploads under the setgid workspace.
+umask 0002
 exec /usr/local/bin/ahvm-forge

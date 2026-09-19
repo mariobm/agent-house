@@ -112,7 +112,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(code,42,error)
         self.assertTrue(self.requests[0][3]['name'].startswith('vm-'))
         self.assertEqual(self.requests[1][1],'/v1/sandboxes/canonical-id/sessions')
-        self.assertEqual(self.requests[1][3],{'argv':['/bin/bash'],'pty':True})
+        self.assertEqual(self.requests[1][3],{'argv':['/bin/sh','-c','if [ -x /usr/local/bin/ahvm-shell ]; then exec /usr/local/bin/ahvm-shell; else exec /bin/bash; fi'],'pty':True})
         self.assertTrue(any(r[1]=='/v1/sandboxes/canonical-id/sessions/new-session/stream?from_seq=0' for r in self.requests))
         self.assertIn(b'Created canonical-id',error)
         self.assertEqual(sum(r[1]=='/v1/sandboxes' for r in self.requests),1)

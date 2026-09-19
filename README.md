@@ -21,7 +21,8 @@ is needed.
 
 The default [Ubuntu image](docs/DEVELOPMENT-IMAGE.md) includes Node.js LTS, Bun,
 Python, Git, build tools, Claude Code, Codex, OpenCode and Pi. Bring your own
-provider credentials. Inside the guest, run `ahvm-dev` to use the developer account.
+provider credentials. New image builds open interactive shells as `ahvm`; use `sudo` for administration.
+Existing images retain their previous user until recreated from an updated image.
 
 ## 1. Install the client
 

@@ -60,9 +60,15 @@ claude
 # Or: codex / opencode / pi
 ```
 
-`ahvm-dev` enters the `developer` account with `/workspace` as its directory.
+Newly built images provide an `ahvm` user. With a matching CLI, `ahvm shell`
+and interactive `ahvm create` open Bash as that user in `/workspace`, with a
+colored prompt. `sudo -i` opens a root shell when needed. Existing images are
+not modified; older images without the shell entry point retain their previous
+Bash behavior. Publishing the new image and CLI is required for rollout.
+
+`ahvm-dev` also enters the `ahvm` account with `/workspace` as its directory.
 For automation, use `ahvm exec dev -- ahvm-dev node --version`. The current API
-still executes as guest root by default. The developer has passwordless sudo
+still executes as guest root by default. The ahvm user has passwordless sudo
 **inside the VM**; it is a convenience account, not a tenant security boundary.
 Forge remains PID 1; systemd and an SSH server are not running in the guest.
 

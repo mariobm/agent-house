@@ -33,8 +33,8 @@ try:
     created = True
     versions = cli('exec', sandbox, '--', 'ahvm-dev', 'bash', '-lc', '''
 set -euo pipefail
-test "$(id -un)" = developer
-test "$HOME" = /home/developer
+test "$(id -un)" = ahvm
+test "$HOME" = /home/ahvm
 test "$PWD" = /workspace
 sudo -n true
 node --version; bun --version; python --version
@@ -63,6 +63,15 @@ printf persistent > marker
                   'bash', '-lc', 'test -t 0 && printf PTY-OK')['session_id']
     output = cli('session', 'read', sandbox, session, '--follow')
     assert 'PTY-OK' in output, output
+    cli('exec', sandbox, '--', 'sh', '-c', 'printf uploaded > /workspace/agent-owned')
+    cli('exec', sandbox, '--', 'ahvm-dev', 'sh', '-c', 'printf edited >> /workspace/agent-owned')
+    shell = obj('session', 'create', sandbox, '--pty', '--', '/usr/local/bin/ahvm-shell')['session_id']
+    script = "test $(id -un) = ahvm && test $HOME = /home/ahvm && test $PWD = /workspace && touch shell-owned && sudo -n true && printf '\\nUSER-SHELL-OK\\n'; exit\n"
+    subprocess.run([binary, 'session', 'input', sandbox, shell], input=script,
+                   text=True, check=True, capture_output=True, timeout=30)
+    output = cli('session', 'read', sandbox, shell, '--follow')
+    assert '\nUSER-SHELL-OK\n' in output, output
+    assert cli('exec', sandbox, '--', 'stat', '-c', '%U', '/workspace/shell-owned').strip() == 'ahvm'
     cli('stop', sandbox)
     cli('start', sandbox)
     assert cli('exec', sandbox, '--', 'ahvm-dev', 'cat', '/workspace/marker') == 'persistent'
