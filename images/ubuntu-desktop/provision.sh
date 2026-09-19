@@ -15,14 +15,14 @@ printf 'deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packa
 printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n\nPackage: firefox\nPin: release o=Ubuntu\nPin-Priority: -1\n' > /etc/apt/preferences.d/mozilla
 apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
 apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends firefox
-mkdir -p /home/developer/.config/autostart /usr/local/share/ahvm
-cat > /home/developer/.config/autostart/terminal.desktop <<'EOF'
+mkdir -p /home/ahvm/.config/autostart /usr/local/share/ahvm
+cat > /home/ahvm/.config/autostart/terminal.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Terminal
 Exec=xfce4-terminal --working-directory=/workspace --command=/bin/bash
 EOF
-chown -R developer:developer /home/developer/.config
+chown -R ahvm:ahvm /home/ahvm/.config
 printf 'ubuntu-desktop\n' > /usr/local/share/ahvm/image-profile
 dpkg-query -W > /usr/local/share/ahvm/ubuntu-packages.tsv
 apt-get clean

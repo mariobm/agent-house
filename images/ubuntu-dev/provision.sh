@@ -9,21 +9,23 @@ apt-get install -y --no-install-recommends ca-certificates curl wget git openssh
     python3 python3-pip python3-venv python-is-python3 build-essential pkg-config \
     bash bash-completion sudo locales tzdata iproute2 iputils-ping dnsutils \
     procps psmisc util-linux ripgrep fd-find jq less nano vim-tiny tmux unzip zip xz-utils sqlite3 file rsync
-useradd -m -s /bin/bash -U developer
-printf 'developer ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/developer
-chmod 440 /etc/sudoers.d/developer
+useradd -m -s /bin/bash -U ahvm
+printf 'ahvm ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/ahvm
+chmod 440 /etc/sudoers.d/ahvm
 mkdir -p /workspace /opt/ahvm-tools /usr/local/share/ahvm
-chown developer:developer /workspace /opt/ahvm-tools
+chown ahvm:ahvm /workspace /opt/ahvm-tools
+# Agent uploads inherit the workspace group and stay editable by ahvm.
+chmod 2775 /workspace
 # Use npm's integrity-checked packages and record the full resolved dependency
-# lock in the image. Build scripts run as the guest developer, not host root.
+# lock in the image. Build scripts run as the guest ahvm, not host root.
 python3 - "$BUN_VERSION" "$CLAUDE_VERSION" "$CODEX_VERSION" "$OPENCODE_VERSION" "$PI_VERSION" <<'PY'
 import json,sys
 names=['bun','@anthropic-ai/claude-code','@openai/codex','opencode-ai','@earendil-works/pi-coding-agent']
 with open('/opt/ahvm-tools/package.json','w') as f:
     json.dump({'name':'ahvm-dev-tools','private':True,'dependencies':dict(zip(names,sys.argv[1:]))},f,indent=2)
 PY
-chown developer:developer /opt/ahvm-tools/package.json
-runuser -u developer -- bash -c 'cd /opt/ahvm-tools && npm install --no-audit --no-fund'
+chown ahvm:ahvm /opt/ahvm-tools/package.json
+runuser -u ahvm -- bash -c 'cd /opt/ahvm-tools && npm install --no-audit --no-fund'
 for tool in bun bunx claude codex opencode pi; do
     test -x "/opt/ahvm-tools/node_modules/.bin/$tool"
     ln -s "/opt/ahvm-tools/node_modules/.bin/$tool" "/usr/local/bin/$tool"
@@ -35,14 +37,31 @@ cat > /usr/local/bin/ahvm-dev <<'DEV'
 set -eu
 cd /workspace
 if [ "$#" -eq 0 ]; then
-    exec sudo -iu developer
+    exec sudo -iu ahvm
 fi
 # sudo -i rebuilds the command through a shell and changes newline arguments.
 # Preserve argv for automated commands (including multiline bash -c scripts).
-exec sudo -H -u developer -- "$@"
+exec sudo -H -u ahvm -- "$@"
 DEV
 chmod 755 /usr/local/bin/ahvm-dev
-printf '\nexport LANG=C.UTF-8\ncd /workspace\n' >> /home/developer/.profile
+# Default interactive entry point. Forge retains root for network/file operations.
+cat > /usr/local/bin/ahvm-shell <<'SHELL'
+#!/bin/sh
+set -eu
+cd /workspace
+exec sudo -H -u ahvm -- env USER=ahvm LOGNAME=ahvm /bin/bash -i
+SHELL
+chmod 755 /usr/local/bin/ahvm-shell
+cat >> /home/ahvm/.bashrc <<'BASHRC'
+
+# Builtins only: no subprocesses on every prompt. Bracket escapes for Readline.
+case "$TERM" in
+  dumb|'') PS1='\u@\h:\w\$ ' ;;
+  *) PS1='\[\e[38;5;150m\]\u@\h\[\e[0m\]:\[\e[38;5;110m\]\w\[\e[0m\]\$ ' ;;
+esac
+BASHRC
+
+printf '\nexport LANG=C.UTF-8\ncd /workspace\n' >> /home/ahvm/.profile
 cp /tmp/versions.env /usr/local/share/ahvm/image-versions.env
 dpkg-query -W > /usr/local/share/ahvm/ubuntu-packages.tsv
 sha256sum /usr/local/bin/ahvm-forge > /usr/local/share/ahvm/forge.sha256
@@ -50,6 +69,6 @@ printf '127.0.0.1 localhost\n127.0.1.1 ahvm\n::1 localhost ip6-localhost\n' > /e
 printf 'ahvm\n' > /etc/hostname
 # No SSH server, background updater or account credentials in the template.
 apt-get clean
-rm -rf /var/lib/apt/lists/* /home/developer/.npm /root/.npm /tmp/* /var/tmp/*
+rm -rf /var/lib/apt/lists/* /home/ahvm/.npm /root/.npm /tmp/* /var/tmp/*
 find /var/log -type f -exec truncate -s 0 {} +
 truncate -s 0 /etc/machine-id

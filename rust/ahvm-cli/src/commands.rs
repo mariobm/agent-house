@@ -111,8 +111,8 @@ enum Command {
     Shell {
         id: String,
         /// Shell executable in the guest (override for minimal images).
-        #[arg(long, default_value = "/bin/bash")]
-        shell: String,
+        #[arg(long)]
+        shell: Option<String>,
     },
     #[command(subcommand)]
     Files(Files),
@@ -473,7 +473,7 @@ pub fn run(cli: Cli) -> Result<i32> {
                 let result = api
                     .clone()
                     .renew_stream_auth()
-                    .and_then(|api| open_shell(&api, id, "/bin/bash"));
+                    .and_then(|api| open_shell(&api, id, None));
                 if result.is_err() {
                     eprintln!("VM {id} was created and was not deleted. Use ahvm shell {id} with the same connection options to reconnect.");
                 }
@@ -542,7 +542,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             }
             return exit_code(&v);
         }
-        Command::Shell { id, shell } => return open_shell(&api, &id, &shell),
+        Command::Shell { id, shell } => return open_shell(&api, &id, shell.as_deref()),
         Command::Files(command) => return files(&api, command),
         Command::Session(command) => return session(&api, command, cli.json),
         Command::Snapshot(command) => match command {
@@ -625,13 +625,22 @@ pub fn run(cli: Cli) -> Result<i32> {
     Ok(0)
 }
 
-fn open_shell(api: &Api, id: &str, shell: &str) -> Result<i32> {
+// Image-owned entry point selects its interactive user. Legacy/custom images
+// retain Bash; explicit --shell remains a direct executable override.
+fn shell_argv(shell: Option<&str>) -> Vec<&str> {
+    match shell {
+        Some(shell) => vec![shell],
+        None => vec!["/bin/sh", "-c", "if [ -x /usr/local/bin/ahvm-shell ]; then exec /usr/local/bin/ahvm-shell; else exec /bin/bash; fi"],
+    }
+}
+
+fn open_shell(api: &Api, id: &str, shell: Option<&str>) -> Result<i32> {
     crate::session::require_terminal()?;
     let v = api.call(
         Method::POST,
         &["sandboxes", id, "sessions"],
         &[],
-        Some(json!({"argv":[shell],"pty":true})),
+        Some(json!({"argv":shell_argv(shell),"pty":true})),
     )?;
     let sid = field(&v, "session_id")?;
     eprintln!("Session {sid}; Ctrl-] detaches. Reattach: ahvm session attach {id} {sid} (use the same connection options)");

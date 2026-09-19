@@ -18,7 +18,7 @@ For a direct API connection, install it on the server first with
 `ahvm image pull ubuntu-desktop`. `--image ubuntu-desktop` may accompany
 `--desktop`; it does not change the default image for ordinary creates.
 
-The desktop runs as `developer`, opens a Bash terminal in `/workspace`, and
+The desktop runs as `ahvm`, opens a Bash terminal in `/workspace`, and
 inherits the existing development image's sudo policy. VNC and X11 expose no TCP
 listener. The private VNC Unix socket is bridged over vsock and the authenticated
 AHVM API; closing the native viewer leaves the VM running.
