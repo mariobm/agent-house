@@ -1361,6 +1361,24 @@ fn require_op(v: &serde_json::Value, op: &str) -> Result<()> {
 }
 
 impl Backend for KrucibleBackend {
+    fn replication_backlog(&self, id: &str) -> Option<u64> {
+        let (dir, volume) = {
+            let inner = self.inner.try_lock().ok()?;
+            let rec = inner.sandboxes.get(id)?;
+            (rec.dir.clone(), rec.record.info.storage.volume_id.clone()?)
+        };
+        // The bounded service read owns no engine or lifecycle lock.
+        self.cfg
+            .replicated
+            .as_ref()?
+            .status(&volume, &dir)
+            .ok()
+            .map(|s| s.pending_bytes)
+    }
+
+    fn resource_usage(&self, id: &str) -> Option<crate::ResourceUsage> {
+        self.cfg.resources.as_ref()?.usage(id).ok()
+    }
     fn sync_remote(&self, id: &str) -> Result<crate::ReplicationStatus> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;

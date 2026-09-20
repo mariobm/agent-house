@@ -82,6 +82,14 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     fn stop(&self, id: &str) -> Result<()>;
     fn status(&self, id: &str) -> Result<SandboxInfo>;
     fn list(&self) -> Result<Vec<SandboxInfo>>;
+    /// Host counters only; no guest RPC or lifecycle mutation.
+    /// Best-effort observation without a lifecycle lock or reconciliation.
+    fn replication_backlog(&self, _id: &str) -> Option<u64> {
+        None
+    }
+    fn resource_usage(&self, _id: &str) -> Option<crate::ResourceUsage> {
+        None
+    }
     fn exec(&self, id: &str, argv: &[String]) -> Result<ExecResult>;
     fn create_snapshot(&self, id: &str, snapshot_id: &str) -> Result<SnapshotManifest>;
     fn restore(&self, snapshot: &SnapshotManifest, new_id: &str) -> Result<SandboxInfo>;

@@ -18,6 +18,7 @@ pub mod auth;
 pub mod bandwidth;
 pub mod desktop;
 pub mod files;
+pub mod metrics;
 pub mod operations;
 pub mod previews;
 pub mod quotas;
@@ -209,6 +210,8 @@ pub fn build_router(state: AppState) -> Router {
     use axum::middleware;
 
     let authed = Router::new()
+        .route("/v1/admin/metrics", get(metrics::sample))
+        .route("/v1/admin/metrics/storage/{id}", get(metrics::backlog))
         .route("/v1/admin/pool-profile", get(pool_profile))
         .route(
             "/v1/admin/idle-policy",

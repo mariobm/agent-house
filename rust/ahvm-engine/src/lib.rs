@@ -33,7 +33,7 @@ pub use replicated::{ReplicatedConfig, ReplicationStatus, SandboxStorage, Storag
 mod storage;
 pub use storage::StorageConfig;
 mod resources;
-pub use resources::ResourceConfig;
+pub use resources::{ResourceConfig, ResourceUsage};
 mod backend;
 mod krucible;
 mod mock;
