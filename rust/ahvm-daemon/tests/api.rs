@@ -1785,3 +1785,64 @@ async fn lifecycle_storage_is_immutable_and_never_falls_back_to_local() {
         assert_eq!(status, StatusCode::CONFLICT);
     }
 }
+
+#[tokio::test]
+async fn metrics_are_admin_only_and_do_not_reconcile_or_wake() {
+    let state = test_state();
+    state
+        .store
+        .upsert_user(&user("admin", "metrics-admin"))
+        .unwrap();
+    let router = build_router(state);
+    assert_eq!(
+        call(router.clone(), None, "GET", "/v1/admin/metrics", None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(
+            router.clone(),
+            Some(TOKEN_A),
+            "GET",
+            "/v1/admin/metrics",
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            router.clone(),
+            Some(TOKEN_A),
+            "GET",
+            "/v1/admin/metrics/storage/missing",
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (_, backlog) = call(
+        router.clone(),
+        Some("metrics-admin"),
+        "GET",
+        "/v1/admin/metrics/storage/missing",
+        None,
+    )
+    .await;
+    assert!(backlog["pending_bytes"].is_null());
+    let (status, body) = call(
+        router,
+        Some("metrics-admin"),
+        "GET",
+        "/v1/admin/metrics",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["protocol"], 1);
+    assert_eq!(body["vms"], serde_json::json!([]));
+    assert_eq!(body["truncated"], false);
+}

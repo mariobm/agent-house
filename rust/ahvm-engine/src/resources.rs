@@ -137,3 +137,62 @@ mod tests {
         .is_err());
     }
 }
+
+/// Includes VMM, gateway, and charged page cache, not guest-reported usage.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ResourceUsage {
+    pub cpu_usec: u64,
+    pub memory_bytes: u64,
+    pub generation: u64,
+}
+impl ResourceConfig {
+    pub(crate) fn usage(&self, id: &str) -> io::Result<ResourceUsage> {
+        use std::os::unix::fs::MetadataExt;
+        let path = self.path(id)?;
+        let generation = fs::metadata(&path)?.ino();
+        let stat = fs::read_to_string(path.join("cpu.stat"))?;
+        let cpu_usec = stat
+            .lines()
+            .find_map(|line| {
+                let mut fields = line.split_whitespace();
+                if fields.next()? != "usage_usec" {
+                    return None;
+                }
+                fields.next()?.parse::<u64>().ok()
+            })
+            .ok_or_else(|| io::Error::other("missing CPU counter"))?;
+        let memory_bytes = fs::read_to_string(path.join("memory.current"))?
+            .trim()
+            .parse()
+            .map_err(|_| io::Error::other("invalid memory counter"))?;
+        if fs::metadata(&path)?.ino() != generation {
+            return Err(io::Error::other("resource group replaced"));
+        }
+        Ok(ResourceUsage {
+            cpu_usec,
+            memory_bytes,
+            generation,
+        })
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    #[test]
+    fn reads_counters_without_mutation_and_refuses_malformed_values() {
+        let root = std::env::temp_dir().join(format!("ahvm-metrics-{}", std::process::id()));
+        let config = ResourceConfig { root: root.clone() };
+        let group = root.join("vm-test");
+        fs::create_dir_all(&group).unwrap();
+        fs::write(group.join("cpu.stat"), "usage_usec 123\nuser_usec 100\n").unwrap();
+        fs::write(group.join("memory.current"), "4096\n").unwrap();
+        let value = config.usage("test").unwrap();
+        assert_eq!(value.cpu_usec, 123);
+        assert_eq!(value.memory_bytes, 4096);
+        assert!(config.usage("../test").is_err());
+        fs::write(group.join("cpu.stat"), "usage_usec nope").unwrap();
+        assert!(config.usage("test").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
