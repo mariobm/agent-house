@@ -73,8 +73,8 @@ ahvm desktop omarchy
 ```
 
 The authenticated desktop connection wakes a stopped Cloud VM. Use the viewer
-release containing the Cloud wake retry support; older viewers time out after
-10 seconds. Disk writes replicate asynchronously. A cold restart preserves
+v0.3.9 or newer for Cloud TLS and cold-wake retry support. Earlier viewers
+either lack a TLS crypto provider or time out after 10 seconds. Disk writes replicate asynchronously. A cold restart preserves
 replicated files and opens a new desktop session, without restoring applications
 from RAM. The connected viewer holds an activity guard; closing it allows the
 normal idle-stop policy to apply. The current viewer connection is bounded to
