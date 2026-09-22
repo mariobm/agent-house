@@ -16,14 +16,23 @@ use std::{
 pub struct Cli {
     #[arg(long, global = true, env = "AHVM_ENDPOINT")]
     endpoint: Option<String>,
+    /// Select Cloud or a saved SSH host for this command.
+    #[arg(long, global = true, env = "AHVM_CONTEXT", conflicts_with_all = ["cloud", "host", "endpoint"])]
+    context: Option<String>,
     /// Use the workspace approved by ahvm login instead of a self-hosted daemon.
-    #[arg(long, global = true, conflicts_with_all = ["host", "endpoint", "token_file"])]
+    #[arg(long, global = true, hide = true, conflicts_with_all = ["host", "endpoint", "token_file"])]
     cloud: bool,
     /// Reuse a cloud lifecycle request after an interrupted response.
-    #[arg(long, global = true, requires = "cloud")]
+    #[arg(long, global = true)]
     idempotency_key: Option<String>,
     /// Select a saved host (otherwise use the default host).
-    #[arg(long, global = true, env = "AHVM_HOST")]
+    #[arg(
+        long,
+        global = true,
+        hide = true,
+        env = "AHVM_HOST",
+        conflicts_with = "endpoint"
+    )]
     host: Option<String>,
     /// File containing a Bearer token (otherwise read AHVM_TOKEN).
     #[arg(long, global = true, env = "AHVM_TOKEN_FILE")]
@@ -40,6 +49,14 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Select the default connection for subsequent commands.
+    Use {
+        name: String,
+    },
+    /// Show the selected connection and its authentication status.
+    Context,
+    /// List Cloud and saved SSH connections.
+    Contexts,
     /// Sign in to AHVM Cloud and approve workspace access in your browser.
     Login(crate::cloud::Login),
     /// Show your AHVM Cloud account and approved workspace.
@@ -268,7 +285,98 @@ pub fn decoded(v: &Value) -> Result<Vec<u8>> {
     Ok(B64.decode(field(v, "data_b64")?)?)
 }
 
-pub fn run(cli: Cli) -> Result<i32> {
+pub fn run(mut cli: Cli) -> Result<i32> {
+    match &cli.command {
+        Command::Use { name } => {
+            crate::hosts::set_context(name, false)?;
+            if cli.json {
+                println!("{}", json!({"context": name}));
+            } else {
+                println!("Using {name}");
+            }
+            return Ok(0);
+        }
+        Command::Contexts => return crate::hosts::show_contexts(cli.json),
+        _ => {}
+    }
+    let needs_context = !matches!(
+        &cli.command,
+        Command::Login(_)
+            | Command::Whoami
+            | Command::Logout
+            | Command::Host(_)
+            | Command::Upgrade
+            | Command::CheckUpdates
+            | Command::License
+            | Command::Image(_)
+    );
+    let mut destination = None;
+    if (needs_context || matches!(cli.command, Command::Image(_))) && cli.endpoint.is_none() {
+        destination = if cli.cloud {
+            Some("cloud".to_owned())
+        } else {
+            cli.context
+                .clone()
+                .or(cli.host.clone())
+                .or(crate::hosts::default_context()?)
+        };
+        if needs_context
+            && destination.is_none()
+            && !cli.json
+            && io::stdin().is_terminal()
+            && io::stderr().is_terminal()
+        {
+            let names = crate::hosts::context_names()?;
+            eprintln!("Choose a default connection: {}", names.join(", "));
+            eprint!("Context: ");
+            io::stderr().flush()?;
+            let mut name = String::new();
+            io::stdin().read_line(&mut name)?;
+            let name = name.trim();
+            crate::hosts::set_context(name, false)?;
+            destination = Some(name.to_owned());
+        }
+        if needs_context && destination.is_none() {
+            return Err("no default connection; run ahvm login, ahvm use cloud, or ahvm use <host>; use --endpoint for a direct daemon".into());
+        }
+        if let Some(name) = destination.as_deref() {
+            cli.cloud = name == "cloud";
+            if !cli.cloud {
+                cli.host = Some(name.to_owned());
+            }
+        }
+    }
+    if cli.cloud && cli.token_file.is_some() {
+        return Err(
+            "Cloud uses ahvm login credentials; --token-file is for direct connections".into(),
+        );
+    }
+    if cli.idempotency_key.is_some() && !cli.cloud {
+        return Err("--idempotency-key requires the cloud context".into());
+    }
+    if matches!(cli.command, Command::Context) {
+        if cli.cloud {
+            eprintln!("Context: cloud");
+            return crate::cloud::whoami(cli.json);
+        }
+        let name = destination
+            .as_deref()
+            .or(cli.endpoint.as_deref())
+            .unwrap_or("none");
+        if cli.endpoint.is_none() {
+            crate::hosts::selected(Some(name), false)?;
+        }
+        if cli.json {
+            println!(
+                "{}",
+                json!({"context": name, "authentication": "self-hosted"})
+            );
+        } else {
+            println!("Context: {name} (self-hosted)");
+        }
+        return Ok(0);
+    }
+
     if cli.cloud
         && matches!(
             &cli.command,
@@ -310,7 +418,13 @@ pub fn run(cli: Cli) -> Result<i32> {
         return crate::upgrade::refresh();
     }
     match &cli.command {
-        Command::Login(options) => return crate::cloud::login(options),
+        Command::Login(options) => {
+            let code = crate::cloud::login(options)?;
+            if code == 0 {
+                crate::hosts::set_context("cloud", true)?;
+            }
+            return Ok(code);
+        }
         Command::Whoami => return crate::cloud::whoami(cli.json),
         Command::Logout => return crate::cloud::logout(),
         _ => {}
@@ -319,11 +433,15 @@ pub fn run(cli: Cli) -> Result<i32> {
     if let Command::Host(command) = cli.command {
         return crate::hosts::run(command, cli.json);
     }
-    let cloud = if cli.cloud {
-        Some(crate::cloud::connection()?)
-    } else {
-        None
-    };
+    if needs_context {
+        eprintln!(
+            "Connection: {}",
+            destination
+                .as_deref()
+                .or(cli.endpoint.as_deref())
+                .unwrap_or("none")
+        );
+    }
     let host = if cli.cloud {
         None
     } else {
@@ -338,6 +456,11 @@ pub fn run(cli: Cli) -> Result<i32> {
             None => crate::images::run(command),
         };
     }
+    let cloud = if cli.cloud {
+        Some(crate::cloud::connection()?)
+    } else {
+        None
+    };
     let connection = host
         .as_ref()
         .map(crate::hosts::Connection::open)
@@ -353,7 +476,8 @@ pub fn run(cli: Cli) -> Result<i32> {
         .as_ref()
         .map(|c| c.endpoint.as_str())
         .or(cli.endpoint.as_deref())
-        .unwrap_or("http://127.0.0.1:8080");
+        .or(cloud.as_ref().map(|c| c.0.as_str()))
+        .ok_or("no endpoint selected; run ahvm use <context>")?;
     let api = match cloud {
         Some((origin, credential)) => {
             Api::new(&origin, credential, cli.timeout)?.cloud(cli.idempotency_key)?
@@ -361,7 +485,10 @@ pub fn run(cli: Cli) -> Result<i32> {
         None => Api::new(endpoint, token, cli.timeout)?,
     };
     let response = match cli.command {
-        Command::Login(_)
+        Command::Use { .. }
+        | Command::Context
+        | Command::Contexts
+        | Command::Login(_)
         | Command::Whoami
         | Command::Logout
         | Command::Host(_)

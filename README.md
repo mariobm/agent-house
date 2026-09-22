@@ -52,13 +52,13 @@ The server needs Linux x86_64, KVM, systemd, glibc 2.35+, Python 3, OpenSSL 3
 and GNU tar. Use root or an account with passwordless sudo.
 
 Installation downloads the runtime and Ubuntu image. Leave off `--install` to
-connect an already installed server. The first host becomes your default;
-`--host home` selects a host explicitly. SSH handles encryption and host-key
+connect an already installed server. The first host becomes your default if none
+is selected; `--context home` selects a host for one command. SSH handles encryption and host-key
 checks; the admin token is not saved on your laptop.
 
 ```sh
-ahvm host list
-ahvm host use home
+ahvm contexts
+ahvm use home
 ```
 
 ## 3. Create a workspace
@@ -107,8 +107,11 @@ ahvm delete dev
 
 Invited accounts can connect the CLI with `ahvm login`, check their workspace with
 `ahvm whoami`, and revoke access with `ahvm logout`. Compute-enabled pilot
-workspaces use `ahvm --cloud create dev` and `ahvm --cloud shell dev`. The cloud
-flag leaves your self-hosted default unchanged. See [cloud setup and limits](docs/CLOUD-LOGIN.md).
+workspaces use `ahvm create dev` and `ahvm shell dev` after `ahvm use cloud`.
+Login selects Cloud only when no default exists. Use `ahvm context` to inspect
+your connection, `ahvm contexts` to list choices, and `ahvm use home` to switch
+back. `ahvm --context cloud delete dev` targets Cloud for just one command.
+Names belong to the selected connection; AHVM never searches other hosts. See [cloud setup and limits](docs/CLOUD-LOGIN.md).
 
 ## Images
 

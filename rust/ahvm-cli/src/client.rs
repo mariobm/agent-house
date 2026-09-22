@@ -217,7 +217,7 @@ impl Api {
             else { error.into() }
         })?;
         if response.status() == reqwest::StatusCode::ACCEPTED && lifecycle {
-            return Err(format!("cloud operation is still pending; inspect its status with ahvm --cloud get <name>. Retry this request using --idempotency-key {}", key.as_deref().unwrap_or_default()).into());
+            return Err(format!("cloud operation is still pending; inspect its status with ahvm --context cloud get <name>. Retry this request using --idempotency-key {}", key.as_deref().unwrap_or_default()).into());
         }
         Self::response(response).map_err(|error| {
             if lifecycle && error.downcast_ref::<ApiFailure>().is_some_and(|e|

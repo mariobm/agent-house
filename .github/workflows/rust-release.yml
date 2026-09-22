@@ -24,6 +24,7 @@ jobs:
           cargo build --manifest-path rust/Cargo.toml --release --locked -p ahvm-cli
           python3 scripts/test-rust-cli.py rust/target/release/ahvm
           python3 scripts/test-host-cli.py rust/target/release/ahvm
+          python3 scripts/test-context-cli.py rust/target/release/ahvm
           bash desktop-viewer/build.sh
           mkdir -p "$RUNNER_TEMP/client/bin"
           cp -R desktop-viewer/dist "$RUNNER_TEMP/client/desktop"
