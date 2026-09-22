@@ -48,25 +48,27 @@ network is unavailable, credentials stay locally so you can retry revocation. It
 not sign out your browser, change your SSH hosts/default host, or delete any VMs.
 To switch cloud accounts or workspaces, log out and log in again.
 
-`--endpoint`, `--token-file`, `AHVM_TOKEN` and `--host` still configure self-hosted
+`--endpoint`, `--token-file`, `AHVM_TOKEN` and SSH host contexts still configure self-hosted
 commands. They do not provide cloud authentication. Developers can point login at a
 different HTTPS service with `--cloud-endpoint`; HTTP is accepted only for a local
 `127.0.0.1` development service. The origin is stored with the cloud login.
 
 ## Hosted machines
 
-The cloud compute commands require v0.2.6 or newer. After your workspace is enabled:
+With the context-enabled CLI, run `ahvm use cloud` after your workspace is enabled.
+Login selects Cloud only if no default exists; existing SSH defaults are preserved.
+Older clients can keep using `--cloud` until upgraded:
 
 ```sh
-ahvm --cloud create dev
+ahvm create dev
 # Bash opens inside the new VM:
 bun --version
 exit
 # Back on your computer; the VM remains available:
-ahvm --cloud files put dev ./hello.txt /workspace/hello.txt
-ahvm --cloud stop dev
-ahvm --cloud start dev
-ahvm --cloud delete dev
+ahvm files put dev ./hello.txt /workspace/hello.txt
+ahvm stop dev
+ahvm start dev
+ahvm delete dev
 ```
 
 Cloud CPU and RAM are selected by the administrator, initially 1 vCPU and 2048 MiB
@@ -76,14 +78,23 @@ Workspace quotas and host capacity still apply. Disk capacity comes from the ima
 
 Interactive creation opens Bash automatically. Use `--no-shell` to return after
 creation; `--json` and redirected stdin/stdout never attach. Later, use
-`ahvm --cloud shell dev` to open another shell.
+`ahvm shell dev` to open another shell.
 
-`--cloud` explicitly selects your approved workspace, bypassing saved SSH host
-selection. It conflicts with `--host`, `--endpoint` and `--token-file`, including
-their environment variables. Omit it to keep using your normal self-hosted default.
+`ahvm use cloud` selects your approved workspace; `ahvm use home` selects a saved
+SSH host. `ahvm contexts` lists choices and `ahvm context` shows the current
+connection (and verifies Cloud identity). Use `--context cloud` or `--context home`
+for one command without changing the default. `AHVM_CONTEXT` is the environment
+equivalent. Explicit context flags conflict with `--endpoint` and legacy selection
+flags. `--endpoint` always selects a direct self-hosted daemon and never receives
+Cloud credentials. Without a default, interactive commands ask you to select one;
+scripts fail with setup instructions. Removing the default host clears the choice,
+rather than selecting another server. Logout keeps the Cloud selection but commands
+require a new login. The old `--cloud`, `--host` and `host use` syntax remains as
+hidden/legacy compatibility support. No implicit localhost daemon is selected.
+
 The cloud credential lock is released before starting VM requests or a shell.
 
-`ahvm --cloud list` lists your machines; `ahvm --cloud get dev` reads current status.
+`ahvm list` lists your machines; `ahvm get dev` reads current status.
 The dashboard at [dashboard.ahvm.app](https://dashboard.ahvm.app/) also shows state
 and operations needing attention. Machine names are scoped to a workspace.
 
@@ -91,7 +102,7 @@ Lifecycle requests carry an idempotency key. If the response is interrupted or
 pending, the CLI prints the key. Retry the same command with that key:
 
 ```sh
-ahvm --cloud --idempotency-key <printed-key> create dev
+ahvm --idempotency-key <printed-key> create dev
 ```
 
 This reads the existing operation instead of creating another VM. Pending or

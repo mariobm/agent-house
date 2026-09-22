@@ -88,13 +88,22 @@ else: print('a'*64)
     body=json.loads((root/'last-create').read_text())
     assert body['cpus']==2 and body['memory_mb']==4096
 
-    run('host', 'use', 'other')
+    run('use', 'other')
     assert json.loads(run('host', 'list', '--json').stdout)['default'] == 'other'
     run('list', '--host', 'missing', ok=False)
     run('list', '--host', 'home', '--endpoint', 'http://127.0.0.1:1', ok=False)
     run('host', 'add', 'home', '--ssh', 'replacement', ok=False)
     run('host', 'add', 'bad', '--ssh', 'root@host;id', ok=False)
     run('host', 'remove', 'other')
-    assert json.loads(run('host', 'list', '--json').stdout)['default'] == 'home'
+    assert json.loads(run('contexts', '--json').stdout)['default'] is None
+    assert 'no default connection' in run('list', ok=False).stderr
+    run('use', 'cloud')
+    assert 'not signed in' in run('list', ok=False).stderr
+    run('--context', 'home', 'list')
+    assert json.loads(run('contexts', '--json').stdout)['default'] == 'cloud'
+    run('--context', 'cloud', '--endpoint', 'http://127.0.0.1:1', 'list', ok=False)
+    run('host', 'add', 'cloud', '--ssh', 'host', ok=False)
+    run('use', 'home')
+    assert json.loads(run('context', '--json').stdout)['context'] == 'home'
     assert 'a' * 64 not in (root / 'config/hosts.json').read_text()
     print('Host selection, default, SSH transport, generated names and rejection contracts passed')

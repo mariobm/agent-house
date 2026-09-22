@@ -131,9 +131,8 @@ fn browser_pkce_roundtrip_ignores_invalid_callback_and_preserves_hosts() {
         .contains(&"r".repeat(43)));
 }
 #[test]
-fn device_login_refresh_whoami_logout_leave_self_hosted_config_untouched() {
+fn device_login_selects_cloud_and_logout_preserves_selection() {
     let temp = tempfile::tempdir().unwrap();
-    std::fs::write(temp.path().join("hosts.json"), "self-hosted sentinel").unwrap();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", server.local_addr().unwrap());
     let server_origin = origin.clone();
@@ -223,7 +222,7 @@ fn device_login_refresh_whoami_logout_leave_self_hosted_config_untouched() {
         .unwrap();
     assert!(who.status.success());
     assert!(String::from_utf8(who.stdout).unwrap().contains("Tester"));
-    let limited = cli(temp.path()).args(["--cloud", "list"]).output().unwrap();
+    let limited = cli(temp.path()).args(["list"]).output().unwrap();
     assert!(!limited.status.success());
     assert!(String::from_utf8(limited.stderr)
         .unwrap()
@@ -231,7 +230,6 @@ fn device_login_refresh_whoami_logout_leave_self_hosted_config_untouched() {
     for pending in [true, false] {
         let create = cli(temp.path())
             .args([
-                "--cloud",
                 "--idempotency-key",
                 "same-request-key-1234",
                 "create",
@@ -246,10 +244,7 @@ fn device_login_refresh_whoami_logout_leave_self_hosted_config_untouched() {
                 .contains("same-request-key-1234"));
         }
     }
-    let failed = cli(temp.path())
-        .args(["--cloud", "stop", "dev"])
-        .output()
-        .unwrap();
+    let failed = cli(temp.path()).args(["stop", "dev"]).output().unwrap();
     assert!(!failed.status.success());
     let message = String::from_utf8(failed.stderr).unwrap();
     assert!(message.contains("choose a new key"));
@@ -258,8 +253,11 @@ fn device_login_refresh_whoami_logout_leave_self_hosted_config_untouched() {
     assert!(logout.status.success());
     assert!(!path.exists());
     assert_eq!(
-        std::fs::read_to_string(temp.path().join("hosts.json")).unwrap(),
-        "self-hosted sentinel"
+        serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(temp.path().join("hosts.json")).unwrap()
+        )
+        .unwrap()["default"],
+        "cloud"
     );
     h.join().unwrap();
 }

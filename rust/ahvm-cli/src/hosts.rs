@@ -94,6 +94,60 @@ pub fn selected(name: Option<&str>, explicit_endpoint: bool) -> Result<Option<Ho
         None => Ok(None),
     }
 }
+/// Connection selection shares the existing host config and its process lock.
+pub fn default_context() -> Result<Option<String>> {
+    Ok(load()?.default)
+}
+pub fn set_context(name: &str, only_if_unset: bool) -> Result<()> {
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory()?.join("hosts.lock"))?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+    let mut config = load()?;
+    if name != "cloud" && !config.hosts.contains_key(name) {
+        return Err(format!("unknown context {name}; run ahvm contexts").into());
+    }
+    if !only_if_unset || config.default.is_none() {
+        config.default = Some(name.to_owned());
+        let dir = directory()?;
+        let mut file = tempfile::NamedTempFile::new_in(&dir)?;
+        serde_json::to_writer_pretty(&mut file, &config)?;
+        file.as_file().sync_all()?;
+        file.persist(dir.join("hosts.json"))?;
+    }
+    Ok(())
+}
+pub fn context_names() -> Result<Vec<String>> {
+    let mut names = vec!["cloud".to_owned()];
+    names.extend(load()?.hosts.into_keys().filter(|n| n != "cloud"));
+    Ok(names)
+}
+pub fn show_contexts(json: bool) -> Result<i32> {
+    let config = load()?;
+    let names = context_names()?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"default": config.default, "contexts": names})
+        );
+    } else {
+        for name in names {
+            println!(
+                "{}{}",
+                name,
+                if config.default.as_ref() == Some(&name) {
+                    " (default)"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
+    Ok(0)
+}
 pub fn run(command: Hosts, json: bool) -> Result<i32> {
     // Serialize read-modify-write across CLI processes, including first default.
     let lock = fs::OpenOptions::new()
@@ -144,7 +198,7 @@ pub fn run(command: Hosts, json: bool) -> Result<i32> {
             install,
             api_port,
         } => {
-            if !valid(&name) {
+            if !valid(&name) || name == "cloud" {
                 return Err("invalid host name".into());
             }
             if config.hosts.contains_key(&name) {
@@ -168,7 +222,7 @@ pub fn run(command: Hosts, json: bool) -> Result<i32> {
             config.hosts.insert(name, host);
         }
         Hosts::Use { name } => {
-            if !config.hosts.contains_key(&name) {
+            if name != "cloud" && !config.hosts.contains_key(&name) {
                 return Err("unknown host".into());
             }
             config.default = Some(name);
@@ -178,7 +232,7 @@ pub fn run(command: Hosts, json: bool) -> Result<i32> {
                 return Err("unknown host".into());
             }
             if config.default.as_ref() == Some(&name) {
-                config.default = config.hosts.keys().next().cloned();
+                config.default = None;
             }
         }
     }
