@@ -54,6 +54,23 @@ share the existing 64-flow/dial limits and TCP timeouts. The exception allows no
 other gateway port or arbitrary private destination. Other UDP and IPv6 are dropped. Private-access exceptions and authenticated previews are described in
 [network access](NETWORK-ACCESS.md). There is no implicit inter-project routing.
 
+On Linux hosts, IPv4 ICMP echo (`ping -4`) is forwarded to public destinations
+using unprivileged kernel ping sockets. Replies must match the destination,
+kernel-assigned identifier, sequence number and entire payload before the guest
+identifier is restored. Pinging `100.64.0.1` tests the local gateway. Host-interface,
+private, metadata and special-use destinations stay blocked; TCP private grants
+do not authorize ICMP. There are at most 64 outstanding echo requests per gateway,
+with a five-second deadline, 20 requests/second and a burst of 20. Echo traffic
+also passes through the existing per-link bandwidth limit. Fragmented/oversized
+packets and other ICMP message types are unsupported; this is not traceroute or
+general raw-IP forwarding.
+
+The service user's group must be within the host's `net.ipv4.ping_group_range`
+(see [Linux ICMP documentation](https://man7.org/linux/man-pages/man7/icmp.7.html)).
+No `CAP_NET_RAW` grant is needed. If ping sockets are unavailable, netd logs the
+first setup error and keeps TCP/DNS working. A failed ping alone does not establish
+a DNS/HTTPS outage; `curl -4 --max-time 15 -I https://example.com` tests web access.
+
 The engine starts netd before the VMM, persists its PID/starttime separately in
 `net-state.json`, and checks it every 250 ms. Linux /proc identity checks avoid
 shell-process polling in the recurring monitor. Dead gateways reconnect through the repaired VMM socket backend. Repeated
@@ -79,6 +96,18 @@ budgets remain bounded. Established TCP streams are not preserved through netd
 loss or cold restore; applications must reconnect.
 
 ## Validation on agent_house
+
+The ICMP follow-up passed 14 unit/gateway tests on macOS and Linux, plus the
+explicit Linux ping-socket roundtrip as `ahvm-cloud`. The socket-only gate
+`python3 scripts/test-netd-icmp.py /path/to/ahvm-netd` ran under that same
+unprivileged account: real public/gateway echo, MTU-sized echo and denial of
+host/private destinations. It creates no VMs. The KVM lifecycle gate also
+asserts public/gateway ping after each recovery and rejects ping to the host.
+After replacing only its gateway, the running production Omarchy VM returned
+3/3 replies from `1.1.1.1` at about 7 ms, passed a 1472-byte-payload ping, and
+returned HTTPS 200 from both example.com and cloudflare.com. Its kernel boot ID
+and Hyprland PID were unchanged across the gateway replacement. These are
+functional samples, not latency guarantees.
 
 [Hardening results](results/networking-hardening-linux.json): UDP reply matching,
 TCP DNS fallback and capped restart backoff pass the expanded two-test KVM gate

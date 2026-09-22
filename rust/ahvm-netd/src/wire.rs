@@ -6,6 +6,15 @@ pub(crate) const GW: Ipv4Address = Ipv4Address::new(100, 64, 0, 1);
 pub(crate) const GUEST: Ipv4Address = Ipv4Address::new(100, 64, 0, 2);
 pub(crate) const MAC: [u8; 6] = [2, 0, 0, 0, 0, 2];
 
+pub(crate) fn valid_echo_request(bytes: &[u8]) -> bool {
+    (8..=1480).contains(&bytes.len())
+        && smoltcp::wire::Icmpv4Packet::new_checked(bytes).is_ok_and(|p| {
+            p.msg_type() == smoltcp::wire::Icmpv4Message::EchoRequest
+                && p.msg_code() == 0
+                && p.verify_checksum()
+        })
+}
+
 pub(crate) enum Packet<'a> {
     Arp,
     Ipv4(Ipv4Packet<&'a [u8]>),
@@ -60,6 +69,7 @@ pub(crate) fn validate(frame: &[u8]) -> Option<Packet<'_>> {
                         return None;
                     }
                 }
+                IpProtocol::Icmp if valid_echo_request(ip.payload()) => {}
                 _ => return None,
             }
             Some(Packet::Ipv4(ip))
@@ -88,9 +98,11 @@ pub(crate) mod tests {
         if protocol == 6 {
             TcpPacket::new_unchecked(&mut packet[34..])
                 .fill_checksum(&GUEST.into(), &Ipv4Address::from(dest).into());
-        } else {
+        } else if protocol == 17 {
             UdpPacket::new_unchecked(&mut packet[34..])
                 .fill_checksum(&GUEST.into(), &Ipv4Address::from(dest).into());
+        } else if protocol == 1 {
+            smoltcp::wire::Icmpv4Packet::new_unchecked(&mut packet[34..]).fill_checksum();
         }
         packet
     }

@@ -1,7 +1,8 @@
-//! One sandbox's outbound TCP/DNS gateway. Policy is supplied by the host.
+//! One sandbox's outbound TCP/DNS/ICMP-echo gateway. Policy is supplied by the host.
 mod bandwidth;
 mod dns;
 mod gateway;
+mod icmp;
 mod wire;
 
 use nix::poll::{poll, PollFd, PollFlags};

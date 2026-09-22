@@ -26,6 +26,12 @@ gets an error. Hardware beyond the tested Intel host is not qualified yet.
 
 The image boots systemd as PID 1. System/user services manage Hyprland, Forge,
 WayVNC and the private desktop relay. The desktop uses the `desktop` user.
+
+For network diagnostics, use `curl -4 -I https://example.com` for HTTPS and
+`ping -4 -c 3 1.1.1.1` for ICMP echo. Public IPv4 ping requires a host gateway
+with ICMP forwarding; v0.3.9 and older gateways only support TCP and DNS, so a
+ping timeout on those versions does not mean Internet access is broken. See
+[networking support and limits](STATUS-networking.md#isolation-and-lifecycle).
 Closing the viewer disconnects the display; idle policy still applies. Stop/start
 preserves disk data but starts a new desktop session. GPU RAM snapshots are not supported.
 

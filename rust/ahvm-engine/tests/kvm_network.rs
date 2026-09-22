@@ -34,6 +34,7 @@ fn exec(be: &KrucibleBackend, id: &str, command: &str) {
 }
 fn network(be: &KrucibleBackend, id: &str) {
     exec(be, id, "curl -4 -fsS --connect-timeout 5 --max-time 15 https://example.com/ -o /tmp/network-check; test -s /tmp/network-check");
+    exec(be, id, "ping -c 1 -W 2 100.64.0.1; ping -c 1 -W 2 1.1.1.1");
 }
 fn kill(w: &Worker) {
     assert_eq!(ahvm_engine::process_starttime(w.pid), w.starttime);
@@ -131,6 +132,7 @@ while True:
     let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
     route.connect("1.1.1.1:53").unwrap();
     let host = route.local_addr().unwrap().ip();
+    exec(be, "a", &format!("! ping -c 1 -W 1 {host}"));
     let listener = std::net::TcpListener::bind((host, 0)).unwrap();
     let address = listener.local_addr().unwrap();
     let _control = std::net::TcpStream::connect(address).unwrap();

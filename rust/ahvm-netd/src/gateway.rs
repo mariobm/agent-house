@@ -1,4 +1,4 @@
-//! Bounded TCP and DNS forwarding for one host-authorized guest link.
+//! Bounded TCP, DNS and ICMP echo forwarding for one host-authorized guest link.
 use nix::poll::{poll, PollFd, PollFlags};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
@@ -63,7 +63,7 @@ impl Device for Link {
         c
     }
 }
-fn public(ip: Ipv4Addr, host: &[Ipv4Addr]) -> bool {
+pub(crate) fn public(ip: Ipv4Addr, host: &[Ipv4Addr]) -> bool {
     let [a, b, c, _] = ip.octets();
     !host.contains(&ip)
         && !matches!(a, 0 | 10 | 127 | 224..=255)
@@ -165,6 +165,7 @@ fn serve_with_io(
     let mut dns: Vec<Dns> = Vec::new();
     let mut flows: HashMap<Key, Flow> = HashMap::new();
     let epoch = Instant::now();
+    let mut echoes = crate::icmp::Forwarder::new(epoch);
     let debug = std::env::var_os("AHVM_NETD_TRACE").is_some();
     let mut incoming = Vec::new();
     let mut write_offset = 0;
@@ -217,6 +218,16 @@ fn serve_with_io(
                 Some(Packet::Ipv4(ip)) => {
                     let dest = Ipv4Addr::from(ip.dst_addr().octets());
                     match ip.next_header() {
+                        IpProtocol::Icmp => {
+                            if let Some(reply) =
+                                echoes.request(dest, ip.payload(), Instant::now(), &mut host_ips)
+                            {
+                                enqueue_echo(&link.tx, reply);
+                            }
+                            // Never give public echo requests to smoltcp's
+                            // any-IP responder: it would fake Internet replies.
+                            continue;
+                        }
                         IpProtocol::Tcp => {
                             let tcp = match TcpPacket::new_checked(ip.payload()) {
                                 Ok(v) => v,
@@ -464,6 +475,7 @@ fn serve_with_io(
             }
         });
         iface.poll(now, &mut link, &mut sockets);
+        echoes.poll(Instant::now(), |reply| enqueue_echo(&link.tx, reply));
         let mut queue = link.tx.borrow_mut();
         for _ in 0..64 {
             let Some(frame) = queue.front() else {
@@ -520,6 +532,9 @@ fn serve_with_io(
         for query in &dns {
             pending.push(PollFd::new(query.socket.as_fd(), PollFlags::POLLIN));
         }
+        for socket in echoes.sockets() {
+            pending.push(PollFd::new(socket.as_fd(), PollFlags::POLLIN));
+        }
         let now = NetInstant::from_millis(epoch.elapsed().as_millis() as i64);
         let timeout = iface
             .poll_delay(now, &sockets)
@@ -550,6 +565,15 @@ fn serve_with_io(
     }
 }
 
+fn enqueue_echo(queue: &Queue, frame: Vec<u8>) {
+    let mut queue = queue.borrow_mut();
+    if queue.len() < 64 {
+        let mut framed = (frame.len() as u32).to_be_bytes().to_vec();
+        framed.extend(frame);
+        queue.push_back(framed);
+    }
+}
+
 #[test]
 fn destination_policy_rejects_private_special_and_host_addresses() {
     let host = [Ipv4Addr::new(136, 243, 144, 225)];
@@ -570,6 +594,52 @@ fn destination_policy_rejects_private_special_and_host_addresses() {
         assert!(!public(s.parse().unwrap(), &host), "{s}");
     }
     assert!(public("1.1.1.1".parse().unwrap(), &host));
+}
+
+#[test]
+fn icmp_gateway_replies_but_unforwarded_public_ping_never_succeeds() {
+    use smoltcp::wire::{Icmpv4Packet, Ipv4Packet};
+    let (mut guest, gateway) = UnixStream::pair().unwrap();
+    let server = std::thread::spawn(move || {
+        serve_with_io(
+            gateway,
+            Ipv4Addr::LOCALHOST,
+            &[],
+            Arc::new(AtomicUsize::new(0)),
+            None,
+            || Err(io::Error::other("injected interface lookup failure")),
+            || panic!("ICMP opened a DNS socket"),
+        )
+        .unwrap();
+    });
+    guest
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let request = [8, 0, 0, 0, 0x12, 0x34, 0, 7];
+    for destination in [[1, 1, 1, 1], GW.octets()] {
+        let frame = crate::wire::tests::frame(1, destination, &request);
+        guest
+            .write_all(&(frame.len() as u32).to_be_bytes())
+            .unwrap();
+        guest.write_all(&frame).unwrap();
+    }
+    let mut length = [0; 4];
+    guest.read_exact(&mut length).unwrap();
+    let mut frame = vec![0; u32::from_be_bytes(length) as usize];
+    guest.read_exact(&mut frame).unwrap();
+    let ip = Ipv4Packet::new_checked(&frame[14..]).unwrap();
+    assert_eq!(ip.src_addr(), GW);
+    assert!(ip.verify_checksum());
+    let reply = Icmpv4Packet::new_checked(ip.payload()).unwrap();
+    assert_eq!(reply.msg_type(), smoltcp::wire::Icmpv4Message::EchoReply);
+    assert_eq!(reply.echo_ident(), 0x1234);
+    assert!(reply.verify_checksum());
+    assert!(
+        guest.read_exact(&mut length).is_err(),
+        "unexpected extra reply"
+    );
+    drop(guest);
+    server.join().unwrap();
 }
 
 #[test]
