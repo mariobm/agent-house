@@ -195,14 +195,9 @@ async fn stream(
         return StatusCode::BAD_GATEWAY.into_response();
     };
     request.headers_mut().insert("Authorization", authorization);
-    let remote = match tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio_tungstenite::connect_async(request),
-    )
-    .await
-    {
-        Ok(Ok((stream, _))) => stream,
-        _ => return StatusCode::BAD_GATEWAY.into_response(),
+    let remote = match connect_remote(request).await {
+        Ok(stream) => stream,
+        Err(()) => return StatusCode::BAD_GATEWAY.into_response(),
     };
     ws.max_message_size(256 * 1024)
         .max_frame_size(256 * 1024)
@@ -211,6 +206,43 @@ async fn stream(
             let _ = tokio::time::timeout(Duration::from_secs(3600), bridge(socket, remote)).await;
         })
 }
+type RemoteSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+// A cold Cloud desktop may need more than one bounded wake request. Retry only
+// explicit service backoff; authentication failures and active streams are never replayed.
+async fn connect_remote(
+    request: tokio_tungstenite::tungstenite::http::Request<()>,
+) -> Result<RemoteSocket, ()> {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            let result = tokio::time::timeout(
+                Duration::from_secs(30),
+                tokio_tungstenite::connect_async(request.clone()),
+            )
+            .await;
+            match result {
+                Ok(Ok((stream, _))) => return Ok(stream),
+                Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
+                    if response.status() == StatusCode::SERVICE_UNAVAILABLE =>
+                {
+                    let delay = response
+                        .headers()
+                        .get("Retry-After")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .filter(|delay| (1..=5).contains(delay))
+                        .ok_or(())?;
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                }
+                _ => return Err(()),
+            }
+        }
+    })
+    .await
+    .map_err(|_| ())?
+}
+
 async fn bridge(
     local: WebSocket,
     remote: tokio_tungstenite::WebSocketStream<
@@ -253,6 +285,44 @@ async fn bridge(
 mod tests {
     use super::*;
     use std::future::IntoFuture;
+
+    #[test]
+    fn cold_wake_retries_backoff_but_not_authentication_failure() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let app = Router::new().route(
+                "/",
+                get({
+                    let attempts = attempts.clone();
+                    move |ws: WebSocketUpgrade| {
+                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                        async move {
+                            if attempt == 0 {
+                                (StatusCode::SERVICE_UNAVAILABLE, [("Retry-After", "1")])
+                                    .into_response()
+                            } else if attempt == 1 {
+                                ws.on_upgrade(|mut socket| async move {
+                                    let _ = socket.send(Message::Close(None)).await;
+                                })
+                            } else {
+                                StatusCode::UNAUTHORIZED.into_response()
+                            }
+                        }
+                    }
+                }),
+            );
+            let server = tokio::spawn(axum::serve(listener, app).into_future());
+            let request = format!("ws://{address}/").into_client_request().unwrap();
+            assert!(connect_remote(request.clone()).await.is_ok());
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            assert!(connect_remote(request).await.is_err());
+            assert_eq!(attempts.load(Ordering::SeqCst), 3);
+            server.abort();
+        });
+    }
 
     #[test]
     fn local_stream_rejects_other_origins_and_wrong_capabilities() {

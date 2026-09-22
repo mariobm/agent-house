@@ -18,7 +18,10 @@ pub enum Request {
         sandbox_id: String,
         cpus: u8,
         memory_mb: u32,
-        /// Pin the installed Ubuntu development image for private pool preparation.
+        /// Named lifecycle image. Absent retains the headless Ubuntu contract.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image: Option<String>,
+        /// Pin the installed named image generation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image_digest: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,6 +103,14 @@ pub async fn submit(
 ) -> ApiResult<Response> {
     if !valid_id(&id) || !valid_id(request.sandbox_id()) {
         return Err(ApiError::Invalid("invalid operation or sandbox id".into()));
+    }
+    if let Request::Create {
+        image: Some(image), ..
+    } = &request
+    {
+        if !matches!(image.as_str(), "ubuntu-dev" | "omarchy-desktop") {
+            return Err(ApiError::Invalid("unsupported lifecycle image".into()));
+        }
     }
     if let Request::Create {
         image_digest: Some(digest),
@@ -221,6 +232,7 @@ async fn execute(state: AppState, user: UserId, request: Request, operation_id: 
             sandbox_id,
             cpus,
             memory_mb,
+            image,
             image_digest,
             storage_mode,
             network_bytes_per_sec,
@@ -233,7 +245,7 @@ async fn execute(state: AppState, user: UserId, request: Request, operation_id: 
                 cpus,
                 memory_mb,
                 desktop: false,
-                image: None,
+                image,
             }),
             Some(operation_id),
             network_bytes_per_sec,
