@@ -72,3 +72,6 @@ The normal `ubuntu-dev` default was unchanged. Test VMs and the separate daemon
 were cleaned up; the downloaded desktop image remains cached for future use.
 
 The CLI/daemon feature is still on PR #32 until its release is published.
+
+The desktop defaults to **1920×1080**. The viewer scales it to fit its window;
+existing VM disks keep the configuration of the image they were created from.
