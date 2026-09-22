@@ -1,28 +1,51 @@
-# Omarchy desktop experiment
+# Omarchy desktop image
 
-Opt-in development experiment, separate from the released Ubuntu/XFCE desktop.
-Uses the existing AHVM Arch GPU image, with Omarchy's Hyprland configuration,
-Quickshell, theme, Firefox and terminal. It does not run Omarchy's disk installer
-or replace the host OS.
+AHVM's Omarchy 4.0.4 image uses the upstream desktop applications and user
+configuration on a clean Arch Linux filesystem. AHVM supplies the kernel,
+virtual networking, systemd entrypoint and private WayVNC transport. It does
+not install Omarchy's physical-machine bootloader or repartition the host.
 
-Upstream source tested: `omacom/omarchy` commit
-`b5589faaf80c6f87c07d4560fca37c4a81722f28` (`4.0.0.alpha`).
-This is an adapted desktop, not a fully qualified Omarchy distribution.
+Pinned upstream release: `v4.0.4`, commit
+`c668141e9c42b13c80c9ca4ea108e11708c5e8a5`.
 
-On the Linux builder, export that upstream commit into a source directory, then:
+## Included software
+
+- Hyprland, Quickshell, Foot, Chromium, Firefox and Nautilus.
+- Git, Neovim, tmux, ripgrep, fzf, lazygit, build tools and Python.
+- LibreOffice, Obsidian, OBS Studio, Kdenlive, mpv and the upstream application set.
+- Mise, Node.js LTS, Bun, Claude Code, Codex, OpenCode and Pi, preinstalled.
+- Docker/Compose and lazydocker packages. Kernel-dependent Docker functionality
+  must be qualified separately; installation alone does not guarantee it works.
+- Omarchy's Bash configuration, themes, application launchers and keyboard bindings.
+
+Other AI launchers provided by upstream may install their tools on first use.
+AI tools ship without accounts or API keys; users sign in themselves.
+The desktop account is `desktop`, with passwordless sudo inside its own VM.
+This does not grant access to the host. Arch uses `pacman`, not Ubuntu's `apt`.
+
+## Build
+
+On a Linux x86_64 builder, as root:
 
 ```sh
-sudo images/omarchy-desktop/prepare-image.sh \
-  /path/to/arch-desktop.ext4 /path/to/new-omarchy.ext4 /path/to/omarchy-source
+images/omarchy-desktop/build-image.sh /path/to/new-omarchy.ext4 /path/to/ahvm-forge
 ```
 
-The output must be new. The builder copies the base and grows the copy to 40 GiB;
-it leaves the base unchanged. Arch packages remain signature checked. Package
-versions roll, so the source pin alone does not make the image reproducible.
+The build includes a fallback for `omarchy-version` because AHVM installs the
+runtime source without the physical-machine meta-package. Upstream system
+upgrades remain unqualified; publish a new AHVM image for a tested update.
 
-For testing use one 4-vCPU / 8-GiB VM, the experimental GPU-enabled worker and
-`AHVM_DESKTOP_IMAGE=/path/to/new-omarchy.ext4`, `AHVM_DESKTOP_GPU=1` on an isolated
-daemon. See [normal installation](../../docs/OMARCHY-DESKTOP.md) for the packaged path.
+The output must be new. The builder verifies the pinned Arch bootstrap and
+Omarchy archive, installs signature-checked packages from the Omarchy stable
+and Arch repositories, and produces a sparse 40 GiB ext4 disk. Arch packages
+and coding tools roll at build time; exact installed versions are recorded in
+`/usr/share/ahvm/packages.txt` and `/usr/share/ahvm/tools.json`. The source pin
+alone does not make the build reproducible.
+
+For development only, `prepare-image.sh CLEAN_ARCH.ext4 NEW.ext4 OMARCHY_SOURCE`
+accepts an existing clean Arch base. Never use a user's running or exported VM
+as an image source. See [publication](../../docs/IMAGE-PUBLISHING.md) for signing,
+qualification and promotion, and [usage](../../docs/OMARCHY-DESKTOP.md).
 
 The initialization wrapper execs systemd as PID 1. System services supervise
 Forge and the PAM-backed desktop session. `user@1000.service` supplies the user
@@ -39,21 +62,29 @@ Power management, desktop login/lock, sound, Omarchy updates, hardware helpers,
 clipboard/international keyboard integration and GPU isolation remain outside
 this qualification. RAM snapshots are unsupported. Keep Ubuntu as the default.
 
-## Qualification (2026-09-11)
+## Qualification
 
-On `agent_house`, one 4-CPU / 8-GiB VM booted the 40-GiB image using the
-experimental GPU worker. Confirmed systemd is PID 1, cgroup v2 is mounted,
-Forge/desktop/user manager/VNC/relay are active, and no systemd units failed.
-Native macOS viewer displays Omarchy's bar, notifications and menu. The RFB
-probe typed a command and the guest marker confirmed delivery. HTTPS returned
-200 through the AHVM gateway. Stop/start preserved a disk marker and all services
-came back without failed units. A fresh build from the committed recipe also
-booted with healthy services and working HTTPS.
+The initial 4.0.0.alpha preview was visually tested on `agent_house`. For the
+4.0.4 replacement, an isolated 2-vCPU / 8-GiB VM booted in 6.31 seconds and
+restarted in 5.91 seconds (local storage, single observations). VNC delivered
+1280×720 with the Omarchy bar, wallpaper, Bash prompt and welcome notification.
+Systemd reported no failed units. HTTPS and Chromium's sandboxed headless
+renderer fetched a public page. A saved file survived a cold restart.
 
-The owner completed visual testing and approved merging the preview. No Omarchy
-image has been published and no production service or existing sandbox was changed.
+The desktop user's interactive Bash found Git, Neovim, Node.js, npm, Bun,
+Python, Claude Code, Codex, OpenCode and Pi; tool version commands and
+passwordless guest sudo passed.
 
-Keybindings menu follow-up: explicitly install Perl and Lua, and adapt the pinned
-upstream scanner's monitor mock for qconsole. The four-modifier Hyper+K sequence
-was verified in the native viewer to reopen the Keybindings menu after Escape.
-The user's physical Raycast Caps Lock remapper remains a manual input check.
+The signed `4.0.4-20260922` artifact is 3.54 GiB compressed and expands to a
+40-GiB sparse disk. A fresh download through the released CLI passed catalog
+signature and image digest verification. The shared R2 base was imported once
+before the replicated lifecycle check.
+
+On the production Cloud node, a temporary 2-vCPU / 8-GiB replicated VM took
+32.46 seconds to create and 37.77 seconds to cold-wake after confirmed local
+eviction (single observations, not latency guarantees). Its boot ID changed,
+a saved file survived, HTTPS worked, systemd reported no failed units and VNC
+returned a 1280×720 framebuffer before and after restart. The desktop user's
+coding tools and keybinding discovery passed. The temporary VM was deleted.
+Offline reclamation took longer than the initial three-minute test wait; the
+check continued until actual eviction, without bypassing collection.
