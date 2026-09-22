@@ -98,6 +98,9 @@ enum Command {
     /// Open the optional native desktop viewer (desktop-enabled VMs only).
     Desktop {
         id: String,
+        /// Shared desktop resolution (applied before connecting).
+        #[arg(long, value_enum, default_value = "720p")]
+        resolution: crate::desktop::Resolution,
         /// Explicit path to the optional ahvm-desktop helper.
         #[arg(long)]
         viewer: Option<PathBuf>,
@@ -498,7 +501,11 @@ pub fn run(mut cli: Cli) -> Result<i32> {
         | Command::License => {
             unreachable!()
         }
-        Command::Desktop { id, viewer } => return crate::desktop::launch(&api, &id, viewer),
+        Command::Desktop {
+            id,
+            viewer,
+            resolution,
+        } => return crate::desktop::launch(&api, &id, viewer, resolution),
         Command::Health => api.call(Method::GET, &["healthz"], &[], None)?,
         Command::Storage(command) => {
             let health = api.call(Method::GET, &["healthz"], &[], None)?;

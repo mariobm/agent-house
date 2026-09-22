@@ -1,5 +1,5 @@
 hl.env("AQ_NO_KMS_REQUIREMENT", "1")
-hl.monitor({ output = "", mode = "1920x1080@60", position = "auto", scale = 1 })
+hl.monitor({ output = "", mode = "1280x720@60", position = "auto", scale = 1 })
 hl.monitor({ output = "Virtual-1", disabled = true })
 hl.config({
     debug = { disable_logs = false, enable_stdout_logs = true },

@@ -4,7 +4,7 @@ export DISPLAY=:1
 cd /workspace
 # Private Unix transport only. Authentication/ownership are enforced by AHVM.
 # TigerVNC parses rfbunixmode as decimal: 384 gives Unix mode 0600.
-Xtigervnc :1 -geometry 1920x1080 -depth 24 -rfbport -1 \
+Xtigervnc :1 -geometry 1280x720 -depth 24 -rfbport -1 \
     -rfbunixpath "$XDG_RUNTIME_DIR/vnc.sock" -rfbunixmode 384 \
     -SecurityTypes None -localhost -nolisten tcp -ac &
 vnc=$!

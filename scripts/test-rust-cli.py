@@ -57,6 +57,30 @@ class ClientTests(unittest.TestCase):
         self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever); self.thread.start()
         self.endpoint = 'http://127.0.0.1:'+str(self.server.server_port)
+    def test_desktop_resolution(self):
+        with tempfile.TemporaryDirectory() as d:
+            viewer = Path(d)/'viewer'
+            viewer.write_text('#!/usr/bin/env python3\nimport sys,json\njson.load(sys.stdin)\n')
+            viewer.chmod(0o755)
+            for args, mode in [([], '720p'), (['--resolution','1080p'], '1080p')]:
+                self.reply({'exit_code':0,'stdout':'','stderr':''})
+                result=self.run_cli('desktop','dev','--viewer',str(viewer),*args)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(self.requests[-1][1],'/v1/sandboxes/dev/exec')
+                self.assertEqual(self.requests[-1][3]['argv'][-1],mode)
+            self.reply({'error':'sandbox_waking','message':'Still starting'},status=503)
+            self.reply({'exit_code':0,'stdout':'','stderr':''})
+            result=self.run_cli('desktop','dev','--viewer',str(viewer))
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.reply({'exit_code':1,'stderr':'unsupported desktop'})
+            result=self.run_cli('desktop','dev','--viewer',str(viewer))
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn(b'unsupported desktop',result.stderr)
+        count=len(self.requests)
+        result=self.run_cli('desktop','dev','--resolution','4k')
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(len(self.requests),count)
+
     def test_cloud_sizing_rejected_before_login(self):
         for flag in ['--cpus', '--memory']:
             env = {k:v for k,v in os.environ.items() if not k.startswith('AHVM_')}

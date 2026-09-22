@@ -26,9 +26,12 @@ gets an error. Hardware beyond the tested Intel host is not qualified yet.
 
 The image boots systemd as PID 1. System/user services manage Hyprland, Forge,
 WayVNC and the private desktop relay. The desktop uses the `desktop` user.
-New image builds default to **1920×1080 at 60 Hz**, with scale 1. The viewer
-fits the desktop to its window; enlarge the window for more readable text.
-Existing VM disks keep their saved display configuration.
+Desktop connections default to **1280×720**. Use `ahvm desktop omarchy --resolution 1080p`
+for **1920×1080**, or `--resolution 720p` to switch back. Hyprland stays at
+60 Hz and scale 1; the viewer fits the desktop to its window. Resolution is
+shared by viewers of the same VM. Switching sizes briefly reconnects the VNC
+transport but keeps desktop applications running. Cold boots use the image's
+720p default until the next desktop connection applies its requested size.
 
 For network diagnostics, use `curl -4 -I https://example.com` for HTTPS and
 `ping -4 -c 3 1.1.1.1` for ICMP echo. Public IPv4 ping requires a host gateway
