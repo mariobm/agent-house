@@ -44,6 +44,19 @@ remain outside this preview's qualification.
 ahvm delete omarchy
 ```
 
+## Included applications
+
+The Omarchy 4.0.4 image includes Hyprland/Quickshell, Foot, Chromium, Firefox,
+Nautilus, Git, Neovim, tmux, LibreOffice, Obsidian and the upstream desktop app
+set. Node.js LTS, Bun, Python, Claude Code, Codex, OpenCode and Pi are installed
+before publication; AI accounts and credentials are not included. Other upstream
+AI launchers may download their tools on first use.
+
+Use the desktop terminal as `desktop`; it has passwordless `sudo` inside the VM.
+Arch Linux packages use `sudo pacman -S PACKAGE`, not `apt`. Omarchy's Bash setup
+adds the coding tools to PATH. Exact image package/tool versions are recorded in
+`/usr/share/ahvm/packages.txt` and `/usr/share/ahvm/tools.json`.
+
 ## Building
 
 See `images/omarchy-desktop/README.md` for the pinned upstream source and image
