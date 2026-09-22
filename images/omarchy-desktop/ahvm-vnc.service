@@ -1,5 +1,6 @@
 [Unit]
 Description=AHVM private WayVNC server
+Wants=ahvm-desktop-relay.service
 [Service]
 UMask=0077
 ExecStartPre=/usr/bin/rm -f %t/vnc.sock
