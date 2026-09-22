@@ -40,6 +40,7 @@ struct Local {
     connections: Arc<tokio::sync::Semaphore>,
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_tls();
     // Private stdin pipe from ahvm, never argv/environment or browser JS.
     let mut bytes = Vec::new();
     std::io::stdin()
@@ -206,6 +207,12 @@ async fn stream(
             let _ = tokio::time::timeout(Duration::from_secs(3600), bridge(socket, remote)).await;
         })
 }
+fn init_tls() {
+    // tokio-tungstenite intentionally enables no crypto backend. Select one
+    // explicitly before the first wss:// connection (SSH's ws:// path hid this).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 type RemoteSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -285,6 +292,15 @@ async fn bridge(
 mod tests {
     use super::*;
     use std::future::IntoFuture;
+
+    #[test]
+    fn tls_configuration_has_a_provider_before_cloud_connect() {
+        init_tls();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        let _config = rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
+    }
 
     #[test]
     fn cold_wake_retries_backoff_but_not_authentication_failure() {
