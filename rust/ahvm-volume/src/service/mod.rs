@@ -148,9 +148,18 @@ impl Slot {
             }
             return Err("volume busy".into());
         }
+        // Observe the collector before requesting cancellation. It can finish
+        // immediately after seeing the new ticket, clearing its flag before
+        // we get scheduled again. That completed handoff must still be waited
+        // for, rather than misclassified as a competing foreground operation.
+        let collecting = self.collecting.load(Ordering::SeqCst);
         self.cancellation.fetch_add(1, Ordering::SeqCst);
-        if !self.collecting.load(Ordering::SeqCst) {
-            return Err("volume busy".into());
+        if !collecting && !self.collecting.load(Ordering::SeqCst) {
+            // The operation may also have finished since the initial try_lock.
+            return self.operation.try_lock().map_err(|e| match e {
+                std::sync::TryLockError::Poisoned(_) => "volume poisoned".into(),
+                std::sync::TryLockError::WouldBlock => "volume busy".into(),
+            });
         }
         // A collector yields between bounded store requests. Briefly wait so a
         // normal start does not fail just because maintenance was in progress.
