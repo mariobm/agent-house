@@ -73,5 +73,18 @@ renderer fetched a public page. A saved file survived a cold restart.
 
 The desktop user's interactive Bash found Git, Neovim, Node.js, npm, Bun,
 Python, Claude Code, Codex, OpenCode and Pi; tool version commands and
-passwordless guest sudo passed. These local checks precede the signed-download
-and replicated Cloud qualification recorded with publication.
+passwordless guest sudo passed.
+
+The signed `4.0.4-20260922` artifact is 3.54 GiB compressed and expands to a
+40-GiB sparse disk. A fresh download through the released CLI passed catalog
+signature and image digest verification. The shared R2 base was imported once
+before the replicated lifecycle check.
+
+On the production Cloud node, a temporary 2-vCPU / 8-GiB replicated VM took
+32.46 seconds to create and 37.77 seconds to cold-wake after confirmed local
+eviction (single observations, not latency guarantees). Its boot ID changed,
+a saved file survived, HTTPS worked, systemd reported no failed units and VNC
+returned a 1280×720 framebuffer before and after restart. The desktop user's
+coding tools and keybinding discovery passed. The temporary VM was deleted.
+Offline reclamation took longer than the initial three-minute test wait; the
+check continued until actual eviction, without bypassing collection.
