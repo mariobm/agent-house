@@ -102,14 +102,14 @@ pub(crate) async fn create_operation(
         ));
     }
     let root_image = if let Some(expected) = image_digest {
-        let path = resolve_image(Some("ubuntu-dev"))?
-            .ok_or_else(|| ApiError::Invalid("Ubuntu image unavailable".into()))?;
+        let path = resolve_image(Some(body.image.as_deref().unwrap_or("ubuntu-dev")))?
+            .ok_or_else(|| ApiError::Invalid("named image unavailable".into()))?;
         if std::path::Path::new(&path)
             .file_stem()
             .and_then(|s| s.to_str())
             != Some(expected)
         {
-            return Err(ApiError::Conflict("Ubuntu image generation changed".into()));
+            return Err(ApiError::Conflict("named image generation changed".into()));
         }
         // Retain the immutable digest path, not the mutable alias/default symlink.
         Some(path)

@@ -104,6 +104,7 @@ async fn pool_image_pin_is_admin_only_and_survives_alias_changes_on_retry() {
         .store
         .upsert_user(&user("admin", "admin-token"))
         .unwrap();
+    let backend = state.backend.clone();
     let app = build_router(state);
     assert_eq!(
         call(
@@ -170,6 +171,86 @@ async fn pool_image_pin_is_admin_only_and_survives_alias_changes_on_retry() {
     .await;
     assert_eq!(rejected.1["status"], 409);
     assert_eq!(rejected.1["sandbox_state"], "absent");
+    // Named desktop operations resolve their own alias, not Ubuntu's generation.
+    std::fs::write(
+        images.join("omarchy-desktop.json"),
+        serde_json::json!({"sha256":a,"guest_abi":1}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        call(
+            app.clone(),
+            Some(TOKEN_A),
+            "GET",
+            "/v1/admin/desktop-profile",
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let profile = call(
+        app.clone(),
+        Some("admin-token"),
+        "GET",
+        "/v1/admin/desktop-profile",
+        None,
+    )
+    .await;
+    assert_eq!(profile.1["image_digest"], a);
+    let desktop = serde_json::json!({"action":"create","sandbox_id":"desktop","cpus":2,"memory_mb":8192,"image":"omarchy-desktop","image_digest":a});
+    let created = call(
+        app.clone(),
+        Some("admin-token"),
+        "POST",
+        "/v1/operations/desktop",
+        Some(desktop.clone()),
+    )
+    .await;
+    assert_eq!(created.1["status"], 201);
+    let info = call(
+        app.clone(),
+        Some("admin-token"),
+        "GET",
+        "/v1/sandboxes/desktop",
+        None,
+    )
+    .await;
+    assert_eq!(info.1["cpus"], 2);
+    assert_eq!(info.1["memory_mb"], 8192);
+    // Desktop specs disable the headless pause path in MockBackend.
+    assert!(!backend.supports_pause("desktop"));
+    let mut changed = desktop.clone();
+    changed["image"] = "ubuntu-dev".into();
+    assert_eq!(
+        call(
+            app.clone(),
+            Some("admin-token"),
+            "POST",
+            "/v1/operations/desktop",
+            Some(changed)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    std::fs::write(
+        images.join("omarchy-desktop.json"),
+        serde_json::json!({"sha256":b,"guest_abi":1}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        call(
+            app.clone(),
+            Some("admin-token"),
+            "POST",
+            "/v1/operations/desktop",
+            Some(desktop)
+        )
+        .await
+        .1["status"],
+        201
+    );
     let malformed = serde_json::json!({"action":"create","sandbox_id":"bad","cpus":1,"memory_mb":2048,"image_digest":"../bad"});
     assert_eq!(
         call(

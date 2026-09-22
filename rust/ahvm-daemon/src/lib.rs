@@ -213,6 +213,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/admin/metrics", get(metrics::sample))
         .route("/v1/admin/metrics/storage/{id}", get(metrics::backlog))
         .route("/v1/admin/pool-profile", get(pool_profile))
+        .route("/v1/admin/desktop-profile", get(desktop_profile))
         .route(
             "/v1/admin/idle-policy",
             get(thermal::policy).put(thermal::set_policy),
@@ -323,7 +324,7 @@ async fn healthz() -> Json<serde_json::Value> {
     let custom = std::env::var_os("AHVM_DESKTOP_IMAGE").is_some();
     Json(serde_json::json!({
         "status": "ok", "version": env!("CARGO_PKG_VERSION"),
-        "features": ["idle-pause-v1", "lifecycle-storage-v1", "replicated-storage-v1", "lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
+        "features": ["lifecycle-omarchy-v1", "idle-pause-v1", "lifecycle-storage-v1", "replicated-storage-v1", "lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
         "desktop_images": {
             "ubuntu-desktop": sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
             "omarchy-desktop": sandboxes::resolve_image(Some("omarchy-desktop")).is_ok(),
@@ -348,5 +349,23 @@ async fn pool_profile(
         .ok_or_else(|| ApiError::Invalid("invalid image path".into()))?;
     Ok(Json(
         serde_json::json!({"image_digest":digest,"protocol":"pool-image-v1"}),
+    ))
+}
+
+/// Operator-only pin for the Cloud desktop profile; never a public image path.
+async fn desktop_profile(
+    axum::Extension(user): axum::Extension<auth::UserId>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if user.0 != "admin" {
+        return Err(ApiError::Forbidden("admin required".into()));
+    }
+    let path = sandboxes::resolve_image(Some("omarchy-desktop"))?
+        .ok_or_else(|| ApiError::Invalid("Omarchy image unavailable".into()))?;
+    let digest = std::path::Path::new(&path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| ApiError::Invalid("invalid image path".into()))?;
+    Ok(Json(
+        serde_json::json!({"image_digest":digest,"image":"omarchy-desktop","protocol":"desktop-image-v1"}),
     ))
 }
