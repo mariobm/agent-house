@@ -20,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -29,6 +29,7 @@ use std::{
 mod accounting;
 mod export;
 mod host;
+mod jobs;
 mod resources;
 use accounting::{Limits, Usage, CACHE_BYTES};
 #[cfg(test)]
@@ -1348,109 +1349,130 @@ pub fn run() -> Result<()> {
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     std::os::unix::fs::chown(&socket, Some(service.config.client_uid), None)?;
     let supervisor = service.clone();
-    thread::spawn(move || loop {
-        let entries: Vec<_> = supervisor
-            .entries
-            .lock()
-            .unwrap()
-            .values()
-            .cloned()
-            .collect();
-        for entry in entries {
-            // Sample before taking the operation lock, so a failed foreground
-            // admission cannot be lost between job admission and cancellation.
-            let ticket = entry.cancellation.load(Ordering::SeqCst);
-            let Ok(mut e) = entry.try_lock() else {
-                continue;
-            };
-            if (!e.record.deleted && e.record.evicted)
-                || (!e.record.deleted
-                    && !e.record.gc_eligible
-                    && !e.record.desired
-                    && e.record.worker.is_none()
-                    && e.record.client.is_none())
-                || Instant::now() < e.retry_at
-            {
-                continue;
-            }
-            // One recovery task per volume; a slow R2 request never stalls the sweep.
-            let service = supervisor.clone();
-            let entry = entry.clone();
-            e.retry_at = Instant::now() + Duration::from_secs(60);
-            let snapshot = e.record.clone();
-            drop(e);
-            thread::spawn(move || {
-                // Health probes do not hold the operation mutex. Revalidate the
-                // snapshot before any destructive recovery or cleanup.
-                let healthy = snapshot.desired && service.inspect(&snapshot).is_ok();
-                let Ok(mut e) = entry.try_lock() else { return };
-                if e.record != snapshot {
-                    e.retry_at = Instant::now() + Duration::from_secs(2);
-                    return;
-                }
-                let _collection = if !e.record.deleted && e.record.gc_eligible && !e.record.desired
-                {
-                    Some(entry.collection())
-                } else {
-                    None
-                };
-                let result = if healthy {
-                    Ok(())
-                } else {
-                    service.recover(&mut e, || {
-                        entry.cancellation.load(Ordering::SeqCst) != ticket
-                    })
-                };
-                match result {
-                    Ok(()) => {
-                        e.failures = 0;
-                        e.retry_at = Instant::now()
-                            + Duration::from_secs(if e.record.reclaimed {
-                                3600
-                            } else if e.record.deleted {
-                                1
-                            } else if !e.record.desired && e.record.prepared {
-                                if e.record.gc_after.is_some() {
-                                    1
-                                } else {
-                                    3600
-                                }
-                            } else {
-                                2
-                            });
-                    }
-                    Err(error) => {
-                        eprintln!("volume {} recovery: {error}", e.record.id);
-                        e.failures = e.failures.saturating_add(1);
-                        e.retry_at = Instant::now()
-                            + Duration::from_secs((1u64 << e.failures.min(6)).min(60));
-                    }
-                }
+    let recovery_jobs = jobs::Jobs::new(8);
+    let cleanup_jobs = jobs::Jobs::new(1);
+    thread::Builder::new()
+        .name("volume-supervisor".into())
+        .spawn(move || loop {
+            let mut entries: Vec<_> = supervisor
+                .entries
+                .lock()
+                .unwrap()
+                .values()
+                .cloned()
+                .collect();
+            // Rechecks of historical tombstones must not delay live recovery or
+            // releasing reservations for newly deleted disks. Never hold the map
+            // lock while inspecting entries (foreground operations take it last).
+            entries.sort_by_cached_key(|entry| {
+                entry
+                    .try_lock()
+                    .map(|e| (e.record.reclaimed, !e.record.desired))
+                    .unwrap_or((true, true))
             });
-        }
-        thread::sleep(Duration::from_secs(1));
-    });
-    let active = Arc::new(AtomicUsize::new(0));
+            for entry in entries {
+                // Sample before taking the operation lock, so a failed foreground
+                // admission cannot be lost between job admission and cancellation.
+                let ticket = entry.cancellation.load(Ordering::SeqCst);
+                let Ok(mut e) = entry.try_lock() else {
+                    continue;
+                };
+                if (!e.record.deleted && e.record.evicted)
+                    || (!e.record.deleted
+                        && !e.record.gc_eligible
+                        && !e.record.desired
+                        && e.record.worker.is_none()
+                        && e.record.client.is_none())
+                    || Instant::now() < e.retry_at
+                {
+                    continue;
+                }
+                // Separate admission keeps slow cleanup from consuming live recovery
+                // capacity. Acquire before spawning, not inside the new thread.
+                let pool = if e.record.desired {
+                    &recovery_jobs
+                } else {
+                    &cleanup_jobs
+                };
+                let Some(permit) = pool.take() else { continue };
+                // One recovery task per volume; a slow R2 request never stalls the sweep.
+                let service = supervisor.clone();
+                let retry_entry = entry.clone();
+                let entry = entry.clone();
+                e.retry_at = Instant::now() + Duration::from_secs(60);
+                let snapshot = e.record.clone();
+                drop(e);
+                let spawned = permit.spawn("volume-recovery", move || {
+                    // Health probes do not hold the operation mutex. Revalidate the
+                    // snapshot before any destructive recovery or cleanup.
+                    let healthy = snapshot.desired && service.inspect(&snapshot).is_ok();
+                    let Ok(mut e) = entry.try_lock() else { return };
+                    if e.record != snapshot {
+                        e.retry_at = Instant::now() + Duration::from_secs(2);
+                        return;
+                    }
+                    let _collection =
+                        if !e.record.deleted && e.record.gc_eligible && !e.record.desired {
+                            Some(entry.collection())
+                        } else {
+                            None
+                        };
+                    let result = if healthy {
+                        Ok(())
+                    } else {
+                        service.recover(&mut e, || {
+                            entry.cancellation.load(Ordering::SeqCst) != ticket
+                        })
+                    };
+                    match result {
+                        Ok(()) => {
+                            e.failures = 0;
+                            e.retry_at = Instant::now()
+                                + Duration::from_secs(if e.record.reclaimed {
+                                    3600
+                                } else if e.record.deleted {
+                                    1
+                                } else if !e.record.desired && e.record.prepared {
+                                    if e.record.gc_after.is_some() {
+                                        1
+                                    } else {
+                                        3600
+                                    }
+                                } else {
+                                    2
+                                });
+                        }
+                        Err(error) => {
+                            eprintln!("volume {} recovery: {error}", e.record.id);
+                            e.failures = e.failures.saturating_add(1);
+                            e.retry_at = Instant::now()
+                                + Duration::from_secs((1u64 << e.failures.min(6)).min(60));
+                        }
+                    }
+                });
+                if let Err(error) = spawned {
+                    // The closure releases admission even when thread creation fails.
+                    // Keep the sweep alive and leave this volume eligible for retry.
+                    if let Ok(mut e) = retry_entry.try_lock() {
+                        e.retry_at = Instant::now() + Duration::from_secs(2);
+                    }
+                    eprintln!("volume recovery thread unavailable: {error}");
+                }
+            }
+            thread::sleep(Duration::from_secs(1));
+        })?;
+    let requests = jobs::Jobs::new(16);
     for connection in listener.incoming() {
         let mut conn = connection?;
         let uid = rustix::net::sockopt::socket_peercred(&conn)?.uid.as_raw();
         if uid != 0 && uid != service.config.client_uid {
             continue;
         }
-        if active.fetch_add(1, Ordering::SeqCst) >= 16 {
-            active.fetch_sub(1, Ordering::SeqCst);
+        let Some(permit) = requests.take() else {
             continue;
-        }
-        let active = active.clone();
+        };
         let service = service.clone();
-        thread::spawn(move || {
-            struct Admission(Arc<AtomicUsize>);
-            impl Drop for Admission {
-                fn drop(&mut self) {
-                    self.0.fetch_sub(1, Ordering::SeqCst);
-                }
-            }
-            let _admission = Admission(active);
+        let spawned = permit.spawn("volume-request", move || {
             let _ = conn.set_read_timeout(Some(Duration::from_secs(3)));
             let _ = conn.set_write_timeout(Some(Duration::from_secs(3)));
             let mut line = String::new();
@@ -1475,6 +1497,9 @@ pub fn run() -> Result<()> {
             let value = reply.unwrap_or_else(|_| serde_json::json!({"ok":false,"volume_id":""}));
             let _ = writeln!(conn, "{value}");
         });
+        if let Err(error) = spawned {
+            eprintln!("volume request thread unavailable: {error}");
+        }
     }
     Ok(())
 }
