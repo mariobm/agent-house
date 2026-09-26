@@ -855,3 +855,107 @@ fn image_digest_survives_supervisor_restart_and_invalidates_changes() {
     assert_eq!(file.stream_position().unwrap(), 5);
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
+fn reclaimed_churn_beyond_record_limit_preserves_fences_and_allows_admission() {
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run make test-volume-root"
+    );
+    let dir = temp();
+    let s = budget_service(&dir);
+    let raw = Arc::new(crate::reclaim::tests::Memory::default());
+    let retire = |n| Request {
+        version: 1,
+        operation: "retire".into(),
+        volume_id: format!("{n:064x}"),
+        sandbox_dir: dir.join(format!("retired-{n}")),
+        image: None,
+        logical_bytes: Some(crate::CHUNK_BYTES as u64),
+    };
+    for n in 0..=MAX_UNRECLAIMED_RECORDS {
+        let q = retire(n);
+        assert_eq!(s.request(retire(n)).unwrap()["reclamation_complete"], false);
+        let entry = s.entry(&q).unwrap();
+        let mut e = entry.lock().unwrap();
+        s.reclaim_with_store(&mut e.record, raw.clone()).unwrap();
+        assert!(e.record.reclaimed);
+    }
+    assert_eq!(s.entries.lock().unwrap().len(), MAX_UNRECLAIMED_RECORDS + 1);
+    assert_eq!(s.usage().unwrap().logical_bytes, 0);
+    // Both durable tombstones and original sandbox bindings survive churn.
+    let first = retire(0);
+    let saved: Record = read(
+        &dir.join("volumes")
+            .join(&first.volume_id)
+            .join("record.json"),
+    )
+    .unwrap();
+    assert!(saved.deleted && saved.reclaimed);
+    assert_eq!(saved.sandbox, first.sandbox_dir);
+    assert!(crate::reclaim::retired(
+        &first.volume_id,
+        &raw.head(&first.volume_id).unwrap().unwrap()
+    )
+    .unwrap());
+    assert_eq!(s.request(retire(0)).unwrap()["reclamation_complete"], true);
+    let mut foreign = retire(0);
+    foreign.sandbox_dir = dir.join("foreign");
+    assert!(s.request(foreign).is_err());
+    let mut replay = first;
+    replay.operation = "prepare".into();
+    assert!(s
+        .request(replay)
+        .unwrap_err()
+        .to_string()
+        .contains("volume deleted"));
+    let fresh = prepare_request(&s, 'a');
+    assert!(s.entry(&fresh).is_ok());
+    assert_eq!(s.usage().unwrap().retained_volumes, 1);
+    assert_eq!(s.usage().unwrap().logical_bytes, crate::CHUNK_BYTES as u64);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
+fn unreclaimed_limit_bounds_prepare_but_never_blocks_missing_record_retirement() {
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run make test-volume-root"
+    );
+    let dir = temp();
+    let mut s = budget_service(&dir);
+    s.config.limits.max_logical_bytes =
+        (MAX_UNRECLAIMED_RECORDS as u64 + 2) * crate::CHUNK_BYTES as u64;
+    let retire = |n| Request {
+        version: 1,
+        operation: "retire".into(),
+        volume_id: format!("{n:064x}"),
+        sandbox_dir: dir.join(format!("missing-{n}")),
+        image: None,
+        logical_bytes: Some(crate::CHUNK_BYTES as u64),
+    };
+    for n in 0..MAX_UNRECLAIMED_RECORDS {
+        assert_eq!(s.request(retire(n)).unwrap()["reclamation_complete"], false);
+    }
+    let fresh = prepare_request(&s, 'a');
+    assert!(s
+        .entry(&fresh)
+        .unwrap_err()
+        .to_string()
+        .contains("unreclaimed volume record limit"));
+    assert!(!s.entries.lock().unwrap().contains_key(&fresh.volume_id));
+    // Compensation for a ledger preceding service registration still creates
+    // a fenced retirement record, without importing or assigning a device.
+    assert_eq!(
+        s.request(retire(MAX_UNRECLAIMED_RECORDS)).unwrap()["reclamation_complete"],
+        false
+    );
+    assert_eq!(
+        s.usage().unwrap().logical_bytes,
+        (MAX_UNRECLAIMED_RECORDS as u64 + 1) * crate::CHUNK_BYTES as u64
+    );
+    assert_eq!(s.usage().unwrap().journal_reserved_bytes, 0);
+    fs::remove_dir_all(dir).unwrap();
+}
