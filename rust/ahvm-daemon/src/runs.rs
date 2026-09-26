@@ -24,6 +24,12 @@ pub struct RunRequest {
     pub sandbox_id: String,
     pub argv: Vec<String>,
     pub max_runtime_secs: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fence_on_failure: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn admin(user: &UserId) -> ApiResult<()> {
@@ -156,7 +162,7 @@ pub async fn cancel(
     let initial = state.store.get_managed_run(&id)?;
     let _lc = state.lifecycle.lock(&initial.sandbox_id).await;
     let run = state.store.get_managed_run(&id)?;
-    if run.finished_at.is_some() {
+    if run.finished_at.is_some() || run.phase == "cancelling" {
         return Ok(Json(run));
     }
     Ok(Json(update(
@@ -286,6 +292,11 @@ fn step(state: &AppState, id: &str, epoch: i64, launch: bool) -> ApiResult<bool>
     if run.epoch != epoch || run.finished_at.is_some() {
         return Ok(true);
     }
+    let request: RunRequest = serde_json::from_str(&run.request_json)
+        .map_err(|e| ApiError::Internal(format!("run request: {e}")))?;
+    if request.fence_on_failure && run.phase == "cancelling" && run.exit_code.is_some() {
+        return finish_fenced_result(state, &run);
+    }
     let live = state.backend.status(&run.sandbox_id)?;
     if live.state == VmState::Stopped {
         update(
@@ -413,13 +424,34 @@ fn step(state: &AppState, id: &str, epoch: i64, launch: bool) -> ApiResult<bool>
             Err(e) => return uncertain(state, &run, &format!("result reconciliation: {e}")),
         };
         if let Some(code) = chunk.exit_code.filter(|_| chunk.eof) {
-            let phase = if run.phase == "cancelling" {
+            let interrupted = run.phase == "cancelling"
+                || (request.fence_on_failure && unix_now() >= run.deadline_at);
+            let phase = if interrupted {
                 "interrupted"
             } else if code == 0 {
                 "succeeded"
             } else {
                 "failed"
             };
+            if request.fence_on_failure && (interrupted || code != 0) {
+                // Persist the observed result before stopping. A failed stop or
+                // controller restart must retain the hold and retry this fence.
+                run = update(
+                    state,
+                    &run,
+                    "cancelling",
+                    None,
+                    None,
+                    Some(code),
+                    Some(if interrupted {
+                        "interruption fence pending"
+                    } else {
+                        "failure fence pending"
+                    }),
+                    false,
+                )?;
+                return finish_fenced_result(state, &run);
+            }
             update(state, &run, phase, None, None, Some(code), None, true)?;
             return Ok(true);
         }
@@ -476,14 +508,36 @@ fn uncertain(state: &AppState, run: &ManagedRun, detail: &str) -> ApiResult<bool
     Ok(false)
 }
 
-fn fence(state: &AppState, run: &ManagedRun, detail: &str) -> ApiResult<bool> {
+fn finish_fenced_result(state: &AppState, run: &ManagedRun) -> ApiResult<bool> {
+    cold_stop(state, run)?;
+    let phase = if run.detail.as_deref() == Some("failure fence pending") {
+        "failed"
+    } else {
+        "interrupted"
+    };
+    update(
+        state,
+        run,
+        phase,
+        None,
+        None,
+        run.exit_code,
+        Some("controller outcome fenced by verified cold stop"),
+        true,
+    )?;
+    Ok(true)
+}
+
+fn cold_stop(state: &AppState, run: &ManagedRun) -> ApiResult<()> {
     let live = state.backend.status(&run.sandbox_id)?;
     if live.storage.mode != StorageMode::Replicated {
         return Err(ApiError::Conflict(
             "cannot safely fence a non-replicated managed run".into(),
         ));
     }
-    state.backend.stop(&run.sandbox_id)?;
+    if live.state != VmState::Stopped {
+        state.backend.stop(&run.sandbox_id)?;
+    }
     let live = state.backend.status(&run.sandbox_id)?;
     if live.state != VmState::Stopped {
         return Err(ApiError::Unavailable(
@@ -496,6 +550,11 @@ fn fence(state: &AppState, run: &ManagedRun, detail: &str) -> ApiResult<bool> {
         &thermal_str(&live.thermal),
         unix_now(),
     )?;
+    Ok(())
+}
+
+fn fence(state: &AppState, run: &ManagedRun, detail: &str) -> ApiResult<bool> {
+    cold_stop(state, run)?;
     update(
         state,
         run,
