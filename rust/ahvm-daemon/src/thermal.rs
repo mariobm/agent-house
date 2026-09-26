@@ -12,19 +12,32 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const MANAGED_IDLE_SECS: u64 = 300;
+pub const DEFAULT_AGENT_IDLE_STOP_SECS: u64 = 300;
 
 /// Last-guest-activity per sandbox id (monotonic clock, daemon-local).
 /// Rebuilt from zero on restart (first-seen rule covers the gap).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ActivityTracker {
     inner: Arc<Mutex<TrackerInner>>,
     policy_updates: Arc<tokio::sync::Mutex<()>>,
 }
 
+impl Default for ActivityTracker {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(TrackerInner {
+                agent_idle_stop_secs: DEFAULT_AGENT_IDLE_STOP_SECS,
+                ..Default::default()
+            })),
+            policy_updates: Default::default(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct TrackerInner {
     pause_after_secs: u64,
+    agent_idle_stop_secs: u64,
     last: HashMap<String, Instant>,
     inflight: HashMap<String, (u64, usize)>,
     /// Independent of controller task lifetime; durable run recovery owns clearing it.
@@ -47,6 +60,20 @@ impl ActivityTracker {
     }
     pub fn set_pause_after_secs(&self, seconds: u64) {
         self.inner.lock().unwrap().pause_after_secs = seconds;
+    }
+
+    pub fn idle_policy(&self) -> IdlePolicy {
+        let inner = self.inner.lock().unwrap();
+        IdlePolicy {
+            pause_after_secs: inner.pause_after_secs,
+            agent_idle_stop_secs: inner.agent_idle_stop_secs,
+        }
+    }
+
+    pub fn set_idle_policy(&self, policy: IdlePolicy) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.pause_after_secs = policy.pause_after_secs;
+        inner.agent_idle_stop_secs = policy.agent_idle_stop_secs;
     }
 
     /// Install a durable controller's current run identity after its lifecycle
@@ -123,7 +150,7 @@ impl ActivityTracker {
             .lock()
             .map(|inner| {
                 if inner.managed_cooldown.contains(id) {
-                    MANAGED_IDLE_SECS
+                    inner.agent_idle_stop_secs
                 } else {
                     default
                 }
@@ -219,7 +246,7 @@ impl ActivityTracker {
         }
         // Recheck the managed policy under the same lock as activity and holds.
         let idle_secs = if !pause && inner.managed_cooldown.contains(id) {
-            MANAGED_IDLE_SECS
+            inner.agent_idle_stop_secs
         } else {
             idle_secs
         };
@@ -706,8 +733,9 @@ mod tests {
             set_policy(
                 Extract(st.clone()),
                 Extension(crate::auth::UserId(user.into())),
-                Json(IdlePolicy {
-                    pause_after_secs: seconds,
+                Json(IdlePolicyUpdate {
+                    pause_after_secs: Some(seconds),
+                    agent_idle_stop_secs: None,
                 }),
             )
         };
@@ -726,6 +754,125 @@ mod tests {
             assert_eq!(st.store.pause_after_secs().unwrap(), Some(seconds));
             assert_eq!(st.activity.pause_after_secs(), seconds);
         }
+    }
+
+    #[test]
+    fn changed_agent_policy_is_authoritative_at_stop_commit() {
+        let t = ActivityTracker::new();
+        let now = Instant::now();
+        assert!(t.restore_managed_cooldown("vm", now));
+        let stale = t.effective_idle_secs("vm", 3600);
+        assert_eq!(stale, 300);
+        t.set_idle_policy(IdlePolicy {
+            pause_after_secs: 30,
+            agent_idle_stop_secs: 600,
+        });
+        // A sweep that sampled 300 before the admin edit cannot stop at 301.
+        assert!(t
+            .begin_stop_if_idle("vm", now + Duration::from_secs(301), stale)
+            .is_none());
+        assert_eq!(t.effective_idle_secs("vm", 3600), 600);
+        assert_eq!(t.effective_idle_secs("ordinary", 3600), 3600);
+        t.set_idle_policy(IdlePolicy {
+            pause_after_secs: 30,
+            agent_idle_stop_secs: 60,
+        });
+        let shell = t.begin("vm").unwrap();
+        assert!(t
+            .begin_stop_if_idle("vm", now + Duration::from_secs(601), 600)
+            .is_none());
+        drop(shell);
+        // Newly configured timeout applies to already-completed managed VMs.
+        assert!(t
+            .begin_stop_if_idle("vm", now + Duration::from_secs(601), 600)
+            .is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn partial_agent_policy_updates_validate_and_preserve_other_fields() {
+        use axum::{extract::State as Extract, Extension, Json};
+        let st = state();
+        let call = |user: &str, pause, stop| {
+            set_policy(
+                Extract(st.clone()),
+                Extension(crate::auth::UserId(user.into())),
+                Json(IdlePolicyUpdate {
+                    pause_after_secs: pause,
+                    agent_idle_stop_secs: stop,
+                }),
+            )
+        };
+        assert!(matches!(
+            call("u", None, Some(60)).await,
+            Err(crate::ApiError::Forbidden(_))
+        ));
+        assert!(matches!(
+            call("admin", None, None).await,
+            Err(crate::ApiError::Invalid(_))
+        ));
+        for seconds in [0, 1, 59, 86401, u64::MAX] {
+            assert!(matches!(
+                call("admin", Some(90), Some(seconds)).await,
+                Err(crate::ApiError::Invalid(_))
+            ));
+            assert_eq!(st.store.pause_after_secs().unwrap(), None);
+            assert_eq!(st.store.agent_idle_stop_secs().unwrap(), None);
+        }
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let mut updates = Vec::new();
+        for (pause, stop) in [(Some(45), None), (None, Some(120))] {
+            let st = st.clone();
+            let barrier = barrier.clone();
+            updates.push(tokio::spawn(async move {
+                barrier.wait().await;
+                set_policy(
+                    Extract(st),
+                    Extension(crate::auth::UserId("admin".into())),
+                    Json(IdlePolicyUpdate {
+                        pause_after_secs: pause,
+                        agent_idle_stop_secs: stop,
+                    }),
+                )
+                .await
+                .unwrap()
+                .0
+            }));
+        }
+        for task in updates {
+            task.await.unwrap();
+        }
+        assert_eq!(
+            st.activity.idle_policy(),
+            IdlePolicy {
+                pause_after_secs: 45,
+                agent_idle_stop_secs: 120
+            }
+        );
+        assert_eq!(st.store.pause_after_secs().unwrap(), Some(45));
+        assert_eq!(st.store.agent_idle_stop_secs().unwrap(), Some(120));
+        for seconds in [60, 300, 86400] {
+            let saved = call("admin", None, Some(seconds)).await.unwrap().0;
+            assert_eq!(saved.pause_after_secs, 45);
+            assert_eq!(saved.agent_idle_stop_secs, seconds);
+        }
+        let read = policy(
+            Extract(st.clone()),
+            Extension(crate::auth::UserId("admin".into())),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(read, st.activity.idle_policy());
+        assert!(policy(
+            Extract(st.clone()),
+            Extension(crate::auth::UserId("u".into()))
+        )
+        .await
+        .is_err());
+        assert!(serde_json::from_str::<IdlePolicyUpdate>(r#"{"agent_idle_stop_sec":60}"#).is_err());
+        assert!(
+            serde_json::from_str::<IdlePolicyUpdate>(r#"{"agent_idle_stop_secs":-1}"#).is_err()
+        );
     }
 
     fn state() -> AppState {
@@ -1207,10 +1354,17 @@ fn stale_stream_completion_does_not_touch_recreated_sandbox() {
     assert!(!tracker.in_flight("id"));
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct IdlePolicy {
     pub pause_after_secs: u64,
+    pub agent_idle_stop_secs: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdlePolicyUpdate {
+    pub pause_after_secs: Option<u64>,
+    pub agent_idle_stop_secs: Option<u64>,
 }
 pub async fn policy(
     axum::extract::State(state): axum::extract::State<AppState>,
@@ -1221,27 +1375,52 @@ pub async fn policy(
             "host administrator required".into(),
         ));
     }
-    Ok(axum::Json(IdlePolicy {
-        pause_after_secs: state.activity.pause_after_secs(),
-    }))
+    Ok(axum::Json(state.activity.idle_policy()))
 }
 pub async fn set_policy(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::Extension(user): axum::Extension<crate::auth::UserId>,
-    axum::Json(policy): axum::Json<IdlePolicy>,
+    axum::Json(update): axum::Json<IdlePolicyUpdate>,
 ) -> crate::ApiResult<axum::Json<IdlePolicy>> {
     if user.0 != "admin" {
         return Err(crate::ApiError::Forbidden(
             "host administrator required".into(),
         ));
     }
-    if policy.pause_after_secs != 0 && !(5..=86400).contains(&policy.pause_after_secs) {
+    if update.pause_after_secs.is_none() && update.agent_idle_stop_secs.is_none() {
+        return Err(crate::ApiError::Invalid(
+            "at least one idle policy field is required".into(),
+        ));
+    }
+    if update
+        .pause_after_secs
+        .is_some_and(|seconds| seconds != 0 && !(5..=86400).contains(&seconds))
+    {
         return Err(crate::ApiError::Invalid(
             "pause_after_secs must be 0 (disabled) or 5..86400".into(),
         ));
     }
+    if update
+        .agent_idle_stop_secs
+        .is_some_and(|seconds| !(60..=86400).contains(&seconds))
+    {
+        return Err(crate::ApiError::Invalid(
+            "agent_idle_stop_secs must be 60..86400".into(),
+        ));
+    }
     let _update = state.activity.policy_updates.lock().await;
-    state.store.set_pause_after_secs(policy.pause_after_secs)?;
-    state.activity.set_pause_after_secs(policy.pause_after_secs);
+    let current = state.activity.idle_policy();
+    let policy = IdlePolicy {
+        pause_after_secs: update.pause_after_secs.unwrap_or(current.pause_after_secs),
+        agent_idle_stop_secs: update
+            .agent_idle_stop_secs
+            .unwrap_or(current.agent_idle_stop_secs),
+    };
+    // Persist both values atomically before publishing the in-memory policy.
+    // There is no await between the database commit and publication.
+    state
+        .store
+        .set_idle_policy(policy.pause_after_secs, policy.agent_idle_stop_secs)?;
+    state.activity.set_idle_policy(policy);
     Ok(axum::Json(policy))
 }

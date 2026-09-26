@@ -133,6 +133,27 @@ impl Store {
             Ok(())
         })
     }
+    pub fn agent_idle_stop_secs(&self) -> Result<Option<u64>> {
+        self.with_conn(|c| {
+            use rusqlite::OptionalExtension;
+            Ok(c.query_row(
+                "SELECT value FROM host_settings WHERE key='agent_idle_stop_secs'",
+                [],
+                |r| r.get::<_, u32>(0).map(u64::from),
+            )
+            .optional()?)
+        })
+    }
+    /// One SQL statement makes a combined host-policy update all-or-nothing.
+    pub fn set_idle_policy(&self, pause: u64, agent_stop: u64) -> Result<()> {
+        if (pause != 0 && !(5..=86400).contains(&pause)) || !(60..=86400).contains(&agent_stop) {
+            return Err(Error::Conflict("invalid idle policy".into()));
+        }
+        self.with_conn(|c| {
+            c.execute("INSERT INTO host_settings(key,value) VALUES('pause_after_secs',?1),('agent_idle_stop_secs',?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![pause as i64, agent_stop as i64])?;
+            Ok(())
+        })
+    }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
         Self::from_conn(conn)

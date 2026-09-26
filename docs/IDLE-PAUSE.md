@@ -12,7 +12,7 @@ prevent automatic pause and idle stop. After the last operation/connection ends,
 the idle timer starts again. Ordinary detached background sessions alone do not
 keep the VM awake.
 [Managed runs](MANAGED-RUNS.md) hold server-owned activity protection through
-completion, then use a five-minute idle stop for their VM. Operators running
+completion, then use a configurable idle stop (five minutes by default) for their VM. Operators running
 unmanaged detached work can disable pause.
 
 Status/list/storage polling does not resume a VM. Passive session inspection and
@@ -24,10 +24,13 @@ requires the existing recovery/start path, not resident resume.
 
 - `AHVM_PAUSE_SECS`: initial default **30**; **0** disables automatic pause;
   otherwise **5–86400** seconds.
+- `AHVM_AGENT_IDLE_STOP_SECS`: initial managed-agent stop default **300**;
+  **60–86400** seconds. Applies only to VMs used by managed runs, after work ends.
 - Authenticated host administrator: `GET`/`PUT /v1/admin/idle-policy` with
-  `{"pause_after_secs":30}`. Changes persist in the daemon database, override the
+  `{"pause_after_secs":30,"agent_idle_stop_secs":300}`. PUT accepts either field
+  independently; omitted fields are preserved. Changes persist in the daemon database, override the
   environment default after restart, and affect subsequent pause decisions.
-- AHVM Cloud: the admin dashboard's **Idle pause** form updates this same host
+- AHVM Cloud: the admin dashboard's separate **Idle pause** and **Agent idle stop** forms update this same host
   policy. Ordinary users cannot change it. An older/unreachable host disables
   the form rather than claiming a setting was saved.
 - Sweep interval is `AHVM_SWEEP_SECS`, capped at five seconds (minimum one).
@@ -41,8 +44,9 @@ Setting pause to zero prevents future pauses; already-paused VMs resume on guest
 work or explicit start. An already-committed transition finishes before new work
 is admitted. Admin settings are not read from a remote database on guest calls.
 
-Desktop idle pause is not enabled until separately qualified. Desktop stop/start
-and the existing one-hour idle-stop policy remain unchanged.
+Desktop idle pause is not enabled until separately qualified. Ordinary desktop
+stop/start and the existing one-hour idle-stop policy remain unchanged; a desktop
+VM used by a managed run receives the managed stop policy after completion.
 
 Before downgrading to a daemon without pause support, resume or stop paused VMs:
 older daemons cannot read the new persisted `paused` state.
