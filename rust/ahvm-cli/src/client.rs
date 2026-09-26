@@ -7,6 +7,7 @@ use std::{io::Read, time::Duration};
 struct ApiFailure {
     status: reqwest::StatusCode,
     detail: String,
+    code: Option<String>,
 }
 impl std::fmt::Display for ApiFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -14,6 +15,13 @@ impl std::fmt::Display for ApiFailure {
     }
 }
 impl std::error::Error for ApiFailure {}
+
+pub(crate) fn is_waking(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
+    error.downcast_ref::<ApiFailure>().is_some_and(|e| {
+        e.status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            && matches!(e.code.as_deref(), Some("sandbox_waking" | "wake_retry"))
+    })
+}
 
 #[derive(Clone)]
 pub struct Api {
@@ -266,7 +274,15 @@ impl Api {
                 .unwrap_or_else(|| {
                     String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).into_owned()
                 });
-            return Err(ApiFailure { status, detail }.into());
+            let code = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned));
+            return Err(ApiFailure {
+                status,
+                detail,
+                code,
+            }
+            .into());
         }
         if bytes.is_empty() {
             Ok(Value::Null)

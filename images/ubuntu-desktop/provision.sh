@@ -5,7 +5,7 @@ export DEBIAN_FRONTEND=noninteractive
 find /etc/apt/sources.list.d -type f -exec sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' {} +
 apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
 apt-get -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends xfce4 xfce4-terminal tigervnc-standalone-server \
-    dbus-x11 xauth x11-utils fonts-dejavu fonts-liberation adwaita-icon-theme gnupg
+    dbus-x11 xauth x11-utils x11-xserver-utils fonts-dejavu fonts-liberation adwaita-icon-theme gnupg
 # Official Mozilla DEB repository; Ubuntu's Firefox package otherwise requires Snap.
 install -d -m755 /etc/apt/keyrings
 curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/packages.mozilla.org.asc

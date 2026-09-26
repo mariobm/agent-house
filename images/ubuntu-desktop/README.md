@@ -72,3 +72,6 @@ The normal `ubuntu-dev` default was unchanged. Test VMs and the separate daemon
 were cleaned up; the downloaded desktop image remains cached for future use.
 
 The CLI/daemon feature is still on PR #32 until its release is published.
+
+The desktop defaults to **1280×720**. Use `ahvm desktop dev --resolution 1080p`
+for 1920×1080. The resolution is shared by all viewers of that VM.
