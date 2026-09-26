@@ -56,6 +56,31 @@ CREATE TABLE IF NOT EXISTS sandboxes (
 );
 CREATE INDEX IF NOT EXISTS idx_sandboxes_owner
     ON sandboxes(owner_user_id, created_at DESC, id DESC);
+-- Run IDs are globally unique while retained. Deleting a sandbox also deletes
+-- its receipts; callers must not reuse sandbox/run identities after deletion.
+CREATE TABLE IF NOT EXISTS managed_runs (
+    id TEXT PRIMARY KEY,
+    sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    phase TEXT NOT NULL CHECK(phase IN
+        ('starting','running','uncertain','cancelling','succeeded','failed','interrupted')),
+    epoch INTEGER NOT NULL CHECK(epoch > 0),
+    session_id TEXT,
+    boot_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deadline_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    exit_code INTEGER,
+    detail TEXT,
+    CHECK((finished_at IS NULL AND phase IN ('starting','running','uncertain','cancelling'))
+       OR (finished_at IS NOT NULL AND phase IN ('succeeded','failed','interrupted')))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS managed_run_active_sandbox
+    ON managed_runs(sandbox_id) WHERE finished_at IS NULL;
+CREATE INDEX IF NOT EXISTS managed_run_finished
+    ON managed_runs(sandbox_id, finished_at) WHERE finished_at IS NOT NULL;
 CREATE TABLE IF NOT EXISTS preview_ports (
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     port INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),

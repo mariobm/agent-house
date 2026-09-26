@@ -212,6 +212,8 @@ async fn main() {
         "pause timeout must be 0 or 5..86400"
     );
     state.activity.set_pause_after_secs(pause);
+    // Restore durable detached-job holds before any automatic idle action.
+    ahvm_daemon::runs::recover(&state).expect("recover managed runs");
     // Thermal sweep (idle stop + reconcile) runs for the daemon lifetime.
     // Shutdown is process exit: activity rebuilds, records persist per-op.
     let thermal_state = state.clone();

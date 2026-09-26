@@ -12,6 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const MANAGED_IDLE_SECS: u64 = 300;
+
 /// Last-guest-activity per sandbox id (monotonic clock, daemon-local).
 /// Rebuilt from zero on restart (first-seen rule covers the gap).
 #[derive(Debug, Clone, Default)]
@@ -25,6 +27,10 @@ struct TrackerInner {
     pause_after_secs: u64,
     last: HashMap<String, Instant>,
     inflight: HashMap<String, (u64, usize)>,
+    /// Independent of controller task lifetime; durable run recovery owns clearing it.
+    managed_runs: HashMap<String, (String, i64)>,
+    /// Completed managed VMs retain a shorter stop policy until removed.
+    managed_cooldown: HashSet<String>,
     next_generation: u64,
     /// Ids with a committed stop: no new guest work admits until the
     /// transition finishes (see [`ActivityTracker::begin_stop`]).
@@ -41,6 +47,88 @@ impl ActivityTracker {
     }
     pub fn set_pause_after_secs(&self, seconds: u64) {
         self.inner.lock().unwrap().pause_after_secs = seconds;
+    }
+
+    /// Install a durable controller's current run identity after its lifecycle
+    /// lock and persisted CAS. A task panic or lease expiry does not drop this hold.
+    pub fn set_managed_run(&self, id: &str, run_id: &str, epoch: i64) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        if inner.stopping.contains(id) {
+            return false;
+        }
+        inner
+            .managed_runs
+            .insert(id.to_string(), (run_id.to_string(), epoch));
+        inner.last.insert(id.to_string(), Instant::now());
+        true
+    }
+
+    /// Only the current identity may finish. Persist completion before calling;
+    /// later guest activity must not be backdated by a recovered finish timestamp.
+    pub fn finish_managed_run(
+        &self,
+        id: &str,
+        run_id: &str,
+        epoch: i64,
+        finished_at: Instant,
+    ) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        if !inner
+            .managed_runs
+            .get(id)
+            .is_some_and(|(run, generation)| run == run_id && *generation == epoch)
+        {
+            return false;
+        }
+        inner.managed_runs.remove(id);
+        Self::cooldown_at(&mut inner, id, finished_at);
+        true
+    }
+
+    /// Restore a persisted completed run before starting thermal sweeping.
+    /// Never replace an active run or race an already committed transition.
+    pub fn restore_managed_cooldown(&self, id: &str, finished_at: Instant) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        if inner.stopping.contains(id) || inner.managed_runs.contains_key(id) {
+            return false;
+        }
+        Self::cooldown_at(&mut inner, id, finished_at);
+        true
+    }
+
+    fn cooldown_at(inner: &mut TrackerInner, id: &str, finished_at: Instant) {
+        inner.managed_cooldown.insert(id.to_string());
+        inner
+            .last
+            .entry(id.to_string())
+            .and_modify(|last| *last = (*last).max(finished_at))
+            .or_insert(finished_at);
+    }
+
+    pub fn has_managed_run(&self, id: &str) -> bool {
+        self.inner
+            .lock()
+            .map(|inner| inner.managed_runs.contains_key(id))
+            .unwrap_or(false)
+    }
+
+    pub fn effective_idle_secs(&self, id: &str, default: u64) -> u64 {
+        self.inner
+            .lock()
+            .map(|inner| {
+                if inner.managed_cooldown.contains(id) {
+                    MANAGED_IDLE_SECS
+                } else {
+                    default
+                }
+            })
+            .unwrap_or(default)
     }
 
     /// Record activity now.
@@ -62,6 +150,8 @@ impl ActivityTracker {
         if let Ok(mut inner) = self.inner.lock() {
             inner.last.remove(id);
             inner.inflight.remove(id);
+            inner.managed_runs.remove(id);
+            inner.managed_cooldown.remove(id);
             inner.stopping.remove(id);
         }
     }
@@ -122,10 +212,17 @@ impl ActivityTracker {
             return None;
         }
         if inner.stopping.contains(id)
+            || inner.managed_runs.contains_key(id)
             || inner.inflight.get(id).map(|(_, count)| *count).unwrap_or(0) > 0
         {
             return None;
         }
+        // Recheck the managed policy under the same lock as activity and holds.
+        let idle_secs = if !pause && inner.managed_cooldown.contains(id) {
+            MANAGED_IDLE_SECS
+        } else {
+            idle_secs
+        };
         match inner.last.get(id) {
             Some(&t) if now.duration_since(t).as_secs() <= idle_secs => None,
             Some(_) => {
@@ -141,14 +238,16 @@ impl ActivityTracker {
         }
     }
 
-    /// True while any guarded operation runs for `id`.
+    /// True while a guarded operation or durable managed run is active for `id`.
     pub fn in_flight(&self, id: &str) -> bool {
         self.inner
             .lock()
             .ok()
-            .and_then(|inner| inner.inflight.get(id).map(|(_, count)| *count))
-            .unwrap_or(0)
-            > 0
+            .map(|inner| {
+                inner.managed_runs.contains_key(id)
+                    || inner.inflight.get(id).map(|(_, count)| *count).unwrap_or(0) > 0
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -307,14 +406,15 @@ pub async fn sweep_once(state: &AppState, cfg: ThermalConfig, now: Instant) -> S
                 }
             };
             let pause_secs = state.activity.pause_after_secs();
-            let stop = now.duration_since(last).as_secs() > cfg.idle_secs;
+            let idle_secs = state.activity.effective_idle_secs(&row.id, cfg.idle_secs);
+            let stop = now.duration_since(last).as_secs() > idle_secs;
             let pause = !stop
                 && pause_secs > 0
                 && live.state == ahvm_engine::State::Running
                 && now.duration_since(last).as_secs() > pause_secs
                 && state.backend.supports_pause(&row.id);
             if stop || pause {
-                let threshold = if stop { cfg.idle_secs } else { pause_secs };
+                let threshold = if stop { idle_secs } else { pause_secs };
                 // Share the op bound with foreground work: stopping snapshots.
                 // Non-blocking take — a busy scheduler defers this row to the
                 // next sweep instead of head-of-line blocking the whole pass.
@@ -395,6 +495,123 @@ mod tests {
     use super::*;
     use ahvm_engine::{Backend, MockBackend, SandboxInfo, State};
     use std::time::Duration;
+
+    #[test]
+    fn managed_run_blocks_quiet_pause_and_stop_until_exact_finish() {
+        let t = ActivityTracker::new();
+        t.set_pause_after_secs(30);
+        assert!(t.set_managed_run("vm", "run", 1));
+        let now = Instant::now();
+        t.touch_at("vm", now - Duration::from_secs(7200));
+        assert!(t.has_managed_run("vm"));
+        assert!(t.in_flight("vm"));
+        assert!(t.begin_pause_if_idle("vm", now, 30).is_none());
+        assert!(t.begin_stop_if_idle("vm", now, 3600).is_none());
+        // No RAII guard or controller task is required to keep this hold alive.
+        assert!(t.finish_managed_run("vm", "run", 1, now));
+        assert!(!t.has_managed_run("vm"));
+        assert!(!t.in_flight("vm"));
+    }
+
+    #[test]
+    fn stale_managed_finish_cannot_release_replacement_or_epoch() {
+        let t = ActivityTracker::new();
+        assert!(t.set_managed_run("vm", "old", 1));
+        assert!(t.set_managed_run("vm", "new", 2));
+        assert!(!t.finish_managed_run("vm", "old", 1, Instant::now()));
+        assert!(!t.finish_managed_run("vm", "new", 1, Instant::now()));
+        assert!(!t.restore_managed_cooldown("vm", Instant::now()));
+        assert!(t.has_managed_run("vm"));
+        assert_eq!(t.effective_idle_secs("vm", 3600), 3600);
+        assert!(t.finish_managed_run("vm", "new", 2, Instant::now()));
+        assert!(!t.finish_managed_run("vm", "new", 2, Instant::now()));
+    }
+
+    #[test]
+    fn managed_completion_uses_300_seconds_at_atomic_commit() {
+        let t = ActivityTracker::new();
+        assert!(t.set_managed_run("vm", "run", 1));
+        let finished = Instant::now();
+        assert!(t.finish_managed_run("vm", "run", 1, finished));
+        assert_eq!(t.effective_idle_secs("vm", 3600), 300);
+        // Even a stale/default caller threshold cannot shorten managed cooldown.
+        assert!(t
+            .begin_stop_if_idle("vm", finished + Duration::from_secs(300), 0)
+            .is_none());
+        let stop = t
+            .begin_stop_if_idle("vm", finished + Duration::from_secs(301), 3600)
+            .unwrap();
+        assert!(!t.set_managed_run("vm", "next", 2));
+        assert!(!t.restore_managed_cooldown("vm", finished));
+        drop(stop);
+        assert_eq!(t.effective_idle_secs("vm", 3600), 300);
+    }
+
+    #[test]
+    fn managed_cooldown_preserves_fresh_activity_and_attached_guards() {
+        let t = ActivityTracker::new();
+        let finished = Instant::now();
+        let now = finished + Duration::from_secs(301);
+        assert!(t.restore_managed_cooldown("vm", finished));
+        let attached = t.begin("vm").unwrap();
+        assert!(t.begin_stop_if_idle("vm", now, 300).is_none());
+        drop(attached);
+        t.touch_at("vm", now);
+        // Restoring an older completed run must not erase recent CLI activity.
+        assert!(t.restore_managed_cooldown("vm", finished));
+        assert_eq!(t.last("vm"), Some(now));
+        assert!(t.begin_stop_if_idle("vm", now, 300).is_none());
+        assert!(t.set_managed_run("vm", "next", 2));
+        t.touch_at("vm", now);
+        assert!(t.finish_managed_run("vm", "next", 2, finished));
+        assert_eq!(t.last("vm"), Some(now));
+    }
+
+    #[test]
+    fn remove_resets_managed_identity_and_policy() {
+        let t = ActivityTracker::new();
+        assert!(t.restore_managed_cooldown("vm", Instant::now()));
+        assert!(t.set_managed_run("vm", "run", 1));
+        t.remove("vm");
+        assert!(!t.has_managed_run("vm"));
+        assert!(!t.in_flight("vm"));
+        assert_eq!(t.effective_idle_secs("vm", 3600), 3600);
+        assert_eq!(t.last("vm"), None);
+        assert!(!t.finish_managed_run("vm", "run", 1, Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn sweep_stops_managed_vm_after_completion_not_global_hour() {
+        let st = state();
+        owner(&st.store);
+        st.activity.set_pause_after_secs(30);
+        let id = live_pair(&st, "managed");
+        assert!(st.activity.set_managed_run(&id, "run", 1));
+        let finished = Instant::now();
+        let cfg = ThermalConfig {
+            idle_secs: 3600,
+            sweep_secs: 5,
+        };
+        st.activity
+            .touch_at(&id, finished - Duration::from_secs(7200));
+        let held = sweep_once(&st, cfg, finished).await;
+        assert_eq!((held.paused, held.stopped), (0, 0));
+        assert!(st.activity.finish_managed_run(&id, "run", 1, finished));
+        assert_eq!(
+            sweep_once(&st, cfg, finished + Duration::from_secs(300))
+                .await
+                .stopped,
+            0
+        );
+        assert_eq!(
+            sweep_once(&st, cfg, finished + Duration::from_secs(301))
+                .await
+                .stopped,
+            1
+        );
+        assert_eq!(st.backend.status(&id).unwrap().state, State::Stopped);
+        assert_eq!(st.store.get_sandbox(&id).unwrap().state, "stopped");
+    }
 
     #[test]
     fn admission_and_stop_commit_exclude_each_other() {

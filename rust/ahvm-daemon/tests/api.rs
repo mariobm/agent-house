@@ -1846,3 +1846,27 @@ async fn metrics_are_admin_only_and_do_not_reconcile_or_wake() {
     assert_eq!(body["vms"], serde_json::json!([]));
     assert_eq!(body["truncated"], false);
 }
+
+#[tokio::test]
+async fn managed_run_routes_require_node_admin_not_tenant_tokens() {
+    let body =
+        serde_json::json!({"sandbox_id":"unknown","argv":["/bin/true"],"max_runtime_secs":60});
+    for (method, path, payload) in [
+        ("POST", "/v1/admin/runs/job", Some(body)),
+        ("GET", "/v1/admin/runs/job", None),
+        (
+            "POST",
+            "/v1/admin/runs/job/cancel",
+            Some(serde_json::json!({})),
+        ),
+    ] {
+        assert_eq!(
+            call(app(), None, method, path, payload.clone()).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(app(), Some(TOKEN_A), method, path, payload).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+}

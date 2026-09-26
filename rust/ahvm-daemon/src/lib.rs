@@ -24,6 +24,7 @@ pub mod previews;
 pub mod quotas;
 pub mod replicated;
 pub mod routes;
+pub mod runs;
 pub mod sandboxes;
 pub mod scheduler;
 pub mod sessions;
@@ -210,6 +211,11 @@ pub fn build_router(state: AppState) -> Router {
     use axum::middleware;
 
     let authed = Router::new()
+        .route("/v1/admin/runs/{id}", get(runs::get).post(runs::submit))
+        .route(
+            "/v1/admin/runs/{id}/cancel",
+            axum::routing::post(runs::cancel),
+        )
         .route("/v1/admin/metrics", get(metrics::sample))
         .route("/v1/admin/metrics/storage/{id}", get(metrics::backlog))
         .route("/v1/admin/pool-profile", get(pool_profile))
@@ -324,7 +330,7 @@ async fn healthz() -> Json<serde_json::Value> {
     let custom = std::env::var_os("AHVM_DESKTOP_IMAGE").is_some();
     Json(serde_json::json!({
         "status": "ok", "version": env!("CARGO_PKG_VERSION"),
-        "features": ["lifecycle-omarchy-v1", "idle-pause-v1", "lifecycle-storage-v1", "replicated-storage-v1", "lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
+        "features": ["managed-runs-v1", "lifecycle-omarchy-v1", "idle-pause-v1", "lifecycle-storage-v1", "replicated-storage-v1", "lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
         "desktop_images": {
             "ubuntu-desktop": sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
             "omarchy-desktop": sandboxes::resolve_image(Some("omarchy-desktop")).is_ok(),

@@ -225,6 +225,7 @@ pub(crate) async fn destroy_operation(
     let _lc = state.lifecycle.lock(&id).await;
     state.store.check_lifecycle_fence(&id, operation)?;
     owned(&state, &user.0, &id).await?;
+    crate::runs::check_lifecycle(&state, &id)?;
     if let Some(reservation) = state.store.replicated_for_sandbox(&user.0, &id)? {
         state
             .store
@@ -307,6 +308,7 @@ async fn set_running(
     // same order as the sweep, so neither can deadlock the other.
     let _lc = state.lifecycle.lock(id).await;
     state.store.check_lifecycle_fence(id, operation)?;
+    crate::runs::check_lifecycle(state, id)?;
     let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
     let a = id.to_string();
