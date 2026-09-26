@@ -9,9 +9,11 @@ mod entities;
 mod events;
 mod operations;
 mod replicated;
+mod runs;
 mod schema;
 pub use operations::LifecycleOperation;
 pub use replicated::{ReplicatedReservation, ReplicatedUsage};
+pub use runs::ManagedRun;
 #[cfg(test)]
 mod tests;
 

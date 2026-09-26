@@ -9,8 +9,11 @@ Exec, files, opening/attaching a shell, and preview requests resume a paused VM
 before accessing the guest. This works for both local and replicated storage.
 Connected shells and previews, even quiet ones, and in-flight guest operations
 prevent automatic pause and idle stop. After the last operation/connection ends,
-the idle timer starts again. Detached background jobs alone do not keep the VM
-awake; operators running them unattended can disable pause.
+the idle timer starts again. Ordinary detached background sessions alone do not
+keep the VM awake.
+[Managed runs](MANAGED-RUNS.md) hold server-owned activity protection through
+completion, then use a five-minute idle stop for their VM. Operators running
+unmanaged detached work can disable pause.
 
 Status/list/storage polling does not resume a VM. Passive session inspection and
 cleanup do not wake it either; these guest RPCs can refuse while it is paused.

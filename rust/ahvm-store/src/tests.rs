@@ -509,3 +509,145 @@ fn idle_policy_survives_reopen_including_disabled_value() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn managed_run_retries_fences_and_terminal_receipts() {
+    let s = Store::open_in_memory().unwrap();
+    s.upsert_user(&user("u", 1)).unwrap();
+    s.create_sandbox(&sandbox("vm", "u", 1)).unwrap();
+    let (r, fresh) = s.admit_managed_run("r", "vm", "u", "{}", 10, 1000).unwrap();
+    assert!(fresh);
+    assert_eq!(
+        s.admit_managed_run("r", "vm", "u", "{}", 20, 2000).unwrap(),
+        (r.clone(), false)
+    );
+    assert!(matches!(
+        s.admit_managed_run("r", "vm", "u", "other", 20, 2000),
+        Err(Error::Conflict(_))
+    ));
+    assert!(matches!(
+        s.admit_managed_run("another", "vm", "u", "{}", 20, 2000),
+        Err(Error::Conflict(_))
+    ));
+    let owned = s.claim_managed_run("r", 30).unwrap();
+    assert_eq!(owned.epoch, 2);
+    assert!(s
+        .update_managed_run("r", 1, "succeeded", None, None, Some(0), None, 40, true)
+        .is_err());
+    s.update_managed_run(
+        "r",
+        2,
+        "running",
+        Some("sid"),
+        Some("boot"),
+        None,
+        None,
+        40,
+        false,
+    )
+    .unwrap();
+    assert!(s
+        .update_managed_run(
+            "r",
+            2,
+            "running",
+            Some("other"),
+            None,
+            None,
+            None,
+            41,
+            false
+        )
+        .is_err());
+    assert!(s
+        .update_managed_run(
+            "r",
+            2,
+            "running",
+            None,
+            Some("other"),
+            None,
+            None,
+            41,
+            false
+        )
+        .is_err());
+    assert!(s
+        .update_managed_run("r", 2, "running", None, None, None, None, 41, true)
+        .is_err());
+    let done = s
+        .update_managed_run("r", 2, "succeeded", None, None, Some(0), None, 50, true)
+        .unwrap();
+    assert_eq!(done.session_id.as_deref(), Some("sid"));
+    assert_eq!(done.finished_at, Some(50));
+    assert!(s.claim_managed_run("r", 60).is_err());
+    assert!(s.managed_run_for_sandbox("vm").unwrap().is_none());
+    assert_eq!(
+        s.list_managed_run_cooldowns().unwrap(),
+        vec![("vm".into(), 50)]
+    );
+    assert_eq!(
+        s.admit_managed_run("r", "vm", "u", "{}", 10000, 20000)
+            .unwrap(),
+        (done, false)
+    );
+    assert!(
+        s.admit_managed_run("next", "vm", "u", "{}", 60, 1000)
+            .unwrap()
+            .1
+    );
+    s.delete_sandbox("vm").unwrap();
+    assert!(s.list_active_managed_runs().unwrap().is_empty());
+    assert!(matches!(s.get_managed_run("r"), Err(Error::NotFound(_))));
+}
+
+#[test]
+fn managed_runs_have_bounded_admission_without_evicting_retry_receipts() {
+    let s = Store::open_in_memory().unwrap();
+    s.upsert_user(&user("u", 1)).unwrap();
+    for i in 0..65 {
+        let id = format!("vm{i}");
+        s.create_sandbox(&sandbox(&id, "u", 1)).unwrap();
+        let r = s.admit_managed_run(&format!("run{i}"), &id, "u", "{}", 1, 1000);
+        assert_eq!(r.is_ok(), i < 64);
+    }
+    assert!(
+        !s.admit_managed_run("run0", "vm0", "u", "{}", 1, 1000)
+            .unwrap()
+            .1
+    );
+    s.update_managed_run("run0", 1, "failed", None, None, None, None, 2, true)
+        .unwrap();
+    assert!(s
+        .admit_managed_run("run64", "vm64", "u", "{}", 2, 1000)
+        .is_ok());
+}
+
+#[test]
+fn managed_runs_survive_database_reopen() {
+    let path = std::env::temp_dir().join(format!("ahvm-run-reopen-{}.db", std::process::id()));
+    let s = Store::open(&path).unwrap();
+    s.upsert_user(&user("u", 1)).unwrap();
+    s.create_sandbox(&sandbox("vm", "u", 1)).unwrap();
+    s.admit_managed_run("job", "vm", "u", "{}", 1, 100).unwrap();
+    s.update_managed_run(
+        "job",
+        1,
+        "running",
+        Some("session"),
+        Some("boot"),
+        None,
+        None,
+        2,
+        false,
+    )
+    .unwrap();
+    drop(s);
+    let s = Store::open(&path).unwrap();
+    let r = s.claim_managed_run("job", 10).unwrap();
+    assert_eq!(r.epoch, 2);
+    assert_eq!(r.session_id.as_deref(), Some("session"));
+    assert_eq!(r.deadline_at, 100);
+    drop(s);
+    std::fs::remove_file(path).unwrap();
+}
