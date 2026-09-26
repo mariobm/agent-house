@@ -330,7 +330,7 @@ async fn healthz() -> Json<serde_json::Value> {
     let custom = std::env::var_os("AHVM_DESKTOP_IMAGE").is_some();
     Json(serde_json::json!({
         "status": "ok", "version": env!("CARGO_PKG_VERSION"),
-        "features": ["managed-runs-v1", "lifecycle-omarchy-v1", "idle-pause-v1", "lifecycle-storage-v1", "replicated-storage-v1", "lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
+        "features": ["managed-runs-v1", "managed-runs-fenced-v1", "lifecycle-omarchy-v1", "idle-pause-v1", "lifecycle-storage-v1", "replicated-storage-v1", "lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
         "desktop_images": {
             "ubuntu-desktop": sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
             "omarchy-desktop": sandboxes::resolve_image(Some("omarchy-desktop")).is_ok(),

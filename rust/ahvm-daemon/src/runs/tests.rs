@@ -2,7 +2,7 @@ use super::*;
 use crate::thermal::{sweep_once, ActivityTracker, ThermalConfig};
 use ahvm_engine::*;
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
     Arc,
 };
 
@@ -10,8 +10,10 @@ use std::sync::{
 struct Fake {
     inner: MockBackend,
     running: AtomicBool,
+    exit_code: AtomicI32,
     lose_launch_reply: AtomicBool,
     fail_stop: AtomicBool,
+    ignore_stop: AtomicBool,
     launches: AtomicUsize,
     stops: AtomicUsize,
 }
@@ -52,6 +54,9 @@ impl Backend for Fake {
         if self.fail_stop.load(Ordering::SeqCst) {
             return Err(Error::Control("sync unavailable".into()));
         }
+        if self.ignore_stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         self.inner.stop(id)
     }
     fn session_create(&self, id: &str, argv: &[String], pty: bool) -> ahvm_engine::Result<String> {
@@ -76,7 +81,9 @@ impl Backend for Fake {
         seq: u64,
         budget: Duration,
     ) -> ahvm_engine::Result<SessionChunk> {
-        self.inner.session_read(id, sid, seq, budget)
+        let mut chunk = self.inner.session_read(id, sid, seq, budget)?;
+        chunk.exit_code = Some(self.exit_code.load(Ordering::SeqCst));
+        Ok(chunk)
     }
     fn session_kill(&self, _id: &str, _sid: &str) -> ahvm_engine::Result<()> {
         self.running.store(false, Ordering::SeqCst);
@@ -89,8 +96,10 @@ fn setup() -> (AppState, Arc<Fake>) {
     let fake = Arc::new(Fake {
         inner: MockBackend::new(std::env::temp_dir().join("ahvm-managed-tests")),
         running: AtomicBool::new(true),
+        exit_code: AtomicI32::new(0),
         lose_launch_reply: AtomicBool::new(false),
         fail_stop: AtomicBool::new(false),
+        ignore_stop: AtomicBool::new(false),
         launches: AtomicUsize::new(0),
         stops: AtomicUsize::new(0),
     });
@@ -146,6 +155,7 @@ fn request() -> RunRequest {
         sandbox_id: "vm".into(),
         argv: vec!["/bin/sleep".into(), "120".into()],
         max_runtime_secs: 3600,
+        fence_on_failure: false,
     }
 }
 fn admit(state: &AppState) -> ManagedRun {
@@ -412,4 +422,157 @@ fn runtime_deadline_cancels_an_already_started_session() {
     assert!(s.activity.has_managed_run("vm"));
     assert!(step(&s, &r.id, r.epoch, false).unwrap());
     assert_eq!(s.store.get_managed_run("job").unwrap().phase, "interrupted");
+}
+
+fn admit_fenced(state: &AppState, expired: bool) -> ManagedRun {
+    let now = unix_now();
+    let mut body = request();
+    body.fence_on_failure = true;
+    let (run, _) = state
+        .store
+        .admit_managed_run(
+            "job",
+            "vm",
+            "admin",
+            &serde_json::to_string(&body).unwrap(),
+            now - 10,
+            if expired { now - 1 } else { now + 3600 },
+        )
+        .unwrap();
+    state.activity.set_managed_run("vm", "job", run.epoch);
+    let sid = state
+        .backend
+        .session_create("vm", &command(&run).unwrap(), false)
+        .unwrap();
+    state
+        .store
+        .update_managed_run(
+            "job",
+            run.epoch,
+            "running",
+            Some(&sid),
+            Some("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            None,
+            None,
+            now - 5,
+            false,
+        )
+        .unwrap()
+}
+
+#[test]
+fn omitted_or_false_fencing_preserves_canonical_receipts() {
+    let expected = r#"{"sandbox_id":"vm","argv":["/bin/sleep","120"],"max_runtime_secs":3600}"#;
+    let body: RunRequest = serde_json::from_str(expected).unwrap();
+    assert!(!body.fence_on_failure);
+    assert_eq!(serde_json::to_string(&body).unwrap(), expected);
+    let explicit = expected.replace("3600}", "3600,\"fence_on_failure\":false}");
+    assert_eq!(
+        serde_json::to_string(&serde_json::from_str::<RunRequest>(&explicit).unwrap()).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn fenced_outcomes_stop_only_failed_or_interrupted_controllers() {
+    // Includes the deadline race: exit observed before cancellation was saved.
+    for (code, cancel, expired, phase, stopped) in [
+        (0, false, false, "succeeded", false),
+        (23, false, false, "failed", true),
+        (0, true, false, "interrupted", true),
+        (0, false, true, "interrupted", true),
+    ] {
+        let (s, f) = setup();
+        let r = admit_fenced(&s, expired);
+        if cancel {
+            update(
+                &s,
+                &r,
+                "cancelling",
+                None,
+                None,
+                None,
+                Some("cancellation requested"),
+                false,
+            )
+            .unwrap();
+        }
+        f.running.store(false, Ordering::SeqCst);
+        f.exit_code.store(code, Ordering::SeqCst);
+        assert!(step(&s, &r.id, r.epoch, false).unwrap());
+        let result = s.store.get_managed_run("job").unwrap();
+        assert_eq!(result.phase, phase);
+        assert_eq!(result.exit_code, Some(code));
+        assert_eq!(f.status("vm").unwrap().state == VmState::Stopped, stopped);
+        assert_eq!(f.stops.load(Ordering::SeqCst), usize::from(stopped));
+        assert!(!s.activity.has_managed_run("vm"));
+        if !stopped {
+            assert_eq!(s.store.list_managed_run_cooldowns().unwrap().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn fenced_failed_stop_retains_result_and_hold_until_retry() {
+    let (s, f) = setup();
+    let r = admit_fenced(&s, false);
+    f.running.store(false, Ordering::SeqCst);
+    f.exit_code.store(23, Ordering::SeqCst);
+    f.fail_stop.store(true, Ordering::SeqCst);
+    assert!(step(&s, &r.id, r.epoch, false).is_err());
+    let pending = s.store.get_managed_run("job").unwrap();
+    assert!(pending.finished_at.is_none());
+    assert_eq!(pending.exit_code, Some(23));
+    assert!(s.activity.has_managed_run("vm"));
+    // Retry/recovery needs no native session to finish the durable fence.
+    f.session_delete("vm", pending.session_id.as_deref().unwrap())
+        .unwrap();
+    let claimed = s.store.claim_managed_run("job", unix_now()).unwrap();
+    s.activity.set_managed_run("vm", "job", claimed.epoch);
+    f.fail_stop.store(false, Ordering::SeqCst);
+    assert!(step(&s, &claimed.id, claimed.epoch, false).unwrap());
+    assert_eq!(f.status("vm").unwrap().state, VmState::Stopped);
+    assert_eq!(s.store.get_managed_run("job").unwrap().phase, "failed");
+    assert!(!s.activity.has_managed_run("vm"));
+}
+
+#[test]
+fn fenced_stop_acknowledgement_requires_verified_stopped_state() {
+    let (s, f) = setup();
+    let r = admit_fenced(&s, false);
+    f.running.store(false, Ordering::SeqCst);
+    f.exit_code.store(1, Ordering::SeqCst);
+    f.ignore_stop.store(true, Ordering::SeqCst);
+    assert!(step(&s, &r.id, r.epoch, false).is_err());
+    assert!(s.activity.has_managed_run("vm"));
+    assert!(s
+        .store
+        .get_managed_run("job")
+        .unwrap()
+        .finished_at
+        .is_none());
+    f.ignore_stop.store(false, Ordering::SeqCst);
+    assert!(step(&s, &r.id, r.epoch, false).unwrap());
+    assert_eq!(f.status("vm").unwrap().state, VmState::Stopped);
+}
+
+#[tokio::test]
+async fn repeated_cancel_preserves_pending_fence_result() {
+    let (s, f) = setup();
+    let r = admit_fenced(&s, false);
+    f.running.store(false, Ordering::SeqCst);
+    f.exit_code.store(23, Ordering::SeqCst);
+    f.fail_stop.store(true, Ordering::SeqCst);
+    assert!(step(&s, &r.id, r.epoch, false).is_err());
+    let Json(receipt) = cancel(
+        State(s.clone()),
+        Extension(UserId("admin".into())),
+        Path(r.id.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(receipt.exit_code, Some(23));
+    f.fail_stop.store(false, Ordering::SeqCst);
+    assert!(step(&s, &r.id, r.epoch, false).unwrap());
+    assert_eq!(s.store.get_managed_run("job").unwrap().phase, "failed");
 }

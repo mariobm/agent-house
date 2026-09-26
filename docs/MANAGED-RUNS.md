@@ -56,7 +56,8 @@ to stop. Ordinary VMs keep their separate `AHVM_IDLE_SECS` policy.
 
 ## Node-only API
 
-The node advertises `managed-runs-v1` in `/v1/healthz`. All three routes
+The node advertises `managed-runs-v1` and `managed-runs-fenced-v1` in
+`/v1/healthz`. All three routes
 require the node `admin` identity:
 
 | Request | Meaning |
@@ -71,7 +72,8 @@ Example admission body:
 {
   "sandbox_id": "agent-vm",
   "argv": ["/usr/local/bin/ahvm-dev", "/bin/sh", "-c", "sleep 90; printf done > /workspace/result"],
-  "max_runtime_secs": 1800
+  "max_runtime_secs": 1800,
+  "fence_on_failure": true
 }
 ```
 
@@ -83,6 +85,18 @@ image's unprivileged developer environment. Arguments are forwarded literally.
 Do not submit a permanent `opencode serve` process as a finite run: the later
 adapter must wait for the native **turn** outcome and then terminate its finite
 controller. Daemonizing work outside that controller is outside this contract.
+
+Finite agent controllers should opt into `fence_on_failure: true`. A nonzero
+controller exit, cancellation, or runtime deadline requires a verified cold stop
+before the receipt becomes terminal or its activity hold is released. Even an
+observed zero exit after cancellation or deadline is fenced: a dead controller
+does not prove its child tools stopped. Stop failures retain the unfinished
+receipt and hold for retry, including after daemon restart. This exceptional
+stop can disconnect an attached CLI shell; clients should check the
+`managed-runs-fenced-v1` capability before relying on this guarantee. A clean
+zero exit before the deadline keeps the VM running with the normal cooldown.
+The optional flag defaults to false; omitted and explicit false preserve the
+legacy canonical receipt. Changing the flag for an existing run ID conflicts.
 
 The caller must explicitly provide a runtime budget of 1–86400 seconds. This is
 separate from idle policy: exceeding it requests cancellation even if work is
