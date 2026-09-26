@@ -156,3 +156,10 @@ stopped **302.8 seconds after observed completion**. Cold wake read the saved
 marker and confirmed one execution. Cancellation and test-VM deletion passed.
 Production daemons and existing VMs were not modified. macOS and Linux daemon/
 store suites and clippy also passed.
+
+A subsequent isolated KVM/R2 check exercised `fence_on_failure`: cancelling a
+controller with an escaped `setsid sleep` child produced an `interrupted` receipt
+only after the VM was stopped. A nonzero controller failure also cold-stopped
+the VM; a clean exit left it available for ordinary idle handling. The finite
+controller survived a daemon restart in the same guest boot and session. These
+checks qualify runtime recovery, not the success of a particular model provider.
