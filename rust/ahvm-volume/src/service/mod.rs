@@ -38,6 +38,7 @@ mod warm;
 mod worker;
 use host::*;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+const MAX_UNRECLAIMED_RECORDS: usize = 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -413,8 +414,8 @@ impl Service {
         if let Some(e) = map.get(&q.volume_id) {
             return Ok(e.clone());
         }
-        if !matches!(q.operation.as_str(), "prepare" | "retire") || map.len() >= 1024 {
-            return Err("unknown volume or record limit".into());
+        if !matches!(q.operation.as_str(), "prepare" | "retire") {
+            return Err("unknown volume".into());
         }
         if q.operation == "retire" {
             // A ledger may precede service registration. Persist retirement
@@ -492,6 +493,7 @@ impl Service {
         }
         let mut usage = Usage::default();
         let mut used = std::collections::BTreeSet::new();
+        let mut unreclaimed = 0;
         for id in map.keys() {
             let r: Record = read(
                 &self
@@ -502,11 +504,19 @@ impl Service {
                     .join("record.json"),
             )?;
             if !r.reclaimed {
+                unreclaimed += 1;
                 usage.add_residency(r.logical_bytes, !r.evicted)?;
             }
             if (!r.deleted && !r.evicted) || r.worker.is_some() || r.client.is_some() {
                 used.insert(r.device);
             }
+        }
+        // Historical tombstones preserve identity/binding fences forever, but
+        // do not consume admission capacity after observed remote reclamation.
+        // Missing-record retirement above must stay available at this limit:
+        // it imports nothing and cannot borrow an active device.
+        if unreclaimed >= MAX_UNRECLAIMED_RECORDS {
+            return Err("unreclaimed volume record limit".into());
         }
         self.config.limits.admit(&usage, logical_bytes)?;
         let device = self
