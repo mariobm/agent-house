@@ -110,6 +110,11 @@ The public signed catalog now advertises Ubuntu image generation **2026-09-26**
 from clean Ubuntu inputs, not exported from an authenticated VM. Publishing
 it does not change installed tools inside existing VM disks.
 
+Production Cloud qualification also passed through the normal CLI with a
+1-vCPU/2-GiB replicated VM: create (**6.44s**), authenticated OpenCode 2 API
+as `ahvm`, stop/start (**5.59s**) and persistent files. The disposable Cloud VM
+was deleted. These are individual image-rollout checks, not latency benchmarks.
+
 The current `scripts/test-dev-image.py` additionally checks the exact OpenCode
 pin against both the repository and guest `image-versions.env`, verifies the
 installed package is `@opencode/cli`, and checks root ownership of the tool.
