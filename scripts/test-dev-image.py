@@ -6,6 +6,7 @@ development image. Usage: test-dev-image.py /path/to/ahvm
 No provider credentials or paid model requests are used.
 """
 import json
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -13,6 +14,123 @@ import uuid
 
 binary = sys.argv[1]
 sandbox = 'dev-image-' + uuid.uuid4().hex[:10]
+pins = dict(line.split('=', 1) for line in
+            (Path(__file__).resolve().parents[1] / 'images/ubuntu-dev/versions.env').read_text().splitlines()
+            if line and not line.startswith('#'))
+
+# Runs inside the disposable guest. All server state is temporary; neither
+# provider authentication nor a Session/prompt is created.
+OPENCODE_GATE = r'''
+import base64, json, os, pwd, secrets, signal, socket, subprocess, sys, tempfile, time
+import urllib.error, urllib.request
+from pathlib import Path
+
+expected = sys.argv[1]
+image_pins = dict(line.split('=', 1) for line in
+                  Path('/usr/local/share/ahvm/image-versions.env').read_text().splitlines()
+                  if line and not line.startswith('#'))
+assert image_pins['OPENCODE_VERSION'] == expected, 'image OpenCode pin mismatch'
+assert os.getuid() == pwd.getpwnam('ahvm').pw_uid, 'gate must run as ahvm'
+assert os.environ.get('HOME') == '/home/ahvm', 'guest HOME mismatch'
+assert os.getcwd() == '/workspace', 'guest workspace mismatch'
+package = Path('/opt/ahvm-tools/node_modules/@opencode/cli/package.json')
+metadata = json.loads(package.read_text())
+assert metadata['name'] == '@opencode/cli' and metadata['version'] == expected, 'released package mismatch'
+for path in (Path('/opt/ahvm-tools'), package, Path('/opt/ahvm-tools/package-lock.json'), Path('/usr/local/bin/opencode').resolve()):
+    assert path.stat().st_uid == 0, 'installed tool must be root-owned'
+version = subprocess.run(['opencode', '--version'], check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+assert version == 'opencode v' + expected, 'OpenCode CLI version mismatch'
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        raise AssertionError('server redirected request')
+
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+with socket.socket() as reservation:
+    reservation.bind(('127.0.0.1', 0))
+    port = reservation.getsockname()[1]
+password = secrets.token_urlsafe(32)
+authorization = 'Basic ' + base64.b64encode(('opencode:' + password).encode()).decode()
+origin = 'http://127.0.0.1:' + str(port)
+
+def request(path, auth=authorization):
+    headers = {'Authorization': auth} if auth else {}
+    response = opener.open(urllib.request.Request(origin + path, headers=headers), timeout=3)
+    with response:
+        assert 'application/json' in response.headers.get('Content-Type', ''), 'API must return JSON'
+        raw = response.read(8 * 1024 * 1024 + 1)
+        assert len(raw) <= 8 * 1024 * 1024, 'API response limit'
+        return json.loads(raw)
+
+process = None
+with tempfile.TemporaryDirectory(prefix='ahvm-opencode-image-gate-') as directory:
+    env = os.environ.copy()
+    for name in ('HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME'):
+        env[name] = directory + '/' + name.lower()
+        Path(env[name]).mkdir()
+    env['OPENCODE_PASSWORD'] = password
+    env.pop('OPENCODE_SERVER_PASSWORD', None)
+    try:
+        process = subprocess.Popen(['opencode', 'serve', '--hostname', '127.0.0.1', '--port', str(port)],
+                                   cwd='/workspace', env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            assert process.poll() is None, 'OpenCode server exited before ready'
+            try:
+                info = request('/api/info')
+                break
+            except (urllib.error.URLError, TimeoutError):
+                time.sleep(0.2)
+        else:
+            raise AssertionError('OpenCode server startup deadline')
+        assert info.get('version') == expected, 'server version mismatch'
+        native_pid = info.get('pid')
+        assert isinstance(native_pid, int) and os.getpgid(native_pid) == process.pid, 'unexpected server process'
+        status = Path('/proc/' + str(native_pid) + '/status').read_text().splitlines()
+        uid = next(line.split()[1] for line in status if line.startswith('Uid:'))
+        assert int(uid) == os.getuid(), 'server runs under wrong guest user'
+        listeners = subprocess.run(['ss', '-H', '-ltn'], check=True, capture_output=True, text=True, timeout=5).stdout.splitlines()
+        listeners = [line.split()[3] for line in listeners if len(line.split()) > 3 and line.split()[3].endswith(':' + str(port))]
+        assert listeners == ['127.0.0.1:' + str(port)], 'server listener is not loopback-only'
+        for auth in ('', 'Basic ' + base64.b64encode(b'opencode:incorrect-image-gate-password').decode()):
+            try:
+                request('/api/info', auth)
+            except urllib.error.HTTPError as error:
+                assert error.code == 401, 'unexpected authentication failure status'
+                error.close()
+            else:
+                raise AssertionError('server accepted missing or wrong credentials')
+        schema = request('/openapi.json')
+        paths = schema.get('paths', {})
+        assert schema.get('openapi') and 'get' in paths.get('/api/info', {}), 'released info schema missing'
+        assert 'post' in paths.get('/api/session', {}), 'released session schema missing'
+        for suffix, method in (('/prompt', 'post'), ('/message', 'get'), ('/interrupt', 'post')):
+            assert any(path.startswith('/api/session/{') and path.endswith(suffix) and method in operations
+                       for path, operations in paths.items()), 'released session operation missing'
+    finally:
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+            # The npm launcher can exit before a child: terminate any remaining
+            # process-group members before removing their temporary state.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+print(json.dumps({'opencode_version': expected, 'released_api': True,
+                  'authenticated': True, 'loopback_only': True, 'model_calls': 0}))
+'''
 
 
 def cli(*args):
@@ -42,6 +160,8 @@ claude --version; codex --version; opencode --version; pi --version
 git --version; gcc --version | head -1
 ''')
     print(versions, flush=True)
+    print(cli('exec', sandbox, '--', 'ahvm-dev', 'python3', '-c', OPENCODE_GATE,
+              pins['OPENCODE_VERSION']), flush=True)
     cli('exec', sandbox, '--', 'bash', '-ec',
         'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; '
         'apt-get install -y -qq --no-install-recommends hello; hello >/dev/null')
@@ -77,7 +197,7 @@ printf persistent > marker
     assert cli('exec', sandbox, '--', 'ahvm-dev', 'cat', '/workspace/marker') == 'persistent'
     cli('exec', sandbox, '--', 'ahvm-dev', 'bash', '-lc',
         'test "$(./hello)" = C-OK && .venv/bin/python -c "import requests" && codex --version')
-    print(f'PASS: Ubuntu tools, apt/npm/pip, HTTPS, PTY, stop/start persistence ({time.monotonic()-started:.2f}s)', flush=True)
+    print(f'PASS: Ubuntu tools, released OpenCode authenticated loopback API, apt/npm/pip, HTTPS, PTY, stop/start persistence ({time.monotonic()-started:.2f}s)', flush=True)
 finally:
     if created:
         cli('delete', sandbox)

@@ -8,6 +8,13 @@ Git, SSH client, CA certificates, GCC/G++/make, pkg-config, ripgrep, fd, jq,
 SQLite, rsync, curl, wget, unzip, tmux, nano and Vim. AI commands are `claude`,
 `codex`, `opencode`, and `pi` (the Pi agent from pi.dev).
 
+The current recipe pins **released OpenCode 2.0.18** from official npm package
+**`@opencode/cli`**, replacing the older `opencode-ai` 1.18.30 package. Other
+tool and OS pins are unchanged. The CLI and its native binary remain under
+root-owned `/opt/ahvm-tools`; no server, provider login, password or conversation
+state is started or saved during image provisioning. Existing VM disks are not
+upgraded by publishing a new image.
+
 ## Build
 
 Use a Linux x86_64 build host with root, curl, Python 3, binutils, util-linux,
@@ -25,6 +32,11 @@ them is an explicit change. Ubuntu security updates are applied at build time,
 so builds are **not byte-for-byte reproducible**. The exact Ubuntu package list,
 tool versions and forge checksum are recorded under `/usr/local/share/ahvm`;
 the resolved npm dependency lock is `/opt/ahvm-tools/package-lock.json`.
+Package installation runs as guest `ahvm`, then the installed tool tree becomes
+root-owned. npm may warn about install scripts; the native platform optional
+package still supplies the executable. No new broad script allowance is added,
+and the gate verifies the installed executable rather than assuming a
+postinstall script ran.
 
 Provisioning mounts are confined to a temporary mount/PID namespace. The host's
 packages and services are not modified. Output is published only after success;
@@ -84,7 +96,32 @@ can be refreshed by rebuilding the image. No update daemon is installed.
 
 ## Qualification
 
-On `agent_house` (2026-09-10), `scripts/test-dev-image.py` passed in **19.50s**
+On **2026-09-26**, a clean image build with released **OpenCode 2.0.18** passed
+the complete KVM gate in **14.40s**, using one disposable **2-vCPU/4-GiB**
+sandbox. The run covered all existing development-tool, apt/npm/pip, HTTPS,
+C compilation, PTY and stop/start persistence checks, plus the authenticated
+loopback released-2 API checks below. The test daemon used the production DNS
+resolver setting `127.0.0.53`. It made **zero model calls**; other tool/OS pins
+were unchanged. The signed download passed the same full gate in **14.60s**;
+its expanded SHA-256 matched the original build. Both test VMs were deleted.
+
+The public signed catalog now advertises Ubuntu image generation **2026-09-26**
+(about **1.10 GiB** compressed, **16 GiB** logical disk). The image is built
+from clean Ubuntu inputs, not exported from an authenticated VM. Publishing
+it does not change installed tools inside existing VM disks.
+
+The current `scripts/test-dev-image.py` additionally checks the exact OpenCode
+pin against both the repository and guest `image-versions.env`, verifies the
+installed package is `@opencode/cli`, and checks root ownership of the tool.
+It starts a bounded foreground server as guest `ahvm` using temporary state and
+a privately generated environment password, then verifies exact version at
+`/api/info`, JSON `/openapi.json` released session operations, loopback-only
+listening, and HTTP 401 for missing/wrong credentials. The temporary server
+process group is terminated on success or failure. This adds **zero model
+calls** and creates no provider login or agent conversation. The disposable
+sandbox is deleted by the outer gate, including on failure.
+
+Historical baseline: on `agent_house` (2026-09-10), `scripts/test-dev-image.py` passed in **19.50s**
 with one 2-vCPU/4-GiB sandbox: all four AI CLI version commands as `developer`,
 Node/Bun/Python, apt/npm/pip installs, HTTPS, C compilation, a PTY, and
 stop/start with installed packages and files intact. The sandbox was deleted
