@@ -20,7 +20,7 @@ chmod 2775 /workspace
 # lock in the image. Build scripts run as the guest ahvm, not host root.
 python3 - "$BUN_VERSION" "$CLAUDE_VERSION" "$CODEX_VERSION" "$OPENCODE_VERSION" "$PI_VERSION" <<'PY'
 import json,sys
-names=['bun','@anthropic-ai/claude-code','@openai/codex','opencode-ai','@earendil-works/pi-coding-agent']
+names=['bun','@anthropic-ai/claude-code','@openai/codex','@opencode/cli','@earendil-works/pi-coding-agent']
 with open('/opt/ahvm-tools/package.json','w') as f:
     json.dump({'name':'ahvm-dev-tools','private':True,'dependencies':dict(zip(names,sys.argv[1:]))},f,indent=2)
 PY
