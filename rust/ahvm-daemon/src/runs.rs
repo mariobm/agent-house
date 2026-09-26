@@ -175,7 +175,7 @@ pub async fn cancel(
 /// The engine's exclusive directory lock prevents two daemon controllers.
 pub fn recover(state: &AppState) -> ApiResult<()> {
     for (id, _) in state.store.list_managed_run_cooldowns()? {
-        // Foreground activity is not durable: allow a fresh five-minute grace
+        // Foreground activity is not durable: allow a fresh configured idle grace
         // on restart instead of stopping a previously attached shell early.
         state.activity.restore_managed_cooldown(&id, Instant::now());
     }

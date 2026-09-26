@@ -3,6 +3,39 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn combined_idle_policy_is_atomic_and_survives_reopen() {
+    let dir = std::env::temp_dir().join(format!(
+        "ahvm-agent-policy-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("policy.db");
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.agent_idle_stop_secs().unwrap(), None);
+    store.set_pause_after_secs(30).unwrap(); // Existing database, before agent policy.
+    assert_eq!(store.agent_idle_stop_secs().unwrap(), None);
+    store.set_idle_policy(45, 600).unwrap();
+    store.with_conn(|c| {
+        c.execute_batch("CREATE TRIGGER refuse_agent_policy BEFORE INSERT ON host_settings WHEN NEW.key='agent_idle_stop_secs' BEGIN SELECT RAISE(ABORT,'test failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(store.set_idle_policy(90, 120).is_err());
+    assert_eq!(store.pause_after_secs().unwrap(), Some(45));
+    assert_eq!(store.agent_idle_stop_secs().unwrap(), Some(600));
+    assert!(store.set_idle_policy(30, 0).is_err());
+    drop(store);
+    let reopened = Store::open(path).unwrap();
+    assert_eq!(reopened.pause_after_secs().unwrap(), Some(45));
+    assert_eq!(reopened.agent_idle_stop_secs().unwrap(), Some(600));
+    drop(reopened);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn user(id: &str, now: i64) -> User {
     User {
         id: id.into(),

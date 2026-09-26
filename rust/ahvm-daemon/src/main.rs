@@ -17,6 +17,7 @@
 //! AHVM_PREVIEW_DOMAIN dedicated domain for per-port preview hosts
 //! AHVM_PRIVATE_ACCESS_FILE optional owner-bound exact TCP grant JSON
 //! AHVM_ADMIN_TOKEN  bootstrap admin token (created once when missing)
+//! AHVM_AGENT_IDLE_STOP_SECS initial managed-agent idle stop (default 300; 60..86400)
 //! ```
 
 use std::net::SocketAddr;
@@ -211,7 +212,28 @@ async fn main() {
         pause == 0 || (5..=86400).contains(&pause),
         "pause timeout must be 0 or 5..86400"
     );
-    state.activity.set_pause_after_secs(pause);
+    let agent_idle_stop_secs = state
+        .store
+        .agent_idle_stop_secs()
+        .expect("load agent idle policy")
+        .unwrap_or_else(|| {
+            std::env::var("AHVM_AGENT_IDLE_STOP_SECS")
+                .map(|v| {
+                    v.parse()
+                        .expect("AHVM_AGENT_IDLE_STOP_SECS must be an integer")
+                })
+                .unwrap_or(ahvm_daemon::thermal::DEFAULT_AGENT_IDLE_STOP_SECS)
+        });
+    assert!(
+        (60..=86400).contains(&agent_idle_stop_secs),
+        "agent idle stop timeout must be 60..86400"
+    );
+    state
+        .activity
+        .set_idle_policy(ahvm_daemon::thermal::IdlePolicy {
+            pause_after_secs: pause,
+            agent_idle_stop_secs,
+        });
     // Restore durable detached-job holds before any automatic idle action.
     ahvm_daemon::runs::recover(&state).expect("recover managed runs");
     // Thermal sweep (idle stop + reconcile) runs for the daemon lifetime.

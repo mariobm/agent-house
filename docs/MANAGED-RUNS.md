@@ -9,15 +9,15 @@ mobile APIs. The node admin credential must never be sent to a mobile client.
 
 An accepted run holds the VM awake through quiet model waits and tool work.
 The node records the result before releasing that protection. After completion,
-**five minutes without guest activity** triggers a full stop, preserving the VM
+**five minutes without guest activity by default** triggers a full stop, preserving the VM
 and replicated disk. An attached CLI shell, preview, or another guarded guest
 operation still prevents that stop. New guest activity restarts the idle timer.
-The ordinary 30-second resident pause may occur during this five-minute window;
+The ordinary 30-second resident pause may occur during this idle window;
 pause alone does not free RAM.
 
 This shorter stop policy belongs only to VMs used by managed runs and persists
 across daemon restarts. Unrelated VMs retain `AHVM_IDLE_SECS` (one hour by
-default). Restart gives completed managed VMs a fresh five-minute grace because
+default). Restart gives completed managed VMs a fresh configured idle grace because
 foreground activity timestamps are not persisted. Successful stop releases the
 worker/RAM; safe local replicated-cache reclamation follows separately and can
 be delayed by pending writes or remote storage failure. R2 disk data remains.
@@ -26,6 +26,33 @@ Cloud's current admission accounting still reserves CPU/RAM for stopped VM
 records. Releasing **Cloud admission reservations** requires separate atomic
 wake admission; this node change only releases physical resources and daemon
 running-resource quota. Never delete a user's VM to release a reservation.
+
+### Configure agent idle stop
+
+The Cloud admin dashboard has a separate **Agent idle stop** setting. Default:
+**300 seconds (5 minutes)**; allowed: **60–86400 seconds (1 minute–24 hours)**.
+This is the host-wide policy for VMs used by managed runs, including already
+completed runs. Active managed jobs and attached CLI sessions still prevent idle
+stop. It is not a maximum job runtime and never deletes the VM or its R2 disk.
+
+Self-hosted nodes can set `AHVM_AGENT_IDLE_STOP_SECS` for the initial default.
+Node administrators can read `GET /v1/admin/idle-policy` or update one or both
+settings with `PUT /v1/admin/idle-policy`:
+
+```json
+{"agent_idle_stop_secs": 600}
+```
+
+Omitted fields retain their current values; the response returns both
+`pause_after_secs` and `agent_idle_stop_secs`. Updates persist atomically in the
+daemon database, override environment defaults after restart, and apply on the
+next available sweep. Shortening the timeout can stop a VM that is already idle
+long enough. A stop already committed before a change finishes normally. The
+runtime uses an in-memory value, with no Cloud/database lookup on guest work.
+
+Pause and stop have independent timers measured from the latest guest activity
+or run completion. A stop timeout shorter than the pause timeout goes directly
+to stop. Ordinary VMs keep their separate `AHVM_IDLE_SECS` policy.
 
 ## Node-only API
 
