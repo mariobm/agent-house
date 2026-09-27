@@ -199,6 +199,7 @@ pub enum SessionResp {
         session_id: String,
     },
     Listed {
+        isolated_receipt_pinning: bool,
         sessions: Vec<crate::sessions::SessionInfo>,
     },
 }
@@ -455,6 +456,7 @@ fn serve_session(_r: &mut BufReader<Conn>, w: &mut Conn, req: SessionReq) -> boo
         }
         SessionReq::List => {
             let body = serde_json::to_vec(&SessionResp::Listed {
+                isolated_receipt_pinning: true,
                 sessions: mgr.list(),
             })
             .expect("serialize");

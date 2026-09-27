@@ -141,6 +141,16 @@ impl Store {
         })
     }
 
+    pub fn list_finished_managed_runs(&self) -> Result<Vec<ManagedRun>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {COLUMNS} FROM managed_runs WHERE finished_at IS NOT NULL ORDER BY sandbox_id,id"
+            ))?;
+            let rows = stmt.query_map([], row)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     pub fn managed_run_for_sandbox(&self, id: &str) -> Result<Option<ManagedRun>> {
         self.with_conn(|conn| {
             Ok(conn

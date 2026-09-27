@@ -16,6 +16,7 @@ struct Fake {
     ignore_stop: AtomicBool,
     launches: AtomicUsize,
     stops: AtomicUsize,
+    receipt_pinning: AtomicBool,
     session_running: std::sync::Mutex<std::collections::HashMap<String, bool>>,
 }
 macro_rules! delegate {
@@ -24,6 +25,9 @@ macro_rules! delegate {
     )*};
 }
 impl Backend for Fake {
+    fn session_receipt_pinning(&self, _id: &str) -> ahvm_engine::Result<bool> {
+        Ok(self.receipt_pinning.load(Ordering::SeqCst))
+    }
     delegate! {
         fn create(spec:&SandboxSpec)->ahvm_engine::Result<SandboxInfo>;
         fn destroy(id:&str)->ahvm_engine::Result<()>;
@@ -109,6 +113,7 @@ fn setup() -> (AppState, Arc<Fake>) {
         ignore_stop: AtomicBool::new(false),
         launches: AtomicUsize::new(0),
         stops: AtomicUsize::new(0),
+        receipt_pinning: AtomicBool::new(true),
         session_running: Default::default(),
     });
     fake.create(&SandboxSpec {
@@ -749,4 +754,65 @@ fn isolated_nonzero_receipt_and_missing_session_never_fence_siblings() {
     assert!(step(&s, "b", b.epoch, false).unwrap());
     assert!(!s.activity.has_managed_run("vm"));
     assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn terminal_commit_releases_pinned_receipt_and_recovery_cleans_crash_window() {
+    let (s, fake) = setup();
+    let a = admit_isolated(&s, "a");
+    assert!(!step(&s, "a", a.epoch, true).unwrap());
+    let a = s.store.get_managed_run("a").unwrap();
+    fake.session_running
+        .lock()
+        .unwrap()
+        .insert(a.session_id.clone().unwrap(), false);
+    assert!(step(&s, "a", a.epoch, false).unwrap());
+    assert!(fake.session_list("vm").unwrap().is_empty());
+    assert_eq!(s.store.get_managed_run("a").unwrap().exit_code, Some(0));
+
+    let b = admit_isolated(&s, "b");
+    assert!(!step(&s, "b", b.epoch, true).unwrap());
+    let b = s.store.get_managed_run("b").unwrap();
+    fake.session_running
+        .lock()
+        .unwrap()
+        .insert(b.session_id.clone().unwrap(), false);
+    s.store
+        .update_managed_run(
+            "b",
+            b.epoch,
+            "succeeded",
+            None,
+            None,
+            Some(0),
+            None,
+            unix_now(),
+            true,
+        )
+        .unwrap();
+    let terminal = s.store.get_managed_run("b").unwrap();
+    assert_eq!(fake.session_list("vm").unwrap().len(), 1);
+    release_guest_receipt(&s, &terminal);
+    assert!(fake.session_list("vm").unwrap().is_empty());
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn old_guest_forge_cannot_admit_isolated_work() {
+    let (s, fake) = setup();
+    fake.receipt_pinning.store(false, Ordering::SeqCst);
+    let mut body = request();
+    body.session_isolated = true;
+    assert!(matches!(
+        submit(
+            State(s.clone()),
+            Extension(UserId("admin".into())),
+            Path("new".into()),
+            Json(body)
+        )
+        .await,
+        Err(ApiError::Conflict(_))
+    ));
+    assert!(s.store.list_active_managed_runs().unwrap().is_empty());
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 0);
 }

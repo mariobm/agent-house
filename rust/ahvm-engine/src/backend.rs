@@ -199,6 +199,10 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     fn session_kill(&self, id: &str, session_id: &str) -> Result<()>;
     fn session_delete(&self, id: &str, session_id: &str) -> Result<()>;
     fn session_list(&self, id: &str) -> Result<Vec<SessionInfo>>;
+    /// Old guest agents must fail closed before isolated run admission.
+    fn session_receipt_pinning(&self, _id: &str) -> Result<bool> {
+        Ok(false)
+    }
     fn session_resize(&self, id: &str, session_id: &str, rows: u16, cols: u16) -> Result<()>;
 
     /// Alias for [`Backend::create_snapshot`] kept so both spellings in

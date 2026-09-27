@@ -81,7 +81,15 @@ fn command(run: &ManagedRun) -> ApiResult<Vec<String>> {
         "/bin/sh".into(),
         "-c".into(),
         "exec \"$@\"".into(),
-        format!("ahvm-run:{}", run.id),
+        format!(
+            "{}:{}",
+            if body.session_isolated {
+                "ahvm-run-isolated"
+            } else {
+                "ahvm-run"
+            },
+            run.id
+        ),
     ];
     argv.extend(body.argv);
     Ok(argv)
@@ -128,9 +136,15 @@ pub async fn submit(
     let check = state.clone();
     let sandbox = body.sandbox_id.clone();
     // Lifecycle ownership stays in the blocking task if the HTTP caller leaves.
-    let (lc, live) = tokio::task::spawn_blocking(move || {
+    let isolated = body.session_isolated;
+    let (lc, live, pinning) = tokio::task::spawn_blocking(move || {
         let live = check.backend.status(&sandbox);
-        (lc, live)
+        let pinning = if isolated {
+            check.backend.session_receipt_pinning(&sandbox)
+        } else {
+            Ok(true)
+        };
+        (lc, live, pinning)
     })
     .await
     .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -140,6 +154,12 @@ pub async fn submit(
     {
         return Err(ApiError::Conflict(
             "managed runs require an awake replicated VM; wake it before submitting".into(),
+        ));
+    }
+    if !pinning? {
+        return Err(ApiError::Conflict(
+            "isolated runs require updated guest Forge receipt pinning; cold boot an updated image"
+                .into(),
         ));
     }
     let now = unix_now();
@@ -198,6 +218,11 @@ pub async fn cancel(
 /// Call once at startup, before accepting HTTP or starting the idle sweeper.
 /// The engine's exclusive directory lock prevents two daemon controllers.
 pub fn recover(state: &AppState) -> ApiResult<()> {
+    // Completion commits before guest receipt release. Recover the crash window
+    // without replaying, touching unrelated sessions, or requiring a VM wake.
+    for run in state.store.list_finished_managed_runs()? {
+        release_guest_receipt(state, &run);
+    }
     for (id, _) in state.store.list_managed_run_cooldowns()? {
         // Foreground activity is not durable: allow a fresh configured idle grace
         // on restart instead of stopping a previously attached shell early.
@@ -252,6 +277,7 @@ fn update(
         terminal,
     )?;
     if terminal {
+        release_guest_receipt(state, &saved);
         // SQLite commit happens BEFORE dropping the hold. A crash in between
         // is recovered as a completed job, never a lost active-job lease.
         state
@@ -259,6 +285,35 @@ fn update(
             .finish_managed_run(&run.sandbox_id, &run.id, run.epoch, Instant::now());
     }
     Ok(saved)
+}
+
+fn release_guest_receipt(state: &AppState, run: &ManagedRun) {
+    let Ok(request) = serde_json::from_str::<RunRequest>(&run.request_json) else {
+        return;
+    };
+    if !request.session_isolated || run.finished_at.is_none() {
+        return;
+    }
+    let (Some(sid), Some(boot)) = (run.session_id.as_deref(), run.boot_id.as_deref()) else {
+        return;
+    };
+    if boot_id(state, &run.sandbox_id).ok().as_deref() != Some(boot) {
+        return;
+    }
+    let Ok(argv) = command(run) else {
+        return;
+    };
+    let Ok(sessions) = state.backend.session_list(&run.sandbox_id) else {
+        return;
+    };
+    if sessions
+        .iter()
+        .any(|s| s.id == sid && s.argv == argv && !s.running)
+    {
+        // The durable node receipt now owns idempotency and completion proof.
+        // A failed cleanup is retried on daemon recovery, never re-dispatched.
+        let _ = state.backend.session_delete(&run.sandbox_id, sid);
+    }
 }
 
 fn boot_id(state: &AppState, sandbox: &str) -> ApiResult<String> {

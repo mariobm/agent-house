@@ -104,6 +104,9 @@ legacy canonical receipt. Changing the flag for an existing run ID conflicts.
 Use `session_isolated: true` with `fence_on_failure: false` only after checking
 `managed-runs-session-isolated-v1`. This opts into a cooperative guest protocol;
 legacy commands and VM-fencing credential jobs cannot overlap isolated runs.
+The daemon also checks the guest Forge `isolated_receipt_pinning` capability
+before admission. Update the guest image and cold boot before using isolated
+runs; updating only the host daemon does not enable an old running guest.
 Each run owns a separate native session and activity hold. The VM remains awake
 until every run has finished, including after daemon recovery.
 
@@ -114,6 +117,10 @@ root-owned with mode 0755; an unprivileged controller can poll file existence.
 The controller must abort only its own shared-server session and verify native
 idle/tool termination before exiting zero. The marker is scoped to the guest
 boot; each run ID is immutable and must not be reused.
+
+Forge pins isolated native sessions against completed-scrollback eviction until
+the daemon commits the terminal receipt and explicitly deletes that guest session.
+Daemon recovery releases terminal pinned sessions left by a commit/cleanup crash.
 
 Only EOF plus exit code zero acknowledges remote termination. Nonzero exits,
 lost sessions and unconfirmed cancellation remain unfinished with an activity
