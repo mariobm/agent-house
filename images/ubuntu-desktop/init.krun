@@ -24,6 +24,7 @@ for ((i=0;i<300;i++)); do
     sleep 0.1
 done
 [[ -f /run/ahvm-desktop/ready ]] || { cat /tmp/desktop.log >&2; exit 1; }
+install -d -o root -g root -m 0755 /run/ahvm-managed-cancel
 cd /workspace
 # Group-writable agent uploads under the setgid workspace.
 umask 0002

@@ -11,6 +11,7 @@ mountpoint -q /dev/pts || mount -t devpts -o newinstance,ptmxmode=0666,mode=0620
 ln -sf pts/ptmx /dev/ptmx
 mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
 chmod 1777 /tmp
+install -d -o root -g root -m 0755 /run/ahvm-managed-cancel
 cd /workspace
 # Group-writable agent uploads under the setgid workspace.
 umask 0002
