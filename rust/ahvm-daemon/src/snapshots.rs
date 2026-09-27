@@ -1,10 +1,6 @@
-//! Typed snapshots: create (online), get/delete (records), restore-as-new.
-//!
-//! Record deletes are record-only: backend registry bundles are immutable
-//! and content-addressed by snapshot id, so dropping the row cannot strand
-//! a live sandbox (nothing references bundles but restores).
+//! Durable, owner-charged snapshots with cancellation-safe publication and cleanup.
 
-use crate::{auth::UserId, blocking, routes::owned, unix_now, ApiResult, AppState};
+use crate::{auth::UserId, routes::owned, unix_now, ApiError, ApiResult, AppState};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -60,45 +56,115 @@ pub async fn create(
     Path(id): Path<String>,
     Json(body): Json<CreateBody>,
 ) -> ApiResult<impl IntoResponse> {
-    if body.name.is_empty() || body.name.len() > 64 {
-        return Err(crate::ApiError::Invalid(
-            "name must be 1..=64 chars".to_string(),
+    if body.name.is_empty()
+        || body.name.len() > 64
+        || !body
+            .name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(ApiError::Invalid(
+            "name must be 1..=64 letters, digits, hyphens or underscores".into(),
         ));
     }
     owned(&state, &user.0, &id).await?;
-    let backend = state.backend.clone();
-    let owned_id = id.clone();
-    let snap_name = body.name.clone();
-    // Quota first: same atomic gate as sandboxes (count + in-flight).
-    let me = state.store.get_user(&user.0)?;
-    let _hold = state
-        .quotas
-        .reserve_snapshot(&state.store, &me, &snap_name)?;
-    state.activity.touch(&id);
-    // Guard across the guest-paused snapshot (minutes on big RAM).
-    let _flight = crate::routes::guest(&state, &id).await?;
-    let _permit = state.ops.acquire().await;
-    let manifest = blocking(move || {
-        let (_flight, _permit) = (_flight, _permit);
-        backend.create_snapshot(&owned_id, &snap_name)
+    let flight = crate::routes::guest(&state, &user.0, &id).await?;
+    let snapshot_lock = state
+        .lifecycle
+        .lock(&format!("snapshot:{}", body.name))
+        .await;
+    let permit = state.ops.acquire().await;
+    let row = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let (snapshot_lock, _flight, _permit) = (snapshot_lock, flight, permit);
+        let me = state.store.get_user(&user.0)?;
+        let hold = state
+            .quotas
+            .reserve_snapshot(&state.store, &me, &body.name)?;
+        let mut row = ahvm_store::Snapshot {
+            id: body.name.clone(),
+            owner_user_id: user.0,
+            sandbox_id: Some(id.clone()),
+            name: body.name,
+            kind: "manual".into(),
+            state: "creating".into(),
+            local_bytes: 0,
+            remote_state: "local".into(),
+            remote_manifest_key: None,
+            created_at: unix_now(),
+            expires_at: None,
+        };
+        // Persist ownership and quota before producing files. The blocking task
+        // owns publication/cleanup even if its HTTP request disappears.
+        state.store.create_snapshot(&row)?;
+        drop(hold);
+        if let Err(error) = state.backend.create_snapshot(&id, &row.id) {
+            // A partial backend publication still belongs to this charged row.
+            // Cleanup errors retain it for explicit retry or startup recovery.
+            match cleanup(&state, &row.id) {
+                Ok(()) => snapshot_lock.invalidate_identity(),
+                Err(cleanup) => eprintln!("snapshot {} cleanup deferred: {cleanup}", row.id),
+            }
+            return Err(error.into());
+        }
+        row.local_bytes = retained_bytes(&state, &row.id)?;
+        row.state = "ready".into();
+        state
+            .store
+            .set_snapshot_state(&row.id, &row.state, row.local_bytes)?;
+        Ok(row)
     })
-    .await?;
-    let now = unix_now();
-    let row = ahvm_store::Snapshot {
-        id: manifest.snapshot_id.clone(),
-        owner_user_id: user.0.clone(),
-        sandbox_id: Some(id.clone()),
-        name: body.name.clone(),
-        kind: "manual".to_string(),
-        state: "ready".to_string(),
-        local_bytes: manifest.artifacts.memory_bytes as i64,
-        remote_state: "local".to_string(),
-        remote_manifest_key: None,
-        created_at: now,
-        expires_at: None,
-    };
-    state.store.create_snapshot(&row)?;
+    .await
+    .map_err(|e| ApiError::Internal(format!("snapshot task: {e}")))??;
     Ok((StatusCode::CREATED, Json(view(&row))))
+}
+
+fn retained_bytes(state: &AppState, id: &str) -> ApiResult<i64> {
+    i64::try_from(state.backend.snapshot_local_bytes(id)?)
+        .map_err(|_| ApiError::Internal("snapshot size exceeds accounting range".into()))
+}
+
+fn cleanup(state: &AppState, id: &str) -> ApiResult<()> {
+    let row = state.store.get_snapshot(id)?;
+    let bytes = retained_bytes(state, id).unwrap_or(row.local_bytes);
+    state.store.set_snapshot_state(id, "deleting", bytes)?;
+    state.backend.delete_snapshot(id)?;
+    state.store.delete_snapshot(id)?;
+    Ok(())
+}
+
+/// Called once before accepting requests. Pending rows retain quota across a
+/// crash; old record-only deletions leave unowned bundles which are retired.
+pub fn recover(state: &AppState) -> ApiResult<()> {
+    for row in state.store.list_snapshots()? {
+        match row.state.as_str() {
+            "creating" => {
+                if state.backend.snapshot_manifest(&row.id).is_ok() {
+                    state.store.set_snapshot_state(
+                        &row.id,
+                        "ready",
+                        retained_bytes(state, &row.id)?,
+                    )?;
+                } else {
+                    cleanup(state, &row.id)?;
+                }
+            }
+            "deleting" => cleanup(state, &row.id)?,
+            "ready" => {
+                state
+                    .store
+                    .set_snapshot_state(&row.id, "ready", retained_bytes(state, &row.id)?)?
+            }
+            _ => {}
+        }
+    }
+    for id in state.backend.snapshot_ids()? {
+        match state.store.get_snapshot(&id) {
+            Ok(_) => {}
+            Err(ahvm_store::Error::NotFound(_)) => state.backend.delete_snapshot(&id)?,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 pub async fn get(
@@ -115,10 +181,21 @@ pub async fn delete(
     Path(snapshot_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     owned_snapshot(&state, &user.0, &snapshot_id)?;
-    match state.store.delete_snapshot(&snapshot_id) {
-        Ok(()) | Err(ahvm_store::Error::NotFound(_)) => {}
-        Err(e) => return Err(e.into()),
-    }
+    let snapshot_lock = state
+        .lifecycle
+        .lock(&format!("snapshot:{snapshot_id}"))
+        .await;
+    crate::routes::unchanged_identity(&snapshot_lock)?;
+    owned_snapshot(&state, &user.0, &snapshot_id)?;
+    let permit = state.ops.acquire().await;
+    tokio::task::spawn_blocking(move || -> ApiResult<()> {
+        let _permit = permit;
+        cleanup(&state, &snapshot_id)?;
+        snapshot_lock.invalidate_identity();
+        Ok(())
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("snapshot cleanup task: {e}")))??;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -133,58 +210,71 @@ pub async fn restore(
     Path(snapshot_id): Path<String>,
     Json(body): Json<RestoreBody>,
 ) -> ApiResult<impl IntoResponse> {
-    owned_snapshot(&state, &user.0, &snapshot_id)?;
-    // Lifecycle first (see scheduler::LifecycleLocks): the restore (quota
-    // → boot → record) is one critical section for the new id.
-    crate::routes::reserved_owner(&state, &user.0, &body.new_id)?;
-    let _lc = state.lifecycle.lock(&body.new_id).await;
-    state.store.check_replicated_name_available(&body.new_id)?;
-    let backend = state.backend.clone();
-    let manifest = blocking({
-        let backend = backend.clone();
-        let snapshot_id = snapshot_id.clone();
-        move || backend.snapshot_manifest(&snapshot_id)
-    })
-    .await?;
-    // Restore consumes sandbox quota like a create (it boots a new VM):
-    // reserve with the stored manifest's sizing before touching the backend.
-    let me = state.store.get_user(&user.0)?;
-    let _hold = state.quotas.reserve_sandbox(
-        &state.store,
-        &me,
-        &body.new_id,
-        manifest.compat.vcpus as i64,
-        manifest.compat.mem_mib as i64,
-    )?;
-    let _permit = state.ops.acquire().await;
-    let new_id = body.new_id.clone();
-    let snap_cpus = manifest.compat.vcpus as i64;
-    let snap_mem = manifest.compat.mem_mib as i64;
-    let info = blocking(move || backend.restore(&manifest, &new_id)).await?;
-    let now = unix_now();
-    // Sizing lives in the manifest (the compat gate already vetted it).
-    let sandbox_row = ahvm_store::Sandbox {
-        id: info.id.clone(),
-        owner_user_id: user.0.clone(),
-        name: info.name.clone(),
-        backend: ahvm_store::Backend::Krucible,
-        state: crate::state_str(&info.state),
-        thermal: crate::thermal_str(&info.thermal),
-        cpus: snap_cpus,
-        memory_mb: snap_mem,
-        ip: info.ip.clone(),
-        created_at: now,
-        updated_at: now,
-    };
-    if let Err(e) = state.store.create_sandbox(&sandbox_row) {
-        let backend = state.backend.clone();
-        let id = info.id.clone();
-        let _ = blocking(move || backend.destroy(&id)).await;
-        return Err(e.into());
+    if body.new_id.is_empty()
+        || body.new_id.len() > 64
+        || body.new_id.starts_with('.')
+        || body.new_id == "snapshots"
+        || !body
+            .new_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+    {
+        return Err(ApiError::Invalid("invalid sandbox name".into()));
     }
-    state.activity.touch(&info.id);
-    Ok((
-        StatusCode::CREATED,
-        Json(crate::SandboxView::new(&sandbox_row, &info)),
-    ))
+    owned_snapshot(&state, &user.0, &snapshot_id)?;
+    crate::routes::reserved_owner(&state, &user.0, &body.new_id)?;
+    let snapshot_lock = state
+        .lifecycle
+        .lock(&format!("snapshot:{snapshot_id}"))
+        .await;
+    crate::routes::unchanged_identity(&snapshot_lock)?;
+    let snapshot = owned_snapshot(&state, &user.0, &snapshot_id)?;
+    if snapshot.state != "ready" {
+        return Err(ApiError::Conflict("snapshot is not ready".into()));
+    }
+    let lifecycle = state.lifecycle.lock(&body.new_id).await;
+    crate::routes::unchanged_identity(&lifecycle)?;
+    crate::routes::identity_available(&state, &body.new_id)?;
+    state.store.check_replicated_name_available(&body.new_id)?;
+    let permit = state.ops.acquire().await;
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let (_snapshot_lock, _lifecycle, _permit) = (snapshot_lock, lifecycle, permit);
+        let manifest = state.backend.snapshot_manifest(&snapshot_id)?;
+        let me = state.store.get_user(&user.0)?;
+        let _hold = state.quotas.reserve_sandbox(
+            &state.store,
+            &me,
+            &body.new_id,
+            manifest.compat.vcpus as i64,
+            manifest.compat.mem_mib as i64,
+        )?;
+        let info = state.backend.restore(&manifest, &body.new_id)?;
+        let now = unix_now();
+        let row = ahvm_store::Sandbox {
+            id: info.id.clone(),
+            owner_user_id: user.0,
+            name: info.name.clone(),
+            backend: ahvm_store::Backend::Krucible,
+            state: crate::state_str(&info.state),
+            thermal: crate::thermal_str(&info.thermal),
+            cpus: manifest.compat.vcpus as i64,
+            memory_mb: manifest.compat.mem_mib as i64,
+            ip: info.ip.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+        if let Err(error) = state.store.create_sandbox(&row) {
+            let _ = state.backend.destroy(&info.id);
+            return Err(error.into());
+        }
+        state.activity.touch(&info.id);
+        Ok(crate::SandboxView::new(&row, &info))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("snapshot restore task: {e}")))??;
+    Ok((StatusCode::CREATED, Json(result)))
 }
+
+#[cfg(test)]
+#[path = "snapshot_tests.rs"]
+mod tests;

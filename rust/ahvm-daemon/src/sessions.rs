@@ -39,7 +39,7 @@ pub async fn create(
     }
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
-    let _flight = crate::routes::guest(&state, &id).await?;
+    let _flight = crate::routes::guest(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     let session_id = blocking(move || {
         let _flight = _flight;
@@ -55,7 +55,7 @@ pub async fn list(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<ahvm_engine::SessionInfo>>> {
     owned(&state, &user.0, &id).await?;
-    let _flight = crate::routes::guest_passive(&state, &id).await?;
+    let _flight = crate::routes::guest_passive(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     Ok(Json(
         blocking(move || {
@@ -85,7 +85,7 @@ pub async fn input(
     use base64::Engine;
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
-    let _flight = crate::routes::guest(&state, &id).await?;
+    let _flight = crate::routes::guest(&state, &user.0, &id).await?;
     let data = base64::engine::general_purpose::STANDARD
         .decode(&body.data_b64)
         .map_err(|e| ApiError::Invalid(format!("data_b64 is not base64: {e}")))?;
@@ -104,7 +104,7 @@ pub async fn kill(
     Path((id, sid)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     owned(&state, &user.0, &id).await?;
-    let _flight = crate::routes::guest_passive(&state, &id).await?;
+    let _flight = crate::routes::guest_passive(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     let sid_reply = sid.clone();
     blocking(move || {
@@ -121,7 +121,7 @@ pub async fn delete(
     Path((id, sid)): Path<(String, String)>,
 ) -> ApiResult<axum::http::StatusCode> {
     owned(&state, &user.0, &id).await?;
-    let _flight = crate::routes::guest_passive(&state, &id).await?;
+    let _flight = crate::routes::guest_passive(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     blocking(move || {
         let _flight = _flight;
@@ -144,7 +144,7 @@ pub async fn resize(
     Json(body): Json<ResizeBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     owned(&state, &user.0, &id).await?;
-    let _flight = crate::routes::guest(&state, &id).await?;
+    let _flight = crate::routes::guest(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     let sid_reply = sid.clone();
     blocking(move || {
@@ -189,7 +189,7 @@ pub async fn read(
     owned(&state, &user.0, &id).await?;
     state.activity.touch(&id);
     // Guard across the drain: budgets reach 30s, past any small idle window.
-    let _flight = crate::routes::guest_passive(&state, &id).await?;
+    let _flight = crate::routes::guest_passive(&state, &user.0, &id).await?;
     let budget = Duration::from_millis(q.budget_ms.clamp(100, 30_000));
     let backend = state.backend.clone();
     let stream_guard = state
@@ -224,7 +224,7 @@ pub async fn stream(
     ws: WebSocketUpgrade,
 ) -> ApiResult<axum::response::Response> {
     owned(&state, &user.0, &id).await?;
-    let activity_guard = crate::routes::guest(&state, &id).await?;
+    let activity_guard = crate::routes::guest(&state, &user.0, &id).await?;
     let stream_guard = state
         .ops
         .try_stream(&id)
@@ -234,8 +234,9 @@ pub async fn stream(
         let backend = state.backend.clone();
         let (id, sid) = (id.clone(), sid.clone());
         let pending_guard = stream_guard.clone();
+        let identity_guard = activity_guard.clone();
         let list = blocking(move || {
-            let _stream = pending_guard;
+            let (_stream, _identity) = (pending_guard, identity_guard);
             backend.session_list(&id)
         })
         .await?;
@@ -249,8 +250,16 @@ pub async fn stream(
         .on_upgrade(move |socket| async move {
             // A connected shell is user activity, including while its TUI is
             // waiting for an agent. Release admission only on disconnect.
-            let _activity = activity_guard;
-            bridge(state, id, sid, q.from_seq, socket, stream_guard).await;
+            bridge(
+                state,
+                id,
+                sid,
+                q.from_seq,
+                socket,
+                stream_guard,
+                activity_guard,
+            )
+            .await;
         }))
 }
 
@@ -261,6 +270,7 @@ async fn bridge(
     mut seq: u64,
     socket: WebSocket,
     stream_guard: std::sync::Arc<crate::scheduler::StreamGuard>,
+    identity: std::sync::Arc<crate::thermal::InFlight>,
 ) {
     use futures_util::StreamExt;
     let (mut tx, mut rx) = socket.split();
@@ -278,8 +288,9 @@ async fn bridge(
         let backend = state.backend.clone();
         let (read_id, read_sid) = (id.clone(), sid.clone());
         let read_guard = stream_guard.clone();
+        let read_identity = identity.clone();
         let mut output = tokio::task::spawn_blocking(move || {
-            let _stream = read_guard;
+            let (_stream, _identity) = (read_guard, read_identity);
             backend.session_poll(&read_id, &read_sid, seq, budget)
         });
         let chunk = loop {
@@ -326,8 +337,9 @@ async fn bridge(
                         let backend = state.backend.clone();
                         let (id, sid) = (id.clone(), sid.clone());
                         let input_guard = stream_guard.clone();
+                        let input_identity = identity.clone();
                         let result = tokio::task::spawn_blocking(move || {
-                            let _stream = input_guard;
+                            let (_stream, _identity) = (input_guard, input_identity);
                             // Admission lasts until the RPC actually completes,
                             // even if this WebSocket task is cancelled.
                             let _guard = guard;

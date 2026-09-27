@@ -29,7 +29,7 @@ pub async fn stream(
     let permit = CONNECTIONS
         .try_acquire()
         .map_err(|_| ApiError::Conflict("desktop connection limit reached".into()))?;
-    let guard = crate::routes::guest(&state, &id).await?;
+    let guard = crate::routes::guest(&state, &user.0, &id).await?;
     let transfer = state.ops.transfers.get(&id);
     let backend = state.backend.clone();
     let (stream, guard) = blocking(move || {

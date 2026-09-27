@@ -81,6 +81,7 @@ pub(crate) async fn create_operation(
     // Lifecycle serialization first (see scheduler::LifecycleLocks): the
     // whole create (quota → boot → record) is one critical section per id.
     let _lc = state.lifecycle.lock(&body.name).await;
+    crate::routes::identity_available(&state, &body.name)?;
     state.store.check_lifecycle_fence(&body.name, operation)?;
     // A retained disk owns the name even after its sandbox row is gone.
     crate::routes::reserved_owner(&state, &user.0, &body.name)?;
@@ -195,16 +196,24 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> ApiResult<Json<SandboxView>> {
     let _lc = state.lifecycle.lock(&id).await;
+    crate::routes::unchanged_identity(&_lc)?;
     let row = owned(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     let owned_id = id.clone();
-    let live = blocking(move || backend.status(&owned_id)).await?;
-    state.store.set_sandbox_state(
-        &id,
-        &state_str(&live.state),
-        &thermal_str(&live.thermal),
-        unix_now(),
-    )?;
+    let store = state.store.clone();
+    let live = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let _lifecycle = _lc;
+        let live = backend.status(&owned_id)?;
+        store.set_sandbox_state(
+            &owned_id,
+            &state_str(&live.state),
+            &thermal_str(&live.thermal),
+            unix_now(),
+        )?;
+        Ok(live)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("status task: {e}")))??;
     Ok(Json(SandboxView::new(&row, &live)))
 }
 
@@ -223,32 +232,46 @@ pub(crate) async fn destroy_operation(
     operation: Option<&str>,
 ) -> ApiResult<StatusCode> {
     let _lc = state.lifecycle.lock(&id).await;
+    crate::routes::unchanged_identity(&_lc)?;
     state.store.check_lifecycle_fence(&id, operation)?;
     owned(&state, &user.0, &id).await?;
     crate::runs::check_lifecycle(&state, &id)?;
-    if let Some(reservation) = state.store.replicated_for_sandbox(&user.0, &id)? {
-        state
-            .store
-            .delete_replicated_reservation(&user.0, &reservation.volume_id, unix_now())?;
-    }
+    let reservation = state.store.replicated_for_sandbox(&user.0, &id)?;
     let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
     let owned_id = id.clone();
-    match blocking(move || backend.destroy(&owned_id)).await {
-        // Backend already lost it (data dir wiped): converge by dropping
-        // the record rather than stranding it.
-        Ok(()) | Err(ApiError::NotFound(_)) => {}
-        Err(e) => return Err(e),
-    }
-    state.activity.remove(&id);
-    match state.store.delete_sandbox(&id) {
-        Ok(()) | Err(ahvm_store::Error::NotFound(_)) => {}
-        Err(e) => return Err(e.into()),
-    }
-    state.ops.transfers.forget(&id);
+    _lc.invalidate_identity();
+    let store = state.store.clone();
+    let activity = state.activity.clone();
+    let transfers = state.ops.transfers.clone();
+    blocking(move || -> Result<(), ahvm_engine::Error> {
+        let (_lifecycle, _permit) = (_lc, _permit);
+        // Persist deletion only after admission, inside the cancellation-safe
+        // worker; a canceled permit wait must leave the running disk usable.
+        if let Some(reservation) = reservation {
+            store
+                .delete_replicated_reservation(
+                    &reservation.owner_user_id,
+                    &reservation.volume_id,
+                    unix_now(),
+                )
+                .map_err(|e| ahvm_engine::Error::Control(e.to_string()))?;
+        }
+        match backend.destroy(&owned_id) {
+            Ok(()) | Err(ahvm_engine::Error::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        activity.remove(&owned_id);
+        match store.delete_sandbox(&owned_id) {
+            Ok(()) | Err(ahvm_store::Error::NotFound(_)) => {}
+            Err(e) => return Err(ahvm_engine::Error::Control(e.to_string())),
+        }
+        transfers.forget(&owned_id);
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
-
 pub async fn start(
     State(state): State<AppState>,
     Extension(user): Extension<UserId>,
@@ -265,13 +288,18 @@ pub(crate) async fn start_operation(
     network_bytes_per_sec: Option<u64>,
 ) -> ApiResult<Json<SandboxView>> {
     owned(&state, &user.0, &id).await?;
-    let me = state.store.get_user(&user.0)?;
-    // Keep admission through the backend transition and its store mirror.
-    // Stopped/failed boxes regain resource usage; running boxes are counted once.
-    let _hold = state.quotas.reserve_start(&state.store, &me, &id)?;
-    set_running(&state, &id, operation, move |backend, owned_id| {
-        backend.start_with_network_bandwidth(&owned_id, network_bytes_per_sec)
-    })
+    // Reserve running capacity inside the worker so HTTP cancellation cannot
+    // release its quota hold before the transition and store mirror complete.
+    set_running(
+        &state,
+        &user.0,
+        &id,
+        operation,
+        true,
+        move |backend, owned_id| {
+            backend.start_with_network_bandwidth(&owned_id, network_bytes_per_sec)
+        },
+    )
     .await
 }
 
@@ -290,16 +318,23 @@ pub(crate) async fn stop_operation(
     operation: Option<&str>,
 ) -> ApiResult<Json<SandboxView>> {
     owned(&state, &user.0, &id).await?;
-    set_running(&state, &id, operation, |backend, owned_id| {
-        backend.stop(&owned_id)
-    })
+    set_running(
+        &state,
+        &user.0,
+        &id,
+        operation,
+        false,
+        |backend, owned_id| backend.stop(&owned_id),
+    )
     .await
 }
 
 async fn set_running(
     state: &AppState,
+    user: &str,
     id: &str,
     operation: Option<&str>,
+    reserve_start: bool,
     op: impl FnOnce(std::sync::Arc<dyn ahvm_engine::Backend>, String) -> Result<(), ahvm_engine::Error>
         + Send
         + 'static,
@@ -307,29 +342,39 @@ async fn set_running(
     // Lifecycle first (see scheduler::LifecycleLocks), then the op permit:
     // same order as the sweep, so neither can deadlock the other.
     let _lc = state.lifecycle.lock(id).await;
+    crate::routes::unchanged_identity(&_lc)?;
+    owned(state, user, id).await?;
     state.store.check_lifecycle_fence(id, operation)?;
     crate::runs::check_lifecycle(state, id)?;
     let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
-    let a = id.to_string();
-    blocking(move || op(backend, a)).await?;
-    let backend = state.backend.clone();
-    let b = id.to_string();
-    let live = blocking(move || backend.status(&b)).await?;
-    state.store.set_sandbox_state(
-        &live.id,
-        &state_str(&live.state),
-        &thermal_str(&live.thermal),
-        unix_now(),
-    )?;
-    if live.state == ahvm_engine::State::Running {
-        // A (re)started VM is active now; without this a start followed by
-        // silence would be reaped on its stale pre-stop timestamp.
-        state.activity.touch(&live.id);
-    }
-    // Re-fetch the row for stable identity fields.
-    let row = state.store.get_sandbox(&live.id)?;
-    Ok(Json(SandboxView::new(&row, &live)))
+    let key = id.to_owned();
+    let user = user.to_owned();
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let (_lifecycle, _permit) = (_lc, _permit);
+        let _quota = if reserve_start {
+            let me = state.store.get_user(&user)?;
+            Some(state.quotas.reserve_start(&state.store, &me, &key)?)
+        } else {
+            None
+        };
+        op(backend.clone(), key.clone())?;
+        let live = backend.status(&key)?;
+        state.store.set_sandbox_state(
+            &key,
+            &state_str(&live.state),
+            &thermal_str(&live.thermal),
+            unix_now(),
+        )?;
+        if live.state == ahvm_engine::State::Running {
+            state.activity.touch(&key);
+        }
+        let row = state.store.get_sandbox(&key)?;
+        Ok(Json(SandboxView::new(&row, &live)))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("lifecycle task: {e}")))?
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,7 +395,7 @@ pub async fn exec(
     // Keep the activity guard inside the backend task, even if the HTTP
     // caller disconnects before the guest command finishes.
     state.activity.touch(&id);
-    let _flight = crate::routes::guest(&state, &id).await?;
+    let _flight = crate::routes::guest(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     let out = blocking(move || {
         let _flight = _flight;

@@ -45,6 +45,8 @@ struct TrackerInner {
     /// Completed managed VMs retain a shorter stop policy until removed.
     managed_cooldown: HashSet<String>,
     next_generation: u64,
+    /// Deleted identities with outstanding transports/RPCs. Reclaimed on final drop.
+    retired: HashSet<String>,
     /// Ids with a committed stop: no new guest work admits until the
     /// transition finishes (see [`ActivityTracker::begin_stop`]).
     stopping: HashSet<String>,
@@ -167,7 +169,9 @@ impl ActivityTracker {
     /// backdating in tests, or seeding from persisted timestamps later).
     pub fn touch_at(&self, id: &str, at: Instant) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.last.insert(id.to_string(), at);
+            if !inner.retired.contains(id) {
+                inner.last.insert(id.to_string(), at);
+            }
         }
     }
 
@@ -176,7 +180,11 @@ impl ActivityTracker {
     pub fn remove(&self, id: &str) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.last.remove(id);
-            inner.inflight.remove(id);
+            // Old guest work pins the deleted identity until it unwinds.
+            // Creation checks this hold before reusing the backend name.
+            if inner.inflight.contains_key(id) {
+                inner.retired.insert(id.to_owned());
+            }
             inner.managed_runs.remove(id);
             inner.managed_cooldown.remove(id);
             inner.stopping.remove(id);
@@ -193,7 +201,7 @@ impl ActivityTracker {
     /// completion counts as activity. Guards hold no locks across awaits.
     pub fn begin(&self, id: &str) -> Option<InFlight> {
         let mut inner = self.inner.lock().ok()?;
-        if inner.stopping.contains(id) {
+        if inner.stopping.contains(id) || inner.retired.contains(id) {
             return None;
         }
         inner.next_generation = inner.next_generation.wrapping_add(1);
@@ -300,7 +308,13 @@ impl Drop for InFlight {
             } else {
                 return;
             }
-            inner.last.insert(self.id.clone(), Instant::now());
+            if inner.retired.contains(&self.id) {
+                if !inner.inflight.contains_key(&self.id) {
+                    inner.retired.remove(&self.id);
+                }
+            } else {
+                inner.last.insert(self.id.clone(), Instant::now());
+            }
         }
     }
 }
@@ -698,7 +712,10 @@ mod tests {
         assert_eq!(st.backend.status(&id).unwrap().state, State::Paused);
         assert_eq!(sweep_once(&st, cfg, now).await.paused, 0);
         assert_eq!(st.backend.status(&id).unwrap().state, State::Paused);
-        let guest = crate::routes::guest(&st, &id).await.unwrap();
+        let guest =
+            crate::routes::guest(&st, &st.store.get_sandbox(&id).unwrap().owner_user_id, &id)
+                .await
+                .unwrap();
         assert_eq!(st.backend.status(&id).unwrap().state, State::Running);
         assert_eq!(st.store.get_sandbox(&id).unwrap().state, "running");
         drop(guest);
@@ -1342,14 +1359,16 @@ mod tests {
 }
 
 #[test]
-fn stale_stream_completion_does_not_touch_recreated_sandbox() {
+fn deleted_identity_cannot_be_recreated_until_old_stream_completion() {
     let tracker = ActivityTracker::new();
     let old = tracker.begin("id").unwrap();
     tracker.remove("id");
-    let new = tracker.begin("id").unwrap();
-    drop(old);
+    assert!(tracker.begin("id").is_none());
     assert!(tracker.in_flight("id"));
+    drop(old);
+    assert!(!tracker.in_flight("id"));
     assert!(tracker.last("id").is_none());
+    let new = tracker.begin("id").unwrap();
     drop(new);
     assert!(!tracker.in_flight("id"));
 }

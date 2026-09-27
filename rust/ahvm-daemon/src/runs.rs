@@ -88,6 +88,7 @@ pub async fn submit(
     admin(&user)?;
     validate(&id, &body)?;
     let lc = state.lifecycle.lock(&body.sandbox_id).await;
+    crate::routes::unchanged_identity(&lc)?;
     state.store.check_lifecycle_fence(&body.sandbox_id, None)?;
     let row = state.store.get_sandbox(&body.sandbox_id)?;
     let canonical = serde_json::to_string(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -106,6 +107,15 @@ pub async fn submit(
         }
         Err(ahvm_store::Error::NotFound(_)) => {}
         Err(e) => return Err(e.into()),
+    }
+    if state
+        .store
+        .replicated_for_sandbox(&row.owner_user_id, &body.sandbox_id)?
+        .is_some_and(|reservation| reservation.state == "deleting")
+    {
+        return Err(ApiError::Conflict(
+            "sandbox storage deletion is pending".into(),
+        ));
     }
     let check = state.clone();
     let sandbox = body.sandbox_id.clone();
