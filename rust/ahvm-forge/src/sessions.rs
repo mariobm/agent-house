@@ -21,7 +21,7 @@ pub const RING_CAP: usize = 256 << 10;
 /// Wire chunk size per SessionData frame.
 pub const CHUNK: usize = 32 << 10;
 /// Max number of sessions retained (including completed). Oldest completed
-/// is evicted first; if none, creation fails.
+/// is evicted first. Active sessions have no fixed numeric cap.
 const MAX_SESSIONS: usize = 100;
 
 static MANAGER: OnceLock<SessionManager> = OnceLock::new();
@@ -145,8 +145,6 @@ impl SessionManager {
                 }
                 if let Some((evict_id, _)) = oldest {
                     map.remove(&evict_id);
-                } else {
-                    return Err("too many active sessions".into());
                 }
             }
             map.insert(id.clone(), placeholder);

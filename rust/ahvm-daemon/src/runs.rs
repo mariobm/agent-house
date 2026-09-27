@@ -2,7 +2,7 @@
 //!
 //! Native sessions are not idempotent. Record launch intent before dispatch,
 //! recover by boot identity + exact argv, and NEVER replay an uncertain launch.
-//! Replicated disks are required: fencing an uncertain job must cold-stop its
+//! Legacy jobs require exclusive admission: fencing an uncertain job cold-stops its
 //! processes, not save them in a resumable RAM snapshot.
 
 use crate::{auth::UserId, state_str, thermal_str, unix_now, ApiError, ApiResult, AppState};
@@ -26,6 +26,9 @@ pub struct RunRequest {
     pub max_runtime_secs: u32,
     #[serde(default, skip_serializing_if = "is_false")]
     pub fence_on_failure: bool,
+    /// Guest aborts its own remote session on a cancellation file, then exits.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub session_isolated: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -48,6 +51,11 @@ fn validate(id: &str, body: &RunRequest) -> ApiResult<()> {
     {
         return Err(ApiError::Invalid(
             "run id must be 1..96 letters, digits, hyphens or underscores".into(),
+        ));
+    }
+    if body.session_isolated && body.fence_on_failure {
+        return Err(ApiError::Invalid(
+            "isolated runs cannot fence the VM".into(),
         ));
     }
     if body.argv.is_empty()
@@ -434,8 +442,16 @@ fn step(state: &AppState, id: &str, epoch: i64, launch: bool) -> ApiResult<bool>
             Err(e) => return uncertain(state, &run, &format!("result reconciliation: {e}")),
         };
         if let Some(code) = chunk.exit_code.filter(|_| chunk.eof) {
+            if request.session_isolated && code != 0 {
+                return uncertain(
+                    state,
+                    &run,
+                    "isolated controller exited without remote termination proof",
+                );
+            }
             let interrupted = run.phase == "cancelling"
-                || (request.fence_on_failure && unix_now() >= run.deadline_at);
+                || ((request.fence_on_failure || request.session_isolated)
+                    && unix_now() >= run.deadline_at);
             let phase = if interrupted {
                 "interrupted"
             } else if code == 0 {
@@ -468,8 +484,8 @@ fn step(state: &AppState, id: &str, epoch: i64, launch: bool) -> ApiResult<bool>
         return uncertain(state, &run, "session exited without a confirmed result");
     }
     if unix_now() >= run.deadline_at || run.phase == "cancelling" {
-        // A cold stop is the final fence if kill/result acknowledgement was
-        // lost. It retains the replicated disk and never snapshots job RAM.
+        // Legacy jobs cold-stop if kill acknowledgement is lost. Isolated jobs
+        // use cooperative cancellation and retain their hold until guest proof.
         if run.phase != "cancelling" {
             run = update(
                 state,
@@ -482,7 +498,15 @@ fn step(state: &AppState, id: &str, epoch: i64, launch: bool) -> ApiResult<bool>
                 false,
             )?;
         }
-        let _ = state.backend.session_kill(&run.sandbox_id, &session.id);
+        if request.session_isolated {
+            state.backend.file_write(
+                &run.sandbox_id,
+                &format!("/run/ahvm-managed-cancel/{}", run.id),
+                b"cancel\n",
+            )?;
+        } else {
+            let _ = state.backend.session_kill(&run.sandbox_id, &session.id);
+        }
         if unix_now().saturating_sub(run.updated_at) >= RECONCILE_SECS {
             return fence(state, &run, "cancellation could not be confirmed");
         }
@@ -564,6 +588,13 @@ fn cold_stop(state: &AppState, run: &ManagedRun) -> ApiResult<()> {
 }
 
 fn fence(state: &AppState, run: &ManagedRun, detail: &str) -> ApiResult<bool> {
+    let request: RunRequest = serde_json::from_str(&run.request_json)
+        .map_err(|e| ApiError::Internal(format!("run request: {e}")))?;
+    if request.session_isolated {
+        // A detached shared-server job may still work. Keep its durable hold
+        // and reconcile; never stop siblings or infer remote termination.
+        return Ok(false);
+    }
     cold_stop(state, run)?;
     update(
         state,

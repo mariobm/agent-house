@@ -7,7 +7,6 @@ use crate::{Error, Result, Store};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-const MAX_ACTIVE: i64 = 64;
 const MAX_RETAINED: i64 = 4096;
 const COLUMNS: &str = "id,sandbox_id,owner_id,request_json,phase,epoch,session_id,boot_id,\
                       created_at,updated_at,deadline_at,finished_at,exit_code,detail";
@@ -64,7 +63,8 @@ fn get(conn: &Connection, id: &str) -> Result<ManagedRun> {
 }
 
 impl Store {
-    /// Atomically admit one run per sandbox, at most 64 active and 4096 total.
+    /// Atomically admit independent isolated runs, retaining at most 4096 receipts.
+    /// Legacy jobs remain exclusive because their recovery may stop the VM.
     /// Exact retries return the original receipt even when terminal or capacity
     /// is exhausted; timestamps/deadline on a retry cannot rewrite the record.
     /// `request_json` equality is byte-for-byte, not semantic JSON equivalence.
@@ -105,18 +105,18 @@ impl Store {
             if retained >= MAX_RETAINED {
                 return Err(Error::Conflict("managed run receipt capacity exhausted".into()));
             }
-            let active: i64 = conn.query_row(
-                "SELECT count(*) FROM managed_runs WHERE finished_at IS NULL",
-                [],
-                |r| r.get(0),
+            let isolated = |json: &str| -> bool {
+                serde_json::from_str::<serde_json::Value>(json).ok().is_some_and(|v|
+                    v["session_isolated"] == true && v["fence_on_failure"] != true)
+            };
+            let mut stmt = conn.prepare(
+                "SELECT request_json FROM managed_runs WHERE sandbox_id=?1 AND finished_at IS NULL"
             )?;
-            let busy: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM managed_runs WHERE sandbox_id=?1 AND finished_at IS NULL)",
-                [sandbox_id],
-                |r| r.get(0),
-            )?;
-            if active >= MAX_ACTIVE || busy {
-                return Err(Error::Conflict("managed run already active or queue full".into()));
+            let requests = stmt.query_map([sandbox_id], |r| r.get::<_, String>(0))?;
+            for request in requests {
+                if !isolated(request_json) || !isolated(&request?) {
+                    return Err(Error::Conflict("exclusive managed run already active".into()));
+                }
             }
             conn.execute(
                 "INSERT INTO managed_runs(id,sandbox_id,owner_id,request_json,phase,epoch,created_at,updated_at,deadline_at)

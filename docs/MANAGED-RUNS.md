@@ -56,7 +56,8 @@ to stop. Ordinary VMs keep their separate `AHVM_IDLE_SECS` policy.
 
 ## Node-only API
 
-The node advertises `managed-runs-v1` and `managed-runs-fenced-v1` in
+The node advertises `managed-runs-v1`, `managed-runs-fenced-v1`, and
+`managed-runs-session-isolated-v1` in
 `/v1/healthz`. All three routes
 require the node `admin` identity:
 
@@ -82,9 +83,9 @@ resident-paused. Local RAM-snapshot storage is refused because recovery fencing
 must terminate the old execution rather than save it for later resumption.
 Commands execute with Forge's normal identity; use `ahvm-dev` for the Ubuntu
 image's unprivileged developer environment. Arguments are forwarded literally.
-Do not submit a permanent `opencode serve` process as a finite run: the later
-adapter must wait for the native **turn** outcome and then terminate its finite
-controller. Daemonizing work outside that controller is outside this contract.
+Do not submit a permanent `opencode serve` process as a finite run. A finite
+controller must wait for the native **turn** outcome and confirm that its tools
+have stopped before exiting. Shared servers require the isolated contract below.
 
 Finite agent controllers should opt into `fence_on_failure: true`. A nonzero
 controller exit, cancellation, or runtime deadline requires a verified cold stop
@@ -98,6 +99,29 @@ zero exit before the deadline keeps the VM running with the normal cooldown.
 The optional flag defaults to false; omitted and explicit false preserve the
 legacy canonical receipt. Changing the flag for an existing run ID conflicts.
 
+### Concurrent isolated controllers
+
+Use `session_isolated: true` with `fence_on_failure: false` only after checking
+`managed-runs-session-isolated-v1`. This opts into a cooperative guest protocol;
+legacy commands and VM-fencing credential jobs cannot overlap isolated runs.
+Each run owns a separate native session and activity hold. The VM remains awake
+until every run has finished, including after daemon recovery.
+
+Cancellation and runtime expiry atomically write ASCII `cancel\n` to
+`/run/ahvm-managed-cancel/<run_id>` using Forge file-write. Run IDs are validated
+and are never shell-interpolated. The guest bootstrap must create this directory
+root-owned with mode 0755; an unprivileged controller can poll file existence.
+The controller must abort only its own shared-server session and verify native
+idle/tool termination before exiting zero. The marker is scoped to the guest
+boot; each run ID is immutable and must not be reused.
+
+Only EOF plus exit code zero acknowledges remote termination. Nonzero exits,
+lost sessions and unconfirmed cancellation remain unfinished with an activity
+hold; they never cold-stop sibling conversations. Recovery never replays a
+launch. A verified VM stop or changed guest boot identity interrupts its old
+runs. Operators must resolve uncertain guest work before changing VM lifecycle.
+The isolated flag defaults false and cannot be combined with VM failure fencing.
+
 The caller must explicitly provide a runtime budget of 1–86400 seconds. This is
 separate from idle policy: exceeding it requests cancellation even if work is
 active. Response fields include `phase`, `epoch`, `session_id`, `boot_id`,
@@ -107,8 +131,9 @@ itself a terminal result. Native stdout remains in Forge's bounded scrollback;
 these receipts are **not** a durable transcript or chat-event journal.
 
 A run ID binds the VM, owner and canonical command/budget. Identical retries
-return the same receipt; changed payloads conflict. There is one unfinished run
-per VM, at most 64 on a node, and at most 4096 retained receipts. Exhaustion
+return the same receipt; changed payloads conflict. Legacy runs remain exclusive
+per VM; isolated runs may share a VM with other isolated runs. There is no fixed
+active-run cap. At most 4096 receipts are retained as a storage safety bound. Exhaustion
 refuses new work rather than evicting idempotency records. Receipts currently
 live until VM deletion; production retention/archival belongs with the backend
 run journal. Do not reuse run IDs or VM identities across deletion.

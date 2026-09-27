@@ -16,6 +16,7 @@ struct Fake {
     ignore_stop: AtomicBool,
     launches: AtomicUsize,
     stops: AtomicUsize,
+    session_running: std::sync::Mutex<std::collections::HashMap<String, bool>>,
 }
 macro_rules! delegate {
     ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $out:ty;)*) => {$ (
@@ -70,7 +71,13 @@ impl Backend for Fake {
     fn session_list(&self, id: &str) -> ahvm_engine::Result<Vec<SessionInfo>> {
         let mut sessions = self.inner.session_list(id)?;
         for s in &mut sessions {
-            s.running = self.running.load(Ordering::SeqCst);
+            s.running = self
+                .session_running
+                .lock()
+                .unwrap()
+                .get(&s.id)
+                .copied()
+                .unwrap_or_else(|| self.running.load(Ordering::SeqCst));
         }
         Ok(sessions)
     }
@@ -102,6 +109,7 @@ fn setup() -> (AppState, Arc<Fake>) {
         ignore_stop: AtomicBool::new(false),
         launches: AtomicUsize::new(0),
         stops: AtomicUsize::new(0),
+        session_running: Default::default(),
     });
     fake.create(&SandboxSpec {
         name: "vm".into(),
@@ -156,6 +164,7 @@ fn request() -> RunRequest {
         argv: vec!["/bin/sleep".into(), "120".into()],
         max_runtime_secs: 3600,
         fence_on_failure: false,
+        session_isolated: false,
     }
 }
 fn admit(state: &AppState) -> ManagedRun {
@@ -617,4 +626,127 @@ async fn deleting_storage_refuses_new_managed_run_and_persisted_run_blocks_reuse
         Err(ApiError::Conflict(_))
     ));
     assert!(check_lifecycle(&state, "vm").is_err());
+}
+
+fn admit_isolated(state: &AppState, id: &str) -> ManagedRun {
+    let mut body = request();
+    body.session_isolated = true;
+    let now = unix_now();
+    let (run, _) = state
+        .store
+        .admit_managed_run(
+            id,
+            "vm",
+            "admin",
+            &serde_json::to_string(&body).unwrap(),
+            now,
+            now + 3600,
+        )
+        .unwrap();
+    assert!(state.activity.set_managed_run("vm", id, run.epoch));
+    run
+}
+
+#[tokio::test]
+async fn concurrent_cancel_waits_for_receipt_and_keeps_sibling_awake() {
+    let (s, fake) = setup();
+    let runs: Vec<_> = (0..3)
+        .map(|i| admit_isolated(&s, &format!("chat{i}")))
+        .collect();
+    for run in &runs {
+        assert!(!step(&s, &run.id, run.epoch, true).unwrap());
+    }
+    let cancelled = s.store.get_managed_run("chat0").unwrap();
+    s.store
+        .update_managed_run(
+            &cancelled.id,
+            cancelled.epoch,
+            "cancelling",
+            None,
+            None,
+            None,
+            Some("cancellation requested"),
+            unix_now() - 120,
+            false,
+        )
+        .unwrap();
+    assert!(!step(&s, "chat0", 1, false).unwrap());
+    assert!(s
+        .store
+        .get_managed_run("chat0")
+        .unwrap()
+        .finished_at
+        .is_none());
+    assert_eq!(fake.stops.load(Ordering::SeqCst), 0);
+    let marker = fake
+        .file_read("vm", "/run/ahvm-managed-cancel/chat0", 0, 64)
+        .unwrap();
+    assert_eq!(marker.data, b"cancel\n");
+    fake.session_running
+        .lock()
+        .unwrap()
+        .insert(cancelled.session_id.unwrap(), false);
+    assert!(step(&s, "chat0", 1, false).unwrap());
+    assert_eq!(
+        s.store.get_managed_run("chat0").unwrap().phase,
+        "interrupted"
+    );
+    assert!(s.activity.has_managed_run("vm"));
+    assert!(!step(&s, "chat1", 1, false).unwrap());
+    s.activity
+        .touch_at("vm", Instant::now() - Duration::from_secs(7200));
+    let sweep = sweep_once(&s, ThermalConfig::default(), Instant::now()).await;
+    assert_eq!(sweep.stopped + sweep.paused, 0);
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 3);
+    assert_eq!(fake.stops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn isolated_nonzero_receipt_and_missing_session_never_fence_siblings() {
+    let (s, fake) = setup();
+    let a = admit_isolated(&s, "a");
+    let b = admit_isolated(&s, "b");
+    assert!(!step(&s, "a", a.epoch, true).unwrap());
+    assert!(!step(&s, "b", b.epoch, true).unwrap());
+    let a = s.store.get_managed_run("a").unwrap();
+    fake.session_running
+        .lock()
+        .unwrap()
+        .insert(a.session_id.clone().unwrap(), false);
+    fake.exit_code.store(137, Ordering::SeqCst);
+    assert!(!step(&s, "a", a.epoch, false).unwrap());
+    let uncertain = s.store.get_managed_run("a").unwrap();
+    assert_eq!(uncertain.phase, "uncertain");
+    s.store
+        .update_managed_run(
+            "a",
+            a.epoch,
+            "uncertain",
+            None,
+            None,
+            None,
+            None,
+            unix_now() - 120,
+            false,
+        )
+        .unwrap();
+    assert!(!step(&s, "a", a.epoch, false).unwrap());
+    fake.session_delete("vm", a.session_id.as_deref().unwrap())
+        .unwrap();
+    assert!(!step(&s, "a", a.epoch, false).unwrap());
+    assert_eq!(fake.stops.load(Ordering::SeqCst), 0);
+    assert!(s.activity.has_managed_run("vm"));
+    let recovered = s.store.claim_managed_run("a", unix_now()).unwrap();
+    s.activity.set_managed_run("vm", "a", recovered.epoch);
+    fake.file_write(
+        "vm",
+        "/proc/sys/kernel/random/boot_id",
+        b"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n",
+    )
+    .unwrap();
+    assert!(step(&s, "a", recovered.epoch, false).unwrap());
+    assert!(s.activity.has_managed_run("vm"));
+    assert!(step(&s, "b", b.epoch, false).unwrap());
+    assert!(!s.activity.has_managed_run("vm"));
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
 }
