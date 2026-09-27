@@ -16,6 +16,7 @@ struct Fake {
     ignore_stop: AtomicBool,
     launches: AtomicUsize,
     stops: AtomicUsize,
+    starts: AtomicUsize,
     receipt_pinning: AtomicBool,
     boot_reads: AtomicUsize,
     session_lists: AtomicUsize,
@@ -33,7 +34,6 @@ impl Backend for Fake {
     delegate! {
         fn create(spec:&SandboxSpec)->ahvm_engine::Result<SandboxInfo>;
         fn destroy(id:&str)->ahvm_engine::Result<()>;
-        fn start(id:&str)->ahvm_engine::Result<()>;
         fn resume_paused(id:&str)->ahvm_engine::Result<Option<SandboxInfo>>;
         fn supports_pause(id:&str)->bool;
         fn pause(id:&str)->ahvm_engine::Result<()>;
@@ -66,6 +66,10 @@ impl Backend for Fake {
         let mut v = self.inner.status(id)?;
         v.storage.mode = StorageMode::Replicated;
         Ok(v)
+    }
+    fn start(&self, id: &str) -> ahvm_engine::Result<()> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        self.inner.start(id)
     }
     fn stop(&self, id: &str) -> ahvm_engine::Result<()> {
         self.stops.fetch_add(1, Ordering::SeqCst);
@@ -127,6 +131,7 @@ fn setup() -> (AppState, Arc<Fake>) {
         ignore_stop: AtomicBool::new(false),
         launches: AtomicUsize::new(0),
         stops: AtomicUsize::new(0),
+        starts: AtomicUsize::new(0),
         receipt_pinning: AtomicBool::new(true),
         boot_reads: AtomicUsize::new(0),
         session_lists: AtomicUsize::new(0),
@@ -906,4 +911,80 @@ fn recovery_batches_terminal_receipt_cleanup_once_per_vm_and_checks_identity() {
     let remaining = fake.session_list("vm").unwrap();
     assert_eq!(remaining.len(), 3); // running, different argv, and old boot
     assert_eq!(fake.launches.load(Ordering::SeqCst), 72);
+}
+
+#[tokio::test]
+async fn running_plain_wake_preserves_active_isolated_runs_and_lifecycle_guards() {
+    let (s, fake) = setup();
+    let a = admit_isolated(&s, "a");
+    assert!(!step(&s, "a", a.epoch, true).unwrap());
+    let before = s.store.get_managed_run("a").unwrap();
+    let started = crate::sandboxes::start(
+        State(s.clone()),
+        Extension(UserId("admin".into())),
+        Path("vm".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(started.0.state, "running");
+    assert_eq!(fake.starts.load(Ordering::SeqCst), 0);
+    let after = s.store.get_managed_run("a").unwrap();
+    assert_eq!(after.session_id, before.session_id);
+    assert_eq!(after.boot_id, before.boot_id);
+    assert!(after.finished_at.is_none());
+    let b = admit_isolated(&s, "b");
+    assert!(!step(&s, "b", b.epoch, true).unwrap());
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+    assert!(matches!(
+        crate::sandboxes::stop(
+            State(s.clone()),
+            Extension(UserId("admin".into())),
+            Path("vm".into()),
+        )
+        .await,
+        Err(ApiError::Conflict(_))
+    ));
+    assert!(matches!(
+        crate::sandboxes::start_operation(
+            State(s.clone()),
+            Extension(UserId("admin".into())),
+            Path("vm".into()),
+            None,
+            Some(65536),
+        )
+        .await,
+        Err(ApiError::Conflict(_))
+    ));
+    assert!(matches!(
+        crate::sandboxes::destroy(
+            State(s.clone()),
+            Extension(UserId("admin".into())),
+            Path("vm".into()),
+        )
+        .await,
+        Err(ApiError::Conflict(_))
+    ));
+    fake.inner.stop("vm").unwrap();
+    assert!(matches!(
+        crate::sandboxes::start(
+            State(s.clone()),
+            Extension(UserId("admin".into())),
+            Path("vm".into()),
+        )
+        .await,
+        Err(ApiError::Conflict(_))
+    ));
+    fake.inner.start("vm").unwrap();
+    fake.pause("vm").unwrap();
+    assert!(matches!(
+        crate::sandboxes::start(
+            State(s.clone()),
+            Extension(UserId("admin".into())),
+            Path("vm".into()),
+        )
+        .await,
+        Err(ApiError::Conflict(_))
+    ));
+    assert_eq!(fake.stops.load(Ordering::SeqCst), 0);
+    assert!(s.activity.has_managed_run("vm"));
 }
