@@ -41,7 +41,7 @@ struct TrackerInner {
     last: HashMap<String, Instant>,
     inflight: HashMap<String, (u64, usize)>,
     /// Independent of controller task lifetime; durable run recovery owns clearing it.
-    managed_runs: HashMap<String, (String, i64)>,
+    managed_runs: HashMap<String, HashMap<String, i64>>,
     /// Completed managed VMs retain a shorter stop policy until removed.
     managed_cooldown: HashSet<String>,
     next_generation: u64,
@@ -89,7 +89,9 @@ impl ActivityTracker {
         }
         inner
             .managed_runs
-            .insert(id.to_string(), (run_id.to_string(), epoch));
+            .entry(id.to_string())
+            .or_default()
+            .insert(run_id.to_string(), epoch);
         inner.last.insert(id.to_string(), Instant::now());
         true
     }
@@ -109,9 +111,14 @@ impl ActivityTracker {
         if !inner
             .managed_runs
             .get(id)
-            .is_some_and(|(run, generation)| run == run_id && *generation == epoch)
+            .is_some_and(|runs| runs.get(run_id) == Some(&epoch))
         {
             return false;
+        }
+        let runs = inner.managed_runs.get_mut(id).unwrap();
+        runs.remove(run_id);
+        if !runs.is_empty() {
+            return true;
         }
         inner.managed_runs.remove(id);
         Self::cooldown_at(&mut inner, id, finished_at);
@@ -559,6 +566,8 @@ mod tests {
         let t = ActivityTracker::new();
         assert!(t.set_managed_run("vm", "old", 1));
         assert!(t.set_managed_run("vm", "new", 2));
+        assert!(t.finish_managed_run("vm", "old", 1, Instant::now()));
+        assert!(t.has_managed_run("vm"));
         assert!(!t.finish_managed_run("vm", "old", 1, Instant::now()));
         assert!(!t.finish_managed_run("vm", "new", 1, Instant::now()));
         assert!(!t.restore_managed_cooldown("vm", Instant::now()));

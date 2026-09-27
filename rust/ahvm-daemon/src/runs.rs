@@ -2,7 +2,7 @@
 //!
 //! Native sessions are not idempotent. Record launch intent before dispatch,
 //! recover by boot identity + exact argv, and NEVER replay an uncertain launch.
-//! Replicated disks are required: fencing an uncertain job must cold-stop its
+//! Legacy jobs require exclusive admission: fencing an uncertain job cold-stops its
 //! processes, not save them in a resumable RAM snapshot.
 
 use crate::{auth::UserId, state_str, thermal_str, unix_now, ApiError, ApiResult, AppState};
@@ -26,6 +26,9 @@ pub struct RunRequest {
     pub max_runtime_secs: u32,
     #[serde(default, skip_serializing_if = "is_false")]
     pub fence_on_failure: bool,
+    /// Guest aborts its own remote session on a cancellation file, then exits.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub session_isolated: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -48,6 +51,11 @@ fn validate(id: &str, body: &RunRequest) -> ApiResult<()> {
     {
         return Err(ApiError::Invalid(
             "run id must be 1..96 letters, digits, hyphens or underscores".into(),
+        ));
+    }
+    if body.session_isolated && body.fence_on_failure {
+        return Err(ApiError::Invalid(
+            "isolated runs cannot fence the VM".into(),
         ));
     }
     if body.argv.is_empty()
@@ -73,7 +81,15 @@ fn command(run: &ManagedRun) -> ApiResult<Vec<String>> {
         "/bin/sh".into(),
         "-c".into(),
         "exec \"$@\"".into(),
-        format!("ahvm-run:{}", run.id),
+        format!(
+            "{}:{}",
+            if body.session_isolated {
+                "ahvm-run-isolated"
+            } else {
+                "ahvm-run"
+            },
+            run.id
+        ),
     ];
     argv.extend(body.argv);
     Ok(argv)
@@ -120,9 +136,15 @@ pub async fn submit(
     let check = state.clone();
     let sandbox = body.sandbox_id.clone();
     // Lifecycle ownership stays in the blocking task if the HTTP caller leaves.
-    let (lc, live) = tokio::task::spawn_blocking(move || {
+    let isolated = body.session_isolated;
+    let (lc, live, pinning) = tokio::task::spawn_blocking(move || {
         let live = check.backend.status(&sandbox);
-        (lc, live)
+        let pinning = if isolated {
+            check.backend.session_receipt_pinning(&sandbox)
+        } else {
+            Ok(true)
+        };
+        (lc, live, pinning)
     })
     .await
     .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -132,6 +154,12 @@ pub async fn submit(
     {
         return Err(ApiError::Conflict(
             "managed runs require an awake replicated VM; wake it before submitting".into(),
+        ));
+    }
+    if !pinning? {
+        return Err(ApiError::Conflict(
+            "isolated runs require updated guest Forge receipt pinning; cold boot an updated image"
+                .into(),
         ));
     }
     let now = unix_now();
@@ -190,6 +218,9 @@ pub async fn cancel(
 /// Call once at startup, before accepting HTTP or starting the idle sweeper.
 /// The engine's exclusive directory lock prevents two daemon controllers.
 pub fn recover(state: &AppState) -> ApiResult<()> {
+    // Completion commits before guest receipt release. Recover the crash window
+    // without replaying, touching unrelated sessions, or requiring a VM wake.
+    release_recovered_guest_receipts(state, state.store.list_finished_managed_runs()?);
     for (id, _) in state.store.list_managed_run_cooldowns()? {
         // Foreground activity is not durable: allow a fresh configured idle grace
         // on restart instead of stopping a previously attached shell early.
@@ -244,6 +275,7 @@ fn update(
         terminal,
     )?;
     if terminal {
+        release_guest_receipt(state, &saved);
         // SQLite commit happens BEFORE dropping the hold. A crash in between
         // is recovered as a completed job, never a lost active-job lease.
         state
@@ -251,6 +283,77 @@ fn update(
             .finish_managed_run(&run.sandbox_id, &run.id, run.epoch, Instant::now());
     }
     Ok(saved)
+}
+
+fn release_recovered_guest_receipts(state: &AppState, runs: Vec<ManagedRun>) {
+    let mut by_vm: std::collections::HashMap<String, Vec<ManagedRun>> = Default::default();
+    for run in runs {
+        if run.finished_at.is_some()
+            && run.session_id.is_some()
+            && run.boot_id.is_some()
+            && serde_json::from_str::<RunRequest>(&run.request_json)
+                .is_ok_and(|request| request.session_isolated)
+        {
+            by_vm.entry(run.sandbox_id.clone()).or_default().push(run);
+        }
+    }
+    for (sandbox, runs) in by_vm {
+        let Ok(boot) = boot_id(state, &sandbox) else {
+            continue;
+        };
+        // History from old boots cannot identify a current guest session.
+        if !runs.iter().any(|run| run.boot_id.as_deref() == Some(&boot)) {
+            continue;
+        }
+        let Ok(sessions) = state.backend.session_list(&sandbox) else {
+            continue;
+        };
+        let sessions: std::collections::HashMap<_, _> = sessions
+            .iter()
+            .map(|session| (session.id.as_str(), session))
+            .collect();
+        for run in runs {
+            if run.boot_id.as_deref() != Some(&boot) {
+                continue;
+            }
+            let sid = run.session_id.as_deref().unwrap();
+            let Some(session) = sessions.get(sid) else {
+                continue;
+            };
+            if !session.running && command(&run).is_ok_and(|argv| argv == session.argv) {
+                let _ = state.backend.session_delete(&sandbox, sid);
+            }
+        }
+    }
+}
+
+fn release_guest_receipt(state: &AppState, run: &ManagedRun) {
+    let Ok(request) = serde_json::from_str::<RunRequest>(&run.request_json) else {
+        return;
+    };
+    if !request.session_isolated || run.finished_at.is_none() {
+        return;
+    }
+    let (Some(sid), Some(boot)) = (run.session_id.as_deref(), run.boot_id.as_deref()) else {
+        return;
+    };
+    if boot_id(state, &run.sandbox_id).ok().as_deref() != Some(boot) {
+        return;
+    }
+    let Ok(argv) = command(run) else {
+        return;
+    };
+    let Ok(sessions) = state.backend.session_list(&run.sandbox_id) else {
+        return;
+    };
+    if sessions
+        .iter()
+        .any(|s| s.id == sid && s.argv == argv && !s.running)
+    {
+        // The durable node receipt now owns idempotency and completion proof.
+        // A failed cleanup is retried on daemon recovery, never re-dispatched.
+        let _ = state.backend.session_delete(&run.sandbox_id, sid);
+    }
 }
 
 fn boot_id(state: &AppState, sandbox: &str) -> ApiResult<String> {
@@ -434,8 +537,16 @@ fn step(state: &AppState, id: &str, epoch: i64, launch: bool) -> ApiResult<bool>
             Err(e) => return uncertain(state, &run, &format!("result reconciliation: {e}")),
         };
         if let Some(code) = chunk.exit_code.filter(|_| chunk.eof) {
+            if request.session_isolated && code != 0 {
+                return uncertain(
+                    state,
+                    &run,
+                    "isolated controller exited without remote termination proof",
+                );
+            }
             let interrupted = run.phase == "cancelling"
-                || (request.fence_on_failure && unix_now() >= run.deadline_at);
+                || ((request.fence_on_failure || request.session_isolated)
+                    && unix_now() >= run.deadline_at);
             let phase = if interrupted {
                 "interrupted"
             } else if code == 0 {
@@ -468,8 +579,8 @@ fn step(state: &AppState, id: &str, epoch: i64, launch: bool) -> ApiResult<bool>
         return uncertain(state, &run, "session exited without a confirmed result");
     }
     if unix_now() >= run.deadline_at || run.phase == "cancelling" {
-        // A cold stop is the final fence if kill/result acknowledgement was
-        // lost. It retains the replicated disk and never snapshots job RAM.
+        // Legacy jobs cold-stop if kill acknowledgement is lost. Isolated jobs
+        // use cooperative cancellation and retain their hold until guest proof.
         if run.phase != "cancelling" {
             run = update(
                 state,
@@ -482,7 +593,15 @@ fn step(state: &AppState, id: &str, epoch: i64, launch: bool) -> ApiResult<bool>
                 false,
             )?;
         }
-        let _ = state.backend.session_kill(&run.sandbox_id, &session.id);
+        if request.session_isolated {
+            state.backend.file_write(
+                &run.sandbox_id,
+                &format!("/run/ahvm-managed-cancel/{}", run.id),
+                b"cancel\n",
+            )?;
+        } else {
+            let _ = state.backend.session_kill(&run.sandbox_id, &session.id);
+        }
         if unix_now().saturating_sub(run.updated_at) >= RECONCILE_SECS {
             return fence(state, &run, "cancellation could not be confirmed");
         }
@@ -564,6 +683,13 @@ fn cold_stop(state: &AppState, run: &ManagedRun) -> ApiResult<()> {
 }
 
 fn fence(state: &AppState, run: &ManagedRun, detail: &str) -> ApiResult<bool> {
+    let request: RunRequest = serde_json::from_str(&run.request_json)
+        .map_err(|e| ApiError::Internal(format!("run request: {e}")))?;
+    if request.session_isolated {
+        // A detached shared-server job may still work. Keep its durable hold
+        // and reconcile; never stop siblings or infer remote termination.
+        return Ok(false);
+    }
     cold_stop(state, run)?;
     update(
         state,

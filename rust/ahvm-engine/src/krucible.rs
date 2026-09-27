@@ -2250,6 +2250,11 @@ impl Backend for KrucibleBackend {
         Ok(())
     }
 
+    fn session_receipt_pinning(&self, id: &str) -> Result<bool> {
+        let v = self.session_rpc(id, serde_json::json!({ "op": "list" }), "listed")?;
+        Ok(v["isolated_receipt_pinning"].as_bool() == Some(true))
+    }
+
     fn session_list(&self, id: &str) -> Result<Vec<SessionInfo>> {
         let v = self.session_rpc(id, serde_json::json!({ "op": "list" }), "listed")?;
         let sessions = v["sessions"]

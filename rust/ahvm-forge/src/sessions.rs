@@ -21,7 +21,7 @@ pub const RING_CAP: usize = 256 << 10;
 /// Wire chunk size per SessionData frame.
 pub const CHUNK: usize = 32 << 10;
 /// Max number of sessions retained (including completed). Oldest completed
-/// is evicted first; if none, creation fails.
+/// is evicted first. Active sessions have no fixed numeric cap.
 const MAX_SESSIONS: usize = 100;
 
 static MANAGER: OnceLock<SessionManager> = OnceLock::new();
@@ -132,7 +132,16 @@ impl SessionManager {
                 let mut oldest: Option<(String, i64)> = None;
                 for (oid, s) in map.iter() {
                     let lc = s.lifecycle.lock().unwrap();
-                    if lc.exit.is_some() {
+                    // Managed isolated completion is a correctness receipt,
+                    // pinned until the daemon durably records and deletes it.
+                    let isolated = s
+                        .argv
+                        .get(3)
+                        .is_some_and(|a| a.starts_with("ahvm-run-isolated:"))
+                        && s.argv.first().is_some_and(|a| a == "/bin/sh")
+                        && s.argv.get(1).is_some_and(|a| a == "-c")
+                        && s.argv.get(2).is_some_and(|a| a == "exec \"$@\"");
+                    if lc.exit.is_some() && !isolated {
                         let started = s.started_at;
                         let is_older = match &oldest {
                             None => true,
@@ -145,8 +154,6 @@ impl SessionManager {
                 }
                 if let Some((evict_id, _)) = oldest {
                     map.remove(&evict_id);
-                } else {
-                    return Err("too many active sessions".into());
                 }
             }
             map.insert(id.clone(), placeholder);
@@ -849,5 +856,42 @@ mod tests {
         let (chunk, next, _, _) = s.read_from(0);
         assert_eq!(chunk, b"READY FIRST SECOND");
         assert_eq!(next, 18);
+    }
+    #[test]
+    fn isolated_exit_receipt_survives_normal_scrollback_eviction_until_ack() {
+        let manager = SessionManager::default();
+        for i in 0..MAX_SESSIONS {
+            let (mut session, _) = test_session();
+            let item = Arc::get_mut(&mut session).unwrap();
+            item.id = format!("old-{i:03}");
+            if i == 0 {
+                item.argv = vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "exec \"$@\"".into(),
+                    "ahvm-run-isolated:run".into(),
+                    "/bin/true".into(),
+                ];
+            }
+            item.lifecycle.lock().unwrap().exit = Some(0);
+            manager
+                .sessions
+                .lock()
+                .unwrap()
+                .insert(item.id.clone(), session);
+        }
+        let id = manager
+            .create(
+                vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
+                HashMap::new(),
+                Some(std::env::temp_dir().to_string_lossy().into_owned()),
+                false,
+            )
+            .unwrap();
+        assert!(manager.get("old-000").is_some());
+        assert!(manager.get("old-001").is_none());
+        manager.delete("old-000").unwrap();
+        assert!(manager.get("old-000").is_none());
+        let _ = manager.delete(&id);
     }
 }

@@ -16,6 +16,10 @@ struct Fake {
     ignore_stop: AtomicBool,
     launches: AtomicUsize,
     stops: AtomicUsize,
+    receipt_pinning: AtomicBool,
+    boot_reads: AtomicUsize,
+    session_lists: AtomicUsize,
+    session_running: std::sync::Mutex<std::collections::HashMap<String, bool>>,
 }
 macro_rules! delegate {
     ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $out:ty;)*) => {$ (
@@ -23,6 +27,9 @@ macro_rules! delegate {
     )*};
 }
 impl Backend for Fake {
+    fn session_receipt_pinning(&self, _id: &str) -> ahvm_engine::Result<bool> {
+        Ok(self.receipt_pinning.load(Ordering::SeqCst))
+    }
     delegate! {
         fn create(spec:&SandboxSpec)->ahvm_engine::Result<SandboxInfo>;
         fn destroy(id:&str)->ahvm_engine::Result<()>;
@@ -37,12 +44,23 @@ impl Backend for Fake {
         fn fork(id:&str,new_id:&str)->ahvm_engine::Result<SandboxInfo>;
         fn capabilities()->Capabilities;
         fn snapshot_manifest(snapshot_id:&str)->ahvm_engine::Result<SnapshotManifest>;
-        fn file_read(id:&str,path:&str,offset:u64,limit:u64)->ahvm_engine::Result<FileChunk>;
         fn file_write(id:&str,path:&str,data:&[u8])->ahvm_engine::Result<u64>;
         fn file_list(id:&str,path:&str,offset:u64,limit:u64)->ahvm_engine::Result<DirListing>;
         fn session_input(id:&str,sid:&str,data:&[u8])->ahvm_engine::Result<u64>;
         fn session_delete(id:&str,sid:&str)->ahvm_engine::Result<()>;
         fn session_resize(id:&str,sid:&str,rows:u16,cols:u16)->ahvm_engine::Result<()>;
+    }
+    fn file_read(
+        &self,
+        id: &str,
+        path: &str,
+        offset: u64,
+        limit: u64,
+    ) -> ahvm_engine::Result<FileChunk> {
+        if path == "/proc/sys/kernel/random/boot_id" {
+            self.boot_reads.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.file_read(id, path, offset, limit)
     }
     fn status(&self, id: &str) -> ahvm_engine::Result<SandboxInfo> {
         let mut v = self.inner.status(id)?;
@@ -68,9 +86,16 @@ impl Backend for Fake {
         Ok(sid)
     }
     fn session_list(&self, id: &str) -> ahvm_engine::Result<Vec<SessionInfo>> {
+        self.session_lists.fetch_add(1, Ordering::SeqCst);
         let mut sessions = self.inner.session_list(id)?;
         for s in &mut sessions {
-            s.running = self.running.load(Ordering::SeqCst);
+            s.running = self
+                .session_running
+                .lock()
+                .unwrap()
+                .get(&s.id)
+                .copied()
+                .unwrap_or_else(|| self.running.load(Ordering::SeqCst));
         }
         Ok(sessions)
     }
@@ -102,6 +127,10 @@ fn setup() -> (AppState, Arc<Fake>) {
         ignore_stop: AtomicBool::new(false),
         launches: AtomicUsize::new(0),
         stops: AtomicUsize::new(0),
+        receipt_pinning: AtomicBool::new(true),
+        boot_reads: AtomicUsize::new(0),
+        session_lists: AtomicUsize::new(0),
+        session_running: Default::default(),
     });
     fake.create(&SandboxSpec {
         name: "vm".into(),
@@ -156,6 +185,7 @@ fn request() -> RunRequest {
         argv: vec!["/bin/sleep".into(), "120".into()],
         max_runtime_secs: 3600,
         fence_on_failure: false,
+        session_isolated: false,
     }
 }
 fn admit(state: &AppState) -> ManagedRun {
@@ -617,4 +647,263 @@ async fn deleting_storage_refuses_new_managed_run_and_persisted_run_blocks_reuse
         Err(ApiError::Conflict(_))
     ));
     assert!(check_lifecycle(&state, "vm").is_err());
+}
+
+fn admit_isolated(state: &AppState, id: &str) -> ManagedRun {
+    let mut body = request();
+    body.session_isolated = true;
+    let now = unix_now();
+    let (run, _) = state
+        .store
+        .admit_managed_run(
+            id,
+            "vm",
+            "admin",
+            &serde_json::to_string(&body).unwrap(),
+            now,
+            now + 3600,
+        )
+        .unwrap();
+    assert!(state.activity.set_managed_run("vm", id, run.epoch));
+    run
+}
+
+#[tokio::test]
+async fn concurrent_cancel_waits_for_receipt_and_keeps_sibling_awake() {
+    let (s, fake) = setup();
+    let runs: Vec<_> = (0..3)
+        .map(|i| admit_isolated(&s, &format!("chat{i}")))
+        .collect();
+    for run in &runs {
+        assert!(!step(&s, &run.id, run.epoch, true).unwrap());
+    }
+    let cancelled = s.store.get_managed_run("chat0").unwrap();
+    s.store
+        .update_managed_run(
+            &cancelled.id,
+            cancelled.epoch,
+            "cancelling",
+            None,
+            None,
+            None,
+            Some("cancellation requested"),
+            unix_now() - 120,
+            false,
+        )
+        .unwrap();
+    assert!(!step(&s, "chat0", 1, false).unwrap());
+    assert!(s
+        .store
+        .get_managed_run("chat0")
+        .unwrap()
+        .finished_at
+        .is_none());
+    assert_eq!(fake.stops.load(Ordering::SeqCst), 0);
+    let marker = fake
+        .file_read("vm", "/run/ahvm-managed-cancel/chat0", 0, 64)
+        .unwrap();
+    assert_eq!(marker.data, b"cancel\n");
+    fake.session_running
+        .lock()
+        .unwrap()
+        .insert(cancelled.session_id.unwrap(), false);
+    assert!(step(&s, "chat0", 1, false).unwrap());
+    assert_eq!(
+        s.store.get_managed_run("chat0").unwrap().phase,
+        "interrupted"
+    );
+    assert!(s.activity.has_managed_run("vm"));
+    assert!(!step(&s, "chat1", 1, false).unwrap());
+    s.activity
+        .touch_at("vm", Instant::now() - Duration::from_secs(7200));
+    let sweep = sweep_once(&s, ThermalConfig::default(), Instant::now()).await;
+    assert_eq!(sweep.stopped + sweep.paused, 0);
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 3);
+    assert_eq!(fake.stops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn isolated_nonzero_receipt_and_missing_session_never_fence_siblings() {
+    let (s, fake) = setup();
+    let a = admit_isolated(&s, "a");
+    let b = admit_isolated(&s, "b");
+    assert!(!step(&s, "a", a.epoch, true).unwrap());
+    assert!(!step(&s, "b", b.epoch, true).unwrap());
+    let a = s.store.get_managed_run("a").unwrap();
+    fake.session_running
+        .lock()
+        .unwrap()
+        .insert(a.session_id.clone().unwrap(), false);
+    fake.exit_code.store(137, Ordering::SeqCst);
+    assert!(!step(&s, "a", a.epoch, false).unwrap());
+    let uncertain = s.store.get_managed_run("a").unwrap();
+    assert_eq!(uncertain.phase, "uncertain");
+    s.store
+        .update_managed_run(
+            "a",
+            a.epoch,
+            "uncertain",
+            None,
+            None,
+            None,
+            None,
+            unix_now() - 120,
+            false,
+        )
+        .unwrap();
+    assert!(!step(&s, "a", a.epoch, false).unwrap());
+    fake.session_delete("vm", a.session_id.as_deref().unwrap())
+        .unwrap();
+    assert!(!step(&s, "a", a.epoch, false).unwrap());
+    assert_eq!(fake.stops.load(Ordering::SeqCst), 0);
+    assert!(s.activity.has_managed_run("vm"));
+    let recovered = s.store.claim_managed_run("a", unix_now()).unwrap();
+    s.activity.set_managed_run("vm", "a", recovered.epoch);
+    fake.file_write(
+        "vm",
+        "/proc/sys/kernel/random/boot_id",
+        b"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n",
+    )
+    .unwrap();
+    assert!(step(&s, "a", recovered.epoch, false).unwrap());
+    assert!(s.activity.has_managed_run("vm"));
+    assert!(step(&s, "b", b.epoch, false).unwrap());
+    assert!(!s.activity.has_managed_run("vm"));
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn terminal_commit_releases_pinned_receipt_and_recovery_cleans_crash_window() {
+    let (s, fake) = setup();
+    let a = admit_isolated(&s, "a");
+    assert!(!step(&s, "a", a.epoch, true).unwrap());
+    let a = s.store.get_managed_run("a").unwrap();
+    fake.session_running
+        .lock()
+        .unwrap()
+        .insert(a.session_id.clone().unwrap(), false);
+    assert!(step(&s, "a", a.epoch, false).unwrap());
+    assert!(fake.session_list("vm").unwrap().is_empty());
+    assert_eq!(s.store.get_managed_run("a").unwrap().exit_code, Some(0));
+
+    let b = admit_isolated(&s, "b");
+    assert!(!step(&s, "b", b.epoch, true).unwrap());
+    let b = s.store.get_managed_run("b").unwrap();
+    fake.session_running
+        .lock()
+        .unwrap()
+        .insert(b.session_id.clone().unwrap(), false);
+    s.store
+        .update_managed_run(
+            "b",
+            b.epoch,
+            "succeeded",
+            None,
+            None,
+            Some(0),
+            None,
+            unix_now(),
+            true,
+        )
+        .unwrap();
+    let terminal = s.store.get_managed_run("b").unwrap();
+    assert_eq!(fake.session_list("vm").unwrap().len(), 1);
+    release_guest_receipt(&s, &terminal);
+    assert!(fake.session_list("vm").unwrap().is_empty());
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn old_guest_forge_cannot_admit_isolated_work() {
+    let (s, fake) = setup();
+    fake.receipt_pinning.store(false, Ordering::SeqCst);
+    let mut body = request();
+    body.session_isolated = true;
+    assert!(matches!(
+        submit(
+            State(s.clone()),
+            Extension(UserId("admin".into())),
+            Path("new".into()),
+            Json(body)
+        )
+        .await,
+        Err(ApiError::Conflict(_))
+    ));
+    assert!(s.store.list_active_managed_runs().unwrap().is_empty());
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn recovery_batches_terminal_receipt_cleanup_once_per_vm_and_checks_identity() {
+    let (s, fake) = setup();
+    for i in 0..70 {
+        let id = format!("history{i}");
+        let run = admit_isolated(&s, &id);
+        assert!(!step(&s, &id, run.epoch, true).unwrap());
+        let run = s.store.get_managed_run(&id).unwrap();
+        fake.session_running
+            .lock()
+            .unwrap()
+            .insert(run.session_id.clone().unwrap(), i == 69);
+        s.store
+            .update_managed_run(
+                &id,
+                run.epoch,
+                "succeeded",
+                None,
+                None,
+                Some(0),
+                None,
+                unix_now(),
+                true,
+            )
+            .unwrap();
+    }
+    // A terminal record naming a current session with different argv is not
+    // permission to delete it, nor is an identity from a previous guest boot.
+    for (id, boot, argv) in [
+        (
+            "wrong-argv",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            vec!["/bin/sleep".into(), "10".into()],
+        ),
+        (
+            "old-boot",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            Vec::new(),
+        ),
+    ] {
+        let run = admit_isolated(&s, id);
+        let argv = if argv.is_empty() {
+            command(&run).unwrap()
+        } else {
+            argv
+        };
+        let sid = fake.session_create("vm", &argv, false).unwrap();
+        fake.session_running
+            .lock()
+            .unwrap()
+            .insert(sid.clone(), false);
+        s.store
+            .update_managed_run(
+                id,
+                run.epoch,
+                "succeeded",
+                Some(&sid),
+                Some(boot),
+                Some(0),
+                None,
+                unix_now(),
+                true,
+            )
+            .unwrap();
+    }
+    fake.boot_reads.store(0, Ordering::SeqCst);
+    fake.session_lists.store(0, Ordering::SeqCst);
+    recover(&s).unwrap();
+    assert_eq!(fake.boot_reads.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.session_lists.load(Ordering::SeqCst), 1);
+    let remaining = fake.session_list("vm").unwrap();
+    assert_eq!(remaining.len(), 3); // running, different argv, and old boot
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 72);
 }

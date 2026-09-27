@@ -635,14 +635,14 @@ fn managed_run_retries_fences_and_terminal_receipts() {
 }
 
 #[test]
-fn managed_runs_have_bounded_admission_without_evicting_retry_receipts() {
+fn managed_runs_have_no_fixed_active_cap_and_preserve_retry_receipts() {
     let s = Store::open_in_memory().unwrap();
     s.upsert_user(&user("u", 1)).unwrap();
     for i in 0..65 {
         let id = format!("vm{i}");
         s.create_sandbox(&sandbox(&id, "u", 1)).unwrap();
         let r = s.admit_managed_run(&format!("run{i}"), &id, "u", "{}", 1, 1000);
-        assert_eq!(r.is_ok(), i < 64);
+        assert!(r.is_ok());
     }
     assert!(
         !s.admit_managed_run("run0", "vm0", "u", "{}", 1, 1000)
@@ -683,4 +683,59 @@ fn managed_runs_survive_database_reopen() {
     assert_eq!(r.deadline_at, 100);
     drop(s);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn isolated_runs_share_sandbox_but_exclusive_jobs_cannot_mix() {
+    let s = Store::open_in_memory().unwrap();
+    s.upsert_user(&user("u", 1)).unwrap();
+    s.create_sandbox(&sandbox("vm", "u", 1)).unwrap();
+    let isolated = r#"{"session_isolated":true}"#;
+    for i in 0..70 {
+        assert!(
+            s.admit_managed_run(&format!("run{i}"), "vm", "u", isolated, 1, 1000)
+                .unwrap()
+                .1
+        );
+    }
+    assert_eq!(s.list_active_managed_runs().unwrap().len(), 70);
+    assert!(s
+        .admit_managed_run("exclusive", "vm", "u", "{}", 1, 1000)
+        .is_err());
+    assert!(s
+        .admit_managed_run(
+            "unsafe",
+            "vm",
+            "u",
+            r#"{"session_isolated":true,"fence_on_failure":true}"#,
+            1,
+            1000
+        )
+        .is_err());
+    assert!(
+        !s.admit_managed_run("run0", "vm", "u", isolated, 9, 2000)
+            .unwrap()
+            .1
+    );
+}
+
+#[test]
+fn concurrent_run_schema_migrates_existing_exclusive_index() {
+    let path = std::env::temp_dir().join(format!("ahvm-run-migration-{}.db", std::process::id()));
+    let s = Store::open(&path).unwrap();
+    s.upsert_user(&user("u", 1)).unwrap();
+    s.create_sandbox(&sandbox("vm", "u", 1)).unwrap();
+    s.with_conn(|conn| {
+        conn.execute_batch("DROP INDEX managed_run_active_sandbox; CREATE UNIQUE INDEX managed_run_active_sandbox ON managed_runs(sandbox_id) WHERE finished_at IS NULL")?;
+        Ok(())
+    }).unwrap();
+    drop(s);
+    let s = Store::open(&path).unwrap();
+    for id in ["a", "b"] {
+        s.admit_managed_run(id, "vm", "u", r#"{"session_isolated":true}"#, 1, 100)
+            .unwrap();
+    }
+    assert_eq!(s.list_active_managed_runs().unwrap().len(), 2);
+    drop(s);
+    let _ = std::fs::remove_file(path);
 }

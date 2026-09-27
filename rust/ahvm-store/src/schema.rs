@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS managed_runs (
     CHECK((finished_at IS NULL AND phase IN ('starting','running','uncertain','cancelling'))
        OR (finished_at IS NOT NULL AND phase IN ('succeeded','failed','interrupted')))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS managed_run_active_sandbox
+DROP INDEX IF EXISTS managed_run_active_sandbox;
+CREATE INDEX IF NOT EXISTS managed_run_active_sandbox
     ON managed_runs(sandbox_id) WHERE finished_at IS NULL;
 CREATE INDEX IF NOT EXISTS managed_run_finished
     ON managed_runs(sandbox_id, finished_at) WHERE finished_at IS NOT NULL;
