@@ -295,7 +295,9 @@ pub(crate) async fn start_operation(
         &user.0,
         &id,
         operation,
-        true,
+        RunningTransition::Start {
+            allow_running_noop: network_bytes_per_sec.is_none(),
+        },
         move |backend, owned_id| {
             backend.start_with_network_bandwidth(&owned_id, network_bytes_per_sec)
         },
@@ -323,10 +325,15 @@ pub(crate) async fn stop_operation(
         &user.0,
         &id,
         operation,
-        false,
+        RunningTransition::Stop,
         |backend, owned_id| backend.stop(&owned_id),
     )
     .await
+}
+
+enum RunningTransition {
+    Start { allow_running_noop: bool },
+    Stop,
 }
 
 async fn set_running(
@@ -334,7 +341,7 @@ async fn set_running(
     user: &str,
     id: &str,
     operation: Option<&str>,
-    reserve_start: bool,
+    transition: RunningTransition,
     op: impl FnOnce(std::sync::Arc<dyn ahvm_engine::Backend>, String) -> Result<(), ahvm_engine::Error>
         + Send
         + 'static,
@@ -345,7 +352,6 @@ async fn set_running(
     crate::routes::unchanged_identity(&_lc)?;
     owned(state, user, id).await?;
     state.store.check_lifecycle_fence(id, operation)?;
-    crate::runs::check_lifecycle(state, id)?;
     let _permit = state.ops.acquire().await;
     let backend = state.backend.clone();
     let key = id.to_owned();
@@ -353,7 +359,32 @@ async fn set_running(
     let state = state.clone();
     tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let (_lifecycle, _permit) = (_lc, _permit);
-        let _quota = if reserve_start {
+        if matches!(
+            transition,
+            RunningTransition::Start {
+                allow_running_noop: true
+            }
+        ) {
+            let live = backend.status(&key)?;
+            if live.state == ahvm_engine::State::Running
+                && live.thermal == ahvm_engine::Thermal::Hot
+            {
+                // A plain wake of a live guest does not change lifecycle or
+                // reserve capacity. It may accompany another isolated run.
+                // Policy overrides still take the guarded backend path below.
+                state.store.set_sandbox_state(
+                    &key,
+                    &state_str(&live.state),
+                    &thermal_str(&live.thermal),
+                    unix_now(),
+                )?;
+                state.activity.touch(&key);
+                let row = state.store.get_sandbox(&key)?;
+                return Ok(Json(SandboxView::new(&row, &live)));
+            }
+        }
+        crate::runs::check_lifecycle(&state, &key)?;
+        let _quota = if matches!(transition, RunningTransition::Start { .. }) {
             let me = state.store.get_user(&user)?;
             Some(state.quotas.reserve_start(&state.store, &me, &key)?)
         } else {
