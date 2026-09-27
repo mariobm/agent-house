@@ -17,6 +17,8 @@ struct Fake {
     launches: AtomicUsize,
     stops: AtomicUsize,
     receipt_pinning: AtomicBool,
+    boot_reads: AtomicUsize,
+    session_lists: AtomicUsize,
     session_running: std::sync::Mutex<std::collections::HashMap<String, bool>>,
 }
 macro_rules! delegate {
@@ -42,12 +44,23 @@ impl Backend for Fake {
         fn fork(id:&str,new_id:&str)->ahvm_engine::Result<SandboxInfo>;
         fn capabilities()->Capabilities;
         fn snapshot_manifest(snapshot_id:&str)->ahvm_engine::Result<SnapshotManifest>;
-        fn file_read(id:&str,path:&str,offset:u64,limit:u64)->ahvm_engine::Result<FileChunk>;
         fn file_write(id:&str,path:&str,data:&[u8])->ahvm_engine::Result<u64>;
         fn file_list(id:&str,path:&str,offset:u64,limit:u64)->ahvm_engine::Result<DirListing>;
         fn session_input(id:&str,sid:&str,data:&[u8])->ahvm_engine::Result<u64>;
         fn session_delete(id:&str,sid:&str)->ahvm_engine::Result<()>;
         fn session_resize(id:&str,sid:&str,rows:u16,cols:u16)->ahvm_engine::Result<()>;
+    }
+    fn file_read(
+        &self,
+        id: &str,
+        path: &str,
+        offset: u64,
+        limit: u64,
+    ) -> ahvm_engine::Result<FileChunk> {
+        if path == "/proc/sys/kernel/random/boot_id" {
+            self.boot_reads.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.file_read(id, path, offset, limit)
     }
     fn status(&self, id: &str) -> ahvm_engine::Result<SandboxInfo> {
         let mut v = self.inner.status(id)?;
@@ -73,6 +86,7 @@ impl Backend for Fake {
         Ok(sid)
     }
     fn session_list(&self, id: &str) -> ahvm_engine::Result<Vec<SessionInfo>> {
+        self.session_lists.fetch_add(1, Ordering::SeqCst);
         let mut sessions = self.inner.session_list(id)?;
         for s in &mut sessions {
             s.running = self
@@ -114,6 +128,8 @@ fn setup() -> (AppState, Arc<Fake>) {
         launches: AtomicUsize::new(0),
         stops: AtomicUsize::new(0),
         receipt_pinning: AtomicBool::new(true),
+        boot_reads: AtomicUsize::new(0),
+        session_lists: AtomicUsize::new(0),
         session_running: Default::default(),
     });
     fake.create(&SandboxSpec {
@@ -815,4 +831,79 @@ async fn old_guest_forge_cannot_admit_isolated_work() {
     ));
     assert!(s.store.list_active_managed_runs().unwrap().is_empty());
     assert_eq!(fake.launches.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn recovery_batches_terminal_receipt_cleanup_once_per_vm_and_checks_identity() {
+    let (s, fake) = setup();
+    for i in 0..70 {
+        let id = format!("history{i}");
+        let run = admit_isolated(&s, &id);
+        assert!(!step(&s, &id, run.epoch, true).unwrap());
+        let run = s.store.get_managed_run(&id).unwrap();
+        fake.session_running
+            .lock()
+            .unwrap()
+            .insert(run.session_id.clone().unwrap(), i == 69);
+        s.store
+            .update_managed_run(
+                &id,
+                run.epoch,
+                "succeeded",
+                None,
+                None,
+                Some(0),
+                None,
+                unix_now(),
+                true,
+            )
+            .unwrap();
+    }
+    // A terminal record naming a current session with different argv is not
+    // permission to delete it, nor is an identity from a previous guest boot.
+    for (id, boot, argv) in [
+        (
+            "wrong-argv",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            vec!["/bin/sleep".into(), "10".into()],
+        ),
+        (
+            "old-boot",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            Vec::new(),
+        ),
+    ] {
+        let run = admit_isolated(&s, id);
+        let argv = if argv.is_empty() {
+            command(&run).unwrap()
+        } else {
+            argv
+        };
+        let sid = fake.session_create("vm", &argv, false).unwrap();
+        fake.session_running
+            .lock()
+            .unwrap()
+            .insert(sid.clone(), false);
+        s.store
+            .update_managed_run(
+                id,
+                run.epoch,
+                "succeeded",
+                Some(&sid),
+                Some(boot),
+                Some(0),
+                None,
+                unix_now(),
+                true,
+            )
+            .unwrap();
+    }
+    fake.boot_reads.store(0, Ordering::SeqCst);
+    fake.session_lists.store(0, Ordering::SeqCst);
+    recover(&s).unwrap();
+    assert_eq!(fake.boot_reads.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.session_lists.load(Ordering::SeqCst), 1);
+    let remaining = fake.session_list("vm").unwrap();
+    assert_eq!(remaining.len(), 3); // running, different argv, and old boot
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 72);
 }

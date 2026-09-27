@@ -220,9 +220,7 @@ pub async fn cancel(
 pub fn recover(state: &AppState) -> ApiResult<()> {
     // Completion commits before guest receipt release. Recover the crash window
     // without replaying, touching unrelated sessions, or requiring a VM wake.
-    for run in state.store.list_finished_managed_runs()? {
-        release_guest_receipt(state, &run);
-    }
+    release_recovered_guest_receipts(state, state.store.list_finished_managed_runs()?);
     for (id, _) in state.store.list_managed_run_cooldowns()? {
         // Foreground activity is not durable: allow a fresh configured idle grace
         // on restart instead of stopping a previously attached shell early.
@@ -285,6 +283,48 @@ fn update(
             .finish_managed_run(&run.sandbox_id, &run.id, run.epoch, Instant::now());
     }
     Ok(saved)
+}
+
+fn release_recovered_guest_receipts(state: &AppState, runs: Vec<ManagedRun>) {
+    let mut by_vm: std::collections::HashMap<String, Vec<ManagedRun>> = Default::default();
+    for run in runs {
+        if run.finished_at.is_some()
+            && run.session_id.is_some()
+            && run.boot_id.is_some()
+            && serde_json::from_str::<RunRequest>(&run.request_json)
+                .is_ok_and(|request| request.session_isolated)
+        {
+            by_vm.entry(run.sandbox_id.clone()).or_default().push(run);
+        }
+    }
+    for (sandbox, runs) in by_vm {
+        let Ok(boot) = boot_id(state, &sandbox) else {
+            continue;
+        };
+        // History from old boots cannot identify a current guest session.
+        if !runs.iter().any(|run| run.boot_id.as_deref() == Some(&boot)) {
+            continue;
+        }
+        let Ok(sessions) = state.backend.session_list(&sandbox) else {
+            continue;
+        };
+        let sessions: std::collections::HashMap<_, _> = sessions
+            .iter()
+            .map(|session| (session.id.as_str(), session))
+            .collect();
+        for run in runs {
+            if run.boot_id.as_deref() != Some(&boot) {
+                continue;
+            }
+            let sid = run.session_id.as_deref().unwrap();
+            let Some(session) = sessions.get(sid) else {
+                continue;
+            };
+            if !session.running && command(&run).is_ok_and(|argv| argv == session.argv) {
+                let _ = state.backend.session_delete(&sandbox, sid);
+            }
+        }
+    }
 }
 
 fn release_guest_receipt(state: &AppState, run: &ManagedRun) {

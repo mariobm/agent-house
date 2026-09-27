@@ -138,7 +138,7 @@ impl SessionManager {
                         .argv
                         .get(3)
                         .is_some_and(|a| a.starts_with("ahvm-run-isolated:"))
-                        && s.argv.get(0).is_some_and(|a| a == "/bin/sh")
+                        && s.argv.first().is_some_and(|a| a == "/bin/sh")
                         && s.argv.get(1).is_some_and(|a| a == "-c")
                         && s.argv.get(2).is_some_and(|a| a == "exec \"$@\"");
                     if lc.exit.is_some() && !isolated {
