@@ -111,7 +111,8 @@ Each run owns a separate native session and activity hold. The VM remains awake
 until every run has finished, including after daemon recovery.
 
 Cancellation and runtime expiry atomically write ASCII `cancel\n` to
-`/run/ahvm-managed-cancel/<run_id>` using Forge file-write. Run IDs are validated
+`/run/ahvm-managed-cancel/<run_id>` using Forge file-write. Updated Forge sets
+mode 0644 on the temporary marker before publishing it atomically. Run IDs are validated
 and are never shell-interpolated. The guest bootstrap must create this directory
 root-owned with mode 0755; an unprivileged controller can poll file existence.
 The controller must abort only its own shared-server session and verify native
@@ -195,3 +196,20 @@ only after the VM was stopped. A nonzero controller failure also cold-stopped
 the VM; a clean exit left it available for ordinary idle handling. The finite
 controller survived a daemon restart in the same guest boot and session. These
 checks qualify runtime recovery, not the success of a particular model provider.
+
+### Concurrent guest-controller qualification (2026-09-27)
+
+A disposable 1-vCPU/2-GiB local-storage Ubuntu VM ran two real OpenCode
+conversations with the synthetic Muse Free provider. Both finite controllers
+were running together. Cancelling the first conversation interrupted its native
+shell tool before its finish marker; the second completed its tool and answer.
+A third conversation completed using the same OpenCode server PID and guest
+boot identity. The VM stayed running throughout and was deleted afterward.
+
+Controller SHA-256:
+`8adca99fc34fe09f0804a41a3bd9298d750785bbf5b2f7441e849db14ca4c301`.
+The existing guest Forge was older, so root Python atomically published a 0644
+cancellation marker for this guest-only check. Updated Forge marker publication
+and managed-run concurrency are covered by Rust tests. This check does **not**
+qualify the new daemon on an actual replicated-storage VM; existing production
+VMs and daemons were not changed.
