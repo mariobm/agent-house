@@ -430,6 +430,32 @@ impl Store {
         })
     }
 
+    pub fn list_snapshots(&self) -> Result<Vec<Snapshot>> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, owner_user_id, sandbox_id, name, kind, state,
+                        local_bytes, remote_state, remote_manifest_key, created_at, expires_at
+                 FROM snapshots ORDER BY id",
+            )?;
+            let rows = stmt.query_map([], Snapshot::from_row)?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Error::Sqlite)
+        })
+    }
+
+    pub fn set_snapshot_state(&self, id: &str, state: &str, local_bytes: i64) -> Result<()> {
+        self.with_conn(|c| {
+            let changed = c.execute(
+                "UPDATE snapshots SET state=?1, local_bytes=?2 WHERE id=?3",
+                params![state, local_bytes, id],
+            )?;
+            if changed == 0 {
+                return Err(Error::NotFound(format!("snapshot {id}")));
+            }
+            Ok(())
+        })
+    }
+
     /// Snapshots an owner holds (for quota checks).
     pub fn count_snapshots(&self, owner: &str) -> Result<i64> {
         self.with_conn(|c| {

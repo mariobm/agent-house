@@ -248,6 +248,7 @@ impl Backend for MockBackend {
     }
 
     fn create_snapshot(&self, id: &str, snapshot_id: &str) -> Result<SnapshotManifest> {
+        crate::krucible::validate_snapshot_id(snapshot_id)?;
         let inner = self.lock();
         let (spec, _) = inner
             .sandboxes
@@ -256,6 +257,38 @@ impl Backend for MockBackend {
         let manifest = Self::manifest_for(id, snapshot_id, spec);
         manifest.write_to(&self.snapshot_dir.join(snapshot_id))?;
         Ok(manifest)
+    }
+
+    fn delete_snapshot(&self, snapshot_id: &str) -> Result<()> {
+        crate::krucible::validate_snapshot_id(snapshot_id)?;
+        match std::fs::remove_dir_all(self.snapshot_dir.join(snapshot_id)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn snapshot_ids(&self) -> Result<Vec<String>> {
+        let entries = match std::fs::read_dir(&self.snapshot_dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut ids = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                if let Some(name) = entry.file_name().to_str() {
+                    ids.push(name.to_owned());
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    fn snapshot_local_bytes(&self, snapshot_id: &str) -> Result<u64> {
+        crate::krucible::validate_snapshot_id(snapshot_id)?;
+        crate::snapshot::bundle_bytes(&self.snapshot_dir.join(snapshot_id))
     }
 
     fn restore(&self, snapshot: &SnapshotManifest, new_id: &str) -> Result<SandboxInfo> {
