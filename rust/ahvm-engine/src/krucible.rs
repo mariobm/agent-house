@@ -1132,7 +1132,7 @@ impl KrucibleBackend {
     }
 }
 
-fn validate_snapshot_id(id: &str) -> Result<()> {
+pub(crate) fn validate_snapshot_id(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > 64 {
         return Err(Error::InvalidState(format!("bad snapshot id {id:?}")));
     }
@@ -1145,11 +1145,38 @@ fn validate_snapshot_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_snapshot_registry_id(id: &str) -> Result<()> {
+    if validate_snapshot_id(id).is_ok() {
+        Ok(())
+    } else if let Some(sandbox) = id.strip_prefix("fork-") {
+        validate_id(sandbox)
+    } else {
+        validate_snapshot_id(id)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait.
 // ---------------------------------------------------------------------------
 
 impl KrucibleBackend {
+    fn remove_snapshot_bundle(&self, snapshot_id: &str) -> Result<()> {
+        validate_snapshot_registry_id(snapshot_id)?;
+        let registry = self.cfg.data_dir.join("snapshots");
+        for name in [snapshot_id.to_owned(), format!("{snapshot_id}.tmp")] {
+            match std::fs::remove_dir_all(registry.join(name)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if registry.exists() {
+            sync_dir(&registry)?;
+        }
+        self.lock().snapshots.remove(snapshot_id);
+        Ok(())
+    }
+
     /// [`Backend::create_snapshot`] with reservations already held
     /// (see [`OpGuard`]; `fork` holds both sides across the two calls).
     fn snapshot_to_registry(&self, id: &str, snapshot_id: &str) -> Result<SnapshotManifest> {
@@ -2273,8 +2300,30 @@ impl Backend for KrucibleBackend {
 
     fn restore(&self, snapshot: &SnapshotManifest, new_id: &str) -> Result<SandboxInfo> {
         validate_id(new_id)?;
+        validate_snapshot_id(&snapshot.snapshot_id)?;
         let _guard = OpGuard::take(self, new_id)?;
+        let _snapshot = OpGuard::take(self, &format!("snap:{}", snapshot.snapshot_id))?;
         self.restore_inner(snapshot, new_id)
+    }
+
+    fn delete_snapshot(&self, snapshot_id: &str) -> Result<()> {
+        validate_snapshot_registry_id(snapshot_id)?;
+        let _snapshot = OpGuard::take(self, &format!("snap:{snapshot_id}"))?;
+        self.remove_snapshot_bundle(snapshot_id)
+    }
+
+    fn snapshot_ids(&self) -> Result<Vec<String>> {
+        Ok(self.lock().snapshots.keys().cloned().collect())
+    }
+
+    fn snapshot_local_bytes(&self, snapshot_id: &str) -> Result<u64> {
+        validate_snapshot_registry_id(snapshot_id)?;
+        let registry = self.cfg.data_dir.join("snapshots");
+        let complete = crate::snapshot::bundle_bytes(&registry.join(snapshot_id))?;
+        let pending = crate::snapshot::bundle_bytes(&registry.join(format!("{snapshot_id}.tmp")))?;
+        complete
+            .checked_add(pending)
+            .ok_or_else(|| Error::InvalidState("snapshot size overflow".into()))
     }
 
     fn fork(&self, id: &str, new_id: &str) -> Result<SandboxInfo> {
@@ -2693,6 +2742,50 @@ mod tests {
         ));
         drop(be);
         let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        drop(be);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn snapshot_cleanup_removes_full_and_partial_bundles_and_respects_restore_guard() {
+        let dir = crate::test_scratch("snapshot-cleanup");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        let registry = dir.join("data/snapshots");
+        let ids = [
+            "manual".to_owned(),
+            "fork-".to_owned(),
+            "fork-test.vm".to_owned(),
+            format!("fork-{}", "x".repeat(64)),
+        ];
+        for id in &ids {
+            for name in [id.clone(), format!("{id}.tmp")] {
+                std::fs::create_dir_all(registry.join(&name)).unwrap();
+                std::fs::write(registry.join(&name).join("memory.img"), b"ram").unwrap();
+                std::fs::write(registry.join(&name).join("root.qcow2"), b"disk").unwrap();
+            }
+        }
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        assert_eq!(be.snapshot_ids().unwrap().len(), 4);
+        let guard = OpGuard::take(&be, "snap:manual").unwrap();
+        assert!(matches!(
+            be.delete_snapshot("manual"),
+            Err(Error::Conflict(_))
+        ));
+        assert!(registry.join("manual/memory.img").exists());
+        drop(guard);
+        for id in &ids {
+            // Startup removed incomplete copies; count both RAM and disk.
+            assert_eq!(be.snapshot_local_bytes(id).unwrap(), 7);
+            be.delete_snapshot(id).unwrap();
+            be.delete_snapshot(id).unwrap();
+            assert!(!registry.join(id).exists());
+            assert!(!registry.join(format!("{id}.tmp")).exists());
+        }
+        assert!(be.snapshot_ids().unwrap().is_empty());
+        for id in ["../outside", "/tmp/outside", "fork-../outside"] {
+            assert!(be.delete_snapshot(id).is_err());
+        }
         drop(be);
         std::fs::remove_dir_all(dir).unwrap();
     }

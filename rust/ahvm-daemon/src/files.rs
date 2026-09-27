@@ -37,7 +37,7 @@ pub async fn read(
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
     state.activity.touch(&id);
-    let _flight = crate::routes::guest(&state, &id).await?;
+    let _flight = crate::routes::guest(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     let chunk = blocking(move || {
         let _flight = _flight;
@@ -72,7 +72,7 @@ pub async fn write(
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
     state.activity.touch(&id);
-    let _flight = crate::routes::guest(&state, &id).await?;
+    let _flight = crate::routes::guest(&state, &user.0, &id).await?;
     let data = base64_decode(&body.data_b64)?;
     let backend = state.backend.clone();
     let bytes = blocking(move || {
@@ -107,7 +107,7 @@ pub async fn list(
         return Err(ApiError::Invalid("path must not be empty".to_string()));
     }
     state.activity.touch(&id);
-    let _flight = crate::routes::guest(&state, &id).await?;
+    let _flight = crate::routes::guest(&state, &user.0, &id).await?;
     let backend = state.backend.clone();
     let listing = blocking(move || {
         let _flight = _flight;
@@ -192,7 +192,7 @@ pub async fn upload(
         .ops
         .try_stream(&id)
         .ok_or_else(|| ApiError::Conflict("workspace stream limit reached; retry later".into()))?;
-    let flight = crate::routes::guest(&state, &id).await?;
+    let flight = crate::routes::guest(&state, &user.0, &id).await?;
     // Admission precedes the global permit, matching lifecycle lock order.
     // Fail fast rather than retaining unbounded waiting HTTP uploads.
     let permit = state

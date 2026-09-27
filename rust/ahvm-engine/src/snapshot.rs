@@ -31,6 +31,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// at restore.
 pub const SIDECAR_NAME: &str = "ahvm-manifest.json";
 
+pub(crate) fn bundle_bytes(path: &Path) -> crate::Result<u64> {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let mut bytes = 0u64;
+    for entry in entries {
+        let entry = entry?;
+        let metadata = entry.path().symlink_metadata()?;
+        let size = if metadata.is_dir() {
+            bundle_bytes(&entry.path())?
+        } else {
+            metadata.len()
+        };
+        bytes = bytes
+            .checked_add(size)
+            .ok_or_else(|| crate::Error::InvalidState("snapshot size overflow".into()))?;
+    }
+    Ok(bytes)
+}
+
 /// Manifest schema version written by this crate.
 pub const MANIFEST_VER: u32 = 2;
 /// Current virtual device-layout version. Bump when the VMM's device set

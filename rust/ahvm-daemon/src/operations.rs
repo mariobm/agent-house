@@ -70,6 +70,7 @@ async fn view(state: &AppState, op: LifecycleOperation) -> ApiResult<Response> {
         // Read backend and metadata under the same lifecycle lock. An orphan
         // backend with no SQL row is NOT evidence that allocation is absent.
         let _lc = state.lifecycle.lock(&op.sandbox_id).await;
+        crate::routes::unchanged_identity(&_lc)?;
         let backend = state.backend.clone();
         let id = op.sandbox_id.clone();
         let tracked = match state.store.get_sandbox(&id) {
@@ -78,13 +79,20 @@ async fn view(state: &AppState, op: LifecycleOperation) -> ApiResult<Response> {
             Err(ahvm_store::Error::NotFound(_)) => false,
             Err(e) => return Err(e.into()),
         };
-        Some(match crate::blocking(move || backend.status(&id)).await {
-            Ok(info) if tracked => crate::state_str(&info.state),
-            Ok(_) => "untracked".into(),
-            Err(ApiError::NotFound(_)) if !tracked => "absent".into(),
-            Err(ApiError::NotFound(_)) => "failed".into(),
-            Err(e) => return Err(e),
-        })
+        Some(
+            match crate::blocking(move || {
+                let _lifecycle = _lc;
+                backend.status(&id)
+            })
+            .await
+            {
+                Ok(info) if tracked => crate::state_str(&info.state),
+                Ok(_) => "untracked".into(),
+                Err(ApiError::NotFound(_)) if !tracked => "absent".into(),
+                Err(ApiError::NotFound(_)) => "failed".into(),
+                Err(e) => return Err(e),
+            },
+        )
     };
     Ok((status,Json(serde_json::json!({"id":op.id,"sandbox_id":op.sandbox_id,"state":op.state,"status":op.status,"sandbox_state":sandbox_state}))).into_response())
 }

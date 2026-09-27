@@ -17,6 +17,7 @@ pub async fn status(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> crate::ApiResult<axum::Json<StorageView>> {
     let lifecycle = state.lifecycle.lock(&id).await;
+    crate::routes::unchanged_identity(&lifecycle)?;
     crate::routes::owned(&state, &user.0, &id).await?;
     let bytes = state
         .store
@@ -40,6 +41,7 @@ pub async fn sync(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> crate::ApiResult<axum::Json<StorageView>> {
     let lifecycle = state.lifecycle.lock(&id).await;
+    crate::routes::unchanged_identity(&lifecycle)?;
     state.store.check_lifecycle_fence(&id, None)?;
     crate::routes::owned(&state, &user.0, &id).await?;
     let bytes = state
@@ -244,11 +246,16 @@ pub async fn run(state: AppState) -> ! {
                     {
                         continue;
                     }
+                    // Durable controller admission and retirement share this
+                    // lifecycle lock. Never destroy beneath an active run.
+                    if crate::runs::check_lifecycle(&state, &row.sandbox_id).is_err() {
+                        continue;
+                    }
                     let Some(_permit) = state.ops.try_acquire() else {
                         continue;
                     };
                     match mark_orphan(&state.store, &row) {
-                        Ok(true) => (),
+                        Ok(true) => _lifecycle.invalidate_identity(),
                         Ok(false) => continue,
                         Err(e) => {
                             eprintln!("storage orphan {}: {e}", row.volume_id);

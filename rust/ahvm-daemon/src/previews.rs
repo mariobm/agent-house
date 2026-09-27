@@ -54,6 +54,7 @@ async fn set(
         return Err(ApiError::Invalid("port must be nonzero".into()));
     }
     let _lock = state.lifecycle.lock(id).await;
+    crate::routes::unchanged_identity(&_lock)?;
     owned(state, user, id).await?;
     state.store.set_preview_port(id, port, enabled)?;
     Ok(StatusCode::NO_CONTENT)
@@ -157,6 +158,11 @@ fn strip_hop(headers: &mut HeaderMap) {
         headers.remove(name);
     }
 }
+#[derive(Clone)]
+struct PreviewGrant {
+    generation: Vec<u8>,
+}
+
 fn active(state: &AppState, id: &str, port: u16, generation: &[u8]) -> bool {
     state
         .store
@@ -171,10 +177,13 @@ async fn proxy(
 ) -> ApiResult<Response> {
     let (id, port) = target(request.headers(), &domain.0)?;
     owned(&state, &user.0, &id).await?;
-    let generation = state
-        .store
-        .preview_generation(&id, port)?
-        .ok_or_else(|| ApiError::NotFound("preview port".into()))?;
+    let generation = match request.extensions().get::<PreviewGrant>() {
+        Some(grant) => grant.generation.clone(),
+        None => state
+            .store
+            .preview_generation(&id, port)?
+            .ok_or_else(|| ApiError::NotFound("preview port".into()))?,
+    };
     if matches!(
         *request.method(),
         axum::http::Method::CONNECT | axum::http::Method::TRACE
@@ -184,10 +193,18 @@ async fn proxy(
     let permit = CONNECTIONS
         .try_acquire()
         .map_err(|_| ApiError::Conflict("preview capacity exhausted".into()))?;
-    let guard = crate::routes::guest(&state, &id).await?;
+    let guard = crate::routes::guest_preview(&state, &user.0, &id, port, &generation).await?;
+    if !active(&state, &id, port, &generation) {
+        return Err(ApiError::Unauthorized);
+    }
     let backend = state.backend.clone();
     let connect_id = id.clone();
-    let raw = blocking(move || backend.preview_connect(&connect_id, port)).await?;
+    let connect_guard = guard.clone();
+    let raw = blocking(move || {
+        let _identity = connect_guard;
+        backend.preview_connect(&connect_id, port)
+    })
+    .await?;
     raw.set_nonblocking(true)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let stream =
@@ -249,6 +266,9 @@ async fn proxy(
         .parse()
         .map_err(|_| ApiError::Invalid("invalid preview path".into()))?;
     let deadline = tokio::time::Instant::now() + LIFETIME;
+    if !active(&state, &id, port, &generation) {
+        return Err(ApiError::Unauthorized);
+    }
     let mut response =
         match tokio::time::timeout(Duration::from_secs(30), sender.send_request(request)).await {
             Ok(Ok(response)) => response,
@@ -378,6 +398,7 @@ pub async fn access(
 ) -> ApiResult<Json<serde_json::Value>> {
     use std::io::Read;
     let _lock = state.lifecycle.lock(&id).await;
+    crate::routes::unchanged_identity(&_lock)?;
     owned(&state, &user.0, &id).await?;
     let mut secret = [0u8; 32];
     std::fs::File::open("/dev/urandom")
@@ -433,10 +454,20 @@ async fn authorize(
         .or(cookie.as_ref())
         .filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
         .ok_or(ApiError::Unauthorized)?;
+    // Read token, owner and generation in one lifecycle critical section.
+    // Never derive a replacement owner's identity from an old validated token.
+    let lifecycle = state.lifecycle.lock(&id).await;
+    crate::routes::unchanged_identity(&lifecycle)?;
     let expires = state
         .store
         .check_preview_token(&id, port, &token_hash(token), crate::unix_now())?
         .ok_or(ApiError::Unauthorized)?;
+    let owner = state.store.get_sandbox(&id)?.owner_user_id;
+    let generation = state
+        .store
+        .preview_generation(&id, port)?
+        .ok_or(ApiError::Unauthorized)?;
+    drop(lifecycle);
     if query_token.is_some() {
         if request.method() != axum::http::Method::GET {
             return Err(ApiError::Unauthorized);
@@ -509,8 +540,8 @@ async fn authorize(
             return Err(ApiError::Forbidden("cross-origin preview request".into()));
         }
     }
-    let owner = state.store.get_sandbox(&id)?.owner_user_id;
     request.extensions_mut().insert(UserId(owner));
+    request.extensions_mut().insert(PreviewGrant { generation });
     Ok(next.run(request).await)
 }
 
@@ -561,6 +592,98 @@ mod tests {
             lifecycle: crate::scheduler::LifecycleLocks::new(),
         }
     }
+    #[tokio::test]
+    async fn validated_preview_token_cannot_bind_to_replacement_identity() {
+        for replacement_owner in ["admin", "bob"] {
+            let state = state();
+            let mut bob = state.store.get_user("admin").unwrap();
+            bob.id = "bob".into();
+            bob.name = "bob".into();
+            bob.api_key_hash = "bob-key".into();
+            state.store.upsert_user(&bob).unwrap();
+            let token = "b".repeat(64);
+            state
+                .store
+                .preview_token("id", 8080, &token_hash(&token), crate::unix_now() + 60)
+                .unwrap();
+            let authorized = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let (signal, wait, handler_state) =
+                (authorized.clone(), release.clone(), state.clone());
+            let app = axum::Router::new()
+                .route(
+                    "/",
+                    axum::routing::get(move |request: Request| {
+                        let (signal, wait, state) =
+                            (signal.clone(), wait.clone(), handler_state.clone());
+                        async move {
+                            let user = request.extensions().get::<UserId>().unwrap().clone();
+                            let grant = request.extensions().get::<PreviewGrant>().unwrap().clone();
+                            assert_eq!(user.0, "admin");
+                            signal.notify_one();
+                            wait.notified().await;
+                            crate::routes::guest_preview(
+                                &state,
+                                &user.0,
+                                "id",
+                                8080,
+                                &grant.generation,
+                            )
+                            .await?;
+                            Ok::<_, ApiError>(StatusCode::OK)
+                        }
+                    }),
+                )
+                .layer(axum::middleware::from_fn_with_state(
+                    (state.clone(), Domain("preview.example".into(), true)),
+                    authorize,
+                ));
+            let req = Request::builder()
+                .uri("/")
+                .header(header::HOST, "6964--8080.preview.example")
+                .header(header::COOKIE, format!("__Host-ahvm_preview={token}"))
+                .body(Body::empty())
+                .unwrap();
+            let task = tokio::spawn(app.oneshot(req));
+            authorized.notified().await;
+            let lock = state.lifecycle.lock("id").await;
+            lock.invalidate_identity();
+            let mut replacement = state.store.get_sandbox("id").unwrap();
+            state.store.delete_sandbox("id").unwrap();
+            replacement.owner_user_id = replacement_owner.into();
+            state.store.create_sandbox(&replacement).unwrap();
+            state.store.set_preview_port("id", 8080, true).unwrap();
+            drop(lock);
+            release.notify_one();
+            let response = task.await.unwrap().unwrap();
+            assert_eq!(
+                response.status(),
+                if replacement_owner == "admin" {
+                    StatusCode::UNAUTHORIZED
+                } else {
+                    StatusCode::NOT_FOUND
+                }
+            );
+            assert!(!state.activity.in_flight("id"));
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_preview_admission_revalidates_revoked_port_before_guest_dispatch() {
+        let state = state();
+        let expected = state.store.preview_generation("id", 8080).unwrap().unwrap();
+        let lock = state.lifecycle.lock("id").await;
+        let mut admission = Box::pin(crate::routes::guest_preview(
+            &state, "admin", "id", 8080, &expected,
+        ));
+        assert!(futures_util::poll!(admission.as_mut()).is_pending());
+        state.store.set_preview_port("id", 8080, false).unwrap();
+        state.store.set_preview_port("id", 8080, true).unwrap();
+        drop(lock);
+        assert!(matches!(admission.await, Err(ApiError::Unauthorized)));
+        assert!(!state.activity.in_flight("id"));
+    }
+
     #[tokio::test]
     async fn browser_grant_is_scoped_expires_and_redirects_without_secret() {
         let state = state();

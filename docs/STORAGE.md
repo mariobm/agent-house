@@ -35,6 +35,18 @@ Local disks remain on the host. For ordinary non-desktop VMs, stop saves a local
 memory/disk checkpoint and start resumes it. Desktop VMs use disk-only stop/start.
 Checkpoints are not off-host backups; host-disk loss can lose local state.
 
+Named local snapshots retain their owner's quota while being created or deleted.
+Deleting a snapshot removes its registry files before releasing that quota. If
+cleanup fails, the snapshot remains in `deleting` state and the delete can be
+retried. Restart recovery finishes pending publication or cleanup before serving
+requests, and removes old registry bundles without a database record. Snapshot
+`local_bytes` includes all retained bundle files, including disk data; it reports
+logical file sizes, not physical filesystem allocation. These operations are
+explicit snapshot management, not scheduled backups during shell or desktop use.
+
+Quota-broker storage and replicated storage do not support these named local
+snapshots. Their existing disk replication and reclamation paths are separate.
+
     ahvm create dev --storage local --no-shell
     ahvm get dev
     ahvm storage status dev

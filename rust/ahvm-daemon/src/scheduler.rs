@@ -56,43 +56,154 @@ impl OpsLimiter {
 /// multiple ids lexicographically when it needs two).
 #[derive(Debug, Clone, Default)]
 pub struct LifecycleLocks {
-    inner: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    inner: Arc<Mutex<HashMap<String, Arc<LifecycleEntry>>>>,
+}
+#[derive(Debug, Default)]
+struct LifecycleEntry {
+    mutex: Arc<tokio::sync::Mutex<()>>,
+    epoch: std::sync::atomic::AtomicU64,
 }
 
+/// A lease exists before queuing, and is reclaimed even when a waiter cancels.
+#[derive(Debug)]
+struct LifecycleLease {
+    registry: LifecycleLocks,
+    id: String,
+    entry: Arc<LifecycleEntry>,
+    epoch: u64,
+}
+impl Drop for LifecycleLease {
+    fn drop(&mut self) {
+        let mut map = self
+            .registry
+            .inner
+            .lock()
+            .expect("lifecycle mutex poisoned");
+        // Map + this lease are the only references. Removing under this same
+        // mutex makes it impossible for a newcomer to receive a second lock.
+        if Arc::strong_count(&self.entry) == 2 {
+            map.remove(&self.id);
+        }
+    }
+}
+#[derive(Debug)]
+pub struct LifecycleGuard {
+    // Unlock before reclaiming the lease.
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    lease: LifecycleLease,
+}
+impl LifecycleGuard {
+    pub fn identity_changed(&self) -> bool {
+        self.lease
+            .entry
+            .epoch
+            .load(std::sync::atomic::Ordering::Relaxed)
+            != self.lease.epoch
+    }
+    pub fn invalidate_identity(&self) {
+        self.lease
+            .entry
+            .epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 impl LifecycleLocks {
     pub fn new() -> Self {
         Self::default()
     }
-
-    pub async fn lock(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
-        let entry = {
-            let mut inner = self.inner.lock().expect("lifecycle mutex poisoned");
-            inner
-                .entry(id.to_string())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
-        };
-        entry.lock_owned().await
+    #[cfg(test)]
+    pub(crate) fn retained_entries(&self) -> usize {
+        self.inner.lock().unwrap().len()
     }
-
-    /// Non-blocking take for the sweep: one long lifecycle transition
-    /// must not stall reconciliation of later rows (mirrors the permit
-    /// handling).
-    pub fn try_lock(&self, id: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
-        let entry = {
-            let mut inner = self.inner.lock().expect("lifecycle mutex poisoned");
-            inner
-                .entry(id.to_string())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
-        };
-        entry.try_lock_owned().ok()
+    fn lease(&self, id: &str) -> LifecycleLease {
+        let mut map = self.inner.lock().expect("lifecycle mutex poisoned");
+        let entry = map.entry(id.to_owned()).or_default().clone();
+        let epoch = entry.epoch.load(std::sync::atomic::Ordering::Relaxed);
+        LifecycleLease {
+            registry: self.clone(),
+            id: id.to_owned(),
+            entry,
+            epoch,
+        }
+    }
+    pub async fn lock(&self, id: &str) -> LifecycleGuard {
+        let lease = self.lease(id);
+        let guard = lease.entry.mutex.clone().lock_owned().await;
+        LifecycleGuard {
+            _guard: guard,
+            lease,
+        }
+    }
+    pub fn try_lock(&self, id: &str) -> Option<LifecycleGuard> {
+        let lease = self.lease(id);
+        let guard = lease.entry.mutex.clone().try_lock_owned().ok()?;
+        Some(LifecycleGuard {
+            _guard: guard,
+            lease,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn lifecycle_reclaims_churn_and_cancelled_waiters_without_split_locks() {
+        let locks = LifecycleLocks::new();
+        for i in 0..10000 {
+            drop(locks.lock(&format!("missing-{i}")).await);
+        }
+        assert!(locks.inner.lock().unwrap().is_empty());
+        let held = locks.lock("same").await;
+        let mut waiting = Box::pin(locks.lock("same"));
+        assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+        assert!(locks.try_lock("same").is_none());
+        drop(waiting);
+        assert_eq!(locks.inner.lock().unwrap().len(), 1);
+        let peer = locks.lock("independent").await;
+        drop(peer);
+        assert_eq!(locks.inner.lock().unwrap().len(), 1);
+        drop(held);
+        assert!(locks.inner.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn queued_identity_epoch_changes_and_map_reclaims_after_completion() {
+        let locks = LifecycleLocks::new();
+        let held = locks.lock("same").await;
+        let mut waiting = Box::pin(locks.lock("same"));
+        assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+        held.invalidate_identity();
+        drop(held);
+        let acquired = waiting.await;
+        assert!(acquired.identity_changed());
+        assert_eq!(locks.inner.lock().unwrap().len(), 1);
+        drop(acquired);
+        assert!(locks.inner.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_reclamation_never_splits_same_key_mutex() {
+        let locks = LifecycleLocks::new();
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let (locks, active) = (locks.clone(), active.clone());
+            workers.push(tokio::spawn(async move {
+                for _ in 0..1000 {
+                    let guard = locks.lock("same").await;
+                    assert_eq!(active.fetch_add(1, std::sync::atomic::Ordering::SeqCst), 0);
+                    tokio::task::yield_now().await;
+                    assert_eq!(active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst), 1);
+                    drop(guard);
+                }
+            }));
+        }
+        for worker in workers {
+            worker.await.unwrap();
+        }
+        assert!(locks.inner.lock().unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn permits_bound_and_release() {

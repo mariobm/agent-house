@@ -137,6 +137,28 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     /// the manifest, not just the id). Unknown ids are NotFound.
     fn snapshot_manifest(&self, snapshot_id: &str) -> Result<SnapshotManifest>;
 
+    /// Remove a registry bundle and incomplete publication, including after a
+    /// restart. Success means no retained registry artifacts remain.
+    fn delete_snapshot(&self, _snapshot_id: &str) -> Result<()> {
+        Err(crate::Error::InvalidState(
+            "snapshot cleanup unavailable".into(),
+        ))
+    }
+
+    fn snapshot_ids(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// Logical bytes retained by the complete or partially published bundle.
+    fn snapshot_local_bytes(&self, snapshot_id: &str) -> Result<u64> {
+        let manifest = self.snapshot_manifest(snapshot_id)?;
+        manifest
+            .artifacts
+            .memory_bytes
+            .checked_add(manifest.artifacts.root_delta_bytes)
+            .ok_or_else(|| crate::Error::InvalidState("snapshot size overflow".into()))
+    }
+
     // -- files (cf. Go's fileEngine surface) --
     fn file_read(&self, id: &str, path: &str, offset: u64, limit: u64) -> Result<FileChunk>;
     fn file_write(&self, id: &str, path: &str, data: &[u8]) -> Result<u64>;

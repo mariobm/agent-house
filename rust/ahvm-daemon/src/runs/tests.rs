@@ -576,3 +576,45 @@ async fn repeated_cancel_preserves_pending_fence_result() {
     assert!(step(&s, &r.id, r.epoch, false).unwrap());
     assert_eq!(s.store.get_managed_run("job").unwrap().phase, "failed");
 }
+
+#[tokio::test]
+async fn deleting_storage_refuses_new_managed_run_and_persisted_run_blocks_reuse() {
+    let (state, fake) = setup();
+    let reservation = state
+        .store
+        .reserve_replicated_volume("admin", "vm", &"d".repeat(64), 65536, unix_now())
+        .unwrap();
+    state
+        .store
+        .delete_replicated_reservation("admin", &reservation.volume_id, unix_now())
+        .unwrap();
+    let result = submit(
+        State(state.clone()),
+        Extension(UserId("admin".into())),
+        Path("rejected".into()),
+        Json(request()),
+    )
+    .await;
+    assert!(matches!(result, Err(ApiError::Conflict(_))));
+    assert_eq!(fake.launches.load(Ordering::SeqCst), 0);
+    assert!(state.store.managed_run_for_sandbox("vm").unwrap().is_none());
+
+    // A persisted controller is authoritative even before activity recovery.
+    state
+        .store
+        .admit_managed_run(
+            "persisted",
+            "vm",
+            "admin",
+            &serde_json::to_string(&request()).unwrap(),
+            unix_now(),
+            unix_now() + 3600,
+        )
+        .unwrap();
+    assert!(!state.activity.in_flight("vm"));
+    assert!(matches!(
+        crate::routes::identity_available(&state, "vm"),
+        Err(ApiError::Conflict(_))
+    ));
+    assert!(check_lifecycle(&state, "vm").is_err());
+}
