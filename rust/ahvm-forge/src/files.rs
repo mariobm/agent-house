@@ -132,6 +132,24 @@ pub fn serve(req: &FileReq, cfg: &Config) -> Result<FileResp, String> {
                 }
             }
             let mut guard = RmGuard(Some(tmp.clone()));
+            // Cancellation is a root-written, unprivileged-readable protocol
+            // marker. Restrict the temporary file BEFORE atomic publication;
+            // guest umask may otherwise leave it group/world writable.
+            if path
+                .strip_prefix("/run/ahvm-managed-cancel/")
+                .is_some_and(|id| {
+                    !id.is_empty()
+                        && id.len() <= 96
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+                })
+            {
+                use std::os::unix::fs::PermissionsExt;
+                tmp_f
+                    .set_permissions(std::fs::Permissions::from_mode(0o644))
+                    .map_err(|e| format!("cancel marker permissions: {e}"))?;
+            }
             use std::io::Write as _;
             tmp_f.write_all(&data).map_err(|e| format!("write: {e}"))?;
             drop(tmp_f);
@@ -251,5 +269,43 @@ pub fn upload(
             }
             _ => return Err("expected upload data or commit".into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn cancellation_marker_is_atomically_readable_and_not_writable_by_guest() {
+        let root =
+            std::env::temp_dir().join(format!("ahvm-cancel-permissions-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg = Config {
+            listen_addr: String::new(),
+            token: String::new(),
+            max_output_bytes: 1024,
+            exec_timeout_secs: 1,
+            root: root.clone(),
+            vsock_port: 0,
+        };
+        let data_b64 = base64::engine::general_purpose::STANDARD.encode(b"cancel\n");
+        serve(
+            &FileReq::Write {
+                path: "/run/ahvm-managed-cancel/job_1".into(),
+                data_b64,
+            },
+            &cfg,
+        )
+        .unwrap();
+        let file = root.join("run/ahvm-managed-cancel/job_1");
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"cancel\n");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
