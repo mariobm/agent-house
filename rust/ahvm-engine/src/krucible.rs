@@ -1434,27 +1434,33 @@ impl Backend for KrucibleBackend {
         SnapshotManifest::read_from(&bundle)
     }
 
-    fn reclaim_replicated_volume(&self, sandbox: &str, volume: &str, bytes: u64) -> Result<bool> {
+    fn reclaim_replicated_volume(
+        &self,
+        sandbox: &str,
+        volume: &str,
+        bytes: u64,
+    ) -> Result<crate::RetirementStatus> {
         validate_id(sandbox)?;
         crate::replicated::validate_volume(volume)?;
         let _guard = OpGuard::take(self, sandbox)?;
+        let dir = self.cfg.data_dir.join(sandbox);
         let existing = {
             let inner = self.lock();
             if let Some(rec) = inner.sandboxes.get(sandbox) {
-                if !rec.record.deleting
-                    || rec.worker.is_some()
-                    || rec.record.info.storage.volume_id.as_deref() != Some(volume)
-                {
-                    return Err(Error::Conflict(
-                        "sandbox is retained or has another volume".into(),
-                    ));
+                if rec.record.info.storage.volume_id.as_deref() != Some(volume) {
+                    // A new VM has reused the name. Retire only the old immutable
+                    // volume, and never release name-scoped host resources here.
+                    drop(inner);
+                    return self.replica()?.retire(volume, &dir, bytes);
+                }
+                if !rec.record.deleting || rec.worker.is_some() {
+                    return Err(Error::Conflict("sandbox is retained".into()));
                 }
                 true
             } else {
                 false
             }
         };
-        let dir = self.cfg.data_dir.join(sandbox);
         // A crash before the record rename can leave only an empty directory
         // or its temporary record. Never remove arbitrary untracked contents.
         if !existing && dir.try_exists()? {
@@ -1468,7 +1474,10 @@ impl Backend for KrucibleBackend {
                 }
             }
         }
-        let complete = self.replica()?.retire(volume, &dir, bytes)?;
+        let retirement = self.replica()?.retire(volume, &dir, bytes)?;
+        if !retirement.logical_released {
+            return Ok(retirement);
+        }
         if existing {
             // A prior destroy may have failed before service registration. The
             // service now owns durable delete intent and verifies consumers.
@@ -1504,7 +1513,7 @@ impl Backend for KrucibleBackend {
                 resources.remove(sandbox)?;
             }
         }
-        Ok(complete)
+        Ok(retirement)
     }
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo> {
         self.create_with_storage_admission(spec, &mut |_, _| Ok(()))

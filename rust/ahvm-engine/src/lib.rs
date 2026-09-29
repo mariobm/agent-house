@@ -29,7 +29,9 @@
 //! * [`mock`]: in-memory [`Backend`] for unit tests.
 
 mod replicated;
-pub use replicated::{ReplicatedConfig, ReplicationStatus, SandboxStorage, StorageMode};
+pub use replicated::{
+    ReplicatedConfig, ReplicationStatus, RetirementStatus, SandboxStorage, StorageMode,
+};
 mod storage;
 pub use storage::StorageConfig;
 mod resources;

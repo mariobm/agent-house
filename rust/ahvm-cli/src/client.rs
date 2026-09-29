@@ -229,14 +229,17 @@ impl Api {
         }
         Self::response(response).map_err(|error| {
             if lifecycle && error.downcast_ref::<ApiFailure>().is_some_and(|e|
-                e.status==reqwest::StatusCode::CONFLICT && e.detail=="operation_failed") {
+                e.status==reqwest::StatusCode::CONFLICT && e.code.as_deref()==Some("operation_failed")) {
                 return format!("{error}; this operation is finished. Inspect the VM, then issue a new command without --idempotency-key (or choose a new key). Reusing the completed key will not rerun it.").into();
             }
-            if let Some(key) = key {
-                format!("{error}; retry this lifecycle request with --idempotency-key {key}").into()
-            } else {
-                error
+            // A gateway's unstructured failure may follow dispatch without a
+            // receipt. Preserve the key so recovery cannot launch duplicate work.
+            if lifecycle && error.downcast_ref::<ApiFailure>().is_some_and(|failure|
+                failure.code.is_none() && matches!(failure.status.as_u16(), 502..=504)) {
+                return format!("{error}; the operation outcome is unknown. Retry this lifecycle request with --idempotency-key {}", key.as_deref().unwrap_or_default()).into();
             }
+            // Structured terminal failures describe a concrete outcome.
+            error
         })
     }
 
@@ -274,9 +277,12 @@ impl Api {
                 .unwrap_or_else(|| {
                     String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).into_owned()
                 });
-            let code = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned));
+            let code = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| {
+                v.get("code")
+                    .or_else(|| v.get("error"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            });
             return Err(ApiFailure {
                 status,
                 detail,
@@ -324,5 +330,83 @@ mod desktop_tests {
             request.headers()["Authorization"],
             "Bearer private-test-token"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn definitive_lifecycle_failures_preserve_status_message_and_omit_retry_key() {
+        for (status, code, message) in [
+            (
+                403,
+                "disk_quota_reached",
+                "replicated storage quota exceeded",
+            ),
+            (404, "not_found", "sandbox missing"),
+            (502, "backend_unavailable", "storage detach failed"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let body = serde_json::json!({"error":code,"message":message}).to_string();
+                write!(stream, "HTTP/1.1 {status} Failed\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            });
+            let api = Api::new(&endpoint, "token".into(), 5)
+                .unwrap()
+                .cloud(Some("same-request-key-1234".into()))
+                .unwrap();
+            let error = api
+                .call(Method::DELETE, &["sandboxes", "vm"], &[], None)
+                .unwrap_err();
+            let failure = error.downcast_ref::<ApiFailure>().unwrap();
+            assert_eq!(failure.status.as_u16(), status);
+            assert_eq!(failure.code.as_deref(), Some(code));
+            assert!(error.to_string().contains(message));
+            assert!(!error.to_string().contains("idempotency-key"));
+            server.join().unwrap();
+        }
+    }
+    #[test]
+    fn unstructured_gateway_failure_keeps_same_key_recovery_guidance() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            write!(stream, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\nConnection: close\r\n\r\nBad Gateway").unwrap();
+        });
+        let api = Api::new(&endpoint, "token".into(), 5)
+            .unwrap()
+            .cloud(Some("same-request-key-1234".into()))
+            .unwrap();
+        let error = api
+            .call(Method::DELETE, &["sandboxes", "vm"], &[], None)
+            .unwrap_err();
+        assert!(error.to_string().contains("outcome is unknown"));
+        assert!(error
+            .to_string()
+            .contains("--idempotency-key same-request-key-1234"));
+        server.join().unwrap();
     }
 }

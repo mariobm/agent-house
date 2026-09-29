@@ -1077,9 +1077,38 @@ async fn lifecycle_receipts_survive_delete_and_fence_old_retries() {
     )
     .await;
     assert_eq!(receipt["status"], 201);
-    assert_eq!(receipt["sandbox_state"], "absent");
-    let (status, _) = call(app, Some(TOKEN_A), "GET", "/v1/sandboxes/journal-vm", None).await;
+    assert_eq!(receipt["sandbox_state"], "running");
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "GET",
+        "/v1/sandboxes/journal-vm",
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"journal-vm","cpus":1,"memory_mb":512})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, replay) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/delete-1",
+        Some(serde_json::json!({"action":"delete","sandbox_id":"journal-vm"})),
+    )
+    .await;
+    assert_eq!(replay["status"], 204);
+    assert_eq!(replay["sandbox_state"], "absent");
+    let (status, live) = call(app, Some(TOKEN_A), "GET", "/v1/sandboxes/journal-vm", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(live["state"], "running");
 }
 
 #[tokio::test]
@@ -1175,6 +1204,9 @@ async fn interrupted_receipt_cannot_be_reexecuted_after_restart() {
                 request: canonical,
                 state: "pending".into(),
                 status: None,
+                error: None,
+                sandbox_state: None,
+                storage_volume_id: None,
             },
             1,
         )
@@ -1189,7 +1221,7 @@ async fn interrupted_receipt_cannot_be_reexecuted_after_restart() {
     )
     .await;
     assert_eq!(receipt["state"], "interrupted");
-    assert_eq!(receipt["sandbox_state"], "absent");
+    assert!(receipt["sandbox_state"].is_null());
     assert!(state.backend.list().unwrap().is_empty());
 }
 
@@ -1351,7 +1383,7 @@ async fn api_pacing_covers_legacy_json_and_upgrade_header_cannot_bypass_it() {
 }
 
 #[tokio::test]
-async fn delete_keeps_replicated_capacity_until_service_confirms_cleanup() {
+async fn delete_without_safe_retirement_proof_retains_row_and_capacity() {
     let state = test_state();
     let app = build_router(state.clone());
     let (status, _) = call(
@@ -1386,8 +1418,12 @@ async fn delete_keeps_replicated_capacity_until_service_confirms_cleanup() {
         "reserved"
     );
     let (status, _) = call(app, Some(TOKEN_A), "DELETE", "/v1/sandboxes/disk-vm", None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-    assert!(state.store.get_sandbox("disk-vm").is_err());
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(state.store.get_sandbox("disk-vm").is_ok());
+    assert!(state
+        .store
+        .check_replicated_name_available("disk-vm")
+        .is_err());
     assert_eq!(
         state
             .store
@@ -1869,4 +1905,377 @@ async fn managed_run_routes_require_node_admin_not_tenant_tokens() {
             StatusCode::FORBIDDEN
         );
     }
+}
+
+#[tokio::test]
+async fn terminal_missing_delete_persists_concrete_failure_on_replay() {
+    let app = app();
+    let body = serde_json::json!({"action":"delete","sandbox_id":"missing"});
+    for method in ["POST", "GET", "POST"] {
+        let (status, receipt) = call(
+            app.clone(),
+            Some(TOKEN_A),
+            method,
+            "/v1/operations/missing-delete",
+            if method == "POST" {
+                Some(body.clone())
+            } else {
+                None
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(receipt["state"], "done");
+        assert_eq!(receipt["status"], 404);
+        assert_eq!(receipt["error"]["code"], "not_found");
+        assert!(receipt["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("missing"));
+        assert_eq!(receipt["sandbox_state"], "absent");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn failed_delete_is_repaired_and_releases_logical_quota_before_gc() {
+    use ahvm_engine::Backend;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    let root = std::env::temp_dir().join(format!(
+        "ahvm-api-logical-delete-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let image = root.join("image");
+    std::fs::File::create(&image)
+        .unwrap()
+        .set_len(65536)
+        .unwrap();
+    let mut config = ahvm_engine::KrucibleConfig::new(
+        "/usr/bin/true".into(),
+        image,
+        root.join("sandboxes"),
+        String::new(),
+    );
+    config.default_storage_mode = ahvm_engine::StorageMode::Replicated;
+    config.replicated = Some(ahvm_engine::ReplicatedConfig {
+        socket: root.join("volume.sock"),
+    });
+    let service = UnixListener::bind(root.join("volume.sock")).unwrap();
+    let server = std::thread::spawn(move || {
+        for operation in ["prepare", "delete", "retire"] {
+            let (mut stream, _) = service.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let q: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(q["operation"], operation);
+            writeln!(stream, "{}", serde_json::json!({"ok":operation=="retire","volume_id":q["volume_id"],"logical_released":operation=="retire","reclamation_complete":false})).unwrap();
+        }
+    });
+    let mut state = test_state();
+    let engine = Arc::new(ahvm_engine::KrucibleBackend::open(config).unwrap());
+    let spec: ahvm_engine::SandboxSpec = serde_json::from_value(serde_json::json!({"name":"logical-delete","cpus":1,"memory_mb":512,"backend":"krucible","storage_mode":"replicated"})).unwrap();
+    let mut volume = None;
+    assert!(engine
+        .create_with_storage_admission(&spec, &mut |id, bytes| {
+            state
+                .store
+                .reserve_replicated_volume("alice", "logical-delete", id, bytes as i64, 0)
+                .unwrap();
+            volume = Some(id.to_string());
+            Ok(())
+        })
+        .is_err());
+    state
+        .store
+        .create_sandbox(&ahvm_store::Sandbox {
+            id: spec.name.clone(),
+            owner_user_id: "alice".into(),
+            name: spec.name.clone(),
+            backend: ahvm_store::Backend::Krucible,
+            state: "failed".into(),
+            thermal: "cold".into(),
+            cpus: 1,
+            memory_mb: 512,
+            ip: String::new(),
+            created_at: 0,
+            updated_at: 0,
+        })
+        .unwrap();
+    state.backend = engine;
+    let (_, receipt) = call(
+        build_router(state.clone()),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/logical-delete",
+        Some(serde_json::json!({"action":"delete","sandbox_id":"logical-delete"})),
+    )
+    .await;
+    assert_eq!(receipt["status"], 204, "{receipt}");
+    assert_eq!(receipt["sandbox_state"], "absent");
+    assert_eq!(
+        state.store.replicated_usage("alice").unwrap().logical_bytes,
+        0
+    );
+    let retired = state
+        .store
+        .replicated_reservation("alice", &volume.unwrap())
+        .unwrap();
+    assert_eq!(retired.state, "deleting");
+    assert!(retired.logical_released);
+    state
+        .store
+        .reserve_replicated_volume("alice", "logical-delete", &"f".repeat(64), 65536, 1)
+        .unwrap();
+    server.join().unwrap();
+    drop(state);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn failed_create_receipt_tracks_only_its_old_volume_retirement() {
+    let state = test_state();
+    let app = build_router(state.clone());
+    let request = serde_json::json!({"action":"create","sandbox_id":"retired-receipt","cpus":1,"memory_mb":512});
+    let canonical = serde_json::to_string(
+        &serde_json::from_value::<ahvm_daemon::operations::Request>(request.clone()).unwrap(),
+    )
+    .unwrap();
+    let old = "a".repeat(64);
+    state
+        .store
+        .reserve_replicated_volume("alice", "retired-receipt", &old, 65536, 0)
+        .unwrap();
+    let op = ahvm_store::LifecycleOperation {
+        id: "failed-retired-create".into(),
+        owner_user_id: "alice".into(),
+        sandbox_id: "retired-receipt".into(),
+        request: canonical,
+        state: "pending".into(),
+        status: None,
+        error: None,
+        sandbox_state: None,
+        storage_volume_id: None,
+    };
+    state.store.admit_lifecycle_operation(&op, 0).unwrap();
+    let error = serde_json::json!({"code":"backend_unavailable","message":"volume prepare failed"});
+    state
+        .store
+        .finish_lifecycle_operation_with_error(
+            &op.id,
+            502,
+            Some(&error),
+            Some("untracked"),
+            Some(&old),
+        )
+        .unwrap();
+    let (_, receipt) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "GET",
+        "/v1/operations/failed-retired-create",
+        None,
+    )
+    .await;
+    assert_eq!(receipt["sandbox_state"], "untracked");
+    state
+        .store
+        .delete_replicated_reservation("alice", &old, 1)
+        .unwrap();
+    state
+        .store
+        .confirm_replicated_retirement("alice", &old, 2, true, false)
+        .unwrap();
+    let (_, receipt) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "GET",
+        "/v1/operations/failed-retired-create",
+        None,
+    )
+    .await;
+    assert_eq!(receipt["sandbox_state"], "absent");
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"retired-receipt","cpus":1,"memory_mb":512})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    state
+        .store
+        .reserve_replicated_volume("alice", "retired-receipt", &"b".repeat(64), 65536, 3)
+        .unwrap();
+    for method in ["GET", "POST"] {
+        let (_, receipt) = call(
+            app.clone(),
+            Some(TOKEN_A),
+            method,
+            "/v1/operations/failed-retired-create",
+            if method == "POST" {
+                Some(request.clone())
+            } else {
+                None
+            },
+        )
+        .await;
+        assert_eq!(receipt["status"], 502);
+        assert_eq!(receipt["error"], error);
+        assert_eq!(receipt["sandbox_state"], "absent");
+    }
+    assert!(state.store.get_sandbox("retired-receipt").is_ok());
+    assert_eq!(
+        state.store.replicated_usage("alice").unwrap().logical_bytes,
+        65536
+    );
+}
+
+#[tokio::test]
+async fn interrupted_replicated_create_can_prove_its_old_volume_retired() {
+    let state = test_state();
+    let op = ahvm_store::LifecycleOperation {
+        id: "interrupted-volume".into(),
+        owner_user_id: "alice".into(),
+        sandbox_id: "interrupted-volume-vm".into(),
+        request: "create".into(),
+        state: "pending".into(),
+        status: None,
+        error: None,
+        sandbox_state: None,
+        storage_volume_id: None,
+    };
+    state.store.admit_lifecycle_operation(&op, 0).unwrap();
+    let old = "a".repeat(64);
+    state
+        .store
+        .reserve_replicated_volume("alice", &op.sandbox_id, &old, 65536, 0)
+        .unwrap();
+    state.store.interrupt_lifecycle_operations().unwrap();
+    let app = build_router(state.clone());
+    let (_, before) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "GET",
+        "/v1/operations/interrupted-volume",
+        None,
+    )
+    .await;
+    assert_eq!(before["state"], "interrupted");
+    assert!(before["sandbox_state"].is_null());
+    state
+        .store
+        .delete_replicated_reservation("alice", &old, 1)
+        .unwrap();
+    state
+        .store
+        .confirm_replicated_retirement("alice", &old, 2, true, false)
+        .unwrap();
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":op.sandbox_id,"cpus":1,"memory_mb":512})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, after) = call(
+        app,
+        Some(TOKEN_A),
+        "GET",
+        "/v1/operations/interrupted-volume",
+        None,
+    )
+    .await;
+    assert_eq!(after["state"], "interrupted");
+    assert_eq!(after["sandbox_state"], "absent");
+    assert!(state.store.get_sandbox(&op.sandbox_id).is_ok());
+}
+
+#[tokio::test]
+async fn failed_delete_receipt_reports_original_retirement_until_safe_release() {
+    let state = test_state();
+    let app = build_router(state.clone());
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"pending-retirement","cpus":1,"memory_mb":512})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let old = "a".repeat(64);
+    state
+        .store
+        .reserve_replicated_volume("alice", "pending-retirement", &old, 65536, 0)
+        .unwrap();
+    let (_, before) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/operations/pending-retirement-delete",
+        Some(serde_json::json!({"action":"delete","sandbox_id":"pending-retirement"})),
+    )
+    .await;
+    assert_eq!(before["state"], "done");
+    assert_eq!(before["status"], 422);
+    assert_eq!(before["sandbox_state"], "failed");
+    assert_eq!(before["retirement_pending"], true);
+    assert_eq!(
+        state.store.replicated_usage("alice").unwrap().logical_bytes,
+        65536
+    );
+    state
+        .store
+        .confirm_replicated_retirement("alice", &old, 1, true, false)
+        .unwrap();
+    let (_, released) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "GET",
+        "/v1/operations/pending-retirement-delete",
+        None,
+    )
+    .await;
+    assert_eq!(released["status"], before["status"]);
+    assert_eq!(released["error"], before["error"]);
+    assert_eq!(released["sandbox_state"], "absent");
+    assert_eq!(released["retirement_pending"], false);
+    assert_eq!(
+        state.store.replicated_usage("alice").unwrap().logical_bytes,
+        0
+    );
+    let (status, _) = call(
+        app.clone(),
+        Some(TOKEN_A),
+        "POST",
+        "/v1/sandboxes",
+        Some(serde_json::json!({"name":"pending-retirement","cpus":1,"memory_mb":512})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, old_receipt) = call(
+        app,
+        Some(TOKEN_A),
+        "GET",
+        "/v1/operations/pending-retirement-delete",
+        None,
+    )
+    .await;
+    assert_eq!(old_receipt["sandbox_state"], "absent");
+    assert_eq!(old_receipt["retirement_pending"], false);
+    assert!(state.store.get_sandbox("pending-retirement").is_ok());
 }

@@ -64,37 +64,67 @@ async fn view(state: &AppState, op: LifecycleOperation) -> ApiResult<Response> {
     } else {
         axum::http::StatusCode::OK
     };
-    let sandbox_state = if op.state == "pending" {
-        None
-    } else {
-        // Read backend and metadata under the same lifecycle lock. An orphan
-        // backend with no SQL row is NOT evidence that allocation is absent.
-        let _lc = state.lifecycle.lock(&op.sandbox_id).await;
-        crate::routes::unchanged_identity(&_lc)?;
-        let backend = state.backend.clone();
-        let id = op.sandbox_id.clone();
-        let tracked = match state.store.get_sandbox(&id) {
-            Ok(row) if row.owner_user_id == op.owner_user_id => true,
-            Ok(_) => return Err(ApiError::NotFound("sandbox".into())),
-            Err(ahvm_store::Error::NotFound(_)) => false,
-            Err(e) => return Err(e.into()),
-        };
-        Some(
-            match crate::blocking(move || {
-                let _lifecycle = _lc;
-                backend.status(&id)
-            })
-            .await
-            {
-                Ok(info) if tracked => crate::state_str(&info.state),
-                Ok(_) => "untracked".into(),
-                Err(ApiError::NotFound(_)) if !tracked => "absent".into(),
-                Err(ApiError::NotFound(_)) => "failed".into(),
-                Err(e) => return Err(e),
-            },
-        )
+    // A terminal receipt describes its own generation, never a new VM that
+    // later reused the name. Legacy receipts without a snapshot remain unknown.
+    let mut sandbox_state = op.sandbox_state;
+    let mut retirement_pending = false;
+    if let Some(volume) = &op.storage_volume_id {
+        if let Ok(row) = state
+            .store
+            .replicated_reservation(&op.owner_user_id, volume)
+        {
+            retirement_pending = row.state == "deleting" && !row.logical_released;
+            if row.logical_released {
+                // Cleanup evidence follows the operation's immutable generation.
+                sandbox_state = Some("absent".into());
+            }
+        }
+    }
+    Ok((status,Json(serde_json::json!({"id":op.id,"sandbox_id":op.sandbox_id,"state":op.state,"status":op.status,"sandbox_state":sandbox_state,"error":op.error,"retirement_pending":retirement_pending}))).into_response())
+}
+async fn current_sandbox_state(
+    state: &AppState,
+    owner: &str,
+    sandbox: &str,
+) -> ApiResult<(String, Option<String>)> {
+    let lc = state.lifecycle.lock(sandbox).await;
+    crate::routes::unchanged_identity(&lc)?;
+    let tracked = match state.store.get_sandbox(sandbox) {
+        Ok(row) if row.owner_user_id == owner => true,
+        Ok(_) => return Err(ApiError::NotFound("sandbox".into())),
+        Err(ahvm_store::Error::NotFound(_)) => false,
+        Err(e) => return Err(e.into()),
     };
-    Ok((status,Json(serde_json::json!({"id":op.id,"sandbox_id":op.sandbox_id,"state":op.state,"status":op.status,"sandbox_state":sandbox_state}))).into_response())
+    let volume = state
+        .store
+        .replicated_for_sandbox(owner, sandbox)?
+        .map(|row| row.volume_id);
+    let backend = state.backend.clone();
+    let id = sandbox.to_string();
+    match crate::blocking(move || {
+        let _lifecycle = lc;
+        backend.status(&id)
+    })
+    .await
+    {
+        Ok(info) if tracked => Ok((
+            crate::state_str(&info.state),
+            info.storage.volume_id.or(volume),
+        )),
+        Ok(info) => Ok(("untracked".into(), info.storage.volume_id.or(volume))),
+        Err(ApiError::NotFound(_)) if !tracked => {
+            // Missing engine metadata alone cannot prove an admitted replicated
+            // disk has retired. Its durable reservation still owns capacity.
+            let resource_state = if volume.is_some() {
+                "untracked"
+            } else {
+                "absent"
+            };
+            Ok((resource_state.into(), volume))
+        }
+        Err(ApiError::NotFound(_)) => Ok(("failed".into(), volume)),
+        Err(e) => Err(e),
+    }
 }
 pub async fn get(
     State(state): State<AppState>,
@@ -204,6 +234,9 @@ pub async fn submit(
         request: canonical,
         state: "pending".into(),
         status: None,
+        error: None,
+        sandbox_state: None,
+        storage_volume_id: None,
     };
     if state
         .store
@@ -213,15 +246,43 @@ pub async fn submit(
         // request/JoinHandle does not cancel this task or its lifecycle guards.
         let task_state = state.clone();
         let operation_id = id.clone();
-        let mut task = tokio::spawn(async move {
-            let response = execute(task_state.clone(), user, request, &operation_id).await;
-            if let Err(error) = task_state
-                .store
-                .finish_lifecycle_operation(&operation_id, response.status().as_u16())
-            {
-                eprintln!("ahvm-daemon: persist operation {operation_id}: {error}");
-            }
-        });
+        let operation_owner = op.owner_user_id.clone();
+        let operation_sandbox = op.sandbox_id.clone();
+        let mut task =
+            tokio::spawn(async move {
+                let result = execute(task_state.clone(), user, request, &operation_id).await;
+                let (status, detail) = match result {
+                    Ok(status) => (status, None),
+                    Err(error) => (
+                        error.status(),
+                        Some(serde_json::json!({"code":error.code(),"message":error.to_string()})),
+                    ),
+                };
+                let (sandbox_state, storage_volume_id) =
+                    match current_sandbox_state(&task_state, &operation_owner, &operation_sandbox)
+                        .await
+                    {
+                        Ok((resource_state, volume)) => (Some(resource_state), volume),
+                        Err(_) => (
+                            None,
+                            task_state
+                                .store
+                                .replicated_for_sandbox(&operation_owner, &operation_sandbox)
+                                .ok()
+                                .flatten()
+                                .map(|row| row.volume_id),
+                        ),
+                    };
+                if let Err(error) = task_state.store.finish_lifecycle_operation_with_error(
+                    &operation_id,
+                    status.as_u16(),
+                    detail.as_ref(),
+                    sandbox_state.as_deref(),
+                    storage_volume_id.as_deref(),
+                ) {
+                    eprintln!("ahvm-daemon: persist operation {operation_id}: {error}");
+                }
+            });
         // Fast operations retain the synchronous CLI experience; slow ones have
         // a pollable receipt. This timeout never aborts the executing task.
         let _ = tokio::time::timeout(Duration::from_secs(20), &mut task).await;
@@ -232,7 +293,12 @@ pub async fn submit(
     )
     .await
 }
-async fn execute(state: AppState, user: UserId, request: Request, operation_id: &str) -> Response {
+async fn execute(
+    state: AppState,
+    user: UserId,
+    request: Request,
+    operation_id: &str,
+) -> ApiResult<axum::http::StatusCode> {
     let s = State(state);
     let u = Extension(user);
     match request {
@@ -260,7 +326,7 @@ async fn execute(state: AppState, user: UserId, request: Request, operation_id: 
             image_digest.as_deref(),
         )
         .await
-        .into_response(),
+        .map(|response| response.into_response().status()),
         Request::Start {
             sandbox_id,
             network_bytes_per_sec,
@@ -272,16 +338,14 @@ async fn execute(state: AppState, user: UserId, request: Request, operation_id: 
             network_bytes_per_sec,
         )
         .await
-        .into_response(),
+        .map(|_| axum::http::StatusCode::OK),
         Request::Stop { sandbox_id } => {
             sandboxes::stop_operation(s, u, Path(sandbox_id), Some(operation_id))
                 .await
-                .into_response()
+                .map(|_| axum::http::StatusCode::OK)
         }
         Request::Delete { sandbox_id } => {
-            sandboxes::destroy_operation(s, u, Path(sandbox_id), Some(operation_id))
-                .await
-                .into_response()
+            sandboxes::destroy_operation(s, u, Path(sandbox_id), Some(operation_id)).await
         }
     }
 }

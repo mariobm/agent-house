@@ -36,6 +36,13 @@ pub struct SandboxStorage {
     pub replication: Option<ReplicationStatus>,
 }
 
+/// Explicit supervisor proofs: safe logical retirement and physical GC differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetirementStatus {
+    pub logical_released: bool,
+    pub reclamation_complete: bool,
+}
+
 /// Trusted host service, configured by the embedding engine application.
 /// It must serve a private Unix socket and never accept guest connections.
 #[derive(Debug, Clone)]
@@ -54,6 +61,8 @@ struct Reply {
     status: Option<ReplicationStatus>,
     #[serde(default)]
     reclamation_complete: Option<bool>,
+    #[serde(default)]
+    logical_released: Option<bool>,
     #[serde(default)]
     resources_enforced: Option<bool>,
 }
@@ -144,12 +153,24 @@ impl ReplicatedConfig {
         }
         Ok(())
     }
-    /// Host-only retirement handshake. False acknowledges intent, not cleanup.
-    /// A missing proof or protocol failure must keep the tenant's reservation.
-    pub fn retire(&self, id: &str, sandbox: &Path, logical_bytes: u64) -> Result<bool> {
-        self.request_sized("retire", id, None, sandbox, Some(logical_bytes))?
+    /// Missing or contradictory proofs must keep tenant capacity reserved.
+    pub fn retire(&self, id: &str, sandbox: &Path, logical_bytes: u64) -> Result<RetirementStatus> {
+        let reply = self.request_sized("retire", id, None, sandbox, Some(logical_bytes))?;
+        let logical_released = reply
+            .logical_released
+            .ok_or_else(|| Error::Control("missing logical retirement confirmation".into()))?;
+        let reclamation_complete = reply
             .reclamation_complete
-            .ok_or_else(|| Error::Control("missing reclamation confirmation".into()))
+            .ok_or_else(|| Error::Control("missing reclamation confirmation".into()))?;
+        if reclamation_complete && !logical_released {
+            return Err(Error::Control(
+                "reclamation without logical retirement".into(),
+            ));
+        }
+        Ok(RetirementStatus {
+            logical_released,
+            reclamation_complete,
+        })
     }
     pub(crate) fn prepare(
         &self,
@@ -215,7 +236,10 @@ impl ReplicatedConfig {
         self.request("detach", id, None, sandbox).map(|_| ())
     }
     pub(crate) fn delete(&self, id: &str, sandbox: &Path) -> Result<()> {
-        self.request("delete", id, None, sandbox).map(|_| ())
+        if self.request("delete", id, None, sandbox)?.logical_released != Some(true) {
+            return Err(Error::Control("missing safe deletion confirmation".into()));
+        }
+        Ok(())
     }
 }
 
@@ -273,13 +297,37 @@ mod tests {
         for (tag, value, expected) in [
             (
                 "pending",
-                serde_json::json!({"ok":true,"volume_id":id,"reclamation_complete":false}),
-                Some(false),
+                serde_json::json!({"ok":true,"volume_id":id,"logical_released":true,"reclamation_complete":false}),
+                Some(RetirementStatus {
+                    logical_released: true,
+                    reclamation_complete: false,
+                }),
             ),
             (
                 "complete",
+                serde_json::json!({"ok":true,"volume_id":id,"logical_released":true,"reclamation_complete":true}),
+                Some(RetirementStatus {
+                    logical_released: true,
+                    reclamation_complete: true,
+                }),
+            ),
+            (
+                "not-detached",
+                serde_json::json!({"ok":true,"volume_id":id,"logical_released":false,"reclamation_complete":false}),
+                Some(RetirementStatus {
+                    logical_released: false,
+                    reclamation_complete: false,
+                }),
+            ),
+            (
+                "missing-logical-proof",
                 serde_json::json!({"ok":true,"volume_id":id,"reclamation_complete":true}),
-                Some(true),
+                None,
+            ),
+            (
+                "contradictory-proof",
+                serde_json::json!({"ok":true,"volume_id":id,"logical_released":false,"reclamation_complete":true}),
+                None,
             ),
             (
                 "missing-proof",
@@ -288,7 +336,7 @@ mod tests {
             ),
             (
                 "wrong-proof-id",
-                serde_json::json!({"ok":true,"volume_id":"b".repeat(64),"reclamation_complete":true}),
+                serde_json::json!({"ok":true,"volume_id":"b".repeat(64),"logical_released":true,"reclamation_complete":true}),
                 None,
             ),
         ] {

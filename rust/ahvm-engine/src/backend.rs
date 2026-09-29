@@ -120,14 +120,14 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     }
 
     /// Trusted accounting reconciler: retire an abandoned/deleting replicated
-    /// identity and report true only after verified local and remote cleanup.
+    /// identity and distinguish safe logical release from physical cleanup.
     /// A normal retained sandbox must be explicitly destroyed first.
     fn reclaim_replicated_volume(
         &self,
         _sandbox: &str,
         _volume: &str,
         _bytes: u64,
-    ) -> Result<bool> {
+    ) -> Result<crate::RetirementStatus> {
         Err(crate::Error::InvalidState(
             "replicated reclamation unavailable".into(),
         ))

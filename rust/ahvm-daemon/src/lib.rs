@@ -100,6 +100,9 @@ impl ApiError {
     fn code(&self) -> &'static str {
         match self {
             ApiError::Unauthorized => "unauthorized",
+            ApiError::Forbidden(message) if message == "replicated storage quota exceeded" => {
+                "disk_quota_reached"
+            }
             ApiError::Forbidden(_) => "forbidden",
             ApiError::NotFound(_) => "not_found",
             ApiError::Conflict(_) => "conflict",

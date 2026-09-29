@@ -1,4 +1,4 @@
-//! Deferred storage deletion. No quota release on an RPC acknowledgement.
+//! Logical retirement releases quota; immutable volume ledgers retain GC work.
 use crate::{unix_now, AppState};
 use ahvm_store::{Error, ReplicatedReservation, Store};
 
@@ -159,6 +159,21 @@ fn cleanup_create(state: &AppState, reserved: Option<&ReplicatedReservation>) {
             return;
         }
         let _ = destroy_matching(state.backend.as_ref(), row);
+        match state.backend.reclaim_replicated_volume(
+            &row.sandbox_id,
+            &row.volume_id,
+            row.logical_bytes as u64,
+        ) {
+            Ok(proof) => {
+                if let Err(e) = finish(&state.store, row, proof) {
+                    eprintln!(
+                        "failed-create storage reconciliation {}: {e}",
+                        row.volume_id
+                    );
+                }
+            }
+            Err(e) => eprintln!("failed-create storage retirement {}: {e}", row.volume_id),
+        }
     }
 }
 
@@ -194,29 +209,20 @@ fn mark_orphan(store: &Store, row: &ReplicatedReservation) -> ahvm_store::Result
     }
 }
 
-// Caller holds the sandbox lifecycle lock. Removing a leftover row first makes
-// interruption conservative: a crash can retain quota, never free it early.
-fn finish(store: &Store, row: &ReplicatedReservation, complete: bool) -> ahvm_store::Result<bool> {
-    if !complete {
-        return Ok(false);
-    }
-    if store
-        .replicated_reservation(&row.owner_user_id, &row.volume_id)?
-        .state
-        != "deleting"
-    {
-        return Err(Error::Conflict("storage deletion no longer pending".into()));
-    }
-    match store.get_sandbox(&row.sandbox_id) {
-        Ok(sandbox) if sandbox.owner_user_id == row.owner_user_id => {
-            store.delete_sandbox(&row.sandbox_id)?
-        }
-        Ok(_) => return Err(Error::Conflict("storage deletion owner mismatch".into())),
-        Err(Error::NotFound(_)) => (),
-        Err(e) => return Err(e),
-    }
-    store.confirm_replicated_reclamation(&row.owner_user_id, &row.volume_id, unix_now())?;
-    Ok(true)
+// The store commits first release and row removal atomically. Old cleanup proofs
+// after name reuse only update the old volume ledger.
+pub(crate) fn finish(
+    store: &Store,
+    row: &ReplicatedReservation,
+    proof: ahvm_engine::RetirementStatus,
+) -> ahvm_store::Result<bool> {
+    store.confirm_replicated_retirement(
+        &row.owner_user_id,
+        &row.volume_id,
+        unix_now(),
+        proof.logical_released,
+        proof.reclamation_complete,
+    )
 }
 
 /// Separate from the thermal sweep so storage failures cannot delay idle stops.
@@ -235,27 +241,48 @@ pub async fn run(state: AppState) -> ! {
                 } else {
                     None
                 };
-                for row in rows {
-                    let Some(_lifecycle) = state.lifecycle.try_lock(&row.sandbox_id) else {
+                for scanned in rows {
+                    let Some(_lifecycle) = state.lifecycle.try_lock(&scanned.sandbox_id) else {
                         continue;
                     };
-                    if state
+                    // Foreground deletion may have released this volume and
+                    // recreated its name since the page was read. Re-read under
+                    // the lifecycle lock before touching any name-scoped state.
+                    let row = match state
                         .store
-                        .check_lifecycle_fence(&row.sandbox_id, None)
-                        .is_err()
+                        .replicated_reservation(&scanned.owner_user_id, &scanned.volume_id)
+                    {
+                        Ok(row) if row.state != "reclaimed" => row,
+                        Ok(_) => continue,
+                        Err(error) => {
+                            eprintln!("storage reservation refresh {}: {error}", scanned.volume_id);
+                            continue;
+                        }
+                    };
+                    if !row.logical_released
+                        && state
+                            .store
+                            .check_lifecycle_fence(&row.sandbox_id, None)
+                            .is_err()
                     {
                         continue;
                     }
                     // Durable controller admission and retirement share this
                     // lifecycle lock. Never destroy beneath an active run.
-                    if crate::runs::check_lifecycle(&state, &row.sandbox_id).is_err() {
+                    if !row.logical_released
+                        && crate::runs::check_lifecycle(&state, &row.sandbox_id).is_err()
+                    {
                         continue;
                     }
                     let Some(_permit) = state.ops.try_acquire() else {
                         continue;
                     };
                     match mark_orphan(&state.store, &row) {
-                        Ok(true) => _lifecycle.invalidate_identity(),
+                        Ok(true) => {
+                            if !row.logical_released {
+                                _lifecycle.invalidate_identity();
+                            }
+                        }
                         Ok(false) => continue,
                         Err(e) => {
                             eprintln!("storage orphan {}: {e}", row.volume_id);
@@ -269,7 +296,9 @@ pub async fn run(state: AppState) -> ! {
                         // record. Only its exact immutable volume may be destroyed.
                         // Even if destroy fails, retirement may repair a never-
                         // registered volume after destroy saved its delete intent.
-                        let _ = destroy_matching(backend.as_ref(), &request);
+                        if !request.logical_released {
+                            let _ = destroy_matching(backend.as_ref(), &request);
+                        }
                         backend.reclaim_replicated_volume(
                             &request.sandbox_id,
                             &request.volume_id,
@@ -278,7 +307,7 @@ pub async fn run(state: AppState) -> ! {
                     })
                     .await;
                     match result {
-                        Ok(complete) => match finish(&state.store, &row, complete) {
+                        Ok(proof) => match finish(&state.store, &row, proof) {
                             Ok(true) => state.activity.remove(&row.sandbox_id),
                             Ok(false) => (),
                             Err(e) => eprintln!("storage reconciliation {}: {e}", row.volume_id),
@@ -330,9 +359,25 @@ mod tests {
             "deleting"
         );
         assert_eq!(store.replicated_usage("u").unwrap().logical_bytes, 65536);
-        assert!(!finish(&store, &row, false).unwrap());
+        assert!(!finish(
+            &store,
+            &row,
+            ahvm_engine::RetirementStatus {
+                logical_released: false,
+                reclamation_complete: false
+            }
+        )
+        .unwrap());
         assert!(store.check_replicated_name_available("vm").is_err());
-        finish(&store, &row, true).unwrap();
+        finish(
+            &store,
+            &row,
+            ahvm_engine::RetirementStatus {
+                logical_released: true,
+                reclamation_complete: true,
+            },
+        )
+        .unwrap();
         store.check_replicated_name_available("vm").unwrap();
     }
 
@@ -367,13 +412,37 @@ mod tests {
     #[test]
     fn acknowledgement_keeps_quota_and_confirmed_cleanup_releases_it() {
         let (store, row) = fixture();
-        assert!(finish(&store, &row, true).is_err());
+        assert!(finish(
+            &store,
+            &row,
+            ahvm_engine::RetirementStatus {
+                logical_released: true,
+                reclamation_complete: true
+            }
+        )
+        .is_err());
         store
             .delete_replicated_reservation("u", &row.volume_id, 1)
             .unwrap();
-        assert!(!finish(&store, &row, false).unwrap());
+        assert!(!finish(
+            &store,
+            &row,
+            ahvm_engine::RetirementStatus {
+                logical_released: false,
+                reclamation_complete: false
+            }
+        )
+        .unwrap());
         assert_eq!(store.replicated_usage("u").unwrap().logical_bytes, 65536);
-        assert!(finish(&store, &row, true).unwrap());
+        assert!(finish(
+            &store,
+            &row,
+            ahvm_engine::RetirementStatus {
+                logical_released: true,
+                reclamation_complete: true
+            }
+        )
+        .unwrap());
         assert_eq!(store.replicated_usage("u").unwrap().logical_bytes, 0);
     }
 }

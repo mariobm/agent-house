@@ -92,8 +92,12 @@ It does not make a named historical checkpoint or a control-plane backup.
 
 After stop, successful synchronization and reclamation allow local journal/cache
 eviction. The remote disk remains. Start cold-boots that disk; RAM, processes and
-network connections are not restored. Deleting a VM begins remote cleanup; disk
-quota and its sandbox name stay reserved until cleanup is confirmed.
+network connections are not restored. Successful deletion detaches the guest and
+storage device, permanently fences local reopening and releases logical disk
+quota and the sandbox name. The same name can then be created again with a new
+volume ID. Remote object cleanup continues in the background under the old volume
+ID; its durable cleanup record remains until reclamation completes. A failed or
+uncertain deletion keeps its charge until the supervisor confirms safe retirement.
 
 ## HTTP API
 
