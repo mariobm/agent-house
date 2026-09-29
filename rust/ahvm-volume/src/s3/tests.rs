@@ -45,7 +45,7 @@ fn server(responses: Vec<Vec<u8>>) -> (S3Store, thread::JoinHandle<Vec<String>>)
             }
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
-            requests.push(request);
+            requests.push(format!("{request}\r\n{}", String::from_utf8_lossy(&body)));
             reader.get_mut().write_all(&response).unwrap();
         }
         requests
@@ -316,4 +316,101 @@ fn shared_images_use_a_separate_namespace_from_vm_collection() {
     assert_eq!(store.base_chunk(&image, &hash, Some(0)).unwrap(), bytes);
     let calls = worker.join().unwrap();
     assert!(calls[0].contains(&format!("/qualification/bases/{image}/chunks/{hash}")));
+}
+
+#[test]
+fn bulk_delete_sends_one_signed_md5_xml_request_for_a_thousand_exact_keys() {
+    use base64::Engine;
+    use md5::{Digest, Md5};
+    let hashes: Vec<_> = (0..1000).map(|index| format!("{index:064x}")).collect();
+    let mut result = String::from("<DeleteResult>");
+    for hash in &hashes {
+        result.push_str(&format!(
+            "<Deleted><Key>qualification/disk/chunks/{hash}</Key></Deleted>"
+        ));
+    }
+    result.push_str("</DeleteResult>");
+    let (store, worker) = server(vec![response("200 OK", "", result.as_bytes())]);
+    store.delete_chunks("disk", &hashes).unwrap();
+    let calls = worker.join().unwrap();
+    assert_eq!(calls.len(), 1);
+    let call = &calls[0];
+    assert!(call.starts_with("POST /test-bucket?delete "));
+    assert!(call.contains("content-md5:"));
+    assert!(call.contains("SignedHeaders=content-md5;content-type;"));
+    let body = call.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(body.matches("<Object>").count(), 1000);
+    let checksum = base64::engine::general_purpose::STANDARD.encode(Md5::digest(body.as_bytes()));
+    assert!(call.contains(&format!("content-md5: {checksum}\r\n")));
+    assert!(!body.contains("head.json"));
+    assert!(!body.contains("/bases/"));
+}
+
+#[test]
+fn bulk_delete_rejects_partial_foreign_duplicate_oversized_and_per_key_errors() {
+    let hash = "a".repeat(64);
+    let key = format!("qualification/disk/chunks/{hash}");
+    let replies = [
+        "<DeleteResult/>".to_owned(),
+        format!("<DeleteResult><Deleted><Key>{key}</Key></Deleted><Deleted><Key>{key}</Key></Deleted></DeleteResult>"),
+        format!("<DeleteResult><Deleted><Key>qualification/peer/chunks/{hash}</Key></Deleted></DeleteResult>"),
+        format!("<DeleteResult><Error><Key>{key}</Key><Code>AccessDenied</Code></Error></DeleteResult>"),
+        "<DeleteResult>invalid".to_owned(),
+    ];
+    for reply in replies {
+        let (store, worker) = server(vec![response("200 OK", "", reply.as_bytes())]);
+        assert!(store
+            .delete_chunks("disk", std::slice::from_ref(&hash))
+            .is_err());
+        worker.join().unwrap();
+    }
+    let (store, worker) = server(vec![
+        Vec::new(),
+        response(
+            "200 OK",
+            "",
+            format!("<DeleteResult><Deleted><Key>{key}</Key></Deleted></DeleteResult>").as_bytes(),
+        ),
+    ]);
+    assert!(store
+        .delete_chunks("disk", std::slice::from_ref(&hash))
+        .is_err());
+    store
+        .delete_chunks("disk", std::slice::from_ref(&hash))
+        .unwrap();
+    assert_eq!(worker.join().unwrap().len(), 2);
+    let store = S3Store::new(config("https://example.com".into())).unwrap();
+    assert!(store
+        .delete_chunks("../disk", std::slice::from_ref(&hash))
+        .is_err());
+    assert!(store
+        .delete_chunks("disk", &vec![hash.clone(); 1001])
+        .is_err());
+    assert!(store.delete_chunks("disk", &[hash.clone(), hash]).is_err());
+    assert!(store
+        .delete_chunks("disk", &["../head.json".into()])
+        .is_err());
+}
+
+#[test]
+fn packed_immutable_put_checks_duplicate_object_and_full_get_bounds() {
+    let bytes = vec![7; crate::MAX_OBJECT_BYTES];
+    let hash = digest(&bytes);
+    let (store, worker) = server(vec![
+        response("412 Precondition Failed", "", &[]),
+        response("200 OK", "ETag: \"pack\"\r\n", &bytes),
+    ]);
+    store.put_chunk("disk", &hash, &bytes).unwrap();
+    assert_eq!(worker.join().unwrap().len(), 2);
+    let too_big = vec![7; crate::MAX_OBJECT_BYTES + CHUNK_BYTES];
+    assert!(store
+        .put_chunk("disk", &digest(&too_big), &too_big)
+        .is_err());
+    let (store, worker) = server(vec![format!(
+        "HTTP/1.1 200 OK\r\nETag: \"pack\"\r\nContent-Length: {}\r\n\r\n",
+        too_big.len()
+    )
+    .into_bytes()]);
+    assert!(matches!(store.chunk("disk", &hash), Err(Error::Corrupt)));
+    worker.join().unwrap();
 }

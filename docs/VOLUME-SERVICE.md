@@ -82,11 +82,14 @@ cannot grow past that reservation on an import retry. Each locally resident reco
 512 MiB for journals (a 256-MiB log plus its simultaneous compaction replacement)
 and 64 MiB of clean-cache payload. These values share the worker's actual bounds.
 
-Failed imports and deleted-but-not-yet-reclaimed records remain charged. Stopped
-disks release local journal/cache reservations after safe eviction, but retain
-the logical capacity charge for their remote disk. Retries do not charge twice. Deleted volumes release reservations only
-after an empty remote chunk listing and successful local journal removal. Failed
-cleanup retains the reservation and retries. Raising a budget requires an explicit
+Failed imports and deletions without a safe retirement proof remain charged.
+Stopped disks release local journal/cache reservations after safe eviction, but
+retain the logical capacity charge for their remote disk. Retries do not charge
+twice. Deleted volumes release logical capacity after durable local fencing and
+verified detachment; local journal/cache budgets release after local files are
+removed. Remote cleanup continues under a durable record without holding tenant
+logical capacity. Failed physical cleanup retries without restoring the old charge.
+Raising a budget requires an explicit
 config change and service restart. Do not remove owner/journal records to evade the budget. A reservation
 write failure freezes further imports and cold reactivation until restart reconstructs the durable
 registry. Lowering a budget preserves existing disks and blocks new admission
@@ -145,8 +148,10 @@ there is no silent production migration or enabled service change.
   sources fail. Ready or owned disks are never overwritten by a retry.
 - Stop/detach retain remote ownership; safe background eviction removes the
   synchronized journal while keeping the small private owner identity.
-  Delete records intent before cleanup. Background reclamation retires the
-  remote identity, removes its chunks and then its local owner/journal directory.
+  Delete records intent before cleanup, verifies detachment, permanently fences
+  local reopening and discards the deleted disk's local journal. Background
+  reclamation retires the remote identity and removes its immutable objects and
+  remaining local owner metadata.
   Small local records and remote retirement markers remain to prevent identity
   reuse. No scheduled backups, automatic cross-host takeover or implicit mode
   conversion is added.
@@ -225,7 +230,9 @@ which did not expose the unprivileged CI fixture mismatch.
 
 ## Deleted-volume reclamation
 
-Deletion acknowledges local intent and detachment; it does not wait for R2.
+Deletion confirms durable local intent, detachment and a permanent local reopen
+fence; it does not wait for R2. This logical retirement releases disk capacity and
+the user-visible name while retaining the immutable volume ID's cleanup ledger.
 The supervisor picks up deleted records automatically. It permanently retires the
 remote head with a conditional write before removing any chunks. A current owned
 volume requires the private owner lock and matching remote identity; another live
@@ -239,21 +246,23 @@ part of chunk cleanup. Unknown formats/fields fail closed. This collector suppor
 volumes without checkpoints only; adding checkpoints requires a new compatible
 reference/format design before this path may delete checkpoint-backed data.
 
-One collector runs at a time, deleting at most 16 chunks per pass. Each S3
-request is bounded to three seconds. It lists only the exact volume chunk prefix,
-validates every returned key, and deletes individual objects. Each pass restarts
+One collector runs at a time, deleting at most 1,000 objects per pass with a signed
+S3 multi-object delete. Each S3 request is bounded to three seconds. It lists only
+the exact volume object prefix and validates every returned key. A successful
+HTTP response with a per-object error remains a failed cleanup pass. Each pass restarts
 at the first page of the shrinking listing, so interrupted cleanup cannot skip
 objects via an obsolete pagination offset. Failures retry with the supervisor's
-bounded backoff. Completion requires a subsequent empty listing. Only then are
-local journals removed/fsynced and `reclaimed` persisted, releasing reservations.
+bounded backoff. Completion requires a subsequent empty listing. Only then is
+remaining owner metadata removed/fsynced and `reclaimed` persisted. Logical
+capacity has already been released by safe local retirement.
 `usage` exposes `reclamation_complete`; the retained metadata remains measurable.
 
 Successful partial passes retry after one second. Reclaimed records are checked
 hourly (and after supervisor restart), collecting any late orphan uploads from
 requests issued before the old worker died. No running volume is scanned or
-paused. This housekeeping does not create backups. Retirement markers/records
-still count toward the existing 1,024-record registry bound; compacting that
-registry and reference-aware reclamation for live disks remain follow-ups.
+paused. This housekeeping does not create backups. Unreclaimed records count toward the 1,024-record admission bound. Completed
+retirement records preserve identity fences without consuming that bound;
+compacting historical metadata and collection for running disks remain follow-ups.
 
 ### Reclamation qualification
 
@@ -267,8 +276,8 @@ changed. This measures a small cleanup probe, not bulk deletion throughput.
 Deterministic tests cover interrupted deletes, lost retirement replies, late
 orphan uploads, malformed markers, failed imports, discarded pending writes,
 foreign listing keys, permission/delete failures, and releasing admission budgets
-only after both remote and local cleanup. The privileged runner discovers the
-root-only tests automatically, including the new cleanup/admission regression.
+after safe local retirement, with physical cleanup tracked separately.
+The privileged runner discovers root-only tests automatically, including the new cleanup/admission regression.
 
 An isolated `ahvm-volumed` smoke on agent_house imported a 128-KiB image, accepted
 delete, automatically removed its remote chunks/local owner directory and released
@@ -318,8 +327,8 @@ They wait up to ten seconds for it to yield before returning a retryable busy
 error. Competing ordinary lifecycle operations still fail fast. Read-only polling
 does not continually cancel collection. One collector runs at a time across both
 deleted and stopped disks. No per-I/O accounting work is added to running guests.
-A large first metadata walk and per-object deletes can still be slow; bulk delete
-and metadata throughput optimization remain separate work.
+A large first metadata walk can still be slow. Garbage keys are removed with
+bounded S3 multi-object deletes; metadata throughput optimization remains separate.
 
 This is not online collection for VMs that never stop, checkpoint creation or
 checkpoint expiry. Local eviction follows a completed collection cycle as below. Checkpoint metadata requires a format/reference
@@ -403,14 +412,18 @@ large-disk eviction or boot-time benchmark.
 ## Accounting retirement handshake
 
 The trusted daemon can send `retire` with `volume_id`, the original `sandbox_dir`
-and `logical_bytes`. The reply's `reclamation_complete` is required: `false` means
-delete intent was recorded; only `true` confirms local and remote reclamation.
-Timeouts, omitted confirmation and mismatched identities never release tenant quota.
+and `logical_bytes`. The reply contains separate required `logical_released` and
+`reclamation_complete` proofs. `logical_released: true` confirms durable local
+fencing, detachment and local journal removal, allowing tenant quota and name
+reuse. `reclamation_complete: false` means physical object cleanup is still pending.
+Complete reclamation requires logical retirement. Timeouts, omitted confirmation
+and mismatched identities never release tenant quota.
 The engine validates lifecycle ownership before issuing this host-only operation.
 
 For a never-registered identity, the supervisor records an already-deleted, cold
 record without an image import, journal/cache reservation or NBD attachment. Its
-logical size is validated and held until cleanup. The original sandbox directory
+logical size is validated; safe local retirement can release its logical charge
+before remote cleanup. The original sandbox directory
 may be absent, but must be directly under the configured engine root. Remote
 ownership checks still apply: missing local ownership cannot authorize deletion
 of another host's owned disk. Small local/remote tombstones remain permanently.
@@ -523,3 +536,12 @@ Operators can prewarm installed images through the bounded supervisor before
 user creation. Workers prefer verified local image data and fall back to R2.
 Existing disks retain their format. See the guide for retention, rollback and
 remote-only qualification details.
+
+## Packed private changes and logical retirement
+
+New disks pack private 64-KiB blocks into immutable objects of at most 1 MiB.
+Existing disks retain their format. Safe local retirement releases tenant capacity
+and the name before remote object deletion finishes; the old volume's durable
+cleanup record remains. See [packed storage](PACKED-STORAGE.md) for formats,
+publication, collection and upgrade requirements. Earlier qualification timings
+above describe the previous implementation, not the new deletion path.

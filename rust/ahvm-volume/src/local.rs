@@ -314,6 +314,41 @@ impl LocalDisk {
     pub fn status(&self) -> Status {
         self.state.lock().unwrap().status()
     }
+    pub(crate) fn compact_remote(
+        &self,
+        after: Option<crate::reclaim::CompactionCursor>,
+        budget: usize,
+        cancel: &impl Fn() -> bool,
+    ) -> Result<crate::reclaim::Compaction> {
+        let _writer = self.writer.lock().map_err(|_| Error::ReopenRequired)?;
+        let mut state = self.state.lock().map_err(|_| Error::ReopenRequired)?;
+        if state.failed {
+            return Err(Error::ReopenRequired);
+        }
+        if !state.pending.is_empty() {
+            return Err(Error::Backpressure);
+        }
+        let mut remote = IndexedVolume::open(self.store.clone(), &self.id)?;
+        if remote.revision() != state.reader.revision() {
+            return Err(Error::Conflict);
+        }
+        let result = match remote.compact_packs(after, budget, cancel) {
+            Ok(result) => result,
+            Err(error @ (Error::Conflict | Error::Uncertain | Error::ReopenRequired)) => {
+                state.failed = true;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        if result.rewritten_blocks != 0 {
+            // Compaction preserves the replication watermark exactly. Persist
+            // the new root binding before allowing writes or GC of old packs.
+            state.header.base = remote.revision().to_owned();
+            state.reader = remote;
+            state.compact()?;
+        }
+        Ok(result)
+    }
     /// Barrier for all writes admitted before this call's snapshot. Guest flush
     /// is deliberately separate and does not call this method.
     pub fn sync_remote(&self) -> Result<Status> {

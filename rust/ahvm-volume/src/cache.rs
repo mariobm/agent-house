@@ -1,5 +1,5 @@
 //! Disposable, volume-scoped FIFO cache of verified immutable objects.
-use crate::{digest, Error, Head, ObjectStore, Result, CHUNK_BYTES};
+use crate::{digest, Error, Head, ObjectStore, Result, CHUNK_BYTES, MAX_OBJECT_BYTES};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
@@ -10,6 +10,7 @@ type Key = (String, String);
 #[derive(Default)]
 struct State {
     objects: HashMap<Key, Vec<u8>>,
+    bytes: usize,
     order: VecDeque<Key>,
     pending: HashSet<Key>,
 }
@@ -44,7 +45,7 @@ impl CachedStore {
             local_base: None,
             #[cfg(unix)]
             local_failed: std::sync::atomic::AtomicBool::new(false),
-            capacity: bytes / CHUNK_BYTES,
+            capacity: bytes,
             state: Arc::new(Mutex::new(State::default())),
         })
     }
@@ -122,7 +123,7 @@ impl CachedStore {
     }
 
     pub fn bytes(&self) -> usize {
-        self.state.lock().unwrap().objects.len() * CHUNK_BYTES
+        self.state.lock().unwrap().bytes
     }
     fn insert(&self, id: &str, hash: &str, bytes: &[u8]) -> Result<()> {
         Self::insert_into(&self.state, self.capacity, id, hash, bytes)
@@ -134,17 +135,25 @@ impl CachedStore {
         hash: &str,
         bytes: &[u8],
     ) -> Result<()> {
-        if bytes.len() != CHUNK_BYTES || digest(bytes) != hash {
+        if !(CHUNK_BYTES..=MAX_OBJECT_BYTES).contains(&bytes.len())
+            || !bytes.len().is_multiple_of(CHUNK_BYTES)
+            || digest(bytes) != hash
+        {
             return Err(Error::Corrupt);
+        }
+        if bytes.len() > capacity {
+            return Ok(());
         }
         let key = (id.to_owned(), hash.to_owned());
         let mut s = state.lock().unwrap();
         if !s.objects.contains_key(&key) {
-            while s.objects.len() >= capacity {
+            while s.bytes + bytes.len() > capacity {
                 let old = s.order.pop_front().unwrap();
-                s.objects.remove(&old);
+                let removed = s.objects.remove(&old).unwrap();
+                s.bytes -= removed.len();
             }
             s.order.push_back(key.clone());
+            s.bytes += bytes.len();
             s.objects.insert(key, bytes.to_vec());
         }
         Ok(())
@@ -216,6 +225,33 @@ impl ObjectStore for CachedStore {
             .objects
             .get(&(id.into(), hash.into()))
             .cloned()
+    }
+    fn list_chunks(&self, id: &str, limit: usize) -> Result<Vec<String>> {
+        self.inner.list_chunks(id, limit)
+    }
+    fn list_chunks_after(
+        &self,
+        id: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        self.inner.list_chunks_after(id, after, limit)
+    }
+    fn delete_chunk(&self, id: &str, hash: &str) -> Result<()> {
+        self.delete_chunks(id, &[hash.to_owned()])
+    }
+    fn delete_chunks(&self, id: &str, hashes: &[String]) -> Result<()> {
+        self.inner.delete_chunks(id, hashes)?;
+        let mut state = self.state.lock().unwrap();
+        for hash in hashes {
+            if let Some(bytes) = state.objects.remove(&(id.to_owned(), hash.clone())) {
+                state.bytes -= bytes.len();
+            }
+        }
+        let mut order = std::mem::take(&mut state.order);
+        order.retain(|key| state.objects.contains_key(key));
+        state.order = order;
+        Ok(())
     }
     fn head(&self, id: &str) -> Result<Option<Head>> {
         self.inner.head(id)

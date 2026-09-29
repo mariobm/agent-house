@@ -160,6 +160,14 @@ impl Store {
         e.epoch == self.identity.epoch && e.owner.as_deref() == Some(&self.identity.token)
     }
     fn open(raw: Arc<dyn ObjectStore>, id: &str, dir: &Path) -> Result<Arc<Self>> {
+        Self::open_inner(raw, id, dir, false)
+    }
+    fn open_inner(
+        raw: Arc<dyn ObjectStore>,
+        id: &str,
+        dir: &Path,
+        retiring: bool,
+    ) -> Result<Arc<Self>> {
         if !crate::valid_id(id) {
             return Err(Error::InvalidInput);
         }
@@ -183,6 +191,9 @@ impl Store {
             .mode(0o600)
             .open(&lock_path))?;
         lock.try_lock().map_err(|_| Error::Conflict)?;
+        if !retiring && dir.join("retired").exists() {
+            return Err(Error::Conflict);
+        }
         let head = raw.head(id)?.ok_or(Error::NotFound)?;
         let mut envelope = decode(raw.clone(), id, &head)?;
         if envelope.epoch == 0 {
@@ -413,7 +424,7 @@ impl OwnedDisk {
             }
             let v: serde_json::Value =
                 serde_json::from_slice(&h.manifest).map_err(|_| Error::Corrupt)?;
-            if v["format"] != 2 && v["format"] != 6 {
+            if !matches!(v["format"].as_u64(), Some(2 | 6 | 8 | 10)) {
                 let envelope = decode(raw.clone(), id, h)?;
                 if envelope.epoch != 0 && envelope.owner.is_none() {
                     // Explicit release already fenced the old owner. Compete
@@ -422,7 +433,7 @@ impl OwnedDisk {
                         .map_err(crate::publication_error)?;
                     return Ok(());
                 }
-                let store = Store::open(raw.clone(), id, dir)?;
+                let store = Store::open_inner(raw.clone(), id, dir, true)?;
                 let mut active = store.active.write().map_err(|_| Error::ReopenRequired)?;
                 *active = false;
                 let h = raw.head(id)?.ok_or(Error::NotFound)?;
@@ -455,6 +466,39 @@ impl OwnedDisk {
     /// Caller must prove VM/NBD are stopped. The owner lock excludes other disk
     /// handles throughout sync and removal. A durable intent makes partial local
     /// deletion recoverable before any subsequent journal replay.
+    /// Caller must prove all VM/device consumers detached. Durably fence local
+    /// reopening and discard unsynced data only for an irrevocably deleted disk.
+    /// Remote owner identity remains until tombstone CAS is confirmed.
+    pub fn discard_retired_local(id: &str, dir: &Path) -> Result<()> {
+        if !crate::valid_id(id) || !dir.is_absolute() {
+            return Err(Error::InvalidInput);
+        }
+        let lock = err(OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(dir.join("owner.lock")))?;
+        lock.try_lock().map_err(|_| Error::Conflict)?;
+        let marker = dir.join("retired");
+        let mut file = err(OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&marker))?;
+        err(file.write_all(id.as_bytes()))?;
+        err(file.sync_all())?;
+        err(err(File::open(dir))?.sync_all())?;
+        match fs::remove_dir_all(dir.join("journal")) {
+            Ok(()) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(_) => return Err(Error::Store),
+        }
+        err(err(File::open(dir))?.sync_all())?;
+        Ok(())
+    }
     pub fn evict_local(raw: Arc<dyn ObjectStore>, id: &str, dir: &Path) -> Result<()> {
         let disk = Self::open(raw, id, dir)?;
         disk.sync_remote()?;
@@ -569,7 +613,7 @@ impl OwnedDisk {
         cancel: impl Fn() -> bool,
         mark: &mut Option<OfflineMark>,
     ) -> Result<crate::reclaim::Collection> {
-        if !(1..=128).contains(&limit) || after.is_some_and(|s| !hash(s)) {
+        if !(1..=1000).contains(&limit) || after.is_some_and(|s| !hash(s)) {
             return Err(Error::InvalidInput);
         }
         let phase = self.phase.write().map_err(|_| Error::ReopenRequired)?;
@@ -624,22 +668,45 @@ impl OwnedDisk {
         {
             return Err(Error::Conflict);
         }
-        let mut deleted = 0;
+        let mut garbage = Vec::new();
         for hash in &hashes {
             if cancel() {
                 return Err(Error::Deadline);
             }
             if live.binary_search(&crate::indexed::decode(hash)?).is_err() {
-                self.store.raw.delete_chunk(&self.store.id, hash)?;
-                deleted += 1;
+                garbage.push(hash.clone());
             }
         }
+        self.store.raw.delete_chunks(&self.store.id, &garbage)?;
+        let deleted = garbage.len();
         Ok(crate::reclaim::Collection {
             scanned_objects: hashes.len(),
             deleted_objects: deleted,
             complete: hashes.is_empty(),
             next_after: hashes.last().cloned(),
         })
+    }
+    /// Same offline detachment contract as collect_offline; excludes guest I/O
+    /// and replication for the entire bounded source/read/upload/publication.
+    pub fn compact_offline(
+        &self,
+        after: Option<crate::reclaim::CompactionCursor>,
+        budget: usize,
+        cancel: impl Fn() -> bool,
+    ) -> Result<crate::reclaim::Compaction> {
+        let phase = self.phase.write().map_err(|_| Error::ReopenRequired)?;
+        if *phase != Phase::Active {
+            return Err(Error::ReopenRequired);
+        }
+        self.disk.compact_remote(after, budget, &cancel)
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn remote_revision(&self) -> Result<String> {
+        Ok(self
+            .store
+            .head(&self.store.id)?
+            .ok_or(Error::NotFound)?
+            .revision)
     }
     pub fn background(&self) -> Background {
         let (tx, rx) = mpsc::channel();

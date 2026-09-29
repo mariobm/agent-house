@@ -36,6 +36,9 @@ fn record(id: &str, root: &Path) -> Record {
         prepared: false,
         deleted: false,
         reclaimed: false,
+        logical_released: false,
+        compact_after: None,
+        compact_revision: None,
         gc_after: None,
         gc_eligible: false,
         gc_last_completed: None,
@@ -442,7 +445,7 @@ fn lower_budgets_preserve_existing_identity_and_usage_includes_tombstones() {
 
 #[test]
 #[ignore = "requires Linux root; run make test-volume-root"]
-fn reclamation_releases_budget_only_after_remote_and_local_cleanup() {
+fn retirement_releases_logical_budget_before_remote_reclamation() {
     assert!(rustix::process::geteuid().is_root());
     let dir = temp();
     let s = budget_service(&dir);
@@ -463,11 +466,16 @@ fn reclamation_releases_budget_only_after_remote_and_local_cleanup() {
     s.reclaim_with_store(&mut e.record, raw.clone()).unwrap();
     assert!(!e.record.reclaimed); // First batch removed chunks, no empty listing yet.
     assert!(owner.exists());
-    assert!(s.entry(&b).is_err());
+    assert!(e.record.logical_released && e.record.evicted);
+    assert_eq!(s.usage().unwrap().retained_volumes, 0);
+    assert_eq!(s.usage().unwrap().logical_bytes, 0);
+    assert!(s.entry(&b).is_ok());
     s.reclaim_with_store(&mut e.record, raw.clone()).unwrap();
     assert!(e.record.reclaimed);
     assert!(!owner.exists());
-    assert_eq!(s.usage().unwrap().retained_volumes, 0);
+    // The replacement admitted before physical cleanup still owns its charge.
+    assert_eq!(s.usage().unwrap().retained_volumes, 1);
+    assert_eq!(s.usage().unwrap().logical_bytes, crate::CHUNK_BYTES as u64);
     let persisted: Record = read(&s.dir(&e.record).join("record.json")).unwrap();
     assert!(persisted.reclaimed);
     assert!(s.entry(&b).is_ok());
@@ -615,7 +623,7 @@ fn cold_disks_release_local_capacity_and_reacquire_without_double_charging() {
 
 #[test]
 #[ignore = "requires Linux root; run make test-volume-root"]
-fn retirement_of_unregistered_disk_requires_observed_cleanup() {
+fn retirement_of_unregistered_disk_releases_logical_capacity_before_cleanup() {
     let dir = temp();
     let s = budget_service(&dir);
     let id = "a".repeat(64);
@@ -629,7 +637,8 @@ fn retirement_of_unregistered_disk_requires_observed_cleanup() {
     };
     let ack = s.request(request()).unwrap();
     assert_eq!(ack["reclamation_complete"], false);
-    assert_eq!(s.usage().unwrap().logical_bytes, crate::CHUNK_BYTES as u64);
+    assert_eq!(ack["logical_released"], true);
+    assert_eq!(s.usage().unwrap().logical_bytes, 0);
     assert_eq!(s.usage().unwrap().journal_reserved_bytes, 0);
     let entry = s.entry(&request()).unwrap();
     let raw = Arc::new(crate::reclaim::tests::Memory::default());
@@ -952,10 +961,85 @@ fn unreclaimed_limit_bounds_prepare_but_never_blocks_missing_record_retirement()
         s.request(retire(MAX_UNRECLAIMED_RECORDS)).unwrap()["reclamation_complete"],
         false
     );
-    assert_eq!(
-        s.usage().unwrap().logical_bytes,
-        (MAX_UNRECLAIMED_RECORDS as u64 + 1) * crate::CHUNK_BYTES as u64
-    );
+    assert_eq!(s.usage().unwrap().logical_bytes, 0);
     assert_eq!(s.usage().unwrap().journal_reserved_bytes, 0);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires Linux root; run make test-volume-root"]
+fn deleted_intent_keeps_device_reserved_until_durable_local_release() {
+    let dir = temp();
+    let mut service = budget_service(&dir);
+    service.config.devices.truncate(1);
+    service.config.limits.max_logical_bytes = 2 * crate::CHUNK_BYTES as u64;
+    let first = prepare_request(&service, 'a');
+    let second = prepare_request(&service, 'b');
+    let entry = service.entry(&first).unwrap();
+    let mut entry = entry.lock().unwrap();
+    entry.record.deleted = true;
+    service.persist(&entry.record).unwrap();
+    assert!(!entry.record.logical_released && !entry.record.evicted);
+    assert!(service
+        .entry(&second)
+        .unwrap_err()
+        .to_string()
+        .contains("device slots exhausted"));
+    service.release_deleted_local(&mut entry.record).unwrap();
+    assert!(entry.record.logical_released && entry.record.evicted);
+    let replacement = service.entry(&second).unwrap();
+    assert_eq!(
+        replacement.lock().unwrap().record.device,
+        entry.record.device
+    );
+    assert_eq!(
+        service.usage().unwrap().logical_bytes,
+        crate::CHUNK_BYTES as u64
+    );
+    drop(entry);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn legacy_reclaimed_record_is_durably_migrated_and_uncharged() {
+    let dir = temp();
+    let service = service(&dir);
+    let id = "a".repeat(64);
+    let mut old = record(&id, &dir);
+    old.deleted = true;
+    old.reclaimed = true;
+    let mut value = serde_json::to_value(&old).unwrap();
+    value.as_object_mut().unwrap().remove("logical_released");
+    value.as_object_mut().unwrap().remove("compact_after");
+    value.as_object_mut().unwrap().remove("compact_revision");
+    let directory = service.dir(&old);
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("record.json");
+    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let migrated = Record::load(&path).unwrap();
+    assert!(migrated.logical_released && migrated.evicted && migrated.reclaimed);
+    let saved: serde_json::Value = read(&path).unwrap();
+    assert_eq!(saved["logical_released"], true);
+    assert_eq!(saved["evicted"], true);
+    service.entries.lock().unwrap().insert(
+        id,
+        Arc::new(Slot::new(Entry {
+            record: migrated.clone(),
+            failures: 0,
+            mark: None,
+            retry_at: Instant::now(),
+        })),
+    );
+    let usage = service.usage().unwrap();
+    assert_eq!(usage.logical_bytes, 0);
+    assert_eq!(usage.journal_reserved_bytes, 0);
+    let mut contradictory = migrated;
+    contradictory.logical_released = false;
+    save(&path, &contradictory).unwrap();
+    assert!(Record::load(&path).is_err());
+    contradictory.logical_released = true;
+    contradictory.desired = true;
+    save(&path, &contradictory).unwrap();
+    assert!(Record::load(&path).is_err());
     fs::remove_dir_all(dir).unwrap();
 }
