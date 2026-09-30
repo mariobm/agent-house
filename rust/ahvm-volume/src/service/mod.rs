@@ -1342,7 +1342,7 @@ impl Service {
         }
         Ok(())
     }
-    fn collect_offline(&self, e: &mut Entry, cancel: impl Fn() -> bool) -> Result<()> {
+    fn collect_offline(&self, e: &mut Entry, cancel: impl Fn() -> bool + Sync) -> Result<()> {
         let r = &mut e.record;
         if r.deleted
             || !r.gc_eligible
@@ -1393,7 +1393,7 @@ impl Service {
         r.gc_after = progress.next_after;
         self.persist(r)
     }
-    fn recover(&self, e: &mut Entry, cancel: impl Fn() -> bool) -> Result<()> {
+    fn recover(&self, e: &mut Entry, cancel: impl Fn() -> bool + Sync) -> Result<()> {
         let r = &mut e.record;
         if r.deleted || !r.desired {
             if r.worker.is_some() || r.client.is_some() || r.vm.is_some() {

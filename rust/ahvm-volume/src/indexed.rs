@@ -579,21 +579,34 @@ impl IndexedVolume {
         Ok(())
     }
     fn publish(&mut self, next: Root, end: Instant) -> Result<u64> {
+        self.publish_cancellable(next, end, &|| false)
+    }
+    fn publish_cancellable(
+        &mut self,
+        next: Root,
+        end: Instant,
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<u64> {
         let bytes = serde_json::to_vec(&next).map_err(|_| Error::Corrupt)?;
         if bytes.len() > MAX_MANIFEST_BYTES {
             return Err(Error::Corrupt);
         }
         deadline(end)?;
-        let revision = match self
-            .store
-            .publish(&next.volume, Some(&self.revision), &bytes)
-        {
-            Ok(v) if !v.is_empty() => v,
-            result => {
-                self.poisoned = true;
-                return Err(publication_error(result.err().unwrap_or(Error::Uncertain)));
-            }
-        };
+        crate::check_cancel(cancel)?;
+        let revision =
+            match self
+                .store
+                .publish_cancellable(&next.volume, Some(&self.revision), &bytes, cancel)
+            {
+                Ok(v) if !v.is_empty() => v,
+                // Transport cancellation proves publication never started. Keep
+                // this handle usable; ambiguous or conflicting CAS still poisons it.
+                Err(Error::Deadline) => return Err(Error::Deadline),
+                result => {
+                    self.poisoned = true;
+                    return Err(publication_error(result.err().unwrap_or(Error::Uncertain)));
+                }
+            };
         self.root = next;
         self.revision = revision;
         self.dirty.clear();
@@ -677,7 +690,7 @@ impl IndexedVolume {
         }
         next.generation = next.generation.checked_add(1).ok_or(Error::Corrupt)?;
         if self.packed() {
-            return self.commit_packed(next, end, concurrency, false);
+            return self.commit_packed(next, end, concurrency, false, &|| false);
         }
         let mut pages = BTreeMap::new();
         let mut uploads: BTreeMap<String, Arc<Vec<u8>>> = BTreeMap::new();
@@ -761,6 +774,7 @@ impl IndexedVolume {
         objects: &[(String, Arc<Vec<u8>>)],
         end: Instant,
         concurrency: usize,
+        cancel: &(dyn Fn() -> bool + Sync),
     ) -> Result<()> {
         std::thread::scope(|scope| {
             let workers: Vec<_> = (0..concurrency.min(objects.len()))
@@ -768,10 +782,12 @@ impl IndexedVolume {
                     scope.spawn(move || {
                         for i in (worker..objects.len()).step_by(concurrency) {
                             deadline(end)?;
-                            self.store.put_chunk(
+                            crate::check_cancel(cancel)?;
+                            self.store.put_chunk_cancellable(
                                 &self.root.volume,
                                 &objects[i].0,
                                 &objects[i].1,
+                                cancel,
                             )?;
                         }
                         Ok(())
@@ -793,13 +809,17 @@ impl IndexedVolume {
         end: Instant,
         concurrency: usize,
         force: bool,
+        cancel: &(dyn Fn() -> bool + Sync),
     ) -> Result<u64> {
+        // Also propagate the total commit deadline into transport retries.
+        let stopped = || cancel() || Instant::now() >= end;
         let mut pages = BTreeMap::new();
         let mut chunks: BTreeMap<String, Arc<Vec<u8>>> = BTreeMap::new();
         let mut changed = Vec::new();
         let mut base_pages = BTreeMap::new();
         for (&index, bytes) in &self.dirty {
             deadline(end)?;
+            crate::check_cancel(&stopped)?;
             let page_index = index / SLOTS;
             if let std::collections::btree_map::Entry::Vacant(entry) = pages.entry(page_index) {
                 entry.insert(self.page(page_index)?);
@@ -827,6 +847,7 @@ impl IndexedVolume {
         let unique: Vec<_> = chunks.into_iter().collect();
         for group in unique.chunks(crate::MAX_OBJECT_BYTES / CHUNK_BYTES) {
             deadline(end)?;
+            crate::check_cancel(&stopped)?;
             let mut bytes = Vec::with_capacity(group.len() * CHUNK_BYTES);
             for (_, chunk) in group {
                 bytes.extend_from_slice(chunk);
@@ -838,6 +859,7 @@ impl IndexedVolume {
             uploads.push((hash, Arc::new(bytes)));
         }
         for (index, hash) in changed {
+            crate::check_cancel(&stopped)?;
             let page = pages.get_mut(&(index / SLOTS)).unwrap();
             let at = slot_at(page, index);
             let (pack, offset) = &locations[&hash];
@@ -845,6 +867,7 @@ impl IndexedVolume {
             page[at + 64..at + 68].copy_from_slice(&(*offset as u32).to_be_bytes());
         }
         for (index, page) in pages {
+            crate::check_cancel(&stopped)?;
             if page[16..].iter().all(|b| *b == 0) {
                 next.pages.remove(&index);
             } else if self.base.is_some() && page == base_pages[&index] {
@@ -862,8 +885,8 @@ impl IndexedVolume {
             self.dirty.clear();
             return Ok(self.root.generation);
         }
-        self.upload_objects(&uploads, end, concurrency)?;
-        self.publish(next, end)
+        self.upload_objects(&uploads, end, concurrency, &stopped)?;
+        self.publish_cancellable(next, end, &stopped)
     }
     /// Repack one index page under exclusive offline ownership. The budget caps
     /// source pack bytes plus rewritten logical bytes (metadata is one 128-KiB
@@ -873,7 +896,25 @@ impl IndexedVolume {
         &mut self,
         after: Option<crate::reclaim::CompactionCursor>,
         budget: usize,
-        cancel: &impl Fn() -> bool,
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<crate::reclaim::Compaction> {
+        // Compaction staging is disposable; never clear actual pending writes
+        // when refusing admission. A canceled/error pass can then retry cleanly.
+        self.check(0, 0)?;
+        if !self.dirty.is_empty() {
+            return Err(Error::InvalidInput);
+        }
+        let result = self.compact_packs_inner(after, budget, cancel);
+        if result.is_err() {
+            self.dirty.clear();
+        }
+        result
+    }
+    fn compact_packs_inner(
+        &mut self,
+        after: Option<crate::reclaim::CompactionCursor>,
+        budget: usize,
+        cancel: &(dyn Fn() -> bool + Sync),
     ) -> Result<crate::reclaim::Compaction> {
         self.check(0, 0)?;
         if after.as_ref().is_some_and(|cursor| {
@@ -1004,7 +1045,7 @@ impl IndexedVolume {
             }
             let mut next = self.root.clone();
             next.generation = next.generation.checked_add(1).ok_or(Error::Corrupt)?;
-            self.commit_packed(next, Instant::now() + BUDGET, WORKERS, true)?;
+            self.commit_packed(next, Instant::now() + BUDGET, WORKERS, true, cancel)?;
         }
         Ok(crate::reclaim::Compaction {
             rewritten_blocks: count,

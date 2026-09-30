@@ -18,7 +18,7 @@ use std::{
     fs::File,
     io::Read,
     path::Path,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 /// Explicit credentials only; never load an ambient AWS profile or metadata service.
@@ -500,6 +500,15 @@ impl ObjectStore for S3Store {
         Ok(bytes)
     }
     fn put_chunk(&self, volume: &str, hash: &str, bytes: &[u8]) -> Result<()> {
+        self.put_chunk_cancellable(volume, hash, bytes, &|| false)
+    }
+    fn put_chunk_cancellable(
+        &self,
+        volume: &str,
+        hash: &str,
+        bytes: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<()> {
         if !(CHUNK_BYTES..=MAX_OBJECT_BYTES).contains(&bytes.len())
             || !bytes.len().is_multiple_of(CHUNK_BYTES)
             || !valid_hash(hash)
@@ -511,16 +520,21 @@ impl ObjectStore for S3Store {
         // successful reply. A 412 still requires reading and verifying the bytes.
         // Never apply this policy to root CAS publication (outcome can be unknown).
         for attempt in 0..3 {
+            crate::check_cancel(cancel)?;
             let response = self.request(
                 Method::PUT,
                 &self.key(volume, &format!("chunks/{hash}"))?,
                 Some(("if-none-match", "*")),
                 bytes,
             );
+            crate::check_cancel(cancel)?;
             match response {
                 Ok(response) if response.status() == StatusCode::OK => return Ok(()),
                 Ok(response) if response.status() == StatusCode::PRECONDITION_FAILED => {
-                    match self.chunk(volume, hash) {
+                    crate::check_cancel(cancel)?;
+                    let existing = self.chunk(volume, hash);
+                    crate::check_cancel(cancel)?;
+                    match existing {
                         Ok(existing) if existing == bytes => return Ok(()),
                         Ok(_) | Err(Error::Corrupt) => return Err(Error::Corrupt),
                         Err(Error::Store) => (),
@@ -542,7 +556,15 @@ impl ObjectStore for S3Store {
                 Err(error) => return Err(error),
             }
             if attempt < 2 {
-                std::thread::sleep(Duration::from_millis(1100 << attempt));
+                let until = Instant::now() + Duration::from_millis(1100 << attempt);
+                loop {
+                    crate::check_cancel(cancel)?;
+                    let left = until.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    std::thread::sleep(left.min(Duration::from_millis(25)));
+                }
             }
         }
         Err(Error::Store)

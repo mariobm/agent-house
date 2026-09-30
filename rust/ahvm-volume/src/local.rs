@@ -318,7 +318,7 @@ impl LocalDisk {
         &self,
         after: Option<crate::reclaim::CompactionCursor>,
         budget: usize,
-        cancel: &impl Fn() -> bool,
+        cancel: &(impl Fn() -> bool + Sync),
     ) -> Result<crate::reclaim::Compaction> {
         let _writer = self.writer.lock().map_err(|_| Error::ReopenRequired)?;
         let mut state = self.state.lock().map_err(|_| Error::ReopenRequired)?;

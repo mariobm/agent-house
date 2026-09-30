@@ -276,8 +276,27 @@ impl ObjectStore for CachedStore {
         self.inner.put_chunk(id, hash, bytes)?;
         self.insert(id, hash, bytes)
     }
+    fn put_chunk_cancellable(
+        &self,
+        id: &str,
+        hash: &str,
+        bytes: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<()> {
+        self.inner.put_chunk_cancellable(id, hash, bytes, cancel)?;
+        self.insert(id, hash, bytes)
+    }
     fn publish(&self, id: &str, expected: Option<&str>, bytes: &[u8]) -> Result<String> {
         self.inner.publish(id, expected, bytes)
+    }
+    fn publish_cancellable(
+        &self,
+        id: &str,
+        expected: Option<&str>,
+        bytes: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<String> {
+        self.inner.publish_cancellable(id, expected, bytes, cancel)
     }
 }
 

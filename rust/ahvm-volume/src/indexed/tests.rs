@@ -12,6 +12,10 @@ pub(crate) struct Store {
     puts: AtomicUsize,
     fail: AtomicBool,
     lost: AtomicBool,
+    cancel_upload: AtomicBool,
+    cancel_publish: AtomicBool,
+    cancel_after_cas: AtomicBool,
+    canceled: AtomicBool,
 }
 impl ObjectStore for Store {
     fn base_chunk(&self, image: &str, hash: &str, _: Option<u64>) -> Result<Vec<u8>> {
@@ -72,7 +76,23 @@ impl ObjectStore for Store {
             .lock()
             .unwrap()
             .insert((id.into(), h.into()), b.into());
+        if self.cancel_upload.load(Ordering::SeqCst) {
+            self.canceled.store(true, Ordering::SeqCst);
+        }
         Ok(())
+    }
+    fn publish_cancellable(
+        &self,
+        id: &str,
+        expected: Option<&str>,
+        bytes: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<String> {
+        if self.cancel_publish.load(Ordering::SeqCst) {
+            self.canceled.store(true, Ordering::SeqCst);
+        }
+        crate::check_cancel(cancel)?;
+        self.publish(id, expected, bytes)
     }
     fn publish(&self, id: &str, expected: Option<&str>, bytes: &[u8]) -> Result<String> {
         let mut heads = self.heads.lock().unwrap();
@@ -119,6 +139,9 @@ impl ObjectStore for Store {
         );
         if self.lost.load(Ordering::SeqCst) {
             return Err(Error::Store);
+        }
+        if self.cancel_after_cas.load(Ordering::SeqCst) {
+            self.canceled.store(true, Ordering::SeqCst);
         }
         Ok(revision)
     }
@@ -874,4 +897,91 @@ fn compaction_checks_bounds_and_hashes_even_when_offsets_look_fully_live() {
             Err(Error::Corrupt)
         ));
     }
+}
+
+#[test]
+fn compaction_cancellation_during_upload_or_publication_keeps_old_head_retryable() {
+    for before_publish in [false, true] {
+        let store = Arc::new(Store::default());
+        let mut disk = create(store.clone());
+        for index in 0..16 {
+            disk.write(
+                index * CHUNK_BYTES as u64,
+                &vec![index as u8 + 1; CHUNK_BYTES],
+            )
+            .unwrap();
+        }
+        disk.commit().unwrap();
+        disk.write(CHUNK_BYTES as u64, &vec![0; 15 * CHUNK_BYTES])
+            .unwrap();
+        disk.commit().unwrap();
+        let head = store.head("v").unwrap().unwrap();
+        if before_publish {
+            store.cancel_publish.store(true, Ordering::SeqCst);
+        } else {
+            store.cancel_upload.store(true, Ordering::SeqCst);
+        }
+        assert!(matches!(
+            disk.compact_packs(None, 4 * crate::MAX_OBJECT_BYTES, &|| store
+                .canceled
+                .load(Ordering::SeqCst)),
+            Err(Error::Deadline)
+        ));
+        assert_eq!(disk.dirty_bytes(), 0);
+        assert_eq!(store.head("v").unwrap().unwrap().revision, head.revision);
+        let mut byte = [0];
+        disk.read(0, &mut byte).unwrap();
+        assert_eq!(byte, [1]);
+        store.cancel_upload.store(false, Ordering::SeqCst);
+        store.cancel_publish.store(false, Ordering::SeqCst);
+        store.canceled.store(false, Ordering::SeqCst);
+        assert_eq!(
+            disk.compact_packs(None, 4 * crate::MAX_OBJECT_BYTES, &|| store
+                .canceled
+                .load(Ordering::SeqCst))
+                .unwrap()
+                .rewritten_blocks,
+            1
+        );
+        IndexedVolume::open(store, "v")
+            .unwrap()
+            .read(0, &mut byte)
+            .unwrap();
+        assert_eq!(byte, [1]);
+    }
+}
+
+#[test]
+fn cancellation_after_successful_compaction_cas_preserves_the_commit() {
+    let store = Arc::new(Store::default());
+    let mut disk = create(store.clone());
+    for index in 0..16 {
+        disk.write(
+            index * CHUNK_BYTES as u64,
+            &vec![index as u8 + 1; CHUNK_BYTES],
+        )
+        .unwrap();
+    }
+    disk.commit().unwrap();
+    disk.write(CHUNK_BYTES as u64, &vec![0; 15 * CHUNK_BYTES])
+        .unwrap();
+    disk.commit().unwrap();
+    let generation = disk.root.generation;
+    store.cancel_after_cas.store(true, Ordering::SeqCst);
+    let progress = disk
+        .compact_packs(None, 4 * crate::MAX_OBJECT_BYTES, &|| {
+            store.canceled.load(Ordering::SeqCst)
+        })
+        .unwrap();
+    assert!(store.canceled.load(Ordering::SeqCst));
+    assert_eq!(progress.rewritten_blocks, 1);
+    assert_eq!(disk.root.generation, generation + 1);
+    let mut byte = [0];
+    disk.read(0, &mut byte).unwrap();
+    assert_eq!(byte, [1]);
+    IndexedVolume::open(store, "v")
+        .unwrap()
+        .read(0, &mut byte)
+        .unwrap();
+    assert_eq!(byte, [1]);
 }

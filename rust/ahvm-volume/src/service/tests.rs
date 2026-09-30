@@ -1043,3 +1043,117 @@ fn legacy_reclaimed_record_is_durably_migrated_and_uncharged() {
     assert!(Record::load(&path).is_err());
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn foreground_wake_cancels_compaction_upload_through_owner_and_cache() {
+    use crate::{cache::CachedStore, indexed::IndexedVolume, ObjectStore};
+    use std::sync::mpsc;
+    #[derive(Debug)]
+    struct SlowUpload {
+        inner: Arc<crate::reclaim::tests::Memory>,
+        entered: Mutex<Option<mpsc::Sender<()>>>,
+    }
+    impl ObjectStore for SlowUpload {
+        fn head(&self, id: &str) -> crate::Result<Option<crate::Head>> {
+            self.inner.head(id)
+        }
+        fn chunk(&self, id: &str, hash: &str) -> crate::Result<Vec<u8>> {
+            self.inner.chunk(id, hash)
+        }
+        fn put_chunk(&self, id: &str, hash: &str, bytes: &[u8]) -> crate::Result<()> {
+            self.put_chunk_cancellable(id, hash, bytes, &|| false)
+        }
+        fn put_chunk_cancellable(
+            &self,
+            id: &str,
+            hash: &str,
+            bytes: &[u8],
+            cancel: &(dyn Fn() -> bool + Sync),
+        ) -> crate::Result<()> {
+            let entered = self.entered.lock().unwrap().take();
+            if let Some(entered) = entered {
+                entered.send(()).unwrap();
+                // Models transport retries while holding the real owner/volume
+                // locks. A dropped callback takes this entire delay and publishes.
+                let end = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < end {
+                    crate::check_cancel(cancel)?;
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            crate::check_cancel(cancel)?;
+            self.inner.put_chunk(id, hash, bytes)
+        }
+        fn publish(&self, id: &str, expected: Option<&str>, bytes: &[u8]) -> crate::Result<String> {
+            self.inner.publish(id, expected, bytes)
+        }
+    }
+    let dir = temp();
+    let owner = dir.join("owner");
+    fs::create_dir(&owner).unwrap();
+    fs::set_permissions(&owner, fs::Permissions::from_mode(0o700)).unwrap();
+    let id = "a".repeat(64);
+    let memory = Arc::new(crate::reclaim::tests::Memory::default());
+    let mut image =
+        IndexedVolume::create(memory.clone(), &id, (16 * crate::CHUNK_BYTES) as u64).unwrap();
+    for index in 0..16 {
+        image
+            .write(
+                index * crate::CHUNK_BYTES as u64,
+                &vec![index as u8 + 1; crate::CHUNK_BYTES],
+            )
+            .unwrap();
+    }
+    image.commit().unwrap();
+    image
+        .write(crate::CHUNK_BYTES as u64, &vec![0; 15 * crate::CHUNK_BYTES])
+        .unwrap();
+    image.commit().unwrap();
+    OwnedDisk::enroll(memory.clone(), &id).unwrap();
+    let (entered, waiting) = mpsc::channel();
+    let transport = Arc::new(SlowUpload {
+        inner: memory.clone(),
+        entered: Mutex::new(Some(entered)),
+    });
+    let cache = Arc::new(CachedStore::new(transport, 2 * crate::MAX_OBJECT_BYTES).unwrap());
+    let disk = OwnedDisk::open(cache, &id, &owner).unwrap();
+    let before = memory.head(&id).unwrap().unwrap().revision;
+    let slot = Arc::new(Slot::new(Entry {
+        record: record(&id, &dir),
+        failures: 0,
+        mark: None,
+        retry_at: Instant::now(),
+    }));
+    let collector = slot.clone();
+    let compaction = thread::spawn(move || {
+        let _held = collector.lock().unwrap();
+        let _collection = collector.collection();
+        let ticket = collector.cancellation.load(Ordering::SeqCst);
+        let result = disk.compact_offline(None, 4 * crate::MAX_OBJECT_BYTES, || {
+            collector.cancellation.load(Ordering::SeqCst) != ticket
+        });
+        (disk, result)
+    });
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    let start = Instant::now();
+    drop(slot.foreground(true).unwrap());
+    assert!(start.elapsed() < Duration::from_secs(1));
+    let (mut disk, result) = compaction.join().unwrap();
+    assert!(matches!(result, Err(crate::Error::Deadline)));
+    assert_eq!(memory.head(&id).unwrap().unwrap().revision, before);
+    assert!(!disk.status().unwrap().local_failed);
+    use crate::nbd::Disk;
+    let mut byte = [0];
+    disk.read(0, &mut byte).unwrap();
+    assert_eq!(byte, [1]);
+    assert_eq!(
+        disk.compact_offline(None, 4 * crate::MAX_OBJECT_BYTES, || false)
+            .unwrap()
+            .rewritten_blocks,
+        1
+    );
+    disk.read(0, &mut byte).unwrap();
+    assert_eq!(byte, [1]);
+    drop(disk);
+    fs::remove_dir_all(dir).unwrap();
+}

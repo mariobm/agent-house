@@ -343,7 +343,31 @@ impl ObjectStore for Store {
         }
         self.raw.put_chunk(id, digest, bytes)
     }
+    fn put_chunk_cancellable(
+        &self,
+        id: &str,
+        digest: &str,
+        bytes: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<()> {
+        crate::check_cancel(cancel)?;
+        let _active = self.active()?;
+        if id != self.id {
+            return Err(Error::InvalidInput);
+        }
+        self.raw.put_chunk_cancellable(id, digest, bytes, cancel)
+    }
     fn publish(&self, id: &str, expected: Option<&str>, manifest: &[u8]) -> Result<String> {
+        self.publish_cancellable(id, expected, manifest, &|| false)
+    }
+    fn publish_cancellable(
+        &self,
+        id: &str,
+        expected: Option<&str>,
+        manifest: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<String> {
+        crate::check_cancel(cancel)?;
         let _active = self.active()?;
         if id != self.id || expected.is_none() {
             return Err(Error::InvalidInput);
@@ -360,7 +384,8 @@ impl ObjectStore for Store {
         }
         e.epoch = self.identity.epoch;
         e.owner = Some(self.identity.token.clone());
-        self.raw.publish(id, expected, &encode(&e)?)
+        self.raw
+            .publish_cancellable(id, expected, &encode(&e)?, cancel)
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -692,7 +717,7 @@ impl OwnedDisk {
         &self,
         after: Option<crate::reclaim::CompactionCursor>,
         budget: usize,
-        cancel: impl Fn() -> bool,
+        cancel: impl Fn() -> bool + Sync,
     ) -> Result<crate::reclaim::Compaction> {
         let phase = self.phase.write().map_err(|_| Error::ReopenRequired)?;
         if *phase != Phase::Active {

@@ -37,8 +37,17 @@ one block is still referenced, its complete pack stays live. Exclusive offline
 compaction repacks remaining blocks and publishes a new root before marking
 references for collection. The supervisor bounds each pass to 4 MiB of source
 and rewritten block payload and persists a page/pack cursor between passes.
-Collection then removes objects that the current root no longer references. Running writers and pending
-replication prevent this maintenance. Historical checkpoint roots are not part
+Collection then removes objects that the current root no longer references.
+
+Foreground wake cancellation reaches immutable uploads, duplicate-object
+verification and retry waits through the cache and ownership adapters. The
+service finishes any request already in flight (bounded to three seconds), then
+yields without starting further uploads. Cancellation observed before the head
+CAS leaves the old root unchanged; the adapter checks again immediately before
+issuing that CAS. Once the CAS starts, its actual success or uncertain outcome
+must be recorded; cancellation cannot undo publication.
+Canceled staging is discarded while the old root and journal remain usable.
+Running writers and pending replication prevent this maintenance. Historical checkpoint roots are not part
 of these formats and cannot be silently ignored by collection.
 
 Deleted disks use signed S3 `DeleteObjects` requests of up to 1,000 keys. Every

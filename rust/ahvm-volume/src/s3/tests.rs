@@ -414,3 +414,47 @@ fn packed_immutable_put_checks_duplicate_object_and_full_get_bounds() {
     assert!(matches!(store.chunk("disk", &hash), Err(Error::Corrupt)));
     worker.join().unwrap();
 }
+
+#[test]
+fn cancellation_interrupts_immutable_upload_retry_backoff() {
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc, Arc,
+    };
+    let (store, peer) = server(vec![response("503 Service Unavailable", "", &[])]);
+    let canceled = Arc::new(AtomicBool::new(false));
+    let request_cancel = canceled.clone();
+    let (entered, waiting) = mpsc::channel();
+    let upload = thread::spawn(move || {
+        let checks = AtomicUsize::new(0);
+        let bytes = vec![3; CHUNK_BYTES];
+        store.put_chunk_cancellable("disk", &digest(&bytes), &bytes, &|| {
+            // Before request, after response, then first retry-wait checkpoint.
+            if checks.fetch_add(1, Ordering::SeqCst) == 2 {
+                entered.send(()).unwrap();
+            }
+            request_cancel.load(Ordering::SeqCst)
+        })
+    });
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    let start = Instant::now();
+    canceled.store(true, Ordering::SeqCst);
+    assert!(matches!(upload.join().unwrap(), Err(Error::Deadline)));
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert_eq!(peer.join().unwrap().len(), 1);
+}
+
+#[test]
+fn cancellation_after_duplicate_put_skips_verification_and_retry() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (store, peer) = server(vec![response("412 Precondition Failed", "", &[])]);
+    let bytes = vec![3; CHUNK_BYTES];
+    let checks = AtomicUsize::new(0);
+    let start = Instant::now();
+    let result = store.put_chunk_cancellable("disk", &digest(&bytes), &bytes, &|| {
+        checks.fetch_add(1, Ordering::SeqCst) != 0
+    });
+    assert!(matches!(result, Err(Error::Deadline)));
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert_eq!(peer.join().unwrap().len(), 1);
+}
