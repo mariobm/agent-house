@@ -248,7 +248,7 @@ pub(crate) async fn destroy_operation(
         let (_lifecycle, _permit) = (_lc, _permit);
         // Persist deletion only after admission, inside the cancellation-safe
         // worker; a canceled permit wait must leave the running disk usable.
-        if let Some(reservation) = reservation {
+        if let Some(reservation) = &reservation {
             store
                 .delete_replicated_reservation(
                     &reservation.owner_user_id,
@@ -257,15 +257,35 @@ pub(crate) async fn destroy_operation(
                 )
                 .map_err(|e| ahvm_engine::Error::Control(e.to_string()))?;
         }
-        match backend.destroy(&owned_id) {
-            Ok(()) | Err(ahvm_engine::Error::NotFound(_)) => {}
-            Err(e) => return Err(e),
+        let destroyed = match backend.destroy(&owned_id) {
+            Ok(()) | Err(ahvm_engine::Error::NotFound(_)) => Ok(()),
+            Err(e) => Err(e),
+        };
+        if let Some(reservation) = &reservation {
+            // Retirement can repair a failed delete after durable intent was
+            // saved. A still-live worker cannot produce a safe release proof.
+            let proof = match backend.reclaim_replicated_volume(
+                &owned_id,
+                &reservation.volume_id,
+                reservation.logical_bytes as u64,
+            ) {
+                Ok(proof) => proof,
+                Err(error) => return Err(destroyed.err().unwrap_or(error)),
+            };
+            if !proof.logical_released {
+                return Err(destroyed.err().unwrap_or_else(|| {
+                    ahvm_engine::Error::Control("storage retirement is not safely detached".into())
+                }));
+            }
+            crate::replicated::finish(&store, reservation, proof)
+                .map_err(|e| ahvm_engine::Error::Control(e.to_string()))?;
+        } else {
+            destroyed?;
+            store
+                .delete_sandbox(&owned_id)
+                .map_err(|e| ahvm_engine::Error::Control(e.to_string()))?;
         }
         activity.remove(&owned_id);
-        match store.delete_sandbox(&owned_id) {
-            Ok(()) | Err(ahvm_store::Error::NotFound(_)) => {}
-            Err(e) => return Err(ahvm_engine::Error::Control(e.to_string())),
-        }
         transfers.forget(&owned_id);
         Ok(())
     })

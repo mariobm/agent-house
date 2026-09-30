@@ -739,3 +739,123 @@ fn concurrent_run_schema_migrates_existing_exclusive_index() {
     drop(s);
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn logical_retirement_recreates_before_gc_and_survives_restart() {
+    let path = std::env::temp_dir().join(format!(
+        "ahvm-logical-retirement-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let store = Store::open(&path).unwrap();
+    let mut u = user("alice", 0);
+    u.max_volumes_mb = 100 * 1024;
+    store.upsert_user(&u).unwrap();
+    let old = "a".repeat(64);
+    let new = "b".repeat(64);
+    let bytes = 40 * 1024 * 1024 * 1024;
+    store
+        .reserve_replicated_volume("alice", "desktop", &old, bytes, 0)
+        .unwrap();
+    store
+        .reserve_replicated_volume("alice", "other", &"c".repeat(64), bytes, 0)
+        .unwrap();
+    let mut vm = sandbox("desktop", "alice", 0);
+    store.create_sandbox(&vm).unwrap();
+    store
+        .delete_replicated_reservation("alice", &old, 1)
+        .unwrap();
+    assert!(!store
+        .confirm_replicated_retirement("alice", &old, 2, false, false)
+        .unwrap());
+    assert_eq!(
+        store.replicated_usage("alice").unwrap().logical_bytes,
+        2 * bytes
+    );
+    assert!(store
+        .reserve_replicated_volume("alice", "desktop", &new, bytes, 2)
+        .is_err());
+    assert!(store.get_sandbox("desktop").is_ok());
+    assert!(store
+        .confirm_replicated_retirement("alice", &old, 3, true, false)
+        .unwrap());
+    assert!(store.get_sandbox("desktop").is_err());
+    assert_eq!(
+        store.replicated_usage("alice").unwrap().logical_bytes,
+        bytes
+    );
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    let old_row = store.replicated_reservation("alice", &old).unwrap();
+    assert!(old_row.logical_released);
+    assert_eq!(old_row.state, "deleting");
+    assert!(store
+        .retained_replicated_reservations(None, 100)
+        .unwrap()
+        .iter()
+        .any(|row| row.volume_id == old));
+    store
+        .reserve_replicated_volume("alice", "desktop", &new, bytes, 4)
+        .unwrap();
+    vm.created_at = 4;
+    store.create_sandbox(&vm).unwrap();
+    assert_eq!(
+        store
+            .replicated_for_sandbox("alice", "desktop")
+            .unwrap()
+            .unwrap()
+            .volume_id,
+        new
+    );
+    assert!(!store
+        .confirm_replicated_retirement("alice", &old, 5, true, true)
+        .unwrap());
+    assert_eq!(store.get_sandbox("desktop").unwrap().created_at, 4);
+    assert_eq!(
+        store.replicated_usage("alice").unwrap().logical_bytes,
+        2 * bytes
+    );
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn legacy_retirement_schema_migrates_without_releasing_pending_deletion() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::SCHEMA).unwrap();
+    conn.execute_batch("DROP TABLE replicated_reservations;
+        CREATE TABLE replicated_reservations(volume_id TEXT PRIMARY KEY,owner_user_id TEXT NOT NULL,sandbox_id TEXT NOT NULL,logical_bytes INTEGER NOT NULL,state TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+        CREATE UNIQUE INDEX replicated_reservations_sandbox ON replicated_reservations(sandbox_id) WHERE state!='reclaimed';").unwrap();
+    conn.execute(
+        "INSERT INTO replicated_reservations VALUES(?1,'alice','desktop',65536,'deleting',0,0)",
+        [&"a".repeat(64)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO replicated_reservations VALUES(?1,'alice','other',65536,'reclaimed',0,0)",
+        [&"b".repeat(64)],
+    )
+    .unwrap();
+    let store = Store::from_conn(conn).unwrap();
+    assert_eq!(
+        store.replicated_usage("alice").unwrap().logical_bytes,
+        65536
+    );
+    assert!(
+        !store
+            .replicated_reservation("alice", &"a".repeat(64))
+            .unwrap()
+            .logical_released
+    );
+    assert!(
+        store
+            .replicated_reservation("alice", &"b".repeat(64))
+            .unwrap()
+            .logical_released
+    );
+    assert!(store.check_replicated_name_available("desktop").is_err());
+    store.check_replicated_name_available("other").unwrap();
+}

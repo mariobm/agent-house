@@ -12,6 +12,10 @@ pub(crate) struct Store {
     puts: AtomicUsize,
     fail: AtomicBool,
     lost: AtomicBool,
+    cancel_upload: AtomicBool,
+    cancel_publish: AtomicBool,
+    cancel_after_cas: AtomicBool,
+    canceled: AtomicBool,
 }
 impl ObjectStore for Store {
     fn base_chunk(&self, image: &str, hash: &str, _: Option<u64>) -> Result<Vec<u8>> {
@@ -72,7 +76,23 @@ impl ObjectStore for Store {
             .lock()
             .unwrap()
             .insert((id.into(), h.into()), b.into());
+        if self.cancel_upload.load(Ordering::SeqCst) {
+            self.canceled.store(true, Ordering::SeqCst);
+        }
         Ok(())
+    }
+    fn publish_cancellable(
+        &self,
+        id: &str,
+        expected: Option<&str>,
+        bytes: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<String> {
+        if self.cancel_publish.load(Ordering::SeqCst) {
+            self.canceled.store(true, Ordering::SeqCst);
+        }
+        crate::check_cancel(cancel)?;
+        self.publish(id, expected, bytes)
     }
     fn publish(&self, id: &str, expected: Option<&str>, bytes: &[u8]) -> Result<String> {
         let mut heads = self.heads.lock().unwrap();
@@ -95,7 +115,7 @@ impl ObjectStore for Store {
                     .or_else(|| objects.get(&(base.into(), h.clone())))
                     .expect("page missing at publish");
                 for i in 0..SLOTS {
-                    if let Some(hash) = slot(page, i) {
+                    if let Some((hash, _)) = object_slot(page, i) {
                         assert!(
                             objects.contains_key(&(id.into(), hash.clone()))
                                 || objects.contains_key(&(base.into(), hash))
@@ -119,6 +139,9 @@ impl ObjectStore for Store {
         );
         if self.lost.load(Ordering::SeqCst) {
             return Err(Error::Store);
+        }
+        if self.cancel_after_cas.load(Ordering::SeqCst) {
+            self.canceled.store(true, Ordering::SeqCst);
         }
         Ok(revision)
     }
@@ -230,14 +253,14 @@ fn page_corruption_and_missing_data_never_become_holes() {
         .lock()
         .unwrap()
         .insert(("v".into(), hash), page.clone());
-    let data = slot(&page, 0).unwrap();
+    let data = object_slot(&page, 0).unwrap().0;
     s.objects.lock().unwrap().remove(&("v".into(), data));
     assert!(matches!(v.read(0, &mut [0; 4]), Err(Error::Corrupt)));
 }
 #[test]
 fn cache_is_bounded_verified_and_does_not_cache_heads() {
     let s = Arc::new(Store::default());
-    let c = Arc::new(CachedStore::new(s.clone(), 2 * CHUNK_BYTES).unwrap());
+    let c = Arc::new(CachedStore::new(s.clone(), 4 * CHUNK_BYTES).unwrap());
     let mut v = create(c.clone());
     v.write(0, b"cached").unwrap();
     v.commit().unwrap();
@@ -249,7 +272,7 @@ fn cache_is_bounded_verified_and_does_not_cache_heads() {
         v.write(n * CHUNK_BYTES as u64, &vec![n as u8; CHUNK_BYTES])
             .unwrap();
         v.commit().unwrap();
-        assert!(c.bytes() <= 2 * CHUNK_BYTES);
+        assert!(c.bytes() <= 4 * CHUNK_BYTES);
     }
     let mut other = IndexedVolume::open(c.clone(), "v").unwrap();
     v.write(0, b"winner").unwrap();
@@ -288,7 +311,7 @@ fn zeroing_last_data_removes_page_and_invalid_ranges_fail() {
 #[test]
 fn read_ahead_is_bounded_and_speculative_corruption_does_not_hide_requested_data() {
     let s = Arc::new(Store::default());
-    let mut v = create(s.clone());
+    let mut v = IndexedVolume::create_import(s.clone(), "v", MAX_SIZE).unwrap();
     for index in 0..10u64 {
         v.write(
             index * CHUNK_BYTES as u64,
@@ -297,6 +320,7 @@ fn read_ahead_is_bounded_and_speculative_corruption_does_not_hide_requested_data
         .unwrap();
     }
     v.commit().unwrap();
+    v.finish_import().unwrap();
     // Delete an adjacent object: reading the requested intact chunk must succeed,
     // while explicitly requesting the missing chunk must still fail closed.
     let missing = digest(&vec![2; CHUNK_BYTES]);
@@ -604,4 +628,360 @@ fn remote_export_materializes_base_and_private_changes_for_independent_restore()
     restored.read(0, &mut recovered).unwrap();
     assert_eq!(crate::digest(&recovered), report.sha256);
     assert_eq!(recovered, bytes);
+}
+
+#[test]
+fn sixteen_distinct_updates_make_one_pack_and_one_page_and_dedup_repeated_blocks() {
+    let store = Arc::new(Store::default());
+    let mut disk = create(store.clone());
+    let mut bytes = vec![0; 16 * CHUNK_BYTES];
+    for (index, block) in bytes.chunks_mut(CHUNK_BYTES).enumerate() {
+        block.fill(index as u8 + 1);
+    }
+    disk.write(0, &bytes).unwrap();
+    disk.commit().unwrap();
+    let objects = store.objects.lock().unwrap();
+    assert_eq!(objects.len(), 2);
+    assert!(objects
+        .values()
+        .any(|bytes| bytes.len() == crate::MAX_OBJECT_BYTES));
+    assert!(objects.values().any(|bytes| bytes.len() == PACK_PAGE_BYTES));
+    drop(objects);
+    let mut out = vec![0; bytes.len()];
+    IndexedVolume::open(store.clone(), "v")
+        .unwrap()
+        .read(0, &mut out)
+        .unwrap();
+    assert_eq!(out, bytes);
+    disk.write(16 * CHUNK_BYTES as u64, &vec![17; CHUNK_BYTES])
+        .unwrap();
+    disk.commit().unwrap();
+    assert!(store
+        .objects
+        .lock()
+        .unwrap()
+        .values()
+        .any(|bytes| bytes.len() == CHUNK_BYTES));
+    let single = vec![33; 16 * CHUNK_BYTES];
+    disk.write(32 * CHUNK_BYTES as u64, &single).unwrap();
+    disk.commit().unwrap();
+    let page = disk.page(0).unwrap();
+    assert_eq!(object_slot(&page, 32), object_slot(&page, 47));
+}
+
+#[test]
+fn packed_reads_verify_full_object_and_offset_and_selected_hash() {
+    for mutation in 0..5 {
+        let store = Arc::new(Store::default());
+        let mut disk = create(store.clone());
+        disk.write(0, &vec![1; CHUNK_BYTES]).unwrap();
+        disk.write(CHUNK_BYTES as u64, &vec![2; CHUNK_BYTES])
+            .unwrap();
+        disk.commit().unwrap();
+        let page_hash = disk.root.pages[&0].clone();
+        let mut page = disk.page(0).unwrap();
+        let (pack, _) = object_slot(&page, 0).unwrap();
+        match mutation {
+            0 => {
+                store
+                    .objects
+                    .lock()
+                    .unwrap()
+                    .get_mut(&("v".into(), pack))
+                    .unwrap()[0] ^= 1;
+            }
+            1 => {
+                store
+                    .objects
+                    .lock()
+                    .unwrap()
+                    .get_mut(&("v".into(), pack))
+                    .unwrap()
+                    .truncate(CHUNK_BYTES);
+            }
+            _ => {
+                let at = slot_at(&page, 0);
+                match mutation {
+                    2 => page[at + 64..at + 68]
+                        .copy_from_slice(&(crate::MAX_OBJECT_BYTES as u32).to_be_bytes()),
+                    3 => page[at + 64..at + 68].copy_from_slice(&1u32.to_be_bytes()),
+                    _ => page[at] ^= 1,
+                }
+                let hash = digest(&page);
+                store
+                    .objects
+                    .lock()
+                    .unwrap()
+                    .insert(("v".into(), hash.clone()), page);
+                disk.root.pages.insert(0, hash);
+                store
+                    .objects
+                    .lock()
+                    .unwrap()
+                    .remove(&("v".into(), page_hash));
+            }
+        }
+        assert!(matches!(disk.read(0, &mut [0; 1]), Err(Error::Corrupt)));
+    }
+}
+
+#[test]
+fn packed_cache_budget_counts_actual_bytes_and_amortizes_adjacent_reads() {
+    let store = Arc::new(Store::default());
+    let mut disk = create(store.clone());
+    for index in 0..16 {
+        disk.write(
+            index * CHUNK_BYTES as u64,
+            &vec![index as u8 + 1; CHUNK_BYTES],
+        )
+        .unwrap();
+    }
+    disk.commit().unwrap();
+    let cache = Arc::new(
+        CachedStore::new(store.clone(), crate::MAX_OBJECT_BYTES + PACK_PAGE_BYTES).unwrap(),
+    );
+    let disk = IndexedVolume::open(cache.clone(), "v").unwrap();
+    let before = store.gets.load(Ordering::SeqCst);
+    disk.read(0, &mut [0; 1]).unwrap();
+    let after = store.gets.load(Ordering::SeqCst);
+    assert_eq!(after - before, 2); // index page and one full pack
+    disk.read(CHUNK_BYTES as u64, &mut [0; 1]).unwrap();
+    assert_eq!(store.gets.load(Ordering::SeqCst), after);
+    assert_eq!(cache.bytes(), crate::MAX_OBJECT_BYTES + PACK_PAGE_BYTES);
+}
+
+#[test]
+fn compaction_cursor_resumes_within_a_page_past_many_full_packs_to_sparse_pack() {
+    let store = Arc::new(Store::default());
+    let mut disk = create(store.clone());
+    for index in 0..96 {
+        disk.write(
+            index * CHUNK_BYTES as u64,
+            &vec![index as u8 + 1; CHUNK_BYTES],
+        )
+        .unwrap();
+    }
+    disk.commit().unwrap();
+    let page = disk.page(0).unwrap();
+    let mut groups: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for index in 0..96 {
+        groups
+            .entry(object_slot(&page, index).unwrap().0)
+            .or_default()
+            .push(index);
+    }
+    assert_eq!(groups.len(), 6);
+    let (last_pack, indexes) = groups.last_key_value().unwrap();
+    let last_pack = last_pack.clone();
+    let retained = indexes[0];
+    for index in indexes.iter().skip(1) {
+        disk.write(index * CHUNK_BYTES as u64, &vec![0; CHUNK_BYTES])
+            .unwrap();
+    }
+    disk.commit().unwrap();
+    let mut cursor = None;
+    let mut passes = 0;
+    let mut rewritten = 0;
+    loop {
+        let result = disk
+            .compact_packs(cursor, 2 * crate::MAX_OBJECT_BYTES, &|| false)
+            .unwrap();
+        passes += 1;
+        rewritten += result.rewritten_blocks;
+        cursor = result.next_page;
+        if cursor.is_none() {
+            break;
+        }
+        assert!(passes < 12);
+    }
+    assert!(passes >= 3, "must yield and resume inside this one page");
+    assert_eq!(rewritten, 1);
+    assert!(!disk
+        .references(&|| false)
+        .unwrap()
+        .contains(&decode(&last_pack).unwrap()));
+    let mut byte = [0];
+    disk.read(retained * CHUNK_BYTES as u64, &mut byte).unwrap();
+    assert_eq!(byte[0], retained as u8 + 1);
+}
+
+#[test]
+fn compaction_upload_failure_or_lost_cas_never_deletes_still_live_original_pack() {
+    for lost in [false, true] {
+        let store = Arc::new(Store::default());
+        let mut disk = create(store.clone());
+        for index in 0..16 {
+            disk.write(
+                index * CHUNK_BYTES as u64,
+                &vec![index as u8 + 1; CHUNK_BYTES],
+            )
+            .unwrap();
+        }
+        disk.commit().unwrap();
+        disk.write(CHUNK_BYTES as u64, &vec![0; 15 * CHUNK_BYTES])
+            .unwrap();
+        disk.commit().unwrap();
+        let before = store.head("v").unwrap().unwrap().revision;
+        if lost {
+            store.lost.store(true, Ordering::SeqCst);
+        } else {
+            store.fail.store(true, Ordering::SeqCst);
+        }
+        assert!(disk
+            .compact_packs(None, 4 * crate::MAX_OBJECT_BYTES, &|| false)
+            .is_err());
+        assert!(store
+            .objects
+            .lock()
+            .unwrap()
+            .values()
+            .any(|bytes| bytes.len() == crate::MAX_OBJECT_BYTES));
+        if lost {
+            assert!(matches!(
+                disk.read(0, &mut [0; 1]),
+                Err(Error::ReopenRequired)
+            ));
+        } else {
+            assert_eq!(store.head("v").unwrap().unwrap().revision, before);
+        }
+        let mut byte = [0];
+        IndexedVolume::open(store, "v")
+            .unwrap()
+            .read(0, &mut byte)
+            .unwrap();
+        assert_eq!(byte, [1]);
+    }
+}
+
+#[test]
+fn compaction_checks_bounds_and_hashes_even_when_offsets_look_fully_live() {
+    for corrupt_hash in [false, true] {
+        let store = Arc::new(Store::default());
+        let mut disk = create(store.clone());
+        for index in 0..16 {
+            disk.write(
+                index * CHUNK_BYTES as u64,
+                &vec![index as u8 + 1; CHUNK_BYTES],
+            )
+            .unwrap();
+        }
+        disk.commit().unwrap();
+        let mut page = disk.page(0).unwrap();
+        if corrupt_hash {
+            let at = slot_at(&page, 0);
+            page[at] ^= 1;
+        } else {
+            let pack = object_slot(&page, 0).unwrap().0;
+            let mut short = store.objects.lock().unwrap()[&("v".to_owned(), pack)].clone();
+            short.truncate(2 * CHUNK_BYTES);
+            let hash = digest(&short);
+            store
+                .objects
+                .lock()
+                .unwrap()
+                .insert(("v".into(), hash.clone()), short);
+            for index in 0..16 {
+                let at = slot_at(&page, index);
+                page[at + 32..at + 64].copy_from_slice(&decode(&hash).unwrap());
+            }
+        }
+        let hash = digest(&page);
+        store
+            .objects
+            .lock()
+            .unwrap()
+            .insert(("v".into(), hash.clone()), page);
+        disk.root.pages.insert(0, hash);
+        assert!(matches!(
+            disk.compact_packs(None, 4 * crate::MAX_OBJECT_BYTES, &|| false),
+            Err(Error::Corrupt)
+        ));
+    }
+}
+
+#[test]
+fn compaction_cancellation_during_upload_or_publication_keeps_old_head_retryable() {
+    for before_publish in [false, true] {
+        let store = Arc::new(Store::default());
+        let mut disk = create(store.clone());
+        for index in 0..16 {
+            disk.write(
+                index * CHUNK_BYTES as u64,
+                &vec![index as u8 + 1; CHUNK_BYTES],
+            )
+            .unwrap();
+        }
+        disk.commit().unwrap();
+        disk.write(CHUNK_BYTES as u64, &vec![0; 15 * CHUNK_BYTES])
+            .unwrap();
+        disk.commit().unwrap();
+        let head = store.head("v").unwrap().unwrap();
+        if before_publish {
+            store.cancel_publish.store(true, Ordering::SeqCst);
+        } else {
+            store.cancel_upload.store(true, Ordering::SeqCst);
+        }
+        assert!(matches!(
+            disk.compact_packs(None, 4 * crate::MAX_OBJECT_BYTES, &|| store
+                .canceled
+                .load(Ordering::SeqCst)),
+            Err(Error::Deadline)
+        ));
+        assert_eq!(disk.dirty_bytes(), 0);
+        assert_eq!(store.head("v").unwrap().unwrap().revision, head.revision);
+        let mut byte = [0];
+        disk.read(0, &mut byte).unwrap();
+        assert_eq!(byte, [1]);
+        store.cancel_upload.store(false, Ordering::SeqCst);
+        store.cancel_publish.store(false, Ordering::SeqCst);
+        store.canceled.store(false, Ordering::SeqCst);
+        assert_eq!(
+            disk.compact_packs(None, 4 * crate::MAX_OBJECT_BYTES, &|| store
+                .canceled
+                .load(Ordering::SeqCst))
+                .unwrap()
+                .rewritten_blocks,
+            1
+        );
+        IndexedVolume::open(store, "v")
+            .unwrap()
+            .read(0, &mut byte)
+            .unwrap();
+        assert_eq!(byte, [1]);
+    }
+}
+
+#[test]
+fn cancellation_after_successful_compaction_cas_preserves_the_commit() {
+    let store = Arc::new(Store::default());
+    let mut disk = create(store.clone());
+    for index in 0..16 {
+        disk.write(
+            index * CHUNK_BYTES as u64,
+            &vec![index as u8 + 1; CHUNK_BYTES],
+        )
+        .unwrap();
+    }
+    disk.commit().unwrap();
+    disk.write(CHUNK_BYTES as u64, &vec![0; 15 * CHUNK_BYTES])
+        .unwrap();
+    disk.commit().unwrap();
+    let generation = disk.root.generation;
+    store.cancel_after_cas.store(true, Ordering::SeqCst);
+    let progress = disk
+        .compact_packs(None, 4 * crate::MAX_OBJECT_BYTES, &|| {
+            store.canceled.load(Ordering::SeqCst)
+        })
+        .unwrap();
+    assert!(store.canceled.load(Ordering::SeqCst));
+    assert_eq!(progress.rewritten_blocks, 1);
+    assert_eq!(disk.root.generation, generation + 1);
+    let mut byte = [0];
+    disk.read(0, &mut byte).unwrap();
+    assert_eq!(byte, [1]);
+    IndexedVolume::open(store, "v")
+        .unwrap()
+        .read(0, &mut byte)
+        .unwrap();
+    assert_eq!(byte, [1]);
 }

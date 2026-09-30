@@ -41,7 +41,7 @@ pub struct Progress {
 /// persist an offset into a shrinking listing. A lost delete reply is retryable.
 /// Subsequent passes also sweep late orphan uploads from terminated writers.
 pub fn sweep(store: &dyn ObjectStore, id: &str, limit: usize) -> Result<Progress> {
-    if !crate::valid_id(id) || !(1..=128).contains(&limit) {
+    if !crate::valid_id(id) || !(1..=1000).contains(&limit) {
         return Err(Error::InvalidInput);
     }
     if !retired(id, &store.head(id)?.ok_or(Error::NotFound)?)? {
@@ -58,9 +58,7 @@ pub fn sweep(store: &dyn ObjectStore, id: &str, limit: usize) -> Result<Progress
     {
         return Err(Error::Corrupt);
     }
-    for hash in &hashes {
-        store.delete_chunk(id, hash)?;
-    }
+    store.delete_chunks(id, &hashes)?;
     // Completion requires an observed empty listing, not merely a short page.
     Ok(Progress {
         deleted_objects: hashes.len(),
@@ -79,3 +77,17 @@ pub struct Collection {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// Resume compaction after this page; None means a completed scan.
+#[derive(Debug, Serialize)]
+pub struct Compaction {
+    pub rewritten_blocks: usize,
+    pub next_page: Option<CompactionCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactionCursor {
+    pub page: u64,
+    pub after_pack: Option<String>,
+}

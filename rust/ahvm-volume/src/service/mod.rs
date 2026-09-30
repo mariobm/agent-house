@@ -81,6 +81,12 @@ struct Record {
     #[serde(default)]
     reclaimed: bool,
     #[serde(default)]
+    logical_released: bool,
+    #[serde(default)]
+    compact_after: Option<crate::reclaim::CompactionCursor>,
+    #[serde(default)]
+    compact_revision: Option<String>,
+    #[serde(default)]
     gc_after: Option<String>,
     #[serde(default)]
     gc_eligible: bool,
@@ -91,6 +97,33 @@ struct Record {
     client: Option<Process>,
     vm: Option<Process>,
 }
+impl Record {
+    fn load(path: &Path) -> Result<Self> {
+        let value: serde_json::Value = read(path)?;
+        let legacy = value.get("logical_released").is_none();
+        let mut record: Self = serde_json::from_value(value).map_err(|_| "invalid record")?;
+        if record.reclaimed
+            && (!record.deleted
+                || record.desired
+                || record.worker.is_some()
+                || record.client.is_some()
+                || record.vm.is_some())
+        {
+            return Err("contradictory reclaimed record".into());
+        }
+        if record.reclaimed && legacy {
+            // Old reclamation required confirmed remote tombstone and physical
+            // local removal, so it already proves both new release conditions.
+            record.logical_released = true;
+            record.evicted = true;
+            save(path, &record)?;
+        } else if record.reclaimed && (!record.logical_released || !record.evicted) {
+            return Err("contradictory reclaimed record".into());
+        }
+        Ok(record)
+    }
+}
+
 #[derive(Debug)]
 struct Entry {
     record: Record,
@@ -313,21 +346,27 @@ impl Service {
                 }
                 return Err("unaccounted volume directory".into());
             }
-            let r: Record = read(&item.path().join("record.json"))?;
+            let r = Record::load(&item.path().join("record.json"))?;
             if let Some(resources) = &config.resources {
                 for process in [&r.worker, &r.client].into_iter().flatten() {
                     resources.verify(&r.id, process)?;
                 }
             }
             if !r.reclaimed {
-                usage.add_residency(r.logical_bytes, !r.evicted)?;
+                usage.add_record(r.logical_bytes, !r.evicted, !r.logical_released)?;
             }
-            if (r.reclaimed
+            if (r.logical_released
                 && (!r.deleted
                     || r.desired
                     || r.worker.is_some()
                     || r.client.is_some()
                     || r.vm.is_some()))
+                || (r.reclaimed
+                    && (!r.deleted
+                        || r.desired
+                        || r.worker.is_some()
+                        || r.client.is_some()
+                        || r.vm.is_some()))
                 || (r.evicted
                     && ((!r.prepared && !r.deleted)
                         || r.desired
@@ -341,7 +380,7 @@ impl Service {
             {
                 return Err("invalid persisted volume binding".into());
             }
-            if ((!r.deleted && !r.evicted) || r.worker.is_some() || r.client.is_some())
+            if ((!r.reclaimed && !r.evicted) || r.worker.is_some() || r.client.is_some())
                 && !assigned.insert(r.device.clone())
             {
                 return Err("duplicate device assignment".into());
@@ -442,6 +481,9 @@ impl Service {
                 prepared: false,
                 deleted: true,
                 reclaimed: false,
+                logical_released: false,
+                compact_after: None,
+                compact_revision: None,
                 gc_after: None,
                 gc_eligible: false,
                 gc_last_completed: None,
@@ -505,9 +547,9 @@ impl Service {
             )?;
             if !r.reclaimed {
                 unreclaimed += 1;
-                usage.add_residency(r.logical_bytes, !r.evicted)?;
+                usage.add_record(r.logical_bytes, !r.evicted, !r.logical_released)?;
             }
-            if (!r.deleted && !r.evicted) || r.worker.is_some() || r.client.is_some() {
+            if (!r.reclaimed && !r.evicted) || r.worker.is_some() || r.client.is_some() {
                 used.insert(r.device);
             }
         }
@@ -540,6 +582,9 @@ impl Service {
             prepared: false,
             deleted: false,
             reclaimed: false,
+            logical_released: false,
+            compact_after: None,
+            compact_revision: None,
             gc_after: None,
             gc_eligible: false,
             gc_last_completed: None,
@@ -588,9 +633,9 @@ impl Service {
                     .join("record.json"),
             )?;
             if !other.reclaimed && other.id != r.id {
-                usage.add_residency(other.logical_bytes, !other.evicted)?;
+                usage.add_record(other.logical_bytes, !other.evicted, !other.logical_released)?;
             }
-            if (!other.deleted && !other.evicted)
+            if (!other.reclaimed && !other.evicted)
                 || other.worker.is_some()
                 || other.client.is_some()
             {
@@ -681,7 +726,7 @@ impl Service {
                     .join("record.json"),
             )?;
             if !r.reclaimed {
-                usage.add_residency(r.logical_bytes, !r.evicted)?;
+                usage.add_record(r.logical_bytes, !r.evicted, !r.logical_released)?;
             }
         }
         Ok(usage)
@@ -894,6 +939,12 @@ impl Service {
         let path = r.sandbox.join("state.json");
         if !path.exists() {
             return Ok(None);
+        }
+        if r.deleted {
+            let record: serde_json::Value = read(&r.sandbox.join("sandbox.json"))?;
+            if record["info"]["storage"]["volume_id"] != r.id {
+                return Ok(None);
+            }
         }
         self.binding(&r.id, &r.sandbox)?;
         let v: serde_json::Value = read(&path)?;
@@ -1137,12 +1188,16 @@ impl Service {
                 usage.reservation.journal_reserved_bytes = 0;
                 usage.reservation.cache_reserved_bytes = 0;
             }
+            if r.logical_released {
+                usage.reservation.logical_bytes = 0;
+                usage.reservation.retained_volumes = 0;
+            }
             if r.reclaimed {
                 usage.reservation = Usage::default();
             }
             return Ok(serde_json::json!({
                 "ok": true, "volume_id": r.id,
-                "usage": usage, "reclamation_complete": r.reclaimed, "local_evicted": r.evicted,
+                "usage": usage, "reclamation_complete": r.reclaimed, "logical_released": r.logical_released, "local_evicted": r.evicted,
                 "last_collection_unix": r.gc_last_completed,
                 "limits": self.config.limits,
                 "host_reservations": self.usage()?,
@@ -1157,6 +1212,7 @@ impl Service {
             if first || r.worker.is_some() || r.client.is_some() || r.vm.is_some() {
                 self.detach(r)?;
             }
+            self.release_deleted_local(r)?;
         } else {
             if r.deleted {
                 return Err("volume deleted".into());
@@ -1217,16 +1273,47 @@ impl Service {
         e.failures = 0;
         e.retry_at = Instant::now();
         let r = &e.record;
-        if q.operation == "retire" {
+        if matches!(q.operation.as_str(), "retire" | "delete") {
             return Ok(
-                serde_json::json!({"ok":true,"volume_id":r.id,"reclamation_complete":r.reclaimed}),
+                serde_json::json!({"ok":true,"volume_id":r.id,"reclamation_complete":r.reclaimed,"logical_released":r.logical_released}),
             );
         }
         Ok(
             serde_json::json!({"ok":true,"volume_id":r.id,"device":if r.worker.is_some(){Some(&r.device)}else{None},"status":status}),
         )
     }
+    fn release_deleted_local(&self, r: &mut Record) -> Result<()> {
+        if !r.deleted {
+            return Err("volume is not deleted".into());
+        }
+        // Prepared resident disks may have failed an earlier detach. Recheck
+        // kernel consumers before releasing their identity or device. Imports
+        // that never prepared have never assigned their reserved device.
+        if !r.reclaimed && !r.evicted && r.prepared {
+            self.detach(r)?;
+        }
+        if !r.deleted || r.desired || r.worker.is_some() || r.client.is_some() || r.vm.is_some() {
+            return Err("volume is not detached and deleted".into());
+        }
+        if r.logical_released && r.evicted {
+            return Ok(());
+        }
+        let owner = self.dir(r).join("owner");
+        private_dir(&owner)?;
+        OwnedDisk::discard_retired_local(&r.id, &owner)?;
+        let _map = self.entries.lock().map_err(|_| "registry poisoned")?;
+        let mut next = r.clone();
+        next.logical_released = true;
+        next.evicted = true;
+        if let Err(error) = self.persist(&next) {
+            self.admission_failed.store(true, Ordering::SeqCst);
+            return Err(error);
+        }
+        *r = next;
+        Ok(())
+    }
     fn reclaim(&self, r: &mut Record) -> Result<()> {
+        self.release_deleted_local(r)?;
         let raw: Arc<dyn ObjectStore> = Arc::new(S3Store::with_timeout(
             S3Config::from_file(&self.config.credentials)?,
             Duration::from_secs(3),
@@ -1237,12 +1324,13 @@ impl Service {
         if !r.deleted || r.desired || r.worker.is_some() || r.client.is_some() || r.vm.is_some() {
             return Err("volume is not detached and deleted".into());
         }
+        self.release_deleted_local(r)?;
         // Bound object-store cleanup concurrency independently of guest I/O.
         let _collector = self.reclamation.try_lock().map_err(|_| "collector busy")?;
         let owner = self.dir(r).join("owner");
         private_dir(&owner)?;
         OwnedDisk::retire(raw.clone(), &r.id, &owner)?;
-        let progress = crate::reclaim::sweep(raw.as_ref(), &r.id, 16)?;
+        let progress = crate::reclaim::sweep(raw.as_ref(), &r.id, 1000)?;
         if progress.complete {
             if let Some(resources) = &self.config.resources {
                 resources.remove(&r.id)?;
@@ -1254,7 +1342,7 @@ impl Service {
         }
         Ok(())
     }
-    fn collect_offline(&self, e: &mut Entry, cancel: impl Fn() -> bool) -> Result<()> {
+    fn collect_offline(&self, e: &mut Entry, cancel: impl Fn() -> bool + Sync) -> Result<()> {
         let r = &mut e.record;
         if r.deleted
             || !r.gc_eligible
@@ -1279,6 +1367,19 @@ impl Service {
         let owner = self.dir(r).join("owner");
         private_dir(&owner)?;
         let disk = OwnedDisk::open(raw, &r.id, &owner)?;
+        if r.gc_after.is_none() && e.mark.is_none() {
+            let revision = disk.remote_revision()?;
+            if r.compact_revision.as_deref() != Some(&revision) {
+                r.compact_after = None;
+            }
+            let compact = disk.compact_offline(
+                r.compact_after.clone(),
+                4 * crate::MAX_OBJECT_BYTES,
+                &cancel,
+            )?;
+            r.compact_revision = Some(disk.remote_revision()?);
+            r.compact_after = compact.next_page;
+        }
         let progress =
             disk.collect_offline_cached(r.gc_after.as_deref(), 128, cancel, &mut e.mark)?;
         if progress.complete {
@@ -1292,17 +1393,17 @@ impl Service {
         r.gc_after = progress.next_after;
         self.persist(r)
     }
-    fn recover(&self, e: &mut Entry, cancel: impl Fn() -> bool) -> Result<()> {
+    fn recover(&self, e: &mut Entry, cancel: impl Fn() -> bool + Sync) -> Result<()> {
         let r = &mut e.record;
         if r.deleted || !r.desired {
-            if r.worker.is_some() || r.client.is_some() {
+            if r.worker.is_some() || r.client.is_some() || r.vm.is_some() {
                 self.detach(r)?;
             }
             if r.deleted {
                 self.reclaim(r)?;
             } else if r.prepared && r.gc_eligible && !r.evicted {
                 self.collect_offline(e, &cancel)?;
-                if e.record.gc_after.is_none() && !cancel() {
+                if e.record.gc_after.is_none() && e.record.compact_after.is_none() && !cancel() {
                     self.evict(&mut e.record)?;
                 }
             }
@@ -1452,7 +1553,9 @@ pub fn run() -> Result<()> {
                                 } else if e.record.deleted {
                                     1
                                 } else if !e.record.desired && e.record.prepared {
-                                    if e.record.gc_after.is_some() {
+                                    if e.record.gc_after.is_some()
+                                        || e.record.compact_after.is_some()
+                                    {
                                         1
                                     } else {
                                         3600

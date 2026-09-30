@@ -396,3 +396,92 @@ fn fully_zeroed_disk_reclaims_all_chunks_but_keeps_readable_head() {
     assert_eq!(b, [0]);
     fs::remove_dir_all(p).unwrap();
 }
+
+#[test]
+fn private_pack_is_retained_while_partially_live_then_compacted_without_watermark_loss() {
+    let store = Arc::new(Memory::default());
+    let mut initial =
+        IndexedVolume::create(store.clone(), "disk", 16 * CHUNK_BYTES as u64).unwrap();
+    for index in 0..16 {
+        initial
+            .write(
+                index * CHUNK_BYTES as u64,
+                &vec![index as u8 + 1; CHUNK_BYTES],
+            )
+            .unwrap();
+    }
+    initial.commit().unwrap();
+    let original_pack = store
+        .0
+        .lock()
+        .unwrap()
+        .chunks
+        .iter()
+        .find(|(_, bytes)| bytes.len() == crate::MAX_OBJECT_BYTES)
+        .unwrap()
+        .0
+        .clone();
+    OwnedDisk::enroll(store.clone(), "disk").unwrap();
+    let path = dir();
+    let mut disk = OwnedDisk::open(store.clone(), "disk", &path).unwrap();
+    disk.write(CHUNK_BYTES as u64, &vec![0; 15 * CHUNK_BYTES])
+        .unwrap();
+    disk.sync_remote().unwrap();
+    let before = disk.status().unwrap().remote_sequence;
+    collect_all(&disk, 1000);
+    assert!(store.0.lock().unwrap().chunks.contains_key(&original_pack));
+    assert!(matches!(
+        disk.compact_offline(None, 1, || false),
+        Err(Error::InvalidInput)
+    ));
+    assert!(matches!(
+        disk.compact_offline(None, 4 * crate::MAX_OBJECT_BYTES, || true),
+        Err(Error::Deadline)
+    ));
+    let progress = disk
+        .compact_offline(None, 4 * crate::MAX_OBJECT_BYTES, || false)
+        .unwrap();
+    assert_eq!(progress.rewritten_blocks, 1);
+    assert_eq!(disk.status().unwrap().remote_sequence, before);
+    collect_all(&disk, 1000);
+    assert!(!store.0.lock().unwrap().chunks.contains_key(&original_pack));
+    let mut out = vec![9; 16 * CHUNK_BYTES];
+    disk.read(0, &mut out).unwrap();
+    assert!(out[..CHUNK_BYTES].iter().all(|byte| *byte == 1));
+    assert!(out[CHUNK_BYTES..].iter().all(|byte| *byte == 0));
+    drop(disk);
+    let mut disk = OwnedDisk::open(store.clone(), "disk", &path).unwrap();
+    disk.read(0, &mut out).unwrap();
+    assert!(out[..CHUNK_BYTES].iter().all(|byte| *byte == 1));
+    disk.write(0, b"still writable").unwrap();
+    disk.sync_remote().unwrap();
+    drop(disk);
+    fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn durable_local_retirement_discards_pending_journal_and_fences_reopen_before_r2() {
+    let store = Arc::new(Memory::default());
+    image(store.clone(), "disk");
+    let path = dir();
+    let mut disk = OwnedDisk::open(store.clone(), "disk", &path).unwrap();
+    disk.write(0, b"discard").unwrap();
+    disk.flush().unwrap();
+    assert!(matches!(
+        OwnedDisk::discard_retired_local("disk", &path),
+        Err(Error::Conflict)
+    ));
+    drop(disk);
+    let revision = store.head("disk").unwrap().unwrap().revision;
+    OwnedDisk::discard_retired_local("disk", &path).unwrap();
+    assert!(path.join("retired").exists());
+    assert!(!path.join("journal").exists());
+    assert_eq!(store.head("disk").unwrap().unwrap().revision, revision);
+    assert!(matches!(
+        OwnedDisk::open(store.clone(), "disk", &path),
+        Err(Error::Conflict)
+    ));
+    OwnedDisk::retire(store.clone(), "disk", &path).unwrap();
+    assert!(sweep(store.as_ref(), "disk", 1000).unwrap().deleted_objects > 0);
+    fs::remove_dir_all(path).unwrap();
+}

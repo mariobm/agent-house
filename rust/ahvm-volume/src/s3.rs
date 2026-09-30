@@ -1,6 +1,9 @@
 //! Private, path-style S3 transport for the bounded protocol experiment.
 //! No credential discovery, redirects, proxy inheritance or automatic retries.
-use crate::{digest, valid_id, Error, Head, ObjectStore, Result, CHUNK_BYTES, MAX_MANIFEST_BYTES};
+use crate::{
+    digest, valid_id, Error, Head, ObjectStore, Result, CHUNK_BYTES, MAX_MANIFEST_BYTES,
+    MAX_OBJECT_BYTES,
+};
 use aws_credential_types::Credentials;
 use aws_sigv4::{
     http_request::{sign, PayloadChecksumKind, SignableBody, SignableRequest, SigningSettings},
@@ -15,7 +18,7 @@ use std::{
     fs::File,
     io::Read,
     path::Path,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 /// Explicit credentials only; never load an ambient AWS profile or metadata service.
@@ -159,6 +162,20 @@ impl S3Store {
         condition: Option<(&str, &str)>,
         body: &[u8],
     ) -> Result<Response> {
+        self.request_headers(
+            method,
+            url,
+            &condition.into_iter().collect::<Vec<_>>(),
+            body,
+        )
+    }
+    fn request_headers(
+        &self,
+        method: Method,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> Result<Response> {
         let identity = Credentials::new(
             &self.config.access_key_id,
             &self.config.secret_access_key,
@@ -181,7 +198,7 @@ impl S3Store {
         let signable = SignableRequest::new(
             method.as_str(),
             url,
-            condition.into_iter(),
+            headers.iter().copied(),
             SignableBody::Bytes(body),
         )
         .map_err(|_| Error::Store)?;
@@ -189,8 +206,8 @@ impl S3Store {
             .map_err(|_| Error::Store)?
             .into_parts();
         let mut request = self.client.request(method, url).body(body.to_vec());
-        if let Some((name, value)) = condition {
-            request = request.header(name, value);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
         }
         for (name, value) in instructions.headers() {
             request = request.header(name, value);
@@ -276,7 +293,7 @@ impl ObjectStore for S3Store {
         if after.is_some_and(|h| !valid_hash(h)) {
             return Err(Error::InvalidInput);
         }
-        if !valid_id(volume) || !(1..=128).contains(&limit) {
+        if !valid_id(volume) || !(1..=1000).contains(&limit) {
             return Err(Error::InvalidInput);
         }
         let prefix = format!("{}/{}/chunks/", self.config.prefix, volume);
@@ -298,7 +315,7 @@ impl ObjectStore for S3Store {
         if response.status() != StatusCode::OK {
             return Err(Error::Store);
         }
-        const MAX_LIST: u64 = 256 * 1024;
+        const MAX_LIST: u64 = 1024 * 1024;
         if response.content_length().is_some_and(|n| n > MAX_LIST) {
             return Err(Error::Corrupt);
         }
@@ -359,6 +376,106 @@ impl ObjectStore for S3Store {
         }
     }
 
+    fn delete_chunks(&self, volume: &str, hashes: &[String]) -> Result<()> {
+        use base64::Engine;
+        use md5::{Digest, Md5};
+        if !valid_id(volume) || hashes.len() > 1000 || hashes.iter().any(|h| !valid_hash(h)) {
+            return Err(Error::InvalidInput);
+        }
+        if hashes.is_empty() {
+            return Ok(());
+        }
+        let keys: std::collections::BTreeSet<_> = hashes
+            .iter()
+            .map(|hash| format!("{}/{volume}/chunks/{hash}", self.config.prefix))
+            .collect();
+        if keys.len() != hashes.len() {
+            return Err(Error::InvalidInput);
+        }
+        // All key characters are validated ASCII identifiers, '/', or hex;
+        // no unescaped XML metacharacter can enter this body.
+        let mut body = String::from("<Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">");
+        for key in &keys {
+            body.push_str(&format!("<Object><Key>{key}</Key></Object>"));
+        }
+        body.push_str("</Delete>");
+        let checksum =
+            base64::engine::general_purpose::STANDARD.encode(Md5::digest(body.as_bytes()));
+        let url = format!(
+            "{}/{}?delete",
+            self.config.endpoint.trim_end_matches('/'),
+            self.config.bucket
+        );
+        #[derive(Deserialize)]
+        #[serde(rename = "DeleteResult", rename_all = "PascalCase")]
+        struct Deleted {
+            #[serde(default)]
+            deleted: Vec<Key>,
+            #[serde(default)]
+            error: Vec<Failure>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Key {
+            key: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Failure {
+            key: String,
+            code: String,
+        }
+        // An ambiguous/partial result is retried as a whole by the next bounded
+        // collector pass; no root CAS or sweep cursor is advanced on failure.
+        let response = self.request_headers(
+            Method::POST,
+            &url,
+            &[
+                ("content-md5", &checksum),
+                ("content-type", "application/xml"),
+            ],
+            body.as_bytes(),
+        )?;
+        if response.status() != StatusCode::OK {
+            return Err(Error::Store);
+        }
+        const LIMIT: u64 = 1024 * 1024;
+        if response.content_length().is_some_and(|n| n > LIMIT) {
+            return Err(Error::Corrupt);
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error::Store)?;
+        if bytes.len() as u64 > LIMIT {
+            return Err(Error::Corrupt);
+        }
+        let result: Deleted =
+            quick_xml::de::from_reader(bytes.as_slice()).map_err(|_| Error::Corrupt)?;
+        let mut seen = std::collections::BTreeSet::new();
+        for key in result
+            .deleted
+            .iter()
+            .map(|item| &item.key)
+            .chain(result.error.iter().map(|item| &item.key))
+        {
+            if !keys.contains(key) || !seen.insert(key.clone()) {
+                return Err(Error::Corrupt);
+            }
+        }
+        if seen != keys {
+            return Err(Error::Corrupt);
+        }
+        if result.error.iter().any(|failure| failure.code.is_empty()) {
+            return Err(Error::Corrupt);
+        }
+        if !result.error.is_empty() {
+            return Err(Error::Store);
+        }
+        Ok(())
+    }
+
     fn head(&self, volume: &str) -> Result<Option<Head>> {
         Ok(self
             .get(&self.key(volume, "head.json")?, MAX_MANIFEST_BYTES)?
@@ -369,31 +486,55 @@ impl ObjectStore for S3Store {
             return Err(Error::InvalidInput);
         }
         let (_, bytes) = self
-            .get(&self.key(volume, &format!("chunks/{hash}"))?, CHUNK_BYTES)?
+            .get(
+                &self.key(volume, &format!("chunks/{hash}"))?,
+                MAX_OBJECT_BYTES,
+            )?
             .ok_or(Error::Corrupt)?;
-        if bytes.len() != CHUNK_BYTES || digest(&bytes) != hash {
+        if !(CHUNK_BYTES..=MAX_OBJECT_BYTES).contains(&bytes.len())
+            || !bytes.len().is_multiple_of(CHUNK_BYTES)
+            || digest(&bytes) != hash
+        {
             return Err(Error::Corrupt);
         }
         Ok(bytes)
     }
     fn put_chunk(&self, volume: &str, hash: &str, bytes: &[u8]) -> Result<()> {
-        if bytes.len() != CHUNK_BYTES || !valid_hash(hash) || digest(bytes) != hash {
+        self.put_chunk_cancellable(volume, hash, bytes, &|| false)
+    }
+    fn put_chunk_cancellable(
+        &self,
+        volume: &str,
+        hash: &str,
+        bytes: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<()> {
+        if !(CHUNK_BYTES..=MAX_OBJECT_BYTES).contains(&bytes.len())
+            || !bytes.len().is_multiple_of(CHUNK_BYTES)
+            || !valid_hash(hash)
+            || digest(bytes) != hash
+        {
             return Err(Error::InvalidInput);
         }
         // Immutable, content-addressed PUTs are safe to retry, including a lost
         // successful reply. A 412 still requires reading and verifying the bytes.
         // Never apply this policy to root CAS publication (outcome can be unknown).
         for attempt in 0..3 {
+            crate::check_cancel(cancel)?;
             let response = self.request(
                 Method::PUT,
                 &self.key(volume, &format!("chunks/{hash}"))?,
                 Some(("if-none-match", "*")),
                 bytes,
             );
+            crate::check_cancel(cancel)?;
             match response {
                 Ok(response) if response.status() == StatusCode::OK => return Ok(()),
                 Ok(response) if response.status() == StatusCode::PRECONDITION_FAILED => {
-                    match self.chunk(volume, hash) {
+                    crate::check_cancel(cancel)?;
+                    let existing = self.chunk(volume, hash);
+                    crate::check_cancel(cancel)?;
+                    match existing {
                         Ok(existing) if existing == bytes => return Ok(()),
                         Ok(_) | Err(Error::Corrupt) => return Err(Error::Corrupt),
                         Err(Error::Store) => (),
@@ -415,7 +556,15 @@ impl ObjectStore for S3Store {
                 Err(error) => return Err(error),
             }
             if attempt < 2 {
-                std::thread::sleep(Duration::from_millis(1100 << attempt));
+                let until = Instant::now() + Duration::from_millis(1100 << attempt);
+                loop {
+                    crate::check_cancel(cancel)?;
+                    let left = until.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    std::thread::sleep(left.min(Duration::from_millis(25)));
+                }
             }
         }
         Err(Error::Store)

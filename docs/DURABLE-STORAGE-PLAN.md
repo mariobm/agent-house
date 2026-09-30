@@ -529,3 +529,18 @@ wake failure where durable start receipts carried a policy that replicated start
 rejected. The private Cloud wake gate read a saved marker after authenticated
 wake in 7.724 seconds with one start record and one guest dispatch. Cloud default
 activation and dashboard qualification remain separate.
+
+### Logical retirement and packed private changes
+
+Deletion now separates tenant capacity from physical object cleanup. A durable
+local fence and verified device/guest detachment release quota and the reusable
+name; background reclamation keeps the old immutable volume ledger until complete.
+Terminal operation receipts preserve their original failure and identity snapshot,
+so a delayed retry cannot inspect or delete a replacement VM.
+
+New private roots pack changed 64-KiB blocks into objects of at most 1 MiB, with
+indexed offsets, whole-pack reachability and bounded exclusive offline compaction.
+S3 multi-object deletion replaces individual cleanup requests. Existing base
+catalogs and disk roots remain readable without migration. See
+[packed storage](PACKED-STORAGE.md) for tradeoffs and coordinated upgrade steps.
+The preceding rollout notes and measurements describe their historical stages.

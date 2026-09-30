@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS lifecycle_operations (
     request TEXT NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('pending','done','interrupted')),
     status INTEGER,
+    error_json TEXT,
+    sandbox_state TEXT,
+    storage_volume_id TEXT,
     created_at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS lifecycle_operation_active
@@ -27,20 +30,20 @@ CREATE TABLE IF NOT EXISTS users (
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
--- Replicated root disks outlive sandbox rows and remain charged until cleanup.
+-- Logical reservations and durable physical cleanup have separate lifetimes.
 CREATE TABLE IF NOT EXISTS replicated_reservations (
     volume_id TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     sandbox_id TEXT NOT NULL,
     logical_bytes INTEGER NOT NULL CHECK(logical_bytes > 0),
     state TEXT NOT NULL CHECK(state IN ('reserved','deleting','reclaimed')),
+    logical_released INTEGER NOT NULL DEFAULT 0 CHECK(logical_released IN (0,1)),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS replicated_reservations_owner
     ON replicated_reservations(owner_user_id, state);
-CREATE UNIQUE INDEX IF NOT EXISTS replicated_reservations_sandbox
-    ON replicated_reservations(sandbox_id) WHERE state != 'reclaimed';
+
 CREATE TABLE IF NOT EXISTS sandboxes (
     id              TEXT PRIMARY KEY,
     owner_user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -142,5 +145,60 @@ CREATE INDEX IF NOT EXISTS idx_events_sandbox ON events(sandbox_id, seq DESC);
 ";
 
 pub fn init_schema(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(SCHEMA)
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    let result = (|| {
+        conn.execute_batch(SCHEMA)?;
+        let has_error = conn
+            .prepare("PRAGMA table_info(lifecycle_operations)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "error_json");
+        if !has_error {
+            conn.execute_batch("ALTER TABLE lifecycle_operations ADD COLUMN error_json TEXT;")?;
+        }
+        let has_snapshot = conn
+            .prepare("PRAGMA table_info(lifecycle_operations)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "sandbox_state");
+        if !has_snapshot {
+            conn.execute_batch("ALTER TABLE lifecycle_operations ADD COLUMN sandbox_state TEXT;")?;
+        }
+        let has_volume = conn
+            .prepare("PRAGMA table_info(lifecycle_operations)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "storage_volume_id");
+        if !has_volume {
+            conn.execute_batch(
+                "ALTER TABLE lifecycle_operations ADD COLUMN storage_volume_id TEXT;",
+            )?;
+        }
+        // Keep old deleting rows charged until a fresh supervisor proof arrives.
+        let has_release = conn
+            .prepare("PRAGMA table_info(replicated_reservations)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "logical_released");
+        if !has_release {
+            conn.execute_batch("ALTER TABLE replicated_reservations ADD COLUMN logical_released INTEGER NOT NULL DEFAULT 0 CHECK(logical_released IN (0,1));")?;
+        }
+        conn.execute_batch(
+            "UPDATE replicated_reservations SET logical_released=1 WHERE state='reclaimed';
+        DROP INDEX IF EXISTS replicated_reservations_sandbox;
+        CREATE UNIQUE INDEX replicated_reservations_sandbox ON replicated_reservations(sandbox_id)
+            WHERE state!='reclaimed' AND logical_released=0;",
+        )
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT;"),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(error)
+        }
+    }
 }

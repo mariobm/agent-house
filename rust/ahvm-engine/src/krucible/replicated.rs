@@ -380,7 +380,7 @@ mod tests {
                 writeln!(
                     stream,
                     "{}",
-                    serde_json::json!({"ok":ok,"volume_id":request["volume_id"]})
+                    serde_json::json!({"ok":ok,"volume_id":request["volume_id"],"logical_released":expected == "delete" && ok})
                 )
                 .unwrap();
             }
@@ -474,7 +474,7 @@ mod tests {
         let listener = UnixListener::bind(socket).unwrap();
         let expected = volume.clone();
         let task = std::thread::spawn(move || {
-            for complete in [false, true] {
+            for (logical_released, complete) in [(false, false), (true, false), (true, true)] {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -487,16 +487,27 @@ mod tests {
                 assert_eq!(q["operation"], "retire");
                 assert_eq!(q["volume_id"], expected);
                 assert_eq!(q["logical_bytes"], 65536);
-                writeln!(stream, "{}", serde_json::json!({"ok":true,"volume_id":expected,"reclamation_complete":complete})).unwrap();
+                writeln!(stream, "{}", serde_json::json!({"ok":true,"volume_id":expected,"logical_released":logical_released,"reclamation_complete":complete})).unwrap();
             }
         });
-        assert!(!be
-            .reclaim_replicated_volume("probe", &volume, 65536)
-            .unwrap());
+        assert!(
+            !be.reclaim_replicated_volume("probe", &volume, 65536)
+                .unwrap()
+                .logical_released
+        );
+        assert!(cfg.data_dir.join("probe").exists());
+        assert!(be.replicated_record("probe").unwrap().1.deleting);
+        assert!(
+            !be.reclaim_replicated_volume("probe", &volume, 65536)
+                .unwrap()
+                .reclamation_complete
+        );
         assert!(!cfg.data_dir.join("probe").exists());
-        assert!(be
-            .reclaim_replicated_volume("probe", &volume, 65536)
-            .unwrap());
+        assert!(
+            be.reclaim_replicated_volume("probe", &volume, 65536)
+                .unwrap()
+                .reclamation_complete
+        );
         task.join().unwrap();
         std::fs::remove_dir_all(cfg.data_dir.parent().unwrap()).unwrap();
     }
@@ -524,13 +535,88 @@ mod tests {
                 .unwrap();
             let q: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(q["operation"], "retire");
-            writeln!(stream, "{}", serde_json::json!({"ok":true,"volume_id":q["volume_id"],"reclamation_complete":false})).unwrap();
+            writeln!(stream, "{}", serde_json::json!({"ok":true,"volume_id":q["volume_id"],"logical_released":true,"reclamation_complete":false})).unwrap();
         });
-        assert!(!be
-            .reclaim_replicated_volume("probe", &volume, 65536)
-            .unwrap());
+        assert!(
+            !be.reclaim_replicated_volume("probe", &volume, 65536)
+                .unwrap()
+                .reclamation_complete
+        );
         assert!(!dir.exists());
         task.join().unwrap();
+        std::fs::remove_dir_all(cfg.data_dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn old_retirement_after_name_reuse_preserves_new_record_and_directory() {
+        let cfg = config("retire-reuse");
+        let listener = UnixListener::bind(&cfg.replicated.as_ref().unwrap().socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut old = None;
+            for (index, operation) in ["prepare", "delete", "retire", "prepare", "retire"]
+                .into_iter()
+                .enumerate()
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let q: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(q["operation"], operation);
+                let id = q["volume_id"].as_str().unwrap().to_string();
+                if old.is_none() {
+                    old = Some(id.clone());
+                }
+                if operation == "retire" {
+                    assert_eq!(old.as_ref().unwrap(), &id);
+                }
+                let complete = index == 4;
+                writeln!(stream, "{}", serde_json::json!({"ok":operation != "prepare","volume_id":id,"logical_released":true,"reclamation_complete":complete})).unwrap();
+            }
+        });
+        let be = KrucibleBackend::open(cfg.clone()).unwrap();
+        assert!(be.create(&spec()).is_err());
+        let old = be
+            .replicated_record("probe")
+            .unwrap()
+            .1
+            .info
+            .storage
+            .volume_id
+            .unwrap();
+        be.destroy("probe").unwrap();
+        assert!(
+            be.reclaim_replicated_volume("probe", &old, 65536)
+                .unwrap()
+                .logical_released
+        );
+        assert!(be.create(&spec()).is_err());
+        let new = be.replicated_record("probe").unwrap().1;
+        assert_ne!(new.info.storage.volume_id.as_deref(), Some(old.as_str()));
+        let dir = cfg.data_dir.join("probe");
+        let before = std::fs::read(dir.join("sandbox.json")).unwrap();
+        assert!(
+            be.reclaim_replicated_volume("probe", &old, 65536)
+                .unwrap()
+                .reclamation_complete
+        );
+        assert_eq!(
+            be.replicated_record("probe")
+                .unwrap()
+                .1
+                .info
+                .storage
+                .volume_id,
+            new.info.storage.volume_id
+        );
+        assert_eq!(std::fs::read(dir.join("sandbox.json")).unwrap(), before);
+        assert!(!be.replicated_record("probe").unwrap().1.deleting);
+        server.join().unwrap();
+        drop(be);
         std::fs::remove_dir_all(cfg.data_dir.parent().unwrap()).unwrap();
     }
 
@@ -588,6 +674,9 @@ mod tests {
                     serde_json::json!({"ok":operation != "prepare","volume_id":q["volume_id"]});
                 if operation == "resources" {
                     reply["resources_enforced"] = serde_json::json!(true);
+                }
+                if operation == "delete" {
+                    reply["logical_released"] = serde_json::json!(true);
                 }
                 writeln!(stream, "{reply}").unwrap();
             }

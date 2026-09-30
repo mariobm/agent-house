@@ -63,14 +63,17 @@ impl Usage {
         self.add_residency(size, true)
     }
     pub fn add_residency(&mut self, size: u64, resident: bool) -> Result<()> {
+        self.add_record(size, resident, true)
+    }
+    pub fn add_record(&mut self, size: u64, resident: bool, retained: bool) -> Result<()> {
         valid_size(size)?;
         fn add(a: u64, b: u64) -> Result<u64> {
             a.checked_add(b)
                 .ok_or_else(|| "storage accounting overflow".into())
         }
         let next = Self {
-            retained_volumes: add(self.retained_volumes, 1)?,
-            logical_bytes: add(self.logical_bytes, size)?,
+            retained_volumes: add(self.retained_volumes, u64::from(retained))?,
+            logical_bytes: add(self.logical_bytes, if retained { size } else { 0 })?,
             journal_reserved_bytes: add(
                 self.journal_reserved_bytes,
                 if resident { JOURNAL_BYTES } else { 0 },

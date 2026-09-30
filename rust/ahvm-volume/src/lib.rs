@@ -27,6 +27,8 @@ pub mod s3;
 pub mod service;
 
 pub const CHUNK_BYTES: usize = 64 * 1024;
+/// Immutable private packs contain at most sixteen logical blocks.
+pub const MAX_OBJECT_BYTES: usize = 1024 * 1024;
 /// Deliberately small for protocol qualification; not a product disk limit.
 pub const MAX_VOLUME_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024;
@@ -55,6 +57,14 @@ pub enum Error {
     ReopenRequired,
 }
 pub type Result<T> = std::result::Result<T, Error>;
+
+pub(crate) fn check_cancel(cancel: &(dyn Fn() -> bool + Sync)) -> Result<()> {
+    if cancel() {
+        Err(Error::Deadline)
+    } else {
+        Ok(())
+    }
+}
 
 /// Revision is opaque: an S3 adapter uses the exact response ETag, not a SHA.
 #[derive(Debug, Clone)]
@@ -105,10 +115,68 @@ pub trait ObjectStore: std::fmt::Debug + Send + Sync {
     fn delete_chunk(&self, _volume: &str, _digest: &str) -> Result<()> {
         Err(Error::InvalidInput)
     }
+    /// Bounded maintenance batch. All hashes must belong to this exact volume.
+    /// Failure may follow partial deletion; repeating the entire batch is safe.
+    fn delete_chunks(&self, volume: &str, hashes: &[String]) -> Result<()> {
+        if !valid_id(volume)
+            || hashes.len() > 1000
+            || hashes.iter().any(|h| indexed::decode(h).is_err())
+        {
+            return Err(Error::InvalidInput);
+        }
+        // Generic adapters keep a bounded fallback; remote transports override
+        // this with one request, so a large sweep never queues serial timeouts.
+        std::thread::scope(|scope| -> Result<()> {
+            let workers: Vec<_> = (0..8.min(hashes.len()))
+                .map(|worker| {
+                    scope.spawn(move || {
+                        for index in (worker..hashes.len()).step_by(8) {
+                            self.delete_chunk(volume, &hashes[index])?;
+                        }
+                        Ok(())
+                    })
+                })
+                .collect();
+            let mut result = Ok(());
+            for worker in workers {
+                if let Err(error) = worker.join().unwrap_or(Err(Error::Store)) {
+                    result = Err(error);
+                }
+            }
+            result
+        })
+    }
     fn head(&self, volume: &str) -> Result<Option<Head>>;
     fn chunk(&self, volume: &str, digest: &str) -> Result<Vec<u8>>;
     fn put_chunk(&self, volume: &str, digest: &str, bytes: &[u8]) -> Result<()>;
+    /// Maintenance uploads must check cancellation between bounded requests and
+    /// throughout retry waits. Adapters must forward this to their transport.
+    /// A canceled upload may leave an unreferenced immutable object behind.
+    fn put_chunk_cancellable(
+        &self,
+        volume: &str,
+        digest: &str,
+        bytes: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<()> {
+        check_cancel(cancel)?;
+        self.put_chunk(volume, digest, bytes)?;
+        check_cancel(cancel)
+    }
     fn publish(&self, volume: &str, expected: Option<&str>, manifest: &[u8]) -> Result<String>;
+    /// Check cancellation immediately before issuing the head CAS. Deadline
+    /// proves no CAS was attempted; once it starts, preserve its real outcome
+    /// (including Uncertain), even if cancellation arrives in flight.
+    fn publish_cancellable(
+        &self,
+        volume: &str,
+        expected: Option<&str>,
+        manifest: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<String> {
+        check_cancel(cancel)?;
+        self.publish(volume, expected, manifest)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
