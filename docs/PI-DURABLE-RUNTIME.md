@@ -124,11 +124,51 @@ production image/default were not changed. Exact SHA-256 evidence:
 | Durable gate | `7f44119d6f6b52d4f0607604b2fbd1936cdd53ec6f1b0862a9ccf092b377b445` |
 | Static Forge | `fda75aa8f5a695e32ecc0590e126a9d40caa0e6e4c73e925d5e05290d7eba08d` |
 
+The disposable integration VM was subsequently recreated with actual
+`replicated` storage, using an isolated volume supervisor, the private
+`ahvm-volume-qualification` R2 bucket and a dedicated object prefix. Its
+immutable base matched the candidate image hash above. A real isolated managed
+run passed admission and completed with exit 0; runtime/helper probes passed,
+and background replication reached equal local/remote sequences with zero
+pending bytes. An explicit remote barrier requires a stopped VM; an awake
+status observation is not that barrier. Production services and their storage,
+image catalog and defaults were unchanged.
+
+Cold-wake qualification initially returned HTTP 502 during private offline
+collection contention. The supervisor logged `commit budget exhausted before
+publication` and worker health failures. Restarting only the private volume
+supervisor recovered the existing disk without recreating it or overriding
+writer ownership. Two subsequent cold stop/start cycles passed: an immediate
+restart and a restart after ten seconds stopped. Starts took 5.17 and 3.31
+seconds, the synthetic workspace marker survived, probes passed after each,
+and replication reached sequence 168 locally/remotely with zero pending bytes.
+This was an operational recovery, not a storage code fix or a determination of
+the initial failure's root cause. Evidence is retained in
+`cold-qualification.json` and `cold-wake-diagnostics.log` under the private host
+directory above.
+
+The companion [Cloud controller PR #71](https://github.com/mariobm/ahvm-site/pull/71)
+then passed a local Worker integration gate against this real replicated VM
+and the pinned Pi SDK, using a deterministic faux-provider fixture. It covered
+partial streaming/SSE and reconnect, one execution of a tool marker, cold
+history without waking the VM, cold continuation without replaying the prompt,
+question/answer, cancellation of an escaped child, preservation of a sibling
+run, and a fresh intent after Stop. Six managed runs were admitted; no external
+model requests or production deployments were involved. Local evidence:
+`/tmp/ahvm-pi-faux-stream-replicated/qualification.json`.
+
+Real Codex device authorization initiation and cancellation also passed through
+the isolated Cloud controller on this replicated VM, with one managed run and
+the VM remaining running. This contacted the real device endpoint without
+authorizing an account or making an inference request. Local evidence:
+`/tmp/ahvm-pi-oauth-isolated-replicated/qualification.json`. The private VM is
+retained for the user's manual subscription sign-in and inference test.
+
 An initial direct Pi AI probe of
 `opencode/muse-spark-1.3-contributor-free` returned HTTP 401 with a dummy bearer
 key. Removing the Authorization header returned HTTP 403 `FreeTierError`: the
 provider restricts its anonymous free tier to OpenCode. Both synthetic probes
 used zero tokens and no account credentials. The catalog entry does not grant
 anonymous provider access. The Pi pilot instead uses explicit Codex subscription
-sign-in; actual authorization, inference, refresh/removal and mobile behavior
-remain application qualification work.
+sign-in; completed account authorization, real-model inference, credential
+refresh/removal and mobile behavior remain application qualification work.
