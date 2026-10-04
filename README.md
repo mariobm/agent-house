@@ -184,16 +184,12 @@ Agent House originated as a fork of [Bhatti](https://github.com/sahil-shubham/bh
 
 ## License
 
-AHVM v0.1.0 and later editions designated under the [AHVM Community License](LICENSE)
-are source-available. Community use is free while your company and its controlled
-affiliates have total worldwide ARR of **USD 1 million or less**. Above that
-threshold, a separate **paid commercial software license** is required; contact
-[sales@ahvm.app](mailto:sales@ahvm.app). Hosting and support fees are separate.
+AHVM is open-source under the standard [MIT License](LICENSE), with no revenue
+cap or paid commercial software license requirement. Commercial use is permitted.
 
-This change is prospective. Existing Apache-2.0 grants and upstream/third-party
-licenses remain valid. See [NOTICE](NOTICE) and the retained
-[Apache-2.0 text](licenses/Apache-2.0.txt). See the
-[licensing explanation](docs/LICENSING.md) for prior-release and third-party scope.
+Upstream and third-party licenses remain valid. See [NOTICE](NOTICE), the retained
+[Apache-2.0 text](licenses/Apache-2.0.txt) and the
+[licensing explanation](docs/LICENSING.md) for attribution and scope.
 
 ### Omarchy desktop preview
 
