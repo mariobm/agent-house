@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -49,7 +50,9 @@ if child == 0:
  if os.fork(): os._exit(0)
  for fd in (0,1,2):
   replacement=os.open('/dev/null',os.O_RDWR);os.dup2(replacement,fd);os.close(replacement)
- marker.write_text(str(os.getpid()))
+ temporary=marker.with_name(marker.name+'.tmp')
+ temporary.write_text(str(os.getpid()))
+ temporary.replace(marker)
  while True:
   marker.with_suffix('.heartbeat').write_text(str(time.monotonic()))
   time.sleep(.02)
@@ -66,11 +69,54 @@ time.sleep(120)
     return process, tool
 
 
+def boot_scope(phase):
+    """Receipts and sealing survive only one boot, independently of SQLite."""
+    directory = Path('/workspace/.ahvm-pi-scope-boot-gate')
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    if phase == 'init':
+        directory.mkdir(mode=0o700)
+        record = {'run': uuid.uuid4().hex, 'tool': hashlib.sha256(uuid.uuid4().bytes).hexdigest(),
+                  'boot': boot}
+    else:
+        record = json.loads((directory / 'receipt.json').read_text())
+        if phase == 'resume':
+            assert record['boot'] == boot, 'expected a restored local RAM checkpoint'
+            receipt = json.loads(invoke('result', record['run'], record['tool']).stdout)
+            assert receipt['exit_code'] == 0 and receipt['empty'] is True
+            assert invoke('run', record['run'], record['tool'], '--cwd', '/workspace', '--',
+                          '/bin/true', check=False).returncode == 75
+            print(json.dumps({'pi_tool_scope_protocol': 1, 'phase': phase,
+                              'warm_scope_preserved': True, 'sealed_admission': True}))
+            return
+        assert record['boot'] != boot, 'scope reset must be tested on a new cold boot'
+        assert invoke('result', record['run'], record['tool'], check=False).returncode == 75, \
+            'a prior-boot trusted receipt survived cold start'
+    # Reusing these IDs after reboot also proves the old admission tombstone and
+    # started claim disappeared. Within one boot, their reuse must still fail.
+    invoke('run', record['run'], record['tool'], '--cwd', '/workspace', '--', '/bin/true')
+    result = json.loads(invoke('result', record['run'], record['tool']).stdout)
+    assert result['exit_code'] == 0 and result['empty'] is True
+    invoke('finish', record['run'])
+    assert invoke('run', record['run'], record['tool'], '--cwd', '/workspace', '--',
+                  '/bin/true', check=False).returncode == 75
+    if phase == 'init':
+        path = directory / 'receipt.json'
+        path.write_text(json.dumps(record))
+        path.chmod(0o600)
+    print(json.dumps({'pi_tool_scope_protocol': 1, 'phase': phase,
+                      'cold_boot_scope_reset': phase == 'reopen', 'sealed_admission': True}))
+
+
 def main():
+    phase = sys.argv[1] if len(sys.argv) > 1 else None
+    assert phase in (None, 'init', 'resume', 'reopen'), 'expected optional init/resume/reopen phase'
     assert os.getuid() != 0 and os.environ['HOME'] == '/home/ahvm'
     assert not os.access(CGROUP, os.W_OK), 'guest user must not control cgroup admission'
     assert not os.access('/run/ahvm-pi-tool', os.W_OK), 'guest user must not control tombstones'
     assert json.loads(invoke('probe').stdout)['cgroup_kill'] is True
+    if phase in ('resume', 'reopen'):
+        boot_scope(phase)
+        return
     # Direct, unprivileged use and invalid identities must fail closed.
     assert subprocess.run([HELPER, 'probe'], capture_output=True).returncode == 75
     for args in [('abort', '../escape'), ('abort', 'A' * 32),
@@ -172,6 +218,8 @@ def main():
                 invoke('abort', run, check=False)
             for process in processes:
                 process.communicate(timeout=10)
+    if phase == 'init':
+        boot_scope(phase)
 
 
 if __name__ == '__main__':

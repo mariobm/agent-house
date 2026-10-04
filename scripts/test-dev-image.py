@@ -2,9 +2,12 @@
 """Opt-in image gate against a disposable daemon; one 4 GiB sandbox, cleaned up.
 
 AHVM_ENDPOINT and AHVM_TOKEN_FILE select an empty test installation with the
-development image. Usage: test-dev-image.py /path/to/ahvm
+development image. Usage: test-dev-image.py /path/to/ahvm [--local-data-dir PATH]
+The optional local daemon data path allows a disk-only cold reboot by moving
+only this gate VM's RAM bundle after stop; the VM is deleted in finally.
 No provider credentials or paid model requests are used.
 """
+import argparse
 import json
 from pathlib import Path
 import subprocess
@@ -12,7 +15,11 @@ import sys
 import time
 import uuid
 
-binary = sys.argv[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('binary')
+parser.add_argument('--local-data-dir', type=Path)
+args = parser.parse_args()
+binary = args.binary
 sandbox = 'dev-image-' + uuid.uuid4().hex[:10]
 pins = dict(line.split('=', 1) for line in
             (Path(__file__).resolve().parents[1] / 'images/ubuntu-dev/versions.env').read_text().splitlines()
@@ -166,7 +173,7 @@ git --version; gcc --version | head -1
               pins['OPENCODE_VERSION']), flush=True)
     print(cli('exec', sandbox, '--', 'ahvm-dev', 'node', '--input-type=module', '-e',
               PI_DURABLE_GATE, 'init', pins['PI_DURABLE_VERSION']), flush=True)
-    print(cli('exec', sandbox, '--', 'ahvm-dev', 'python3', '-c', PI_TOOL_GATE), flush=True)
+    print(cli('exec', sandbox, '--', 'ahvm-dev', 'python3', '-c', PI_TOOL_GATE, 'init'), flush=True)
     cli('exec', sandbox, '--', 'bash', '-ec',
         'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; '
         'apt-get install -y -qq --no-install-recommends hello; hello >/dev/null')
@@ -200,8 +207,27 @@ printf persistent > marker
     cli('stop', sandbox)
     cli('start', sandbox)
     assert cli('exec', sandbox, '--', 'ahvm-dev', 'cat', '/workspace/marker') == 'persistent'
+    storage = obj('get', sandbox).get('storage', {}).get('mode', 'local')
+    scope_phase = 'reopen' if storage == 'replicated' else 'resume'
+    print(cli('exec', sandbox, '--', 'ahvm-dev', 'python3', '-c', PI_TOOL_GATE, scope_phase), flush=True)
     print(cli('exec', sandbox, '--', 'ahvm-dev', 'node', '--input-type=module', '-e',
               PI_DURABLE_GATE, 'reopen', pins['PI_DURABLE_VERSION']), flush=True)
+    if args.local_data_dir:
+        assert storage == 'local', '--local-data-dir requires a local-storage gate VM'
+        cli('exec', sandbox, '--', '/bin/sync')
+        cli('stop', sandbox)
+        assert obj('get', sandbox)['state'] == 'stopped'
+        directory = args.local_data_dir.resolve() / 'sandboxes' / sandbox
+        bundle = directory / 'bundle'
+        assert bundle.is_dir() and not bundle.is_symlink() and (bundle / 'manifest.json').is_file()
+        # Local stop preserves RAM; retaining its bundle would skip init.krun.
+        # Preserve it under this owned, disposable VM directory until cleanup.
+        bundle.rename(directory / 'image-gate-warm-bundle')
+        cli('start', sandbox)
+        assert cli('exec', sandbox, '--', 'ahvm-dev', 'cat', '/workspace/marker') == 'persistent'
+        print(cli('exec', sandbox, '--', 'ahvm-dev', 'python3', '-c', PI_TOOL_GATE, 'reopen'), flush=True)
+        print(cli('exec', sandbox, '--', 'ahvm-dev', 'node', '--input-type=module', '-e',
+                  PI_DURABLE_GATE, 'reopen', pins['PI_DURABLE_VERSION']), flush=True)
     cli('exec', sandbox, '--', 'ahvm-dev', 'bash', '-lc',
         'test "$(./hello)" = C-OK && .venv/bin/python -c "import requests" && codex --version')
     print(f'PASS: Ubuntu tools, released OpenCode authenticated loopback API, locked Pi Durable SQLite/duplicate admission, apt/npm/pip, HTTPS, PTY, stop/start persistence ({time.monotonic()-started:.2f}s)', flush=True)

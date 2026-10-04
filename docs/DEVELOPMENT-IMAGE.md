@@ -150,3 +150,13 @@ AHVM_ENDPOINT=http://127.0.0.1:18880 \
 AHVM_TOKEN_FILE=/etc/ahvm-test-dev/admin.token \
   python3 scripts/test-dev-image.py /opt/ahvm-test-dev/bin/ahvm
 ```
+
+Local storage preserves a RAM checkpoint across stop/start; the scope gate
+verifies its tool receipts and admission seals survive that resume. To also
+exercise guest initialization on a new disk-only boot, run on the daemon host
+with `--local-data-dir` set to that disposable daemon's `AHVM_DATA_DIR`. The
+gate syncs the guest, stops its own UUID VM and retains its RAM bundle under
+that VM directory before starting from disk. It then requires a changed boot
+ID, cleared old receipts/seals, fresh scoped-tool admission and persistent
+SQLite/workspace state. The VM and retained bundle are deleted in `finally`.
+Replicated storage already performs a disk-only boot after stop/start.

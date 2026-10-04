@@ -107,6 +107,23 @@ admission, eight admission/abort races, root-only trusted exit receipts,
 tool-identity reuse rejection, unprivileged use and invalid IDs. All tool
 processes run as `ahvm`; failed helper checks cannot be counted as tool success.
 
+Independent review added atomic PID-marker publication to the tool fixture and
+explicit warm/cold scope checks. Local stop/start restores RAM: the gate requires
+the original boot ID, trusted receipt and admission seal to survive that resume.
+With `--local-data-dir` set to the disposable daemon data directory, it then
+syncs the guest, stops its own VM, retains only that VM's RAM bundle under its
+directory and boots from disk. A new boot ID, rejection of the old receipt,
+fresh admission using the prior IDs, resealing and persistent workspace/SQLite
+are required. Replicated storage already uses a disk-only stop/start.
+
+The expanded gate passed in **24.29 seconds** on 2026-10-04 against a fresh,
+signature/checksum/size-verified pull of the immutable published candidate into
+an isolated image cache. It used one local 2-vCPU/4-GiB VM and the 0.3.13 runtime;
+the VM was deleted after passing. The full log is retained at
+`/var/tmp/ahvm-pi-review-gate-20261004/gate.log` on `agent_house`. The private
+daemon uses the host's working DNS stub `127.0.0.53`; an initial attempt using
+unreachable `1.1.1.1` was interrupted during apt resolution and cleaned up.
+
 The 16-GiB logical candidate allocated approximately 2.8 GiB. It remains private
 at `/var/tmp/ahvm-pi-durable-20261004/ubuntu-dev-qualified.ext4`; build and gate
 evidence is in `qualified-build.log`, `qualified-gate.log`, `source.sha256` and
@@ -120,7 +137,9 @@ production image/default were not changed. Exact SHA-256 evidence:
 | Guest init | `8cc8d70ba54b8e2db69eb12b333ad6bfea05cd570a96b5d67cf8a637f1a2421d` |
 | Durable npm lock | `a6d19b2eb685e180fd228ff11731324e9cfccbb4f8bac2f9e163314a945928aa` |
 | Runtime probe | `b4dfb5f366bc311261654dd8d47e1b731b71893eb60fe8ff7d2d4a2880469426` |
-| Tool scope gate | `a82640ffd10f00a6021150895ace4efeb89ebbea9f9a68ab53522f9dbef9186f` |
+| Initial tool scope gate | `a82640ffd10f00a6021150895ace4efeb89ebbea9f9a68ab53522f9dbef9186f` |
+| Reviewed tool scope gate | `54db2169c3104aa9ca20d1900ff4b2770d395455c449261bbfca74374b7e3de0` |
+| Reviewed full image gate | `c20e9a7e020407216eb377f4b15cc45770951f22475dde7c7287829d2349d7d8` |
 | Durable gate | `7f44119d6f6b52d4f0607604b2fbd1936cdd53ec6f1b0862a9ccf092b377b445` |
 | Static Forge | `fda75aa8f5a695e32ecc0590e126a9d40caa0e6e4c73e925d5e05290d7eba08d` |
 
@@ -193,3 +212,21 @@ anonymous provider access. The Pi pilot instead uses explicit Codex subscription
 sign-in. Completed account authorization, real-model inference and credential
 removal are qualified above; credential refresh and mobile behavior remain
 unqualified.
+
+## Immutable publication preparation
+
+The same clean raw image was compressed with a deterministic gzip header,
+checked for gzip integrity and expanded-hash equality, and uploaded through the
+bucket-scoped publisher as generation **2026.10.04-pi-durable.1**:
+
+`https://images.ahvm.app/ubuntu-dev/2026.10.04-pi-durable.1/ubuntu-dev-amd64.ext4.gz`
+
+The download is **1,054,083,218 bytes** with SHA-256
+`cec23c433dcab4b0d4e0fb297b2e0c94b0a56f3f1dfb2c21f4edd299cad28657`.
+Its expanded size is **17,179,869,184 bytes**, raw hash matches the table above,
+and guest ABI is **1**. A signed qualification catalog at
+`https://images.ahvm.app/qualification.json` advertised this record for the fresh
+pull and expanded gate. The reviewed helper, init, lock, runtime probe and Forge
+bytes remain unchanged. Production promotion must merge the image record into
+the freshly verified release catalog to preserve concurrent release metadata;
+the qualification run changed no production catalog, daemon path or default.
