@@ -161,8 +161,28 @@ Real Codex device authorization initiation and cancellation also passed through
 the isolated Cloud controller on this replicated VM, with one managed run and
 the VM remaining running. This contacted the real device endpoint without
 authorizing an account or making an inference request. Local evidence:
-`/tmp/ahvm-pi-oauth-isolated-replicated/qualification.json`. The private VM is
-retained for the user's manual subscription sign-in and inference test.
+`/tmp/ahvm-pi-oauth-isolated-replicated/qualification.json`.
+
+The subsequent real ChatGPT subscription gate passed on this same private
+replicated VM using `gpt-6.1-sol`. It completed account authorization and real
+model/tool requests, executed its tool marker once, streamed/reconnected,
+retrieved cold history without a wake, continued after a cold start without
+prompt replay, and removed the connected credential. Four managed runs were
+admitted. Local evidence: `/tmp/ahvm-pi-live-replicated/qualification.json`.
+This was a private integration run, not a production rollout or mobile test.
+
+A final guest probe inspected file metadata only and confirmed the live
+credential record, active credential pointer and all `cred_*.json` records were
+absent. After qualification, the disposable VM was deleted, both private volume
+records were safely retired/reclaimed, their remote volume chunks were swept,
+and NBD slot 3 was free. The private daemon and volume-supervisor units were
+stopped; temporary host R2/admin credential files and the local admin-token copy
+were removed. The candidate image, clean private R2 base, retirement tombstones
+and qualification evidence remain retained. No private runtime service remains
+active, and the production node/runtime/volume units remained active. Host
+evidence: `live-qualification.json`, `cloud-faux-qualification.json`,
+`oauth-init-cancel-qualification.json`, `credential-removal-probe.json` and
+`cleanup.json` in the private artifact directory above.
 
 An initial direct Pi AI probe of
 `opencode/muse-spark-1.3-contributor-free` returned HTTP 401 with a dummy bearer
@@ -170,5 +190,6 @@ key. Removing the Authorization header returned HTTP 403 `FreeTierError`: the
 provider restricts its anonymous free tier to OpenCode. Both synthetic probes
 used zero tokens and no account credentials. The catalog entry does not grant
 anonymous provider access. The Pi pilot instead uses explicit Codex subscription
-sign-in; completed account authorization, real-model inference, credential
-refresh/removal and mobile behavior remain application qualification work.
+sign-in. Completed account authorization, real-model inference and credential
+removal are qualified above; credential refresh and mobile behavior remain
+unqualified.
