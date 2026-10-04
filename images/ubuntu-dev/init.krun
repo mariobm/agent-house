@@ -12,6 +12,15 @@ ln -sf pts/ptmx /dev/ptmx
 mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
 chmod 1777 /tmp
 install -d -o root -g root -m 0755 /run/ahvm-managed-cancel
+# OpenCode remains usable on kernels without cgroup v2; the Pi scope helper
+# rejects admission when the stronger tool-termination capability is absent.
+if mkdir -p /sys/fs/cgroup && { mountpoint -q /sys/fs/cgroup || mount -t cgroup2 -o nosuid,nodev,noexec none /sys/fs/cgroup; }; then
+    install -d -o root -g root -m 0755 /sys/fs/cgroup/ahvm-pi-tool
+fi
+install -d -o root -g root -m 0700 /run/ahvm-pi-tool
+# /run itself is part of the persistent ext4 root. Give only this helper's
+# receipts and admission tombstones a fresh lifetime on every cold guest boot.
+mountpoint -q /run/ahvm-pi-tool || mount -t tmpfs -o mode=0700,nosuid,nodev,noexec,size=16m tmpfs /run/ahvm-pi-tool || true
 cd /workspace
 # Group-writable agent uploads under the setgid workspace.
 umask 0002

@@ -10,7 +10,13 @@ SQLite, rsync, curl, wget, unzip, tmux, nano and Vim. AI commands are `claude`,
 
 The current recipe pins **released OpenCode 2.0.18** from official npm package
 **`@opencode/cli`**, replacing the older `opencode-ai` 1.18.30 package. Other
-tool and OS pins are unchanged. The CLI and its native binary remain under
+CLI and OS pins are unchanged. It also installs the separate, experimental
+**Pi Durable 1.0.2** application runtime, with Pi AI and Chord 1.0.2, under
+root-owned `/opt/ahvm-pi-durable`. The Pi CLI remains 0.85.1; installing its
+command does not provide a Durable application service. OpenCode remains the
+existing harness default. See [Pi Durable runtime](PI-DURABLE-RUNTIME.md) for
+the capability probe, scoped tool execution, and qualification limits.
+The OpenCode CLI and its native binary remain under
 root-owned `/opt/ahvm-tools`; no server, provider login, password or conversation
 state is started or saved during image provisioning. Existing VM disks are not
 upgraded by publishing a new image.
@@ -31,7 +37,10 @@ from official sources are pinned in `images/ubuntu-dev/versions.env`; refreshing
 them is an explicit change. Ubuntu security updates are applied at build time,
 so builds are **not byte-for-byte reproducible**. The exact Ubuntu package list,
 tool versions and forge checksum are recorded under `/usr/local/share/ahvm`;
-the resolved npm dependency lock is `/opt/ahvm-tools/package-lock.json`.
+the resolved CLI dependency lock is `/opt/ahvm-tools/package-lock.json`.
+The Durable runtime uses the committed `images/ubuntu-dev/pi-durable/package-lock.json`
+with `npm ci --ignore-scripts`, and records its lock hash and exact package pins
+in `/usr/local/share/ahvm/pi-durable-runtime.json`.
 Package installation runs as guest `ahvm`, then the installed tool tree becomes
 root-owned. npm may warn about install scripts; the native platform optional
 package still supplies the executable. No new broad script allowance is added,
@@ -141,3 +150,13 @@ AHVM_ENDPOINT=http://127.0.0.1:18880 \
 AHVM_TOKEN_FILE=/etc/ahvm-test-dev/admin.token \
   python3 scripts/test-dev-image.py /opt/ahvm-test-dev/bin/ahvm
 ```
+
+Local storage preserves a RAM checkpoint across stop/start; the scope gate
+verifies its tool receipts and admission seals survive that resume. To also
+exercise guest initialization on a new disk-only boot, run on the daemon host
+with `--local-data-dir` set to that disposable daemon's `AHVM_DATA_DIR`. The
+gate syncs the guest, stops its own UUID VM and retains its RAM bundle under
+that VM directory before starting from disk. It then requires a changed boot
+ID, cleared old receipts/seals, fresh scoped-tool admission and persistent
+SQLite/workspace state. The VM and retained bundle are deleted in `finally`.
+Replicated storage already performs a disk-only boot after stop/start.
