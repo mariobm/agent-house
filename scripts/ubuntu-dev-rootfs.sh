@@ -30,6 +30,10 @@ install -m755 "$FORGE_BIN" "$ROOT/usr/local/bin/ahvm-forge"
 install -m755 "$REPO/images/ubuntu-dev/init.krun" "$ROOT/init.krun"
 install -m755 "$REPO/images/ubuntu-dev/provision.sh" "$ROOT/tmp/provision.sh"
 install -m644 "$REPO/images/ubuntu-dev/versions.env" "$ROOT/tmp/versions.env"
+mkdir -p "$ROOT/opt/ahvm-pi-durable"
+for asset in package.json package-lock.json check.mjs tool.py; do
+    install -m644 "$REPO/images/ubuntu-dev/pi-durable/$asset" "$ROOT/opt/ahvm-pi-durable/$asset"
+done
 # Ubuntu base has no host credentials. Only DNS configuration crosses over.
 rm -f "$ROOT/etc/resolv.conf"
 cp -L /etc/resolv.conf "$ROOT/etc/resolv.conf"

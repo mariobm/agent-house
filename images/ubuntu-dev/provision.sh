@@ -31,6 +31,38 @@ for tool in bun bunx claude codex opencode pi; do
     ln -s "/opt/ahvm-tools/node_modules/.bin/$tool" "/usr/local/bin/$tool"
 done
 chown -R root:root /opt/ahvm-tools
+# Pi Durable is an opt-in application runtime, separate from the Pi CLI and
+# OpenCode. Install its reviewed dependency lock without package build scripts.
+python3 - "$PI_DURABLE_VERSION" <<'PY'
+import json,sys
+package=json.load(open('/opt/ahvm-pi-durable/package.json'))
+assert set(package['dependencies']) == {'@earendil-works/pi-durable','@earendil-works/pi-ai','@earendil-works/chord'}
+assert all(version == sys.argv[1] for version in package['dependencies'].values()), 'Pi runtime pin mismatch'
+PY
+chown -R ahvm:ahvm /opt/ahvm-pi-durable
+runuser -u ahvm -- bash -c 'cd /opt/ahvm-pi-durable && npm ci --omit=dev --ignore-scripts --no-audit --no-fund'
+chown -R root:root /opt/ahvm-pi-durable
+chmod 755 /opt/ahvm-pi-durable/tool.py
+ln -s /opt/ahvm-pi-durable/tool.py /usr/local/bin/ahvm-pi-tool
+python3 - "$NODE_VERSION" <<'PY'
+import hashlib,json,sys
+from pathlib import Path
+root=Path('/opt/ahvm-pi-durable')
+package=json.loads((root/'package.json').read_text())
+manifest={'schema':1,'harness':'pi-durable','experimental':True,
+          'module_root':str(root/'node_modules'),'node_minimum':'22.19.0',
+          'node_version':sys.argv[1],'packages':package['dependencies'],
+          'tool_scope_helper':'/usr/local/bin/ahvm-pi-tool','tool_scope_protocol':1,
+          'package_lock_sha256':hashlib.sha256((root/'package-lock.json').read_bytes()).hexdigest()}
+Path('/usr/local/share/ahvm/pi-durable-runtime.json').write_text(json.dumps(manifest,indent=2)+'\n')
+PY
+cat > /usr/local/bin/ahvm-pi-durable-check <<'CHECK'
+#!/bin/sh
+set -eu
+exec /usr/local/bin/node /opt/ahvm-pi-durable/check.mjs "$@"
+CHECK
+chmod 755 /usr/local/bin/ahvm-pi-durable-check
+runuser -u ahvm -- /usr/local/bin/ahvm-pi-durable-check
 ln -s /usr/bin/fdfind /usr/local/bin/fd
 cat > /usr/local/bin/ahvm-dev <<'DEV'
 #!/bin/sh
