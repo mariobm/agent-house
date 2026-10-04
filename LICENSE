@@ -1,114 +1,21 @@
-AHVM Community License 1.0
-Effective for the AHVM v0.1.0 edition and subsequent editions designated under
-this license. Commercial licensing contact: sales@ahvm.app.
+MIT License
 
-1. Scope and existing rights
+Copyright (c) 2026 Mario Balukcic and AHVM contributors
 
-This license governs the AHVM software and documentation supplied with it
-(the "Covered Software") to the extent the copyright holders making this
-edition available (the "Licensor") have authority to license those materials.
-It does not change the license of third-party materials, including upstream
-Bhatti code, libkrucible/libkrun, Linux, Ubuntu packages, or bundled tools.
-Their applicable licenses and notices continue to govern those materials.
-See NOTICE and licenses/Apache-2.0.txt.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-This license is prospective. It does not revoke, narrow, or replace rights
-already granted in copies or versions previously supplied under Apache-2.0
-or another license. A person exercising those independently granted rights
-remains subject to that earlier license, not this revenue restriction.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-2. Definitions
-
-"You" means the individual or legal entity exercising rights under this
-license. Use in the course of employment or on behalf of an organization is
-use by that organization, not separate personal use by its staff.
-
-"Affiliate" means an entity controlling, controlled by, or under common
-control with You. Control means ownership of more than 50 percent of voting
-interests or the power to direct management. Your "Group" includes You and
-all Affiliates. Intra-group revenue is counted only once.
-
-"ARR" means Your Group's total worldwide annual recurring revenue from ALL
-products and services, not only those using AHVM. Measure ARR at the end of
-each calendar month as the annualized value of recurring subscription,
-contract and service revenue then in force: multiply monthly recurring
-revenue by 12 and use the annual value of annual recurring contracts. For
-recurring usage-based revenue, annualize the monthly average of the last
-three completed months, or all completed months if fewer than three exist.
-Exclude nonrecurring charges, sales taxes, refunds and credits. Convert
-non-USD amounts using a consistently applied, publicly available month-end
-exchange rate. Apply these rules consistently and in good faith.
-
-"Eligible" means Your Group's ARR does not exceed USD 1,000,000. An individual
-acting solely on their own behalf with no recurring business revenue is
-Eligible. Splitting operations among Affiliates does not avoid the threshold.
-
-3. Community permission
-
-While You are Eligible and comply with this license, Licensor permits You to
-use, copy, modify and distribute the Covered Software in source or binary
-form, worldwide, without a license fee. This permission includes commercial
-and internal business use. It does not include hosting, support, model access
-or other paid services; those require their own arrangements.
-
-Each recipient must receive this license and the applicable notices. Mark
-Your modifications clearly and do not remove copyright, attribution or
-third-party license notices. You may license Your own separable additions
-on other terms, but may not purport to remove these conditions from the
-Covered Software or grant recipients rights You do not possess.
-
-4. Paid commercial license above the threshold
-
-If Your Group's ARR exceeds USD 1,000,000, You must obtain a separate written,
-paid commercial license from Licensor before using, copying, modifying or
-distributing the Covered Software in reliance on this license. Contact
-sales@ahvm.app. Merely sending an enquiry, negotiating, purchasing hosting or
-support, or receiving no reply does not grant a commercial software license.
-Fees and scope are agreed in that separate written agreement.
-
-Reassess eligibility at each calendar month-end. If You cease to be Eligible,
-permissions under this license end unless a separate commercial license
-covers Your continued activity. Retaining a non-operational archival copy
-for legal recordkeeping is permitted. Section 1's preservation of existing
-and third-party rights applies regardless of Your ARR.
-
-5. Patents and trademarks
-
-For activities permitted under this license, Licensor grants permission under
-patent claims it controls that would necessarily be infringed by the Covered
-Software as supplied. That patent permission ends if You bring patent claims
-alleging that the Covered Software infringes Your patents. This provision
-neither changes nor limits any patent grant under a third-party license.
-
-No trademark rights are granted other than truthful attribution and
-identification of the software. Do not imply sponsorship or endorsement.
-
-6. Compliance and termination
-
-Permissions end upon a material breach of this license. For a breach other
-than commercial use without the license required by section 4, permissions
-are reinstated if You cure it within 30 days after becoming aware of it.
-Other reinstatement requires Licensor's written agreement. Termination does
-not cancel third-party rights or a compliant recipient's independent rights.
-Sections 1, 4 (for continuing activity), 5 (trademarks), 7 and 8 survive.
-
-7. No warranties or service commitment
-
-The Covered Software is supplied as available, with no promise that it is
-accurate, secure, fit for a particular purpose, free of defects, or available
-without interruption. To the extent law permits, Licensor disclaims express
-and implied warranties, including warranties of merchantability, fitness and
-noninfringement. This license creates no support, maintenance or service-level
-obligation. Any such commitment must be in a separate written agreement.
-
-8. Liability and interpretation
-
-To the extent law permits, Licensor and contributors are not liable for
-losses arising from the Covered Software or its use, including lost revenue,
-lost data, interruption, or indirect or consequential losses. Nothing here
-excludes liability or rights that applicable law does not permit to be
-excluded. If a provision cannot be enforced, the remaining provisions
-continue to apply to the extent permitted by law.
-
-This is a source-available commercial/community license. It is not the Apache
-License, a Meta Llama license, or an OSI-approved open-source license.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

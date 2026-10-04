@@ -7,7 +7,7 @@ import sys
 catalog = json.loads(Path(sys.argv[1]).read_text())
 cli = catalog['cli']
 version = cli['darwin-aarch64']['version']
-lines = ['class Ahvm < Formula', '  desc "Persistent Linux microVMs for coding agents"', '  homepage "https://ahvm.app"', f'  version "{version}"', '  license "LicenseRef-AHVM-Community-1.0"']
+lines = ['class Ahvm < Formula', '  desc "Persistent Linux microVMs for coding agents"', '  homepage "https://ahvm.app"', f'  version "{version}"', '  license "MIT"']
 for os, entries in [('macos', [('arm', 'darwin-aarch64')]), ('linux', [('intel', 'linux-x86_64')])]:
     lines.append(f'  on_{os} do')
     if os == 'macos':
