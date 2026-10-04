@@ -98,8 +98,11 @@ The cloud credential lock is released before starting VM requests or a shell.
 The dashboard at [dashboard.ahvm.app](https://dashboard.ahvm.app/) also shows state
 and operations needing attention. Machine names are scoped to a workspace.
 
-Lifecycle requests carry an idempotency key. If the response is interrupted or
-pending, the CLI prints the key. Retry the same command with that key:
+Lifecycle requests carry an idempotency key. For create, start, stop and delete,
+the CLI waits through pending responses using the same request and key, with
+backoff up to five seconds. The global `--timeout` bounds the entire wait. If
+the response is interrupted or remains pending when that deadline expires, the
+CLI prints the key. Retry the same command with that key:
 
 ```sh
 ahvm --idempotency-key <printed-key> create dev

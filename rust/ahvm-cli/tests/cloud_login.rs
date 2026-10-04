@@ -227,23 +227,19 @@ fn device_login_selects_cloud_and_logout_preserves_selection() {
     assert!(String::from_utf8(limited.stderr)
         .unwrap()
         .contains("17 seconds"));
-    for pending in [true, false] {
-        let create = cli(temp.path())
-            .args([
-                "--idempotency-key",
-                "same-request-key-1234",
-                "create",
-                "dev",
-            ])
-            .output()
-            .unwrap();
-        assert_eq!(create.status.success(), !pending);
-        if pending {
-            assert!(String::from_utf8(create.stderr)
-                .unwrap()
-                .contains("same-request-key-1234"));
-        }
-    }
+    let create = cli(temp.path())
+        .args([
+            "--idempotency-key",
+            "same-request-key-1234",
+            "create",
+            "dev",
+        ])
+        .output()
+        .unwrap();
+    assert!(create.status.success());
+    assert!(String::from_utf8(create.stderr)
+        .unwrap()
+        .contains("Waiting for Cloud operation"));
     let failed = cli(temp.path()).args(["stop", "dev"]).output().unwrap();
     assert!(!failed.status.success());
     let message = String::from_utf8(failed.stderr).unwrap();
