@@ -89,6 +89,23 @@ struct Flow {
     write_eof: bool,
 }
 struct ConnectPermit(Arc<AtomicUsize>);
+impl ConnectPermit {
+    fn take(active: &Arc<AtomicUsize>) -> Option<Self> {
+        let mut current = active.load(Ordering::Acquire);
+        while current < MAX_FLOWS {
+            match active.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(Self(active.clone())),
+                Err(observed) => current = observed,
+            }
+        }
+        None
+    }
+}
 impl Drop for ConnectPermit {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Release);
@@ -286,15 +303,9 @@ fn serve_with_io(
                                         continue;
                                     }
                                 }
-                                if connecting
-                                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                                        (n < MAX_FLOWS).then_some(n + 1)
-                                    })
-                                    .is_err()
-                                {
+                                let Some(permit) = ConnectPermit::take(&connecting) else {
                                     continue;
-                                }
-                                let permit = ConnectPermit(connecting.clone());
+                                };
                                 let mut sock = tcp::Socket::new(
                                     tcp::SocketBuffer::new(vec![0; BUFSIZE]),
                                     tcp::SocketBuffer::new(vec![0; BUFSIZE]),
@@ -572,6 +583,21 @@ fn enqueue_echo(queue: &Queue, frame: Vec<u8>) {
         framed.extend(frame);
         queue.push_back(framed);
     }
+}
+
+#[test]
+fn connection_admission_preserves_limit_and_returns_capacity_on_drop() {
+    let active = Arc::new(AtomicUsize::new(0));
+    let mut permits: Vec<_> = (0..MAX_FLOWS)
+        .map(|_| ConnectPermit::take(&active).unwrap())
+        .collect();
+    assert!(ConnectPermit::take(&active).is_none());
+    assert_eq!(active.load(Ordering::Acquire), MAX_FLOWS);
+    drop(permits.pop());
+    let retry = ConnectPermit::take(&active).unwrap();
+    drop(permits);
+    drop(retry);
+    assert_eq!(active.load(Ordering::Acquire), 0);
 }
 
 #[test]
