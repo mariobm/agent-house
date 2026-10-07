@@ -1,7 +1,10 @@
 use crate::Result;
 use reqwest::{blocking::Client, Method, Url};
 use serde_json::Value;
-use std::{io::Read, time::Duration};
+use std::{
+    io::Read,
+    time::{Duration, Instant},
+};
 
 #[derive(Debug)]
 struct ApiFailure {
@@ -30,6 +33,7 @@ pub struct Api {
     token: String,
     cloud: bool,
     operation_key: Option<String>,
+    timeout: Duration,
 }
 
 impl Api {
@@ -67,6 +71,7 @@ impl Api {
             token,
             cloud: false,
             operation_key: None,
+            timeout: Duration::from_secs(timeout),
         })
     }
 
@@ -220,13 +225,44 @@ impl Api {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request.send().map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
-            if let Some(key) = &key { format!("cloud request interrupted; retry the same command with --idempotency-key {key}: {error}").into() }
-            else { error.into() }
-        })?;
-        if response.status() == reqwest::StatusCode::ACCEPTED && lifecycle {
-            return Err(format!("cloud operation is still pending; inspect its status with ahvm --context cloud get <name>. Retry this request using --idempotency-key {}", key.as_deref().unwrap_or_default()).into());
-        }
+        let deadline = Instant::now()
+            .checked_add(timeout.unwrap_or(self.timeout))
+            .ok_or("timeout is out of range")?;
+        let mut delay = Duration::from_millis(500);
+        let mut announced = false;
+        let pending_error = || -> Box<dyn std::error::Error + Send + Sync> {
+            format!("cloud operation is still pending; inspect its status with ahvm --context cloud get <name>. Retry this request using --idempotency-key {}", key.as_deref().unwrap_or_default()).into()
+        };
+        let response = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(pending_error());
+            }
+            let attempt = request
+                .try_clone()
+                .ok_or("request body cannot be retried")?
+                .timeout(remaining);
+            let response = attempt.send().map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
+                if let Some(key) = &key { format!("cloud request interrupted; retry the same command with --idempotency-key {key}: {error}").into() }
+                else { error.into() }
+            })?;
+            if response.status() != reqwest::StatusCode::ACCEPTED || !lifecycle {
+                break response;
+            }
+            // Keep the exact original destination, body and idempotency key.
+            // Cloud reconciles this operation's receipt without a new mutation.
+            Self::response(response)?;
+            if !announced {
+                eprintln!("Waiting for Cloud operation to finish...");
+                announced = true;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(pending_error());
+            }
+            std::thread::sleep(delay.min(remaining));
+            delay = (delay * 2).min(Duration::from_secs(5));
+        };
         Self::response(response).map_err(|error| {
             if lifecycle && error.downcast_ref::<ApiFailure>().is_some_and(|e|
                 e.status==reqwest::StatusCode::CONFLICT && e.code.as_deref()==Some("operation_failed")) {
@@ -338,6 +374,97 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    fn pending_server(statuses: Vec<u16>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for status in statuses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                let mut size = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        size = value.trim().parse::<usize>().unwrap();
+                    }
+                    request.push_str(&line);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut body = vec![0; size];
+                reader.read_exact(&mut body).unwrap();
+                request.push_str(std::str::from_utf8(&body).unwrap());
+                requests.push(request);
+                let body = if status == 204 {
+                    ""
+                } else {
+                    "{\"state\":\"running\"}"
+                };
+                write!(stream, "HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+            requests
+        });
+        (endpoint, server)
+    }
+
+    #[test]
+    fn pending_lifecycle_reuses_identical_key_destination_and_body_until_complete() {
+        for (method, path, body, status) in [
+            (
+                Method::POST,
+                vec!["sandboxes"],
+                Some(serde_json::json!({"name":"vm"})),
+                201,
+            ),
+            (Method::POST, vec!["sandboxes", "vm", "start"], None, 200),
+            (Method::POST, vec!["sandboxes", "vm", "stop"], None, 200),
+            (Method::DELETE, vec!["sandboxes", "vm"], None, 204),
+        ] {
+            let (endpoint, server) = pending_server(vec![202, status]);
+            let api = Api::new(&endpoint, "test-token".into(), 5)
+                .unwrap()
+                .cloud(None)
+                .unwrap();
+            let result = api.call(method, &path, &[], body).unwrap();
+            assert_eq!(result.is_null(), status == 204);
+            let requests = server.join().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0], requests[1]);
+            assert!(requests[0].contains("idempotency-key:"));
+        }
+    }
+
+    #[test]
+    fn pending_lifecycle_has_one_total_deadline_and_preserves_recovery_key() {
+        let (endpoint, server) = pending_server(vec![202, 202]);
+        let api = Api::new(&endpoint, "test-token".into(), 10)
+            .unwrap()
+            .cloud(Some("same-request-key-1234".into()))
+            .unwrap();
+        let started = Instant::now();
+        let error = api
+            .call_with_timeout(
+                Method::POST,
+                &["sandboxes", "vm", "start"],
+                &[],
+                None,
+                Some(Duration::from_secs(1)),
+            )
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(error
+            .to_string()
+            .contains("--idempotency-key same-request-key-1234"));
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
 
     #[test]
     fn definitive_lifecycle_failures_preserve_status_message_and_omit_retry_key() {
