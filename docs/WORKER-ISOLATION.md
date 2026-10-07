@@ -92,10 +92,59 @@ process-memory, signal, abstract-socket, symlink/hardlink and file checks and
 prints the pathname-socket gap on older ABIs. VM, snapshot, networking and
 installation qualification must be run separately on Linux/KVM.
 
+The opt-in native NBD/R2 gate is
+`experiments/durable-storage/qualify-worker-isolation.py`. It requires a
+dedicated private `ahvm-volume-qualification` bucket credential, an existing
+nonroot test identity, Linux/KVM, systemd, a free NBD device outside the
+production pool, static BusyBox, e2fsprogs, nbd-client and boto3. Build the
+current daemon, volume service, forge, release VMM and exact-policy probe first:
+
+```bash
+cargo build --manifest-path rust/Cargo.toml --locked \
+  -p ahvm-daemon -p ahvm-volume -p ahvm-forge
+cargo build --manifest-path rust/Cargo.toml --locked --release -p ahvm-vmm
+cargo build --manifest-path rust/Cargo.toml --locked \
+  -p ahvm-engine --example worker_policy_probe
+sudo env AHVM_WORKER_REPLICATED_TEST=1 python3 \
+  experiments/durable-storage/qualify-worker-isolation.py --execute \
+  --root /var/tmp/ahvm-nbd-r2-FRESH_ID --credentials /private/r2.json \
+  --daemon "$PWD/rust/target/debug/ahvm-daemon" \
+  --volumed "$PWD/rust/target/debug/ahvm-volumed" \
+  --forge "$PWD/rust/target/debug/ahvm-forge" \
+  --vmm "$PWD/rust/target/release/ahvm-vmm" \
+  --policy-probe "$PWD/rust/target/debug/examples/worker_policy_probe" \
+  --lib /usr/local/lib64 --device /dev/nbdUNUSED --user TEST_USER \
+  --source-head "$(git rev-parse HEAD)"
+```
+
+The gate uses native volume eviction and recovery in bounded, disposable
+systemd units and a separate 2-GiB filesystem. It writes and hashes guest data,
+syncs and stops, requires the local journal to be gone, removes the copied
+pinned base, then restarts both supervisors and recovers through a fresh NBD
+worker. `local_base_reads` remains enabled. A separate zero-filled default
+image satisfies the daemon's general default-image preflight; it cannot
+supply the pinned VM's filesystem. The exact emitted worker policy is probed
+as the nonroot identity for own-device/runtime access and peer/TCP denial.
+
+The negative phase backs up and deletes one referenced private object
+containing a known marker block. It requires an explicit direct NBD `EIO` at
+that block, restores and verifies the exact bytes, then checks successful guest
+recovery again. Logs distinguish each phase. Cleanup removes only the owned
+VM, units/cgroups, NBD attachment, loop mount, copied credentials and fresh R2
+prefix. Sanitized evidence stays under the fresh root's `evidence/` directory.
+This gate checks explicitly synchronized disk recovery. Guest fsync retains its
+local-journal contract; host-disk loss can still lose writes pending replication.
+
 [Recorded Linux qualification](results/worker-isolation-linux.json) covers a
 fresh nonroot install, effective cgroups, daemon adoption, managed DNS, custom
 backing-image snapshots, raw disk writes/sync and inherited descriptor closure.
+[Native NBD/R2 qualification](results/worker-replicated-isolation-linux.json)
+also passed synchronized writes, native journal eviction, both supervisor
+restarts, absent pinned local base, fresh NBD recovery, exact-policy TCP denial,
+missing-object `EIO`, verified restoration and cleanup. It used a minimal
+128-MiB image with a 1-vCPU/256-MiB guest and a 1-MiB marker. Its 7.009-second
+remote recovery is an observation for that fixture, not an Ubuntu boot target.
 Release worker policy setup measured 61–83 microseconds in these runs. This is
 startup-only evidence, not a throughput benchmark or a comparison of complete
-cold-boot latency. Real NBD/R2 recovery, GPU and native macOS isolation were not
-qualified in this change.
+cold-boot latency. The NBD/R2 workers measured 51–52 microseconds.
+GPU and native macOS isolation were not qualified in this change.

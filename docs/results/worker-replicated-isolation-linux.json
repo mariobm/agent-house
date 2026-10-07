@@ -1,0 +1,86 @@
+{
+  "date": "2026-10-07",
+  "qualified_runtime_head": "64393f17bdf3aca53c58d2c7de48452668a6c09d",
+  "libkrucible_pin": "79cdb626fff10c16731c6f4bec690dacd7feec59",
+  "host": {"architecture": "x86_64", "kernel": "7.0.0-22-generic", "landlock_abi": 8, "systemd": 259, "rustc": "1.98.1"},
+  "qualification_sources": {
+    "executed_harness_sha256": "f1c6bfec57d5052fd341059e91b6fc9341f2779c9077204d13ec3aeb2c1067e4",
+    "committed_harness_sha256": "4e7a4f530c1d5da1e062f188a9b0ec94b37ee1b9ac2a01437fcd06fa9cab13c7",
+    "worker_policy_probe_source_sha256": "b724b9ed6fb21f80d2590ac7d8bae57bda9aa1c268c9e7957c5e8c2fb532b61f",
+    "final_harness_only_changes": "Move copied credential creation inside cleanup guard; reject Python -O before setup. Recovery/probe assertions and qualified runtime sources are unchanged."
+  },
+  "fixture": {
+    "native_volume_service": true,
+    "vcpus": 1,
+    "guest_memory_mib": 256,
+    "image_bytes": 134217728,
+    "marker_bytes": 1048576,
+    "isolated_storage_filesystem_bytes": 2147483648,
+    "client_uid": 994,
+    "nbd_device": "/dev/nbd3",
+    "local_base_reads": true,
+    "recovery_backing": "Pinned local base removed after native eviction; base metadata cache cleared; both supervisors restarted; unrelated zero-filled 64-KiB configured default cannot boot this filesystem",
+    "remote_scope": "Dedicated private qualification bucket with fresh random prefix containing only this fixture's volume and immutable shared base",
+    "retained_evidence": "/var/tmp/ahvm-nbd-r2-20261007d/evidence"
+  },
+  "checks": {
+    "nonroot_real_vmm_and_native_nbd": "pass",
+    "guest_write_sync_stop": "pass",
+    "native_eviction": "evicted=true; worker/client/VM absent; owner journal absent; NBD detached",
+    "fresh_storage_recovery": "same prepared volume; storage PID 1303477 -> 1303615; local pinned image absent; daemon and storage supervisor restarted",
+    "exact_emitted_policy_initial_recovery_restored": "same-UID peer file and live TCP baseline passed before restriction; own NBD/runtime allowed; peer contents and TCP bind/connect denied afterwards",
+    "policy_enforcement_all_positive_boots": "pass; full per-boot logs retained",
+    "missing_private_object": "exact referenced packed object backed up and fsynced, deleted, then verified absent; start failed before readiness; known marker LBA returned NBD EIO",
+    "remote_object_restoration": "exact bytes restored and SHA-256 verified before recovery",
+    "post_negative_guest_recovery": "pass",
+    "native_delete_reclamation": "pass",
+    "cleanup": "owned VM, transient units/private cgroups, NBD attachment, loop mount/image, copied credentials and 268 exact-prefix objects removed; cleanup_errors=[]",
+    "production_services": "existing node/volume/tunnel/legacy service identities remained active; independently reviewed",
+    "linux_probe_clippy_and_build": "pass",
+    "python_syntax_format_and_diff_checks": "pass"
+  },
+  "guest_sha256": {
+    "expected": "bf63d8a95fcc2e64619813aae35fdcbe871fdd9264caa3f365eb3aed0f679129",
+    "initial": "bf63d8a95fcc2e64619813aae35fdcbe871fdd9264caa3f365eb3aed0f679129",
+    "recovery": "bf63d8a95fcc2e64619813aae35fdcbe871fdd9264caa3f365eb3aed0f679129",
+    "restored": "bf63d8a95fcc2e64619813aae35fdcbe871fdd9264caa3f365eb3aed0f679129"
+  },
+  "direct_read": {
+    "disk_offset": 42074112,
+    "baseline": {"bytes": 65536, "errno": 0, "sha256": "944044fe482bc4e91085c15c5a923a1b9e02eac98d3bce04997d6dbecd2a5b8d"},
+    "after_delete_and_fresh_attachment": {"bytes": 0, "errno": 5},
+    "deleted_object_sha256": "e29f6735cb4dbf4c80253fd5ba263f48386bec1d737ff283b6081ca36c891491"
+  },
+  "timings_seconds": {
+    "initial_publication_and_create": 12.445,
+    "initial_stop": 1.482,
+    "initial_native_eviction": 6.157,
+    "remote_recovery_start": 7.009,
+    "recovery_stop": 0.938,
+    "recovery_native_eviction": 7.667,
+    "baseline_read_then_eviction": 6.761,
+    "expected_missing_object_start_failure": 61.06,
+    "restored_remote_start": 5.987,
+    "delete_acknowledgement": 0.327
+  },
+  "policy_setup_us": {"initial": 52, "recovery": 52, "restored": 51},
+  "resource_limits": {
+    "vmm": {"cpu.max": "100000 100000", "memory.max": "805306368", "memory.swap.max": "0", "pids.max": "256"},
+    "storage_worker": {"cpu.max": "100000 100000", "memory.max": "536870912", "memory.swap.max": "0", "pids.max": "128"}
+  },
+  "runtime_binary_sha256": {
+    "vmm": "fd644e7f4ace1073a4d7d40cd05d3b45b101084e7594c19e7607e731fcf39bbe",
+    "daemon": "07a9259dd6a23f71b43e6f94d363b64a997e1054f121515fbccebc7eefd7b90e",
+    "volumed": "e955f94213c9f9e6eeb2eddfbe9d9bdc31a8a2d61c64f33df5428d0b6cb7ec11",
+    "forge": "363088fa18354db8b5ee512dbccec8c2353a067259c61e59538e6f26e30ac0aa",
+    "policy_probe": "2b5aa98d75ce61e38da918ca30f5ec55aca38ed78608e70a3e6cbfe5364a7891"
+  },
+  "limitations": [
+    "Finding 4 remains partial: shared Unix UID, pathname Unix sockets on ABI 8, UDP and permission/metadata operations remain gaps",
+    "Permitted descriptors cannot be revoked after compromise; native snapshot output remains untrusted",
+    "This checks explicitly synchronized disk recovery; guest fsync remains local-journal durability and pending replication can be lost with host storage",
+    "Minimal 128-MiB fixture and release VMM; timings are not an Ubuntu image cold-boot target or matched performance benchmark",
+    "GPU and native macOS isolation remain unqualified"
+  ],
+  "passed": true
+}

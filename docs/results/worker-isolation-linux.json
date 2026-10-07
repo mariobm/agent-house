@@ -15,6 +15,7 @@
     "fresh_installer": "nonroot VM create/exec and managed DNS passed; private cgroup membership verified; daemon restart kept worker PID/group",
     "snapshot_restore": "protected publication, named restore-as-new, stop/start, custom backing image and second stop/start passed",
     "raw_disk_and_inherited_fd": "raw ext4 read/write/sync and deliberate synthetic inherited descriptor closure passed",
+    "replicated_nbd_r2": "pass; additional native recovery evidence in worker-replicated-isolation-linux.json",
     "missing_policy_and_unsupported_landlock": "startup fails closed",
     "snapshot_symlink_outputs": "peer sentinel unchanged; symlinked root/metadata/native artifacts and directory rejected",
     "packaging_pin_guard": "older 4f247dda checkout rejected in isolated worktree; original checkout unchanged",
@@ -25,7 +26,7 @@
   "limitations": [
     "Finding 4 remains partial: same Unix UID, pathname Unix sockets on ABI 8, UDP and chmod/chown/timestamp/xattr gaps remain",
     "Descriptors legitimately opened after sandboxing cannot be revoked; native snapshot output remains untrusted",
-    "Real NBD/R2 remote recovery was not run; raw disk behavior and prepared-replicated allowlist paths were checked",
+    "NBD/R2 recovery used a minimal 128-MiB image and explicitly synchronized 1-MiB marker; unsynchronized host-loss recovery was not qualified",
     "Experimental GPU and native macOS isolation were not qualified",
     "Minimal fixture and release VMM used; debug virtio-net worker stack overflow prevented debug-profile KVM validation",
     "No throughput or cold-start regression benchmark against an otherwise identical baseline was run"
