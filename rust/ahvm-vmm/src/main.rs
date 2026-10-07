@@ -13,6 +13,7 @@
 
 mod ffi;
 
+use ahvm_engine::WorkerSandbox;
 use ffi as krun;
 use serde::Deserialize;
 use std::ffi::CString;
@@ -22,6 +23,11 @@ use std::os::raw::c_char;
 /// (clean break — the daemon is the only writer).
 #[derive(Debug, Deserialize)]
 struct VmSpec {
+    #[serde(default)]
+    worker_sandbox: Option<WorkerSandbox>,
+    /// Trusted standalone host opt-in; the daemon never enables host sockets.
+    #[serde(default)]
+    trusted_host_socket_access: bool,
     vcpus: u8,
     #[serde(default)]
     gpu: bool,
@@ -68,6 +74,16 @@ struct VmSpec {
     /// Cold restore from this snapshot bundle instead of cold-booting.
     #[serde(default)]
     snapshot_dir: String,
+}
+
+impl VmSpec {
+    fn host_socket_access(&self) -> Result<bool, &'static str> {
+        if self.trusted_host_socket_access && (!self.net_uds.is_empty() || self.gpu) {
+            Err("trusted host sockets cannot be combined with managed networking or GPU mode")
+        } else {
+            Ok(self.trusted_host_socket_access)
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +166,34 @@ fn create_overlay(args: &[String]) {
 }
 
 fn run(spec: VmSpec) {
+    let host_sockets = spec.host_socket_access().unwrap_or_else(|e| {
+        eprintln!("vmm: {e}");
+        std::process::exit(1);
+    });
+    #[cfg(target_os = "linux")]
+    {
+        let sandbox_started = std::time::Instant::now();
+        if let Err(e) = krun::close_inherited_fds() {
+            eprintln!("vmm: close inherited file descriptors: {e}");
+            std::process::exit(1);
+        }
+        let Some(policy) = &spec.worker_sandbox else {
+            eprintln!("vmm: host-authored worker_sandbox filesystem policy is required");
+            std::process::exit(1);
+        };
+        match policy.restrict(host_sockets) {
+            Ok(pathname_sockets) => eprintln!(
+                "vmm: worker filesystem/signal sandbox enforced; pathname Unix sockets restricted={pathname_sockets}; setup_us={}",
+                sandbox_started.elapsed().as_micros()
+            ),
+            Err(e) => {
+                eprintln!("vmm: worker sandbox requires enabled Landlock ABI 6 (Linux 6.12+): {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = &spec.worker_sandbox;
     if spec.gpu && (!spec.snapshot_dir.is_empty() || !spec.control_socket_uds.is_empty()) {
         eprintln!("vmm: experimental GPU mode does not support snapshots or control sockets");
         std::process::exit(1);
@@ -210,10 +254,8 @@ fn run(spec: VmSpec) {
     }
 
     krun::add_console(cid);
-    // Desktop services need native guest sockets. The bundled TSI fallback
-    // faults in tsi_dgram_setsockopt during udev startup; GPU experiments use
-    // explicit vsock bridges and optionally netd, never transparent host INET.
-    krun::add_vsock(cid, spec.net_uds.is_empty() && !spec.gpu);
+    // Missing netd means offline: guest-controlled TSI packets must not acquire host sockets.
+    krun::add_vsock(cid, host_sockets);
 
     if !spec.net_uds.is_empty() {
         let mac = parse_mac(&spec.net_mac).unwrap_or_else(|| {
@@ -295,4 +337,24 @@ fn main() {
         std::process::exit(1);
     });
     run(spec);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_sockets_require_an_explicit_standalone_opt_in() {
+        let mut spec: VmSpec =
+            serde_json::from_value(serde_json::json!({"vcpus":1,"mem_mib":256})).unwrap();
+        assert_eq!(spec.host_socket_access(), Ok(false));
+        spec.net_uds = "/vm/net.sock".into();
+        assert_eq!(spec.host_socket_access(), Ok(false));
+        spec.trusted_host_socket_access = true;
+        assert!(spec.host_socket_access().is_err());
+        spec.net_uds.clear();
+        assert_eq!(spec.host_socket_access(), Ok(true));
+        spec.gpu = true;
+        assert!(spec.host_socket_access().is_err());
+    }
 }

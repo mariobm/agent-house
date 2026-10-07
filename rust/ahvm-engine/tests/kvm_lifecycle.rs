@@ -16,7 +16,7 @@
 
 #![cfg(unix)]
 
-use ahvm_engine::{host_caps, send_ctl, SnapshotManifest};
+use ahvm_engine::{host_caps, send_ctl, SnapshotManifest, WorkerSandbox};
 use ahvm_proto::{read_frame, write_frame, Frame, FrameType};
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
@@ -79,7 +79,39 @@ fn base_image_bytes(image: &Path) -> u64 {
 }
 
 fn write_spec(path: &Path, image: &Path, sock: &Path, snapshot_dir: Option<&Path>) {
+    let mut policy = WorkerSandbox {
+        read_only: vec![std::env::var("AHVM_GUEST_IMAGE").unwrap().into()],
+        read_write: vec![path.parent().unwrap().into(), image.into()],
+    };
+    policy.read_only.extend(
+        std::env::var("LD_LIBRARY_PATH")
+            .unwrap()
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from),
+    );
+    for name in [
+        "/lib",
+        "/lib64",
+        "/usr/lib",
+        "/usr/lib64",
+        "/proc/cpuinfo",
+        "/proc/self/fd",
+    ] {
+        if Path::new(name).exists() {
+            policy.read_only.push(name.into());
+        }
+    }
+    for name in ["/dev/kvm", "/dev/null", "/dev/urandom"] {
+        if Path::new(name).exists() {
+            policy.read_write.push(name.into());
+        }
+    }
+    if let Some(bundle) = snapshot_dir {
+        policy.read_only.push(bundle.into());
+    }
     let mut spec = serde_json::json!({
+        "worker_sandbox": policy,
         "vcpus": test_vcpus(),
         "mem_mib": 512,
         "log_level": 3,
@@ -123,6 +155,7 @@ impl Guest {
         };
         let log = std::fs::File::create(cfg.work.join(log_name)).unwrap();
         let console = log.try_clone().unwrap();
+        std::fs::create_dir_all(cfg.work.join("tmp")).unwrap();
         let child = Command::new(&cfg.vmm)
             .arg(&spec)
             .env_clear()
@@ -130,7 +163,8 @@ impl Guest {
                 "PATH",
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             )
-            .env("HOME", "/root")
+            .env("HOME", &cfg.work)
+            .env("TMPDIR", cfg.work.join("tmp"))
             .env("LANG", "C.UTF-8")
             .env("LD_LIBRARY_PATH", ld_path)
             .stdin(Stdio::null())

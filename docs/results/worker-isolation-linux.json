@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-07",
+  "source_base": "e91380812c1fc146e6f15fb1c297898aad07c06f",
+  "libkrucible_pin": "79cdb626fff10c16731c6f4bec690dacd7feec59",
+  "host": {"architecture": "x86_64", "kernel": "7.0.0-22-generic", "landlock_abi": 8, "systemd": 259, "rustc": "1.98.1"},
+  "fixture": "Dedicated installation and transient test units; one 1-vCPU/256-MiB guest at a time; no existing services or VMs changed",
+  "checks": {
+    "local_workspace_tests_excluding_vmm": "pass",
+    "local_workspace_clippy_excluding_vmm": "pass",
+    "linux_engine_daemon_vmm_clippy_all_targets": "pass",
+    "linux_engine_unit_tests": 68,
+    "existing_vsock_packet_bounds_tests": 7,
+    "vmm_host_socket_opt_in_test": "pass",
+    "kernel_policy": "own files/snapshot/socket allowed; own supervisor metadata, peer contents, daemon state, symlink/hardlink escape, parent proc/process-memory/signals, abstract Unix sockets and host TCP denied",
+    "fresh_installer": "nonroot VM create/exec and managed DNS passed; private cgroup membership verified; daemon restart kept worker PID/group",
+    "snapshot_restore": "protected publication, named restore-as-new, stop/start, custom backing image and second stop/start passed",
+    "raw_disk_and_inherited_fd": "raw ext4 read/write/sync and deliberate synthetic inherited descriptor closure passed",
+    "missing_policy_and_unsupported_landlock": "startup fails closed",
+    "snapshot_symlink_outputs": "peer sentinel unchanged; symlinked root/metadata/native artifacts and directory rejected",
+    "packaging_pin_guard": "older 4f247dda checkout rejected in isolated worktree; original checkout unchanged",
+    "format_shell_syntax_and_upgrade_rollback": "pass"
+  },
+  "effective_256_mib_vm_limits": {"cpu.max": "100000 100000", "memory.max": "805306368", "memory.swap.max": "0", "pids.max": "256"},
+  "policy_setup_us": {"successful_managed_vm": 63, "successful_raw_vm": 61, "earlier_release_startup": 83, "synthetic_kernel_probe": 126},
+  "limitations": [
+    "Finding 4 remains partial: same Unix UID, pathname Unix sockets on ABI 8, UDP and chmod/chown/timestamp/xattr gaps remain",
+    "Descriptors legitimately opened after sandboxing cannot be revoked; native snapshot output remains untrusted",
+    "Real NBD/R2 remote recovery was not run; raw disk behavior and prepared-replicated allowlist paths were checked",
+    "Experimental GPU and native macOS isolation were not qualified",
+    "Minimal fixture and release VMM used; debug virtio-net worker stack overflow prevented debug-profile KVM validation",
+    "No throughput or cold-start regression benchmark against an otherwise identical baseline was run"
+  ]
+}
