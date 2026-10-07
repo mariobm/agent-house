@@ -16,7 +16,7 @@ main() {
             --unit-name) unit=${2:?}; shift 2 ;;
             --user) run_user=${2:?}; shift 2 ;;
             --no-start) no_start=1; shift ;;
-            --help|-h) printf 'Usage: curl -fsSL https://ahvm.app/install.sh | bash\nOptions: --prefix PATH --config-dir PATH --data-dir PATH --bin-dir PATH --unit-name NAME --user NAME --no-start\nFresh Linux x86_64/KVM/systemd installation; requires glibc 2.35+.\n'; return ;;
+            --help|-h) printf 'Usage: curl -fsSL https://ahvm.app/install.sh | bash\nOptions: --prefix PATH --config-dir PATH --data-dir PATH --bin-dir PATH --unit-name NAME --user NAME --no-start\nFresh Linux x86_64/KVM installation; requires enabled Landlock ABI 6 (Linux 6.12+), systemd 254+, cgroup v2 cpu/memory/pids and glibc 2.35+.\n'; return ;;
             *) printf 'Unknown option: %s\n' "$1" >&2; return 1 ;;
         esac
     done
@@ -31,7 +31,7 @@ try:
     name, version = sys.argv[1].split()
     assert name == 'glibc' and tuple(map(int,version.split('.'))) >= (2,35)
 except (ValueError, AssertionError):
-    raise SystemExit('This build requires glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer).')
+    raise SystemExit('This build requires glibc 2.35+; the runtime also requires enabled Landlock ABI 6 (Linux 6.12+) and systemd 254+.')
 PY
     local path
     for path in "$prefix" "$config" "$data" "$bin_dir"; do

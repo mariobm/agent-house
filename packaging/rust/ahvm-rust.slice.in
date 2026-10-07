@@ -1,0 +1,6 @@
+[Unit]
+Description=Agent House private service resource tree
+
+[Slice]
+MemoryAccounting=yes
+TasksAccounting=yes

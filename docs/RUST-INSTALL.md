@@ -10,7 +10,8 @@ ahvm host add home --ssh root@YOUR_SERVER_IP --install
 
 The client is distributed separately from the server runtime and Ubuntu image.
 The server downloads its signed guest image directly from `images.ahvm.app`.
-The qualified server target remains Linux x86_64/KVM/systemd with glibc 2.35+.
+The server requires Linux x86_64/KVM, enabled Landlock ABI 6 (Linux 6.12+),
+systemd 254+, unified cgroup v2 with cpu/memory/pids controllers, and glibc 2.35+.
 The v0.2.0 CLI and daemon use static musl builds; VMM native dependencies retain
 the glibc 2.35 baseline. macOS server packaging and Linux arm64 qualification
 are separate work. Review [licensing](LICENSING.md) before installation.
@@ -48,8 +49,16 @@ It refuses existing paths or units: this is a **fresh install**, not an update
 or a Go cutover. `--prefix`, `--config-dir`, `--data-dir`, `--unit-name` and
 `--user` allow a separate test installation. Keep ancestors accessible to the
 service account. Installation requires root; workers run under the dedicated
-account with KVM group access and no new privileges. The configured data path
+account with KVM group access and no new privileges. Fresh installations also
+create a private slice and a delegated worker service, enabling per-VM CPU,
+memory, swap and task limits. The configured data path
 must be on a filesystem with enough space for disk and RAM snapshots.
+
+New Linux VMM workers apply a per-VM filesystem and signal policy before any
+guest runs. Missing managed networking leaves the VM offline. Existing live
+workers need an explicit stop/start to receive these protections, and upgrades
+preserve existing cgroup configuration. See [worker isolation and migration](WORKER-ISOLATION.md)
+for the remaining shared-identity/socket risks and cgroup migration steps.
 
 New sandboxes use Ubuntu with Node.js LTS, Bun, Python and the AI CLIs already
 installed. No image selection is required. See [development image usage and
