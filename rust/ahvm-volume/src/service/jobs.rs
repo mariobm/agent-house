@@ -22,12 +22,19 @@ impl Jobs {
     }
 
     pub(super) fn take(&self) -> Option<Permit> {
-        self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < self.limit).then_some(n + 1)
-            })
-            .ok()?;
-        Some(Permit(self.active.clone()))
+        let mut current = self.active.load(Ordering::Acquire);
+        while current < self.limit {
+            match self.active.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(Permit(self.active.clone())),
+                Err(observed) => current = observed,
+            }
+        }
+        None
     }
 }
 
@@ -66,7 +73,34 @@ impl Drop for Permit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{mpsc, Condvar, Mutex};
+    use std::sync::{mpsc, Barrier, Condvar, Mutex};
+
+    #[test]
+    fn concurrent_admission_never_exceeds_limit_and_releases_all_permits() {
+        let jobs = Arc::new(Jobs::new(4));
+        let gate = Arc::new(Barrier::new(33));
+        let (tx, rx) = mpsc::channel();
+        let mut workers = Vec::new();
+        for _ in 0..32 {
+            let (jobs, gate, tx) = (jobs.clone(), gate.clone(), tx.clone());
+            workers.push(thread::spawn(move || {
+                gate.wait();
+                let permit = jobs.take();
+                tx.send(permit.is_some()).unwrap();
+                gate.wait();
+                drop(permit);
+            }));
+        }
+        gate.wait();
+        assert_eq!((0..32).filter(|_| rx.recv().unwrap()).count(), 4);
+        assert!(jobs.take().is_none());
+        gate.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(jobs.active.load(Ordering::Acquire), 0);
+        assert!(jobs.take().is_some());
+    }
 
     #[test]
     fn large_startup_burst_keeps_cleanup_separate_from_live_recovery() {

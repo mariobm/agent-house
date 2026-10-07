@@ -1,0 +1,20 @@
+[Unit]
+Description=Agent House delegated VM resource groups
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+Slice=@SLICE@
+ExecStartPre=+/usr/bin/chown @USER@:@USER@ /sys/fs/cgroup/@SLICE@/cgroup.procs
+ExecStart=/usr/bin/sleep infinity
+Delegate=cpu memory pids
+DelegateSubgroup=keeper
+TasksMax=4096
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

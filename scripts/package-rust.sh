@@ -8,6 +8,17 @@
 set -euo pipefail
 umask 022
 cd "$(dirname "$0")/.."
+if [[ -e .git ]]; then
+    expected_fork=$(git rev-parse HEAD:libkrucible)
+    actual_fork=$(git -C libkrucible rev-parse HEAD)
+    [[ $actual_fork == "$expected_fork" ]] || {
+        echo "Refusing bundle from libkrucible $actual_fork; this checkout pins $expected_fork. Use the pinned submodule in a separate clean checkout." >&2
+        exit 1
+    }
+    git -C libkrucible diff --quiet && git -C libkrucible diff --cached --quiet || {
+        echo 'Refusing bundle from modified libkrucible sources' >&2; exit 1
+    }
+fi
 [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || { echo 'Currently qualified for Linux x86_64 only' >&2; exit 1; }
 OUT=${1:?Usage: package-rust.sh OUTPUT_DIRECTORY}
 OUT=$(realpath -m "$OUT")
@@ -91,15 +102,17 @@ if [[ -f $STAGE/share/base.ext4 ]]; then chmod 644 "$STAGE/share/base.ext4"; fi
 cp packaging/rust/ahvm-volume.service "$STAGE/packaging/"
 cp packaging/rust/ahvm-volume-workers.service "$STAGE/packaging/"
 cp packaging/rust/ahvm-rust.service.in "$STAGE/packaging/"
+cp packaging/rust/ahvm-rust-workers.service.in "$STAGE/packaging/"
+cp packaging/rust/ahvm-rust.slice.in "$STAGE/packaging/"
 cp scripts/install-rust.sh "$STAGE/install.sh"
 cp docs/RUST-INSTALL.md "$STAGE/README.md"
-cp docs/NETWORK-ACCESS.md docs/NETWORK-QUALIFICATION.md docs/FILE-UPLOADS.md docs/LICENSING.md docs/DEVELOPMENT-IMAGE.md docs/REMOTE-HOSTS.md docs/VOLUME-SERVICE.md LICENSE NOTICE "$STAGE/"
+cp docs/NETWORK-ACCESS.md docs/NETWORK-QUALIFICATION.md docs/FILE-UPLOADS.md docs/LICENSING.md docs/DEVELOPMENT-IMAGE.md docs/REMOTE-HOSTS.md docs/VOLUME-SERVICE.md docs/WORKER-ISOLATION.md LICENSE NOTICE "$STAGE/"
 mkdir -p "$STAGE/licenses"
 cp -R licenses/. "$STAGE/licenses/"
 printf 'platform=linux-x86_64\nglibc=%s\nsource=%s\nfork=%s\n' \
     "$(getconf GNU_LIBC_VERSION)" "${AHVM_SOURCE_REV:-$(git rev-parse HEAD 2>/dev/null || echo source-archive)}" \
     "${AHVM_FORK_REV:-$(git -C libkrucible rev-parse HEAD 2>/dev/null || echo source-archive)}" > "$STAGE/BUILD.txt"
-(cd "$STAGE" && find bin lib gpu share packaging licenses -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum install.sh README.md NETWORK-ACCESS.md NETWORK-QUALIFICATION.md FILE-UPLOADS.md LICENSING.md DEVELOPMENT-IMAGE.md REMOTE-HOSTS.md VOLUME-SERVICE.md LICENSE NOTICE BUILD.txt >> SHA256SUMS)
+(cd "$STAGE" && find bin lib gpu share packaging licenses -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum install.sh README.md NETWORK-ACCESS.md NETWORK-QUALIFICATION.md FILE-UPLOADS.md LICENSING.md DEVELOPMENT-IMAGE.md REMOTE-HOSTS.md VOLUME-SERVICE.md WORKER-ISOLATION.md LICENSE NOTICE BUILD.txt >> SHA256SUMS)
 chmod 755 "$STAGE"
 mv "$STAGE" "$OUT"
 echo "Built $OUT. Install with: sudo $OUT/install.sh $OUT"

@@ -39,6 +39,11 @@ fn required(key: &str) -> String {
 
 #[tokio::main]
 async fn main() {
+    #[cfg(target_os = "linux")]
+    if let Err(e) = ahvm_engine::WorkerSandbox::check_support() {
+        eprintln!("ahvm-daemon: worker isolation: {e}");
+        std::process::exit(1);
+    }
     let data_dir = PathBuf::from(env("AHVM_DATA_DIR", "./data"));
     // The store cannot create parent directories itself: a fresh data dir
     // must exist before SQLite opens the database file inside it.

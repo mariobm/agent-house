@@ -22,6 +22,19 @@ pub use krun::{
 
 use std::ffi::c_char;
 
+#[cfg(target_os = "linux")]
+pub fn close_inherited_fds() -> std::io::Result<()> {
+    // Called after exec, before any libkrun thread or owned runtime FD exists.
+    // Stdio is the explicitly configured console/log; inherited host FDs must
+    // not bypass the filesystem sandbox. No Rust File handles remain here.
+    let result = unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 /// Disk image formats (`KRUN_DISK_FORMAT_*`).
 pub const DISK_RAW: u32 = 0;
 pub const DISK_QCOW2: u32 = 1;

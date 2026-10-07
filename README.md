@@ -48,8 +48,10 @@ ahvm host add home --ssh root@YOUR_SERVER_IP --install
 ```
 
 Existing SSH aliases work too: replace `root@YOUR_SERVER_IP` with your alias.
-The server needs Linux x86_64, KVM, systemd, glibc 2.35+, Python 3, OpenSSL 3
-and GNU tar. Use root or an account with passwordless sudo.
+The server needs Linux x86_64/KVM with enabled Landlock ABI 6 (Linux 6.12+),
+systemd 254+, cgroup v2 with cpu/memory/pids, glibc 2.35+, Python 3, OpenSSL 3
+and GNU tar. Use root or an account with passwordless sudo. Fresh installs enable
+per-VM resource limits; see [worker isolation](docs/WORKER-ISOLATION.md).
 
 Installation downloads the runtime and Ubuntu image. Leave off `--install` to
 connect an already installed server. The first host becomes your default if none

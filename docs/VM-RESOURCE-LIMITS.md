@@ -1,9 +1,18 @@
 # Per-VM resource limits
 
-Linux hosts can opt in with `AHVM_CGROUP_ROOT`, pointing at a systemd-delegated
-cgroup v2 subtree. Default self-hosted behavior is unchanged. Missing controllers,
+Fresh Linux installations enable `AHVM_CGROUP_ROOT`, pointing at a private
+systemd-delegated cgroup v2 subtree. Upgrades and custom hosts preserve their
+existing policy; manual deployments can enable the setting explicitly. The
+runtime requires enabled Landlock ABI 6 (Linux 6.12+), and fresh installation
+requires systemd 254+ and cpu/memory/pids controllers. Missing controllers,
 unwritable limits or live workers outside the expected group fail closed; stop
 existing VMs before enabling this setting for the first time.
+
+The standard installer puts the daemon and persistent worker service in a
+private `ahvm_<unit>.slice`, with a root setup step granting only that slice's
+`cgroup.procs` to the service account. It leaves the global system slice
+root-owned. [Worker isolation and migration](WORKER-ISOLATION.md) covers the
+filesystem policy and the remaining shared-identity containment gaps.
 
 The cloud deployment uses two services under one aggregate slice:
 

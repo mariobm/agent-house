@@ -7,10 +7,38 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 struct Permit;
+fn reserve(active: &AtomicUsize) -> bool {
+    let mut current = active.load(Ordering::Relaxed);
+    while current < 64 {
+        match active.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+    false
+}
 impl Drop for Permit {
     fn drop(&mut self) {
         ACTIVE.fetch_sub(1, Ordering::Relaxed);
     }
+}
+
+#[test]
+fn preview_admission_preserves_limit_and_reuses_released_capacity() {
+    let active = AtomicUsize::new(0);
+    for _ in 0..64 {
+        assert!(reserve(&active));
+    }
+    assert!(!reserve(&active));
+    assert_eq!(active.load(Ordering::Relaxed), 64);
+    active.fetch_sub(1, Ordering::Relaxed);
+    assert!(reserve(&active));
+    assert_eq!(active.load(Ordering::Relaxed), 64);
 }
 
 pub fn serve(mut reader: BufReader<Conn>, mut writer: Conn, payload: &[u8]) {
@@ -21,13 +49,7 @@ pub fn serve(mut reader: BufReader<Conn>, mut writer: Conn, payload: &[u8]) {
             port: u16,
         }
         let request: Request = serde_json::from_slice(payload)?;
-        if request.port == 0
-            || ACTIVE
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                    (n < 64).then_some(n + 1)
-                })
-                .is_err()
-        {
+        if request.port == 0 || !reserve(&ACTIVE) {
             return Err(std::io::Error::other(
                 "invalid port or preview capacity exhausted",
             ));

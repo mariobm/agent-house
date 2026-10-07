@@ -1,6 +1,7 @@
 [Unit]
 Description=Agent House Rust daemon
-After=network-online.target
+After=network-online.target @UNIT@-workers.service
+Requires=@UNIT@-workers.service
 Wants=network-online.target
 StartLimitIntervalSec=60
 StartLimitBurst=5
@@ -9,6 +10,7 @@ StartLimitBurst=5
 Type=simple
 User=@USER@
 Group=@USER@
+Slice=@SLICE@
 SupplementaryGroups=kvm
 EnvironmentFile=@CONFIG@/daemon.env
 ExecStart=@PREFIX@/bin/ahvm-daemon

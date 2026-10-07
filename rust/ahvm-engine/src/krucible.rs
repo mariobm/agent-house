@@ -31,7 +31,7 @@ mod replicated;
 use replicated::validate_storage_record;
 
 use std::collections::{HashMap, HashSet};
-use std::io::BufReader;
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -831,7 +831,13 @@ impl KrucibleBackend {
         }
         let sock = sock_dir(dir);
         std::fs::create_dir_all(&sock)?;
+        for name in ["tmp", "runtime"] {
+            std::fs::create_dir_all(dir.join(name))?;
+        }
+        let policy = self.worker_filesystem_policy(dir, overlay, spec, snapshot_dir)?;
         let mut js = serde_json::json!({
+            "worker_sandbox": policy,
+            "trusted_host_socket_access": false,
             "vcpus": spec.cpus,
             "mem_mib": spec.memory_mb,
             "log_level": 3,
@@ -859,6 +865,100 @@ impl KrucibleBackend {
         let path = dir.join("spec.json");
         std::fs::write(&path, serde_json::to_vec_pretty(&js)?)?;
         Ok(path)
+    }
+
+    fn worker_filesystem_policy(
+        &self,
+        dir: &Path,
+        overlay: &Path,
+        spec: &SandboxSpec,
+        snapshot_dir: Option<&Path>,
+    ) -> Result<crate::WorkerSandbox> {
+        let mut policy = crate::WorkerSandbox {
+            read_only: vec![dir.to_path_buf()],
+            read_write: vec![
+                overlay.to_path_buf(),
+                sock_dir(dir),
+                dir.join("tmp"),
+                dir.join("runtime"),
+            ],
+        };
+        let record = dir.join("sandbox.json");
+        let backing = if record.is_file() {
+            let saved: SandboxRecord = serde_json::from_slice(&std::fs::read(record)?)?;
+            saved.backing
+        } else {
+            spec.root_image
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| self.cfg.base_image.clone())
+        };
+        if spec.storage_mode != Some(crate::StorageMode::Replicated) {
+            policy.read_only.push(backing);
+        }
+        policy.read_only.extend(
+            self.cfg
+                .lib_path
+                .split(':')
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+        );
+        if let Some(bundle) = snapshot_dir {
+            policy.read_only.push(bundle.to_path_buf());
+        }
+        for path in [
+            "/lib",
+            "/lib64",
+            "/usr/lib",
+            "/usr/lib64",
+            "/etc/localtime",
+            "/proc/cpuinfo",
+            "/proc/self/fd",
+            "/sys/module/kvm_intel/parameters/nested",
+            "/sys/module/kvm_amd/parameters/nested",
+        ] {
+            if Path::new(path).exists() {
+                policy.read_only.push(path.into());
+            }
+        }
+        for path in ["/dev/kvm", "/dev/null", "/dev/urandom"] {
+            if Path::new(path).exists() {
+                policy.read_write.push(path.into());
+            }
+        }
+        if spec.desktop_gpu {
+            let gpu = self
+                .cfg
+                .vmm_bin
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("gpu");
+            policy.read_only.push(gpu);
+            for path in [
+                "/usr/share/drirc.d",
+                "/usr/share/glvnd",
+                "/etc/drirc",
+                "/etc/machine-id",
+            ] {
+                if Path::new(path).exists() {
+                    policy.read_only.push(path.into());
+                }
+            }
+            if let Ok(entries) = std::fs::read_dir("/dev/dri") {
+                policy
+                    .read_write
+                    .extend(entries.flatten().filter_map(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("renderD")
+                            .then(|| entry.path())
+                    }));
+            }
+        }
+        Ok(policy)
     }
 
     /// Hermetic spawn: the worker inherits NOTHING (see SpawnConfig).
@@ -898,9 +998,12 @@ impl KrucibleBackend {
         for stale in ["c.sock", "f.sock", "control.sock"] {
             let _ = std::fs::remove_file(sock_dir(dir).join(stale));
         }
+        let temporary = dir.join("tmp");
+        std::fs::create_dir_all(&temporary)?;
         let mut env = vec![
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
-            "HOME=/root".to_string(),
+            format!("HOME={}", dir.join("runtime").display()),
+            format!("TMPDIR={}", temporary.display()),
             "LANG=C.UTF-8".to_string(),
             format!("LD_LIBRARY_PATH={}", self.cfg.lib_path),
         ];
@@ -919,7 +1022,7 @@ impl KrucibleBackend {
             env.push(format!("LIBGL_DRIVERS_PATH={}/dri", gpu.display()));
             env.push(format!(
                 "MESA_SHADER_CACHE_DIR={}",
-                dir.join("mesa-cache").display()
+                dir.join("runtime/mesa-cache").display()
             ));
         }
         let group = self
@@ -1001,7 +1104,9 @@ impl KrucibleBackend {
         }
         validate_snapshot_id(snapshot_id)?;
         let bundle = dir.join("bundle");
-        let gen = dir.join("bundle.new");
+        let staging = dir.join("runtime/bundle.new");
+        let gen = dir.join("bundle.pending");
+        let _ = std::fs::remove_dir_all(&staging);
         let _ = std::fs::remove_dir_all(&gen);
         let ctl = control_sock(dir);
         let snap = (|| -> Result<()> {
@@ -1014,12 +1119,15 @@ impl KrucibleBackend {
             // writes, rather than treating slow progress as a failed snapshot.
             let reply = crate::worker::send_ctl_with_timeout(
                 &ctl,
-                &format!("SNAPSHOT {}", gen.display()),
+                &format!("SNAPSHOT {}", staging.display()),
                 Duration::from_secs(300),
             )?;
             if !reply.starts_with("OK") {
                 return Err(Error::Control(format!("SNAPSHOT refused: {reply}")));
             }
+            // Remove the VMM's path access before validating or adding trusted files.
+            std::fs::rename(&staging, &gen)?;
+            validate_worker_snapshot(&gen)?;
             // Freeze the disk while vCPUs are paused: libkrun's checkpoint
             // is RAM-only, so the overlay copy IS the disk snapshot.
             let root_bytes = std::fs::copy(dir.join("root.qcow2"), gen.join("root.qcow2"))?;
@@ -1028,6 +1136,13 @@ impl KrucibleBackend {
             }
             // Flush what we wrote before publishing the generation.
             std::fs::File::open(gen.join("root.qcow2"))?.sync_all()?;
+            let backing_identity = gen.join("backing-image.json");
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(backing_identity)?;
+            file.write_all(&serde_json::to_vec(&rec.backing)?)?;
+            file.sync_all()?;
             let manifest = SnapshotManifest::new(
                 snapshot_id,
                 crate::Compat {
@@ -1261,13 +1376,19 @@ impl KrucibleBackend {
         stored.check_compat(&self.host_caps())?;
         // Spec derives from the stored manifest: sizing is part of the
         // compat gate, so a passing gate implies a bootable shape.
+        let backing_identity = bundle.join("backing-image.json");
+        let backing: PathBuf = if backing_identity.is_file() {
+            serde_json::from_slice(&std::fs::read(backing_identity)?)?
+        } else {
+            self.cfg.base_image.clone()
+        };
         let spec = SandboxSpec {
             storage_mode: None,
             name: new_id.to_string(),
             cpus: stored.compat.vcpus,
             memory_mb: stored.compat.mem_mib,
             backend: BackendKind::Krucible,
-            root_image: None,
+            root_image: Some(backing.to_string_lossy().into_owned()),
             kernel_image: None,
             desktop: false,
             desktop_gpu: false,
@@ -1315,7 +1436,7 @@ impl KrucibleBackend {
                 let record = SandboxRecord {
                     spec,
                     info: info.clone(),
-                    backing: self.cfg.base_image.clone(),
+                    backing,
                     deleting: false,
                     volume_prepared: false,
                     admitted_bytes: None,
@@ -2397,7 +2518,12 @@ fn sweep_debris(data_dir: &Path) -> Result<()> {
             continue;
         }
         recover_bundle(&entry.path().join("bundle"))?;
-        for junk in ["bundle.new", "sandbox.json.tmp"] {
+        for junk in [
+            "bundle.new",
+            "bundle.pending",
+            "runtime/bundle.new",
+            "sandbox.json.tmp",
+        ] {
             let p = entry.path().join(junk);
             if p.is_dir() {
                 let _ = std::fs::remove_dir_all(&p);
@@ -2420,6 +2546,31 @@ fn recover_bundle(bundle: &Path) -> Result<()> {
         sync_dir(bundle.parent().expect("bundle parent"))?;
         if old.exists() {
             std::fs::remove_dir_all(old)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_worker_snapshot(dir: &Path) -> Result<()> {
+    let files = ["memory.img", "checkpoint.bin", "manifest.json"];
+    if !std::fs::symlink_metadata(dir)?.is_dir() {
+        return Err(Error::InvalidState(
+            "worker snapshot is not a directory".into(),
+        ));
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() || !files.iter().any(|name| entry.file_name() == *name) {
+            return Err(Error::InvalidState(
+                "worker snapshot contains an unexpected or symlinked file".into(),
+            ));
+        }
+    }
+    for name in files {
+        if !std::fs::symlink_metadata(dir.join(name))?.is_file() {
+            return Err(Error::InvalidState(
+                "worker snapshot is missing a regular artifact".into(),
+            ));
         }
     }
     Ok(())
@@ -2912,6 +3063,32 @@ mod tests {
             assert_eq!(js.get("control_socket_uds").is_some(), !enabled);
             assert!(js.get("snapshot_dir").is_none());
         }
+    }
+
+    #[test]
+    fn worker_snapshot_rejects_symlinked_host_outputs_and_artifacts() {
+        let dir = crate::test_scratch("snapshot-worker-output");
+        let snapshot = dir.join("bundle.pending");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        let peer = dir.join("peer-disk");
+        std::fs::write(&peer, b"peer-must-survive").unwrap();
+        for name in ["memory.img", "checkpoint.bin", "manifest.json"] {
+            std::fs::write(snapshot.join(name), b"snapshot").unwrap();
+        }
+        validate_worker_snapshot(&snapshot).unwrap();
+        for name in ["root.qcow2", "backing-image.json", "ahvm-manifest.json.tmp"] {
+            std::os::unix::fs::symlink(&peer, snapshot.join(name)).unwrap();
+            assert!(validate_worker_snapshot(&snapshot).is_err());
+            assert_eq!(std::fs::read(&peer).unwrap(), b"peer-must-survive");
+            std::fs::remove_file(snapshot.join(name)).unwrap();
+        }
+        std::fs::remove_file(snapshot.join("memory.img")).unwrap();
+        std::os::unix::fs::symlink(&peer, snapshot.join("memory.img")).unwrap();
+        assert!(validate_worker_snapshot(&snapshot).is_err());
+        std::os::unix::fs::symlink(&snapshot, dir.join("symlinked-bundle")).unwrap();
+        assert!(validate_worker_snapshot(&dir.join("symlinked-bundle")).is_err());
+        assert_eq!(std::fs::read(&peer).unwrap(), b"peer-must-survive");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -10,6 +10,7 @@ default = []
 gpu = ["krun/gpu"]
 
 [dependencies]
+ahvm-engine = { path = "../ahvm-engine" }
 # NOTE: package is `libkrun`, lib target is `krun` — the rename below is what
 # creates the --extern edge so the linker sees the rlib (a bare extern block
 # in our code does NOT link anything on its own).

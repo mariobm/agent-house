@@ -44,6 +44,8 @@ pub use network::NetworkConfig;
 mod snapshot;
 mod spec;
 mod worker;
+mod worker_sandbox;
+pub use worker_sandbox::WorkerSandbox;
 
 pub use backend::{Backend, Capabilities};
 pub use krucible::{KrucibleBackend, KrucibleConfig};

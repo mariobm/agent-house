@@ -29,11 +29,28 @@ for path in "$PREFIX" "$CONFIG" "$DATA"; do
     [[ ! -e $path && ! -L $path ]] || { echo "Refusing existing installation/state: $path" >&2; exit 1; }
 done
 UNIT_FILE=/etc/systemd/system/$UNIT.service
-[[ ! -e $UNIT_FILE ]] || { echo "Unit exists: $UNIT_FILE" >&2; exit 1; }
+WORKERS_FILE=/etc/systemd/system/$UNIT-workers.service
+SLICE=ahvm_${UNIT//-/_}.slice
+SLICE_FILE=/etc/systemd/system/$SLICE
+[[ ! -e $UNIT_FILE && ! -e $WORKERS_FILE && ! -e $SLICE_FILE ]] || { echo 'Daemon/worker resource units already exist' >&2; exit 1; }
 [[ -c /dev/kvm ]] || { echo '/dev/kvm is required' >&2; exit 1; }
 getent group kvm >/dev/null || { echo 'kvm group is required' >&2; exit 1; }
 command -v python3 >/dev/null
 command -v systemctl >/dev/null
+python3 - <<'PY'
+import ctypes, os, subprocess
+from pathlib import Path
+libc=ctypes.CDLL(None, use_errno=True)
+abi=libc.syscall(444, None, 0, 1)
+if abi < 6:
+    raise SystemExit('Requires enabled Landlock ABI 6 (Linux 6.12+); worker isolation fails closed')
+version=int(subprocess.check_output(['systemctl','--version'],text=True).split()[1])
+if version < 254:
+    raise SystemExit('Requires systemd 254+ for delegated VM cgroups')
+controllers=(Path('/sys/fs/cgroup')/'cgroup.controllers').read_text().split()
+if not {'cpu','memory','pids'}.issubset(controllers):
+    raise SystemExit('Requires unified cgroup v2 with cpu, memory and pids controllers')
+PY
 BUNDLE=$(realpath "$BUNDLE")
 (cd "$BUNDLE" && sha256sum --quiet --strict -c SHA256SUMS)
 [[ -x $BUNDLE/bin/ahvm && -s $BUNDLE/share/base.ext4 ]] || { echo 'Incomplete bundle' >&2; exit 1; }
@@ -67,10 +84,10 @@ for file in bin/ahvm-daemon bin/ahvm-vmm bin/ahvm-netd lib/libkrunfw.so.5 share/
 done
 install -d -m700 "$CONFIG"
 install -d -m700 -o "$RUN_USER" -g "$RUN_USER" "$DATA"
-python3 - "$CONFIG" "$PREFIX" "$DATA" "$RESOLVER" <<'PY'
+python3 - "$CONFIG" "$PREFIX" "$DATA" "$RESOLVER" "$UNIT" "$SLICE" <<'PY'
 from pathlib import Path
 import secrets,sys
-config,prefix,data,dns=sys.argv[1:]
+config,prefix,data,dns,unit,slice_name=sys.argv[1:]
 p=Path(config)
 token=secrets.token_hex(32)
 (p/'admin.token').write_text(token+'\n'); (p/'admin.token').chmod(0o600)
@@ -79,6 +96,7 @@ token=secrets.token_hex(32)
 AHVM_DATA_DIR={data}
 AHVM_VMM_BIN={prefix}/bin/ahvm-vmm
 AHVM_NETD_BIN={prefix}/bin/ahvm-netd
+AHVM_CGROUP_ROOT=/sys/fs/cgroup/{slice_name}/{unit}-workers.service
 AHVM_BASE_IMAGE={prefix}/share/base.ext4
 AHVM_LIB={prefix}/lib
 AHVM_DNS_RESOLVER={dns}
@@ -95,15 +113,17 @@ PY
 chown root:"$RUN_USER" "$CONFIG" "$CONFIG/private-access.json"
 chmod 750 "$CONFIG"
 chmod 640 "$CONFIG/private-access.json"
-python3 - "$PREFIX/packaging/ahvm-rust.service.in" "$UNIT_FILE" "$PREFIX" "$CONFIG" "$DATA" "$RUN_USER" <<'PY'
+python3 - "$PREFIX/packaging" "$UNIT_FILE" "$WORKERS_FILE" "$SLICE_FILE" "$PREFIX" "$CONFIG" "$DATA" "$RUN_USER" "$UNIT" "$SLICE" <<'PY'
 from pathlib import Path
 import sys
-source,dest,prefix,config,data,user=sys.argv[1:]
-s=Path(source).read_text()
-for key,val in [('PREFIX',prefix),('CONFIG',config),('DATA',data),('USER',user)]: s=s.replace('@'+key+'@',val)
-Path(dest).write_text(s)
+source,daemon,workers,slice_file,prefix,config,data,user,unit,slice_name=sys.argv[1:]
+for name,dest in [('ahvm-rust.service.in',daemon),('ahvm-rust-workers.service.in',workers),('ahvm-rust.slice.in',slice_file)]:
+    s=(Path(source)/name).read_text()
+    for key,val in [('PREFIX',prefix),('CONFIG',config),('DATA',data),('USER',user),('UNIT',unit),('SLICE',slice_name)]:
+        s=s.replace('@'+key+'@',val)
+    Path(dest).write_text(s)
 PY
-systemd-analyze verify "$UNIT_FILE"
+systemd-analyze verify "$UNIT_FILE" "$WORKERS_FILE" "$SLICE_FILE"
 systemctl daemon-reload
 if ((START)); then systemctl enable --now "$UNIT.service"; fi
 printf 'Installed. CLI: %s/bin/ahvm\nToken file: %s/admin.token (root-only)\nConfig: %s/daemon.env\nService: %s.service\n' "$PREFIX" "$CONFIG" "$CONFIG" "$UNIT"
