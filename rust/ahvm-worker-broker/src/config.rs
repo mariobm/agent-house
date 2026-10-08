@@ -75,6 +75,25 @@ pub fn private_root(path: &Path) -> io::Result<()> {
     }
     Ok(())
 }
+fn data_root(path: &Path, daemon_uid: u32) -> io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.is_dir() || meta.mode() & 0o022 != 0 {
+        return Err(io::Error::other(
+            "worker data root must be a directory without other-writer access",
+        ));
+    }
+    if meta.uid() == 0 {
+        // Cloud's quota broker owns the parent so only it can admit VM roots.
+        // Individual VM directories/specs must still belong to the daemon.
+        root_owned(path)
+    } else if meta.uid() == daemon_uid {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "worker data root must belong to root or daemon",
+        ))
+    }
+}
 pub fn daemon_file(path: &Path, uid: u32) -> io::Result<Vec<u8>> {
     let file = fs::File::from(super::kernel::open(path, libc::O_RDONLY, 0)?);
     let meta = file.metadata()?;
@@ -178,9 +197,7 @@ impl Config {
                 .ok_or_else(|| io::Error::other("missing socket parent"))?,
         )?;
         cfg.data_dir = cfg.data_dir.canonicalize()?;
-        if fs::metadata(&cfg.data_dir)?.uid() != cfg.daemon_uid {
-            return Err(io::Error::other("worker data root must belong to daemon"));
-        }
+        data_root(&cfg.data_dir, cfg.daemon_uid)?;
         cfg.cgroup_root = cfg.cgroup_root.canonicalize()?;
         if !cfg.cgroup_root.starts_with("/sys/fs/cgroup")
             || cfg.cgroup_root == Path::new("/sys/fs/cgroup")
@@ -247,6 +264,35 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn data_root_rejects_other_writers_and_non_directories() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = PathBuf::from(format!(
+            "/tmp/ahvm-data-root-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let owner = fs::metadata(&path).unwrap().uid();
+        // Under root this exercises the Cloud quota-parent ownership case.
+        let daemon_uid = if owner == 0 { 65534 } else { owner };
+        assert!(data_root(&path, daemon_uid).is_ok());
+        if owner != 0 {
+            assert!(data_root(&path, owner + 1).is_err());
+        }
+        for mode in [0o775, 0o777, 0o1777] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(data_root(&path, daemon_uid).is_err());
+        }
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, b"not a directory").unwrap();
+        assert!(data_root(&path, daemon_uid).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn names_and_paths_cannot_escape() {
         for bad in ["", ".", "..", "snapshots", "a/b", "bad\n", "../../root"] {

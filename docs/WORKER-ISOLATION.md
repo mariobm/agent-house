@@ -98,6 +98,9 @@ Existing hosts require an explicit migration before deploying this daemon:
    allocations and `/etc/ahvm-worker-ranges/`. Install the new broker binary and
    create its separate private state/jail directories. Preserve the existing
    daemon account and disk ownership.
+   The sandbox parent may remain root-owned for a storage-quota broker;
+   it must not be group/other-writable, and every VM directory and spec must
+   still belong to the daemon. Do not chown the quota-controlled parent.
 3. Render `packaging/rust/ahvm-worker-broker.service.in` for the actual unit,
    prefix, data and broker-state paths. Retain the existing Cloud resource slice
    and delegated worker service. Configure the broker with their actual paths;

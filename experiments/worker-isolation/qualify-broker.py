@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--probe', type=Path, required=True)
     parser.add_argument('--user', required=True)
     parser.add_argument('--uid-base', type=int, default=1450000000)
+    parser.add_argument('--root-owned-data', action='store_true', help='Qualify a Cloud quota-style root-owned sandbox parent')
     args = parser.parse_args()
     assert os.geteuid() == 0 and os.environ.get('AHVM_WORKER_BROKER_TEST') == '1'
     assert args.root.parent == Path('/var/tmp') and args.root.name.startswith('ahvm-worker-isolation-') and not args.root.exists()
@@ -43,7 +44,10 @@ def main():
         shutil.copyfile(source, root / 'bin' / name)
         (root / 'bin' / name).chmod(0o755)
     data = root / 'data'
-    os.chown(data, user.pw_uid, user.pw_gid)
+    if args.root_owned_data:
+        data.chmod(0o755)
+    else:
+        os.chown(data, user.pw_uid, user.pw_gid)
     base = root / 'images' / 'base'
     base.write_bytes(b'readonly-base')
     base.chmod(0o644)
@@ -71,7 +75,7 @@ def main():
     sock = root / 'b' / 'broker.sock'
     units = []
     records = []
-    result = {'checks': {}, 'workers': []}
+    result = {'checks': {}, 'workers': [], 'root_owned_data': args.root_owned_data}
 
     def run(argv):
         return subprocess.run(list(map(str, argv)), check=True, capture_output=True, text=True, timeout=20)
