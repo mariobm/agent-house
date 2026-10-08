@@ -85,6 +85,19 @@ is only for development fixtures. The publisher has no corresponding bypass.
 Published assets are immutable; signing must ship in a new release, not replace
 an existing version's files.
 
+## Git signatures and Homebrew updates
+
+Git commit/tag signing is separate from Apple's executable signing and the
+signed update catalog. Configure the release checkout's author email and Git
+signing key together; GitHub must associate that email with the registered key
+to mark the commit verified. Repository-local settings allow a personal release
+identity without changing the Mac's defaults for unrelated repositories.
+
+The publisher copies the source checkout's effective author and signing settings
+into its temporary Homebrew tap clone. It copies only those settings, never Git
+credentials or remote configuration, so the formula commit uses the same release
+identity instead of falling back to an unrelated global account.
+
 ## Qualification
 
 - Run `python3 scripts/test-client-bundle.py` for unsigned-package rejection and

@@ -28,6 +28,19 @@ def run(*args, **kwargs):
 def gh_json(*args):
     return json.loads(subprocess.check_output(['gh', *args]))
 
+# The temporary tap clone does not inherit this repository's local identity.
+# Capture only author/signing settings, never credentials or remote config.
+tap_git_config = {}
+for name in ('user.name', 'user.email', 'user.signingkey', 'gpg.format',
+             'gpg.program', 'gpg.openpgp.program', 'gpg.ssh.program',
+             'gpg.x509.program', 'commit.gpgsign', 'tag.gpgsign'):
+    result = subprocess.run(['git', 'config', '--get', name], cwd=scripts.parent,
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        tap_git_config[name] = result.stdout.rstrip('\n')
+    elif result.returncode != 1:
+        raise SystemExit('Could not read Git release configuration: ' + name)
+
 metadata = [dist / (p + '.json') for p in ['darwin-aarch64', 'linux-x86_64']]
 assets = []
 for path in metadata:
@@ -81,6 +94,8 @@ with tempfile.TemporaryDirectory() as temp:
     # Formula updates use a reviewable PR; no account-wide PAT is stored in CI.
     tap = temp/'tap'
     run('gh','repo','clone','mariobm/homebrew-ahvm',str(tap))
+    for name, value in tap_git_config.items():
+        run('git', 'config', '--local', name, value, cwd=tap)
     run('git','switch','-c','feat/release-'+version,cwd=tap)
     (tap/'Formula').mkdir(exist_ok=True)
     run('python3',str(scripts/'homebrew-formula.py'),str(temp/'payload.json'),str(tap/'Formula/ahvm.rb'))
