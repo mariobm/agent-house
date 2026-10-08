@@ -144,13 +144,33 @@ impl Store {
             .optional()?)
         })
     }
+    pub fn idle_stop_secs(&self) -> Result<Option<u64>> {
+        self.with_conn(|c| {
+            use rusqlite::OptionalExtension;
+            Ok(c.query_row(
+                "SELECT value FROM host_settings WHERE key='idle_stop_secs'",
+                [],
+                |r| {
+                    let value = r.get::<_, i64>(0)?;
+                    u64::try_from(value)
+                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, value))
+                },
+            )
+            .optional()?)
+        })
+    }
     /// One SQL statement makes a combined host-policy update all-or-nothing.
-    pub fn set_idle_policy(&self, pause: u64, agent_stop: u64) -> Result<()> {
+    pub fn set_idle_policy(&self, pause: u64, agent_stop: u64, idle_stop: u64) -> Result<()> {
         if (pause != 0 && !(5..=86400).contains(&pause)) || !(60..=86400).contains(&agent_stop) {
             return Err(Error::Conflict("invalid idle policy".into()));
         }
+        // Admin-supplied ordinary timeouts are bounded at the API. Preserve
+        // existing AHVM_IDLE_SECS defaults (including shorter test overrides)
+        // when a partial update changes another field.
+        let idle_stop = i64::try_from(idle_stop)
+            .map_err(|_| Error::Conflict("idle stop timeout too large".into()))?;
         self.with_conn(|c| {
-            c.execute("INSERT INTO host_settings(key,value) VALUES('pause_after_secs',?1),('agent_idle_stop_secs',?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![pause as i64, agent_stop as i64])?;
+            c.execute("INSERT INTO host_settings(key,value) VALUES('pause_after_secs',?1),('agent_idle_stop_secs',?2),('idle_stop_secs',?3) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![pause as i64, agent_stop as i64, idle_stop])?;
             Ok(())
         })
     }

@@ -6,7 +6,7 @@ use serde_json::json;
 #[test]
 fn combined_idle_policy_is_atomic_and_survives_reopen() {
     let dir = std::env::temp_dir().join(format!(
-        "ahvm-agent-policy-{}-{}",
+        "ahvm-idle-policy-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -19,21 +19,35 @@ fn combined_idle_policy_is_atomic_and_survives_reopen() {
     assert_eq!(store.agent_idle_stop_secs().unwrap(), None);
     store.set_pause_after_secs(30).unwrap(); // Existing database, before agent policy.
     assert_eq!(store.agent_idle_stop_secs().unwrap(), None);
-    store.set_idle_policy(45, 600).unwrap();
+    assert_eq!(store.idle_stop_secs().unwrap(), None);
+    store.set_idle_policy(45, 600, 7200).unwrap();
     store.with_conn(|c| {
-        c.execute_batch("CREATE TRIGGER refuse_agent_policy BEFORE INSERT ON host_settings WHEN NEW.key='agent_idle_stop_secs' BEGIN SELECT RAISE(ABORT,'test failure'); END;")?;
+        c.execute_batch("CREATE TRIGGER refuse_idle_policy BEFORE INSERT ON host_settings WHEN NEW.key='idle_stop_secs' BEGIN SELECT RAISE(ABORT,'test failure'); END;")?;
         Ok(())
     }).unwrap();
-    assert!(store.set_idle_policy(90, 120).is_err());
+    assert!(store.set_idle_policy(90, 120, 1800).is_err());
     assert_eq!(store.pause_after_secs().unwrap(), Some(45));
     assert_eq!(store.agent_idle_stop_secs().unwrap(), Some(600));
-    assert!(store.set_idle_policy(30, 0).is_err());
+    assert_eq!(store.idle_stop_secs().unwrap(), Some(7200));
+    assert!(store.set_idle_policy(30, 0, 3600).is_err());
+    assert!(store.set_idle_policy(30, 300, u64::MAX).is_err());
     drop(store);
     let reopened = Store::open(path).unwrap();
     assert_eq!(reopened.pause_after_secs().unwrap(), Some(45));
     assert_eq!(reopened.agent_idle_stop_secs().unwrap(), Some(600));
+    assert_eq!(reopened.idle_stop_secs().unwrap(), Some(7200));
     drop(reopened);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn initial_idle_stop_overrides_remain_persistable() {
+    let store = Store::open_in_memory().unwrap();
+    // Existing environment/config hooks need not match the admin input range.
+    for seconds in [0, 2, 35, 86401] {
+        store.set_idle_policy(30, 300, seconds).unwrap();
+        assert_eq!(store.idle_stop_secs().unwrap(), Some(seconds));
+    }
 }
 
 fn user(id: &str, now: i64) -> User {

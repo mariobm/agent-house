@@ -15,9 +15,9 @@ operation still prevents that stop. New guest activity restarts the idle timer.
 The ordinary 30-second resident pause may occur during this idle window;
 pause alone does not free RAM.
 
-This shorter stop policy belongs only to VMs used by managed runs and persists
-across daemon restarts. Unrelated VMs retain `AHVM_IDLE_SECS` (one hour by
-default). Restart gives completed managed VMs a fresh configured idle grace because
+This separate stop policy belongs only to VMs used by managed runs and persists
+across daemon restarts. Unrelated VMs use the separate `idle_stop_secs` policy
+(one hour by default, initially from `AHVM_IDLE_SECS`). Restart gives completed managed VMs a fresh configured idle grace because
 foreground activity timestamps are not persisted. Successful stop releases the
 worker/RAM; safe local replicated-cache reclamation follows separately and can
 be delayed by pending writes or remote storage failure. R2 disk data remains.
@@ -36,15 +36,15 @@ completed runs. Active managed jobs and attached CLI sessions still prevent idle
 stop. It is not a maximum job runtime and never deletes the VM or its R2 disk.
 
 Self-hosted nodes can set `AHVM_AGENT_IDLE_STOP_SECS` for the initial default.
-Node administrators can read `GET /v1/admin/idle-policy` or update one or both
+Node administrators can read `GET /v1/admin/idle-policy` or update any of its three
 settings with `PUT /v1/admin/idle-policy`:
 
 ```json
 {"agent_idle_stop_secs": 600}
 ```
 
-Omitted fields retain their current values; the response returns both
-`pause_after_secs` and `agent_idle_stop_secs`. Updates persist atomically in the
+Omitted fields retain their current values; the response returns
+`pause_after_secs`, `agent_idle_stop_secs` and `idle_stop_secs`. Updates persist atomically in the
 daemon database, override environment defaults after restart, and apply on the
 next available sweep. Shortening the timeout can stop a VM that is already idle
 long enough. A stop already committed before a change finishes normally. The
@@ -52,7 +52,8 @@ runtime uses an in-memory value, with no Cloud/database lookup on guest work.
 
 Pause and stop have independent timers measured from the latest guest activity
 or run completion. A stop timeout shorter than the pause timeout goes directly
-to stop. Ordinary VMs keep their separate `AHVM_IDLE_SECS` policy.
+to stop. Ordinary VMs keep their separate `idle_stop_secs` policy; completed
+managed VMs always use the agent timeout, even if the ordinary timeout is shorter.
 
 ## Node-only API
 
