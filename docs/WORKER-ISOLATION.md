@@ -97,7 +97,7 @@ Existing hosts require an explicit migration before deploying this daemon:
 2. Reserve an unused host UID/GID range, checking users/groups, subordinate ID
    allocations and `/etc/ahvm-worker-ranges/`. Install the new broker binary and
    create its separate private state/jail directories. Preserve the existing
-daemon account and disk ownership.
+   daemon account and disk ownership.
    The sandbox parent may remain root-owned for a storage-quota broker;
    it must not be group/other-writable, and every VM directory and spec must
    still belong to the daemon. Do not chown the quota-controlled parent.
