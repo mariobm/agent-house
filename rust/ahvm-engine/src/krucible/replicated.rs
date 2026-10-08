@@ -137,6 +137,7 @@ impl KrucibleBackend {
                 dir: dir.clone(),
                 worker: None,
                 needs_resume: false,
+                resident_control: false,
             },
         );
         self.persist_record(&dir, &record)?;
@@ -198,9 +199,7 @@ impl KrucibleBackend {
         let device = measure("engine", "volume_attach", id, || {
             service.attach(volume, &dir)
         })?;
-        let mut worker = match measure("engine", "worker_boot", id, || {
-            self.boot_worker(&dir, &device, &record.spec, None)
-        }) {
+        let mut worker = match self.boot_worker(&dir, &device, &record.spec, None) {
             Ok(w) => w,
             Err(e) => {
                 let _ = service.detach(volume, &dir);
@@ -223,7 +222,13 @@ impl KrucibleBackend {
             }
             return Err(e);
         }
-        self.lock().sandboxes.get_mut(id).unwrap().worker = Some(WorkerHandle::Owned(worker));
+        {
+            let mut inner = self.lock();
+            let rec = inner.sandboxes.get_mut(id).unwrap();
+            rec.worker = Some(WorkerHandle::Owned(worker));
+            rec.resident_control =
+                !record.spec.desktop || desktop_resident_control_supported(&record.spec);
+        }
         record.info.state = State::Running;
         record.info.thermal = Thermal::Hot; // cold boot; RAM is never restored
         self.save_replica(id, record)

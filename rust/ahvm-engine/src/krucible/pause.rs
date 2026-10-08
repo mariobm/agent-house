@@ -37,13 +37,13 @@ impl KrucibleBackend {
     pub(super) fn pause_resident(&self, id: &str) -> Result<()> {
         validate_id(id)?;
         let _guard = OpGuard::take(self, id)?;
-        let dir = {
+        let (dir, desktop) = {
             let mut inner = self.lock();
             let rec = inner
                 .sandboxes
                 .get_mut(id)
                 .ok_or_else(|| Error::NotFound(id.into()))?;
-            if rec.record.spec.desktop {
+            if rec.record.spec.desktop && !desktop_resident_control_supported(&rec.record.spec) {
                 return Err(Error::InvalidState("desktop pause is not qualified".into()));
             }
             if !rec
@@ -61,13 +61,24 @@ impl KrucibleBackend {
             if rec.record.info.state != State::Running {
                 return Err(Error::InvalidState("pause requires a running VM".into()));
             }
+            (rec.dir.clone(), rec.record.spec.desktop)
+        };
+        if desktop
+            && !send_ctl(control_sock(&dir), "STATUS").is_ok_and(|reply| reply == "OK running")
+        {
+            return Err(Error::InvalidState(
+                "desktop resident control unavailable; cold-start the VM after upgrading".into(),
+            ));
+        }
+        {
+            let mut inner = self.lock();
+            let rec = inner.sandboxes.get_mut(id).expect("reserved VM");
             let mut record = rec.record.clone();
             record.info.state = State::Paused;
             record.info.thermal = Thermal::Warm;
             self.persist_record(&rec.dir, &record)?;
             rec.record = record;
-            rec.dir.clone()
-        };
+        }
         let ctl = control_sock(&dir);
         if send_ctl(&ctl, "PAUSE").is_ok_and(|s| s == "OK paused")
             || send_ctl(&ctl, "STATUS").is_ok_and(|s| s == "OK paused")

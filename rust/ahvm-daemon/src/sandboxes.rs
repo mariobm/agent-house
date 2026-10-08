@@ -75,6 +75,31 @@ pub(crate) async fn create_operation(
     network_bytes_per_sec: Option<u64>,
     image_digest: Option<&str>,
 ) -> ApiResult<impl IntoResponse> {
+    let id = body.name.clone();
+    ahvm_proto::timing::measure_async(
+        "daemon",
+        "create_request",
+        &id,
+        create_inner(
+            state,
+            user,
+            body,
+            operation,
+            network_bytes_per_sec,
+            image_digest,
+        ),
+    )
+    .await
+}
+
+async fn create_inner(
+    state: AppState,
+    user: UserId,
+    body: CreateBody,
+    operation: Option<&str>,
+    network_bytes_per_sec: Option<u64>,
+    image_digest: Option<&str>,
+) -> ApiResult<impl IntoResponse> {
     if body.name.is_empty() || body.name.len() > 64 {
         return Err(ApiError::Invalid("name must be 1..=64 chars".to_string()));
     }
@@ -310,17 +335,22 @@ pub(crate) async fn start_operation(
     owned(&state, &user.0, &id).await?;
     // Reserve running capacity inside the worker so HTTP cancellation cannot
     // release its quota hold before the transition and store mirror complete.
-    set_running(
-        &state,
-        &user.0,
+    ahvm_proto::timing::measure_async(
+        "daemon",
+        "start_request",
         &id,
-        operation,
-        RunningTransition::Start {
-            allow_running_noop: network_bytes_per_sec.is_none(),
-        },
-        move |backend, owned_id| {
-            backend.start_with_network_bandwidth(&owned_id, network_bytes_per_sec)
-        },
+        set_running(
+            &state,
+            &user.0,
+            &id,
+            operation,
+            RunningTransition::Start {
+                allow_running_noop: network_bytes_per_sec.is_none(),
+            },
+            move |backend, owned_id| {
+                backend.start_with_network_bandwidth(&owned_id, network_bytes_per_sec)
+            },
+        ),
     )
     .await
 }

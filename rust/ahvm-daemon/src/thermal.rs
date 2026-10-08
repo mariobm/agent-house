@@ -1045,6 +1045,7 @@ mod tests {
         entered: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
         release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
         stops: std::sync::Mutex<Vec<String>>,
+        desktop_transport: std::sync::Mutex<Option<std::os::unix::net::UnixStream>>,
     }
 
     impl std::fmt::Debug for GateBackend {
@@ -1066,6 +1067,7 @@ mod tests {
                     entered: std::sync::Mutex::new(Some(entered_tx)),
                     release: std::sync::Mutex::new(release_rx),
                     stops: std::sync::Mutex::new(Vec::new()),
+                    desktop_transport: std::sync::Mutex::new(None),
                 },
                 entered_rx,
                 release_tx,
@@ -1113,6 +1115,16 @@ mod tests {
         }
         fn list(&self) -> ahvm_engine::Result<Vec<SandboxInfo>> {
             Ok(vec![])
+        }
+        fn desktop_connect(
+            &self,
+            _id: &str,
+        ) -> ahvm_engine::Result<std::os::unix::net::UnixStream> {
+            self.desktop_transport
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or_else(|| ahvm_engine::Error::NotFound("desktop".into()))
         }
         fn exec(
             &self,
@@ -1229,6 +1241,7 @@ mod tests {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
         let mut st = state();
+        st.activity.set_pause_after_secs(30);
         owner(&st.store);
         st.store
             .create_sandbox(&row("attached", "running", "hot"))
@@ -1262,6 +1275,12 @@ mod tests {
             .touch_at("attached", Instant::now() - Duration::from_secs(7200));
         assert!(
             st.activity
+                .begin_pause_if_idle("attached", Instant::now(), 30)
+                .is_none(),
+            "attached shell was idle-paused"
+        );
+        assert!(
+            st.activity
                 .begin_stop_if_idle("attached", Instant::now(), 3600)
                 .is_none(),
             "attached shell was idle-stopped"
@@ -1283,6 +1302,60 @@ mod tests {
         .await
         .unwrap();
         assert!(st.activity.last("attached").unwrap().elapsed() < Duration::from_secs(2));
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connected_quiet_desktop_blocks_pause_and_stop_until_disconnect() {
+        let mut st = state();
+        owner(&st.store);
+        st.activity.set_pause_after_secs(30);
+        st.store
+            .create_sandbox(&row("viewer", "running", "hot"))
+            .unwrap();
+        let (transport, _guest) = std::os::unix::net::UnixStream::pair().unwrap();
+        let gate = GateBackend::new().0;
+        *gate.desktop_transport.lock().unwrap() = Some(transport);
+        st.backend = Arc::new(gate);
+        let router = axum::Router::new()
+            .route(
+                "/v1/sandboxes/{id}/desktop/stream",
+                axum::routing::get(crate::desktop::stream),
+            )
+            .layer(axum::Extension(crate::auth::UserId("u".into())))
+            .with_state(st.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+            "ws://{address}/v1/sandboxes/viewer/desktop/stream"
+        ))
+        .await
+        .unwrap();
+        st.activity
+            .touch_at("viewer", Instant::now() - Duration::from_secs(7200));
+        assert!(st
+            .activity
+            .begin_pause_if_idle("viewer", Instant::now(), 30)
+            .is_none());
+        assert!(st
+            .activity
+            .begin_stop_if_idle("viewer", Instant::now(), 3600)
+            .is_none());
+        socket.close(None).await.unwrap();
+        drop(socket);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while st.activity.in_flight("viewer") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(st.activity.last("viewer").unwrap().elapsed() < Duration::from_secs(2));
+        assert!(st
+            .activity
+            .begin_pause_if_idle("viewer", Instant::now(), 30)
+            .is_none());
         server.abort();
     }
 
