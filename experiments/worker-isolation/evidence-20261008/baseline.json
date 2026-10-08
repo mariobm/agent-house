@@ -1,0 +1,55 @@
+{
+  "label": "released-v0.3.16",
+  "memory_mb": 512,
+  "cpus": 1,
+  "checks": {
+    "daemon_adopts_live_worker": true,
+    "snapshot_resume_preserves_file": true,
+    "delete_releases_vm": true
+  },
+  "timings": {
+    "create": 0.336278,
+    "first_exec": 0.014347,
+    "stop_local_snapshot": 0.658735,
+    "start_local_snapshot": 0.441432,
+    "delete": 0.110677
+  },
+  "samples": [
+    {
+      "cpu_sha256_512_mib_seconds": 0.243598245,
+      "write_fsync_64_mib_seconds": 0.113652737,
+      "read_hash_64_mib_seconds": 0.05256725799999995,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.02646864800000004
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24181857799999995,
+      "write_fsync_64_mib_seconds": 0.09104157899999987,
+      "read_hash_64_mib_seconds": 0.0517102599999999,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.022914011000000123
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24465691699999992,
+      "write_fsync_64_mib_seconds": 0.05715113400000016,
+      "read_hash_64_mib_seconds": 0.041027004000000034,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.022856757000000005
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24619580899999982,
+      "write_fsync_64_mib_seconds": 0.056576740000000125,
+      "read_hash_64_mib_seconds": 0.041117690000000096,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.02288448999999959
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24934558200000012,
+      "write_fsync_64_mib_seconds": 0.06114006399999994,
+      "read_hash_64_mib_seconds": 0.04195188399999994,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.023262147000000066
+    }
+  ],
+  "ok": true
+}

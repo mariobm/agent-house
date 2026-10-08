@@ -31,6 +31,7 @@ host. Configuration is JSON; paths are absolute. Example:
   "nbd_client": "/usr/sbin/nbd-client",
   "devices": ["/dev/nbd0", "/dev/nbd1"],
   "client_uid": 1001,
+  "worker_broker_socket": "/run/ahvm-rust-worker-broker/worker.sock",
   "limits": {
     "max_volume_bytes": 68719476736,
     "max_logical_bytes": 1099511627776,
@@ -51,6 +52,14 @@ image directories/files with no unprivileged write access, so import cannot be
 used to read arbitrary root-private files. Journals, credentials and worker sockets remain
 private to root. With `client_uid` omitted (zero), `socket_dir` can be omitted and
 the socket lives inside the private state directory.
+
+For isolated Linux workers, set `worker_broker_socket` to the same broker used
+by the daemon and add this service's exact NBD devices to the broker's root-only
+device allowlist. The volume service verifies the exact VM, role, PID, start
+time and approved disk against the root-owned launch record. `client_uid`
+continues to authenticate the daemon socket caller; it is not changed to a
+worker UID or a range of UIDs. The VMM accesses a private device inode in its
+jail. See [worker isolation and migration](WORKER-ISOLATION.md).
 
 The existing S3 credential format is used: `endpoint`, `region`, `bucket`,
 `prefix`, `access_key_id`, `secret_access_key`, optional `session_token`. Keep that

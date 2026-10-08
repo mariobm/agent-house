@@ -59,12 +59,15 @@ def main():
     parser.add_argument('--daemon', type=Path, required=True)
     parser.add_argument('--vmm', type=Path, required=True)
     parser.add_argument('--volumed', type=Path, required=True)
+    parser.add_argument('--worker-broker', type=Path, required=True)
     parser.add_argument('--forge', type=Path, required=True)
     parser.add_argument('--policy-probe', type=Path, required=True)
     parser.add_argument('--lib', type=Path, required=True)
     parser.add_argument('--device', type=Path, required=True)
     parser.add_argument('--user', required=True)
     parser.add_argument('--source-head', required=True)
+    parser.add_argument('--uid-base', type=int, required=True,
+                        help='fresh explicit reserved range; never reuse a range from a fixture that launched workers')
     parser.add_argument('--production-config', type=Path,
                         default=Path('/etc/ahvm-cloud/volume-service.json'))
     parser.add_argument('--execute', action='store_true')
@@ -74,7 +77,8 @@ def main():
     assert args.root.name.startswith('ahvm-nbd-r2-') and not args.root.exists()
     assert len(str(args.root / 'store')) <= 70
     assert re.fullmatch(r'[a-f0-9]{40}', args.source_head)
-    for key in ('daemon', 'vmm', 'volumed', 'forge', 'policy_probe'):
+    assert 65536 <= args.uid_base < 2**31 - 4096
+    for key in ('daemon', 'vmm', 'volumed', 'forge', 'policy_probe', 'worker_broker'):
         assert getattr(args, key).is_file() and os.access(getattr(args, key), os.X_OK)
     user = pwd.getpwnam(args.user)
     assert user.pw_uid != 0
@@ -140,6 +144,15 @@ def main():
 
     assert keys() == [], 'fresh prefix required'
     args.root.mkdir(mode=0o711)
+    # Launch only root-protected copies. A build cache/source checkout may have
+    # user-writable ancestors, which the production broker correctly rejects.
+    binaries = args.root / 'bin'
+    binaries.mkdir(mode=0o755)
+    for key in ('daemon', 'vmm', 'volumed', 'forge', 'policy_probe', 'worker_broker'):
+        target = binaries / key
+        shutil.copyfile(getattr(args, key), target)
+        target.chmod(0o755)
+        setattr(args, key, target)
     private, evidence = args.root / 'private', args.root / 'evidence'
     private.mkdir(mode=0o700)
     evidence.mkdir(mode=0o700)
@@ -153,7 +166,7 @@ def main():
     result = {'source_head': args.source_head, 'prefix': credentials['prefix'],
         'client_uid': user.pw_uid, 'device': str(device), 'checks': {}, 'timings_seconds': {}}
     result['binaries'] = {key: digest(getattr(args, key).read_bytes())
-        for key in ('vmm', 'daemon', 'volumed', 'forge', 'policy_probe')}
+        for key in ('vmm', 'daemon', 'volumed', 'forge', 'policy_probe', 'worker_broker')}
     units, unit_files, loop, mounted = [], [], None, False
     removed_key, removed_bytes = None, None
     phase = 'setup'
@@ -174,6 +187,7 @@ def main():
     name = 'ahvm-nbd-r2-' + nonce
     slice_name = 'ahvm_nbd_r2_' + nonce + '.slice'
     volume_unit, daemon_unit = name + '-volume', name + '-daemon'
+    broker_unit = name + '-broker'
     vm_keeper, disk_keeper = name + '-vm-workers', name + '-disk-workers'
 
     def command(argv, check=True, timeout=90):
@@ -272,6 +286,27 @@ def main():
             assert 'peer contents and TCP bind/connect denied' in probe.stdout
         assert peer.read_bytes() == b'peer contents'
         assert 'worker filesystem/signal sandbox enforced' in (vm_dir / 'vmm.log').read_text()
+        worker = json.loads((vm_dir / 'state.json').read_text())
+        identity = worker['isolation']
+        assert identity['role'] == 'vmm' and identity['uid'] != user.pw_uid
+        # Inspect the actual emitted jail, not a reconstructed allowlist. The
+        # separate actual-launch adversarial gate exercises denied syscalls.
+        jail = Path(f'/proc/{worker["pid"]}/root')
+        assert not (jail / str(peer).lstrip('/')).exists()
+        assert not (jail / str(data / 'daemon.db').lstrip('/')).exists()
+        private_device = jail / str(device).lstrip('/')
+        metadata = private_device.stat()
+        assert stat.S_ISBLK(metadata.st_mode) and metadata.st_rdev == device.stat().st_rdev
+        assert metadata.st_uid == identity['uid'] and device.stat().st_uid == user.pw_uid
+        assert json.loads((jail / str(vm_dir / 'spec.json').lstrip('/')).read_text()) == spec
+        # Volume integration may inspect only exact root-ledger identity/device.
+        with socket.socket(socket.AF_UNIX) as inspect:
+            inspect.settimeout(15)
+            inspect.connect(str(sockets / 'worker-broker.sock'))
+            inspect.sendall((json.dumps(dict(action='inspect', id=vm, role='vmm', worker=worker)) + '\n').encode())
+            reply = json.loads(inspect.makefile().readline())
+            assert reply['error'] is None and reply['alive'] and reply['root_disk'] == str(device)
+        result['checks']['actual_nbd_jail_private_inode_and_root_ledger_' + phase] = True
         result['checks']['exact_nbd_policy_nonroot_and_tcp_' + phase] = True
 
     def record():
@@ -358,6 +393,22 @@ def main():
             'Delegate=cpu memory pids', 'DelegateSubgroup=keeper',
             'CPUQuota=100%', 'MemoryMax=768M', 'MemorySwapMax=0', 'TasksMax=256'])
         vm_group, disk_group = group(vm_keeper), group(disk_keeper)
+        broker_state, broker_jails = args.root / 'broker-state', args.root / 'broker-jails'
+        broker_state.mkdir(mode=0o700)
+        broker_jails.mkdir(mode=0o700)
+        broker_config = private / 'worker-broker.json'
+        durable(broker_config, json.dumps(dict(socket=str(sockets / 'worker-broker.sock'),
+            state_dir=str(broker_state), jail_dir=str(broker_jails), data_dir=str(data / 'sandboxes'),
+            cgroup_root=str(vm_group), daemon_uid=user.pw_uid, daemon_gid=user.pw_gid,
+            uid_base=args.uid_base, gid_base=args.uid_base, identity_count=4096,
+            vmm_bin=str(args.vmm), netd_bin=None, gpu_bin=None, lib_path=str(args.lib),
+            image_roots=[str(images)], devices=[str(device)])).encode())
+        run_unit(broker_unit, [args.worker_broker, broker_config], ['Type=notify', 'NotifyAccess=main',
+            'KillMode=process', 'User=root', 'Group=root', 'NoNewPrivileges=yes', 'UMask=0077', 'LimitCORE=0',
+            'AmbientCapabilities=CAP_SETUID CAP_SETGID',
+            'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_CHROOT CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_MKNOD CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_KILL',
+            'RestrictNamespaces=user mnt', 'CPUQuota=100%', 'MemoryMax=128M', 'TasksMax=64'])
+        wait(lambda: (sockets / 'worker-broker.sock').exists())
         # Move only new fixture VMMs across siblings in this private slice.
         os.chown(Path('/sys/fs/cgroup') / slice_name / 'cgroup.procs', user.pw_uid, user.pw_gid)
         store_image = private / 'store.ext4'
@@ -404,6 +455,7 @@ def main():
         durable(config, json.dumps(dict(root=str(store), engine_root=str(data / 'sandboxes'),
             credentials=str(creds), nbd_client='/usr/sbin/nbd-client', devices=[str(device)],
             client_uid=user.pw_uid, socket_dir=str(sockets), image_roots=[str(images)],
+            worker_broker_socket=str(sockets / 'worker-broker.sock'),
             local_base_reads=True, limits=dict(max_volume_bytes=128 * MIB, max_logical_bytes=128 * MIB,
                 max_journal_bytes=512 * MIB, max_cache_bytes=64 * MIB),
             resources=dict(root=str(disk_group), memory_bytes=512 * MIB,
@@ -413,6 +465,7 @@ def main():
             AHVM_VMM_BIN=str(args.vmm), AHVM_BASE_IMAGE=str(placeholder), AHVM_IMAGE_DIR=str(images),
             AHVM_LIB=str(args.lib), AHVM_VOLUME_SOCKET=str(sockets / 'service.sock'),
             AHVM_CGROUP_ROOT=str(vm_group), AHVM_ADMIN_TOKEN=token, AHVM_TIMINGS='1')
+        env['AHVM_WORKER_BROKER_SOCKET'] = str(sockets / 'worker-broker.sock')
         durable(envfile, ''.join(f'{key}={value}\n' for key, value in env.items()).encode())
         unused()
         run_unit(volume_unit, [args.volumed, config], ['KillMode=process', 'CPUQuota=100%',
@@ -428,7 +481,7 @@ def main():
         state = snapshot('initial-running')
         original_worker = state['worker']['pid']
         original_vmm = state['vm']['pid']
-        assert Path(f'/proc/{original_vmm}').stat().st_uid == user.pw_uid
+        assert Path(f'/proc/{original_vmm}').stat().st_uid != user.pw_uid
         result['resource_limits'] = {}
         for category, pid, expected_group, limits in (
             ('vmm', original_vmm, vm_group / ('vm-' + vm),
@@ -436,7 +489,7 @@ def main():
             ('storage', original_worker, disk_group / ('vol-' + state['id']),
              {'cpu.max': '100000 100000', 'memory.max': str(512 * MIB), 'memory.swap.max': '0', 'pids.max': '128'})):
             member = Path(f'/proc/{pid}/cgroup').read_text().strip().split('::', 1)[1]
-            assert Path('/sys/fs/cgroup') / member.lstrip('/') == expected_group
+            assert Path('/sys/fs/cgroup') / member.lstrip('/') == (expected_group / 'vmm' if category == 'vmm' else expected_group)
             actual = {key: (expected_group / key).read_text().strip() for key in limits}
             assert actual == limits
             result['resource_limits'][category] = actual
@@ -591,7 +644,7 @@ def main():
             logs('final')
         except Exception as error:
             cleanup_errors.append('evidence: ' + type(error).__name__)
-        for unit in (daemon_unit, vm_keeper, volume_unit, disk_keeper):
+        for unit in (daemon_unit, broker_unit, vm_keeper, volume_unit, disk_keeper):
             if unit in units:
                 cleanup_command(['systemctl', 'stop', unit], 'stop ' + unit)
         # Only detach a device whose recorded identity belongs to this fixture.

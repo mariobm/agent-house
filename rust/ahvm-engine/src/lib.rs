@@ -44,6 +44,10 @@ pub use network::NetworkConfig;
 mod snapshot;
 mod spec;
 mod worker;
+mod worker_broker;
+pub use worker_broker::{
+    BrokerAction, BrokerReply, BrokerRequest, WorkerBrokerConfig, WorkerIdentity, WorkerRole,
+};
 mod worker_sandbox;
 pub use worker_sandbox::WorkerSandbox;
 

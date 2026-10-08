@@ -1,0 +1,55 @@
+{
+  "label": "isolated-c",
+  "memory_mb": 512,
+  "cpus": 1,
+  "checks": {
+    "daemon_adopts_live_worker": true,
+    "snapshot_resume_preserves_file": true,
+    "delete_releases_vm": true
+  },
+  "timings": {
+    "create": 0.421116,
+    "first_exec": 0.014613,
+    "stop_local_snapshot": 0.731626,
+    "start_local_snapshot": 0.555523,
+    "delete": 0.112867
+  },
+  "samples": [
+    {
+      "cpu_sha256_512_mib_seconds": 0.24925330100000004,
+      "write_fsync_64_mib_seconds": 0.09720654500000003,
+      "read_hash_64_mib_seconds": 0.05042417899999996,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.026421331000000103
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24200669500000005,
+      "write_fsync_64_mib_seconds": 0.08943549600000011,
+      "read_hash_64_mib_seconds": 0.05131515600000003,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.02547917700000002
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.250118686,
+      "write_fsync_64_mib_seconds": 0.054023441999999866,
+      "read_hash_64_mib_seconds": 0.04433569100000012,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.025252361000000167
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24481495799999986,
+      "write_fsync_64_mib_seconds": 0.06518859799999999,
+      "read_hash_64_mib_seconds": 0.04239519199999986,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.025006510999999954
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.241141909,
+      "write_fsync_64_mib_seconds": 0.06281555700000041,
+      "read_hash_64_mib_seconds": 0.03938003099999987,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.023193655000000035
+    }
+  ],
+  "ok": true
+}

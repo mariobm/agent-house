@@ -33,7 +33,7 @@ export LD_LIBRARY_PATH="$FW_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export CC_LINUX=${CC_LINUX:-cc}
 export BUILD_JOBS=${BUILD_JOBS:-2}
 cargo build --manifest-path rust/Cargo.toml --release --locked -j "${BUILD_JOBS:-2}" \
-    -p ahvm-cli -p ahvm-daemon -p ahvm-vmm -p ahvm-netd -p ahvm-volume
+    -p ahvm-cli -p ahvm-daemon -p ahvm-vmm -p ahvm-netd -p ahvm-volume -p ahvm-worker-broker
 cargo build --manifest-path rust/Cargo.toml --release --locked -j "${BUILD_JOBS:-2}" \
     -p ahvm-forge --target x86_64-unknown-linux-musl
 # Keep the standard worker free of graphics dependencies.
@@ -48,7 +48,7 @@ mkdir -p "$(dirname "$OUT")"
 STAGE=$(mktemp -d "${OUT}.build.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE"/{bin,lib,share,packaging}
-for name in ahvm ahvm-daemon ahvm-vmm ahvm-netd ahvm-volumed; do
+for name in ahvm ahvm-daemon ahvm-vmm ahvm-netd ahvm-volumed ahvm-worker-broker; do
     install -m755 "rust/target/release/$name" "$STAGE/bin/$name"
     patchelf --set-rpath '$ORIGIN/../lib' "$STAGE/bin/$name"
 done
@@ -103,6 +103,7 @@ cp packaging/rust/ahvm-volume.service "$STAGE/packaging/"
 cp packaging/rust/ahvm-volume-workers.service "$STAGE/packaging/"
 cp packaging/rust/ahvm-rust.service.in "$STAGE/packaging/"
 cp packaging/rust/ahvm-rust-workers.service.in "$STAGE/packaging/"
+cp packaging/rust/ahvm-worker-broker.service.in "$STAGE/packaging/"
 cp packaging/rust/ahvm-rust.slice.in "$STAGE/packaging/"
 cp scripts/install-rust.sh "$STAGE/install.sh"
 cp docs/RUST-INSTALL.md "$STAGE/README.md"

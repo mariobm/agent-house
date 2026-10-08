@@ -1,0 +1,55 @@
+{
+  "checks": {
+    "host_and_vmm_connect_own_0600_gateway": true,
+    "fresh_snapshot_directory_protects_metadata_from_retained_fd": true,
+    "forged_record_not_signalled": true,
+    "vmm_descendants_drained_gateway_survives": true,
+    "readonly_symlink_and_writable_hardlink_rejected_pre_spawn": true,
+    "exact_empty_jail_backings_removed": true,
+    "identity_exhaustion_prevents_spawn_and_preserves_counter": true,
+    "offline_compaction_retains_existing_vms_and_never_reuses_identities": true
+  },
+  "workers": [
+    {
+      "denied": {
+        "daemon_state": 2,
+        "daemon_state_chmod": 2,
+        "peer_contents": 2,
+        "peer_contents_chmod": 2,
+        "peer_pathname_uds": 2,
+        "sealed_spec_chmod": 30,
+        "sealed_spec_write": 30,
+        "sealed_spec_xattr": 30,
+        "symlink_escape": 2,
+        "target_proc": 2
+      },
+      "disk_open": false,
+      "gid": 1450000200,
+      "own_artifact": true,
+      "role": "netd",
+      "uid": 1450000200
+    },
+    {
+      "denied": {
+        "daemon_state": 2,
+        "daemon_state_chmod": 2,
+        "host_tcp": 13,
+        "host_tcp_bind": 13,
+        "peer_contents": 2,
+        "peer_contents_chmod": 2,
+        "peer_pathname_uds": 2,
+        "sealed_spec_chmod": 30,
+        "sealed_spec_write": 30,
+        "sealed_spec_xattr": 30,
+        "symlink_escape": 2,
+        "target_proc": 2
+      },
+      "disk_open": true,
+      "gid": 1450000201,
+      "own_artifact": true,
+      "role": "vmm",
+      "uid": 1450000201
+    }
+  ],
+  "result": "PASS"
+}

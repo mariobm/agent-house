@@ -1,7 +1,7 @@
 [Unit]
 Description=Agent House Rust daemon
-After=network-online.target @UNIT@-workers.service
-Requires=@UNIT@-workers.service
+After=network-online.target @UNIT@-workers.service @UNIT@-worker-broker.service
+Requires=@UNIT@-workers.service @UNIT@-worker-broker.service
 Wants=network-online.target
 StartLimitIntervalSec=60
 StartLimitBurst=5

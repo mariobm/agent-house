@@ -68,6 +68,8 @@ fn isolated_gateways_recover_without_disturbing_peers() {
         std::env::var("LD_LIBRARY_PATH").unwrap(),
     );
     cfg.network = Some(NetworkConfig {
+        worker_broker: None,
+        lib_path: String::new(),
         bandwidth_bytes_per_sec: None,
         private_access: Default::default(),
         netd_bin: std::env::var("AHVM_NETD_BIN").unwrap().into(),
@@ -285,6 +287,8 @@ fn dns_rejects_wrong_replies_and_retries_truncation_over_tcp() {
         std::env::var("LD_LIBRARY_PATH").unwrap(),
     );
     cfg.network = Some(NetworkConfig {
+        worker_broker: None,
+        lib_path: String::new(),
         bandwidth_bytes_per_sec: None,
         private_access: Default::default(),
         netd_bin: std::env::var("AHVM_NETD_BIN").unwrap().into(),
@@ -402,6 +406,8 @@ fn per_vm_bandwidth_bounds_both_directions_and_preserves_peers() {
         std::env::var("LD_LIBRARY_PATH").unwrap(),
     );
     cfg.network = Some(NetworkConfig {
+        worker_broker: None,
+        lib_path: String::new(),
         bandwidth_bytes_per_sec: Some(256 * 1024),
         private_access: ["a", "b"]
             .into_iter()

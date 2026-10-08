@@ -45,6 +45,10 @@ const MAX_UNRECLAIMED_RECORDS: usize = 1024;
 struct Config {
     #[serde(default)]
     client_uid: u32,
+    /// Root-authorized exact VMM identity/device verification. Socket caller
+    /// authentication remains the fixed daemon client_uid.
+    #[serde(default)]
+    worker_broker_socket: Option<PathBuf>,
     #[serde(default)]
     resources: Option<resources::Resources>,
     limits: Limits,
@@ -913,7 +917,36 @@ impl Service {
         }
         Ok(s)
     }
-    fn check_vm_uid(&self, p: &Process) -> Result<()> {
+    fn check_vm_uid(&self, r: &Record, p: &Process) -> Result<()> {
+        if let Some(socket) = &self.config.worker_broker_socket {
+            let worker = ahvm_engine::Worker::load(r.sandbox.join("state.json"))?;
+            let identity = worker
+                .isolation
+                .as_ref()
+                .ok_or("missing broker VMM identity")?;
+            if worker.pid != p.pid
+                || worker.starttime != Some(p.start)
+                || identity.socket != *socket
+                || identity.role != ahvm_engine::WorkerRole::Vmm
+                || worker.state_path != r.sandbox.join("state.json")
+                || worker.sock_dir != r.sandbox
+            {
+                return Err("VM broker identity binding mismatch".into());
+            }
+            let reply = ahvm_engine::WorkerBrokerConfig {
+                socket: socket.clone(),
+            }
+            .request(&ahvm_engine::BrokerRequest {
+                action: ahvm_engine::BrokerAction::Inspect,
+                id: worker.id.clone(),
+                role: ahvm_engine::WorkerRole::Vmm,
+                worker: Some(worker),
+            })?;
+            if !reply.alive || reply.root_disk.as_ref() != Some(&r.device) {
+                return Err("root broker VMM/device binding mismatch".into());
+            }
+            return Ok(());
+        }
         let status = fs::read_to_string(format!("/proc/{}/status", p.pid))?;
         let uid = status
             .lines()
@@ -932,7 +965,7 @@ impl Service {
         }
         if let Some(vm) = &r.vm {
             if vm.alive()? {
-                self.check_vm_uid(vm)?;
+                self.check_vm_uid(r, vm)?;
                 return Ok(Some(vm.clone()));
             }
         }
@@ -959,7 +992,7 @@ impl Service {
         if spec["root_disk"].as_str() != r.device.to_str() || spec["root_disk_format"] != "raw" {
             return Err("VM disk binding mismatch".into());
         }
-        self.check_vm_uid(&p)?;
+        self.check_vm_uid(r, &p)?;
         if !consumers(&r.device)?.contains(&pid) {
             return Ok(None);
         }

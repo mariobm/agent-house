@@ -63,6 +63,12 @@ def health():
 
 
 def upgrade_runtime(stage, temp):
+    broker = (stage / 'bin/ahvm-worker-broker').is_file()
+    if broker:
+        settings = dict(line.split('=', 1) for line in (CONFIG / 'daemon.env').read_text().splitlines() if '=' in line)
+        if not settings.get('AHVM_WORKER_BROKER_SOCKET') or not (CONFIG / 'worker-broker.json').is_file():
+            raise ValueError('This release requires isolated worker migration before upgrading; see WORKER-ISOLATION.md. Existing services were not stopped.')
+        run('systemctl', 'is-active', '--quiet', 'ahvm-rust-worker-broker')
     backup = PREFIX.with_name(PREFIX.name + '.previous')
     older = temp / 'older-rollback'
     # Stabilize legacy bundled images before rotating runtime directories.
@@ -85,6 +91,8 @@ def upgrade_runtime(stage, temp):
     saved_database = False
     swapped = False
     try:
+        if broker:
+            run('systemctl', 'stop', 'ahvm-rust-worker-broker')
         db_backup.mkdir()
         for p in DATA.glob('daemon.db*'):
             shutil.copy2(p, db_backup / p.name)
@@ -105,10 +113,14 @@ def upgrade_runtime(stage, temp):
                 group = grp.getgrgid(node.stat().st_gid).gr_name
                 if group != 'root' and user:
                     run('usermod', '-a', '-G', group, user)
+        if broker:
+            run('systemctl', 'start', 'ahvm-rust-worker-broker')
         run('systemctl', 'start', 'ahvm-rust')
         health()
     except BaseException:
         run('systemctl', 'stop', 'ahvm-rust')
+        if broker:
+            run('systemctl', 'stop', 'ahvm-rust-worker-broker')
         if swapped:
             if PREFIX.exists():
                 PREFIX.rename(temp / 'failed-runtime')
@@ -121,6 +133,8 @@ def upgrade_runtime(stage, temp):
             for p in db_backup.iterdir():
                 shutil.copy2(p, DATA / p.name)
                 os.chown(DATA / p.name, p.stat().st_uid, p.stat().st_gid)
+        if broker:
+            run('systemctl', 'start', 'ahvm-rust-worker-broker')
         run('systemctl', 'start', 'ahvm-rust')
         raise
     shutil.copytree(db_backup, backup / 'rollback-database')

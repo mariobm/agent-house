@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct NetworkConfig {
+    pub worker_broker: Option<crate::WorkerBrokerConfig>,
+    pub lib_path: String,
     pub netd_bin: PathBuf,
     pub resolver: Ipv4Addr,
     /// Per-direction virtual Ethernet bytes/second; None leaves self-hosted links unlimited.
@@ -82,6 +84,8 @@ pub(crate) fn cleanup_orphan(dir: &Path) -> Result<()> {
 pub(crate) struct Networks(Arc<Mutex<Core>>);
 
 fn alive(w: &Worker) -> bool {
+    // Used only in legacy fixtures. Production observation routes through the
+    // root-owned broker identity and treats errors as unknown, never death.
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", w.pid)) else {
         return false;
     };
@@ -94,11 +98,8 @@ fn alive(w: &Worker) -> bool {
             .is_some_and(|t| fields.get(19).and_then(|v| v.parse::<u64>().ok()) == Some(t))
 }
 
-fn worker_alive(w: &mut WorkerHandle) -> bool {
-    match w {
-        WorkerHandle::Owned(w) => w.owns_child() && matches!(w.try_reap(), Ok(None)),
-        WorkerHandle::Adopted(w) => alive(w),
-    }
+fn worker_alive(w: &mut WorkerHandle) -> Result<bool> {
+    w.alive()
 }
 
 impl Networks {
@@ -139,6 +140,19 @@ impl Networks {
         if !cfg.netd_bin.is_file() {
             return Err(Error::InvalidState("network binary missing".into()));
         }
+        if let Some(broker) = &cfg.worker_broker {
+            let reply = broker.request(&crate::BrokerRequest {
+                action: crate::BrokerAction::Check,
+                id: String::new(),
+                role: crate::WorkerRole::Netd,
+                worker: None,
+            })?;
+            if reply.netd_bin != Some(cfg.netd_bin.canonicalize()?) {
+                return Err(Error::InvalidState(
+                    "network broker binary differs from daemon configuration".into(),
+                ));
+            }
+        }
         let shared = Arc::new(Mutex::new(Core {
             cfg,
             entries: HashMap::new(),
@@ -153,13 +167,23 @@ impl Networks {
                 let mut cfg = core.cfg.clone();
                 core.entries.retain(|dir, entry| {
                     cfg.bandwidth_bytes_per_sec = entry.bandwidth_bytes_per_sec;
-                    if entry.vm.as_ref().is_some_and(|w| !alive(w)) {
+                    let vm_alive = entry.vm.as_ref().map(Worker::verified_alive).transpose();
+                    if vm_alive.is_err() {
+                        return true;
+                    }
+                    if vm_alive.ok().flatten() == Some(false) {
                         if let Some(w) = &mut entry.worker {
-                            let _ = w.terminate();
+                            if w.terminate().is_err() {
+                                return true;
+                            }
                         }
                         return false;
                     }
-                    if entry.worker.as_mut().is_some_and(worker_alive) {
+                    let live = entry.worker.as_mut().map(worker_alive).transpose();
+                    if live.is_err() {
+                        return true;
+                    }
+                    if live.ok().flatten() == Some(true) {
                         entry.backoff.healthy(entry.running_since.elapsed());
                         return true;
                     }
@@ -212,7 +236,12 @@ impl Networks {
         }
         // Even when netd is dead, do not attach a new checksum-validating gateway
         // to an old live VMM which negotiated checksum/GSO offloads.
-        if Worker::load(dir.join("state.json")).is_ok_and(|w| alive(&w)) {
+        let vm_alive = match Worker::load(dir.join("state.json")) {
+            Ok(w) => w.verified_alive()?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.into()),
+        };
+        if vm_alive {
             let saved: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(dir.join("net.json"))?)?;
             if saved["ethernet_contract"].as_u64() != Some(1) {
@@ -225,11 +254,42 @@ impl Networks {
         // dead VM must not remove the new VM's network process during boot.
         if let Some(entry) = core.entries.get_mut(dir) {
             entry.vm = None;
-            if entry.worker.as_mut().is_some_and(worker_alive) {
+            if entry
+                .worker
+                .as_mut()
+                .map(worker_alive)
+                .transpose()?
+                .unwrap_or(false)
+            {
                 return Ok(());
             }
         }
         let worker = match Worker::load(dir.join("net-state.json")) {
+            Ok(w) if w.isolation.is_some() => {
+                let broker = cfg.worker_broker.as_ref().ok_or_else(|| {
+                    Error::InvalidState(
+                        "isolated network worker requires its configured broker".into(),
+                    )
+                })?;
+                if w.isolation
+                    .as_ref()
+                    .is_none_or(|i| i.socket != broker.socket || i.role != crate::WorkerRole::Netd)
+                {
+                    return Err(Error::InvalidState(
+                        "network broker adoption configuration mismatch".into(),
+                    ));
+                }
+                if broker.status(&w)? {
+                    WorkerHandle::Adopted(w)
+                } else {
+                    launch(&cfg, dir, cgroup)?
+                }
+            }
+            Ok(w) if cfg.worker_broker.is_some() && alive(&w) => {
+                return Err(Error::InvalidState(
+                    "stop legacy gateway before enabling per-launch identities".into(),
+                ));
+            }
             Ok(w) if alive(&w) => {
                 let saved: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(dir.join("net.json"))?)?;
@@ -302,12 +362,12 @@ impl Networks {
                 w.terminate()?;
             }
         } else if let Ok(w) = Worker::load(dir.join("net-state.json")) {
-            if alive(&w) {
+            if w.verified_alive()? {
                 WorkerHandle::Adopted(w).terminate()?;
             }
         }
         let _ = std::fs::remove_file(dir.join("net-state.json"));
-        let _ = std::fs::remove_file(dir.join("sock/net.sock"));
+        let _ = std::fs::remove_file(dir.join("net/net.sock"));
         Ok(())
     }
 }
@@ -321,7 +381,7 @@ fn rules_for(cfg: &NetworkConfig, dir: &Path) -> Vec<std::net::SocketAddrV4> {
 }
 
 fn launch(cfg: &NetworkConfig, dir: &Path, cgroup: Option<&Path>) -> Result<WorkerHandle> {
-    let sock = dir.join("sock");
+    let sock = dir.join("net");
     std::fs::create_dir_all(&sock)?;
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o700))?;
     let socket = sock.join("net.sock");
@@ -331,22 +391,44 @@ fn launch(cfg: &NetworkConfig, dir: &Path, cgroup: Option<&Path>) -> Result<Work
         Err(e) => return Err(e.into()),
     }
     let spec = dir.join("net.json");
+    let mut read_only: Vec<PathBuf> = cfg
+        .lib_path
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    read_only.push(spec.clone());
+    for path in ["/lib", "/lib64", "/usr/lib", "/usr/lib64", "/etc/localtime"] {
+        if Path::new(path).exists() {
+            read_only.push(path.into());
+        }
+    }
+    let policy = crate::WorkerSandbox {
+        read_only,
+        read_write: vec![sock.clone(), "/dev/urandom".into()],
+        unix_connect: Vec::new(),
+    };
     std::fs::write(
         &spec,
         serde_json::to_vec(&serde_json::json!({
             "ethernet_contract": 1, "socket": socket, "resolver": cfg.resolver, "private_access": rules_for(cfg, dir),
+            "worker_sandbox": policy,
             "bandwidth_bytes_per_sec": cfg.bandwidth_bytes_per_sec,
         }))?,
     )?;
-    let mut worker = spawn_worker_cfg(&SpawnConfig {
-        cgroup,
-        vmm_binary: cfg.netd_bin.as_os_str(),
-        spec_arg: &spec,
-        state_path: &dir.join("net-state.json"),
-        hermetic: true,
-        env: &["PATH=/usr/bin:/bin".into()],
-        stderr_log: Some(&dir.join("netd.log")),
-    })?;
+    let mut worker = if let Some(broker) = &cfg.worker_broker {
+        broker.launch(dir, crate::WorkerRole::Netd)?
+    } else {
+        spawn_worker_cfg(&SpawnConfig {
+            cgroup,
+            vmm_binary: cfg.netd_bin.as_os_str(),
+            spec_arg: &spec,
+            state_path: &dir.join("net-state.json"),
+            hermetic: true,
+            env: &["PATH=/usr/bin:/bin".into()],
+            stderr_log: Some(&dir.join("netd.log")),
+        })?
+    };
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if worker.try_reap()?.is_some() || Instant::now() >= deadline {
@@ -375,6 +457,8 @@ mod tests {
         (
             dir,
             NetworkConfig {
+                worker_broker: None,
+                lib_path: String::new(),
                 private_access: Default::default(),
                 bandwidth_bytes_per_sec: None,
                 netd_bin: bin,
@@ -396,6 +480,7 @@ mod tests {
             id: "legacy".into(),
             pid: std::process::id(),
             starttime: process_starttime(std::process::id()),
+            isolation: None,
             sock_dir: dir.clone(),
             state_path: dir.join("state.json"),
         };
@@ -419,6 +504,7 @@ mod tests {
             id: "test-vm".into(),
             pid: std::process::id(),
             starttime: process_starttime(std::process::id()),
+            isolation: None,
             sock_dir: dir.clone(),
             state_path: dir.join("vm-state.json"),
         };

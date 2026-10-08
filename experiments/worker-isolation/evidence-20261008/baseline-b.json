@@ -1,0 +1,55 @@
+{
+  "label": "released-v0.3.16-repeat",
+  "memory_mb": 512,
+  "cpus": 1,
+  "checks": {
+    "daemon_adopts_live_worker": true,
+    "snapshot_resume_preserves_file": true,
+    "delete_releases_vm": true
+  },
+  "timings": {
+    "create": 0.348662,
+    "first_exec": 0.015056,
+    "stop_local_snapshot": 0.720575,
+    "start_local_snapshot": 0.424468,
+    "delete": 0.098215
+  },
+  "samples": [
+    {
+      "cpu_sha256_512_mib_seconds": 0.24153158400000002,
+      "write_fsync_64_mib_seconds": 0.10104317900000004,
+      "read_hash_64_mib_seconds": 0.05043485400000003,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.025567483000000002
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24838766200000006,
+      "write_fsync_64_mib_seconds": 0.07466559799999994,
+      "read_hash_64_mib_seconds": 0.05099502399999989,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.02292212700000018
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.2428637939999998,
+      "write_fsync_64_mib_seconds": 0.063820757,
+      "read_hash_64_mib_seconds": 0.04705865099999995,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.023253680999999915
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.241775627,
+      "write_fsync_64_mib_seconds": 0.06299162299999983,
+      "read_hash_64_mib_seconds": 0.04701457199999992,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.023493342000000084
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.2417160949999997,
+      "write_fsync_64_mib_seconds": 0.062261719999999965,
+      "read_hash_64_mib_seconds": 0.04269692200000019,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.022979649999999907
+    }
+  ],
+  "ok": true
+}

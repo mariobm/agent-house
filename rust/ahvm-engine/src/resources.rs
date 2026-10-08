@@ -39,7 +39,13 @@ impl ResourceConfig {
             let entry = entry?;
             if entry.file_name().to_string_lossy().starts_with("vm-") && entry.file_type()?.is_dir()
             {
-                let _ = fs::remove_dir(entry.path());
+                if let Some(id) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.strip_prefix("vm-"))
+                {
+                    let _ = self.remove(id);
+                }
             }
         }
         Ok(())
@@ -68,7 +74,15 @@ impl ResourceConfig {
     }
 
     pub(crate) fn remove(&self, id: &str) -> io::Result<()> {
-        match fs::remove_dir(self.path(id)?) {
+        let path = self.path(id)?;
+        for role in ["vmm", "netd"] {
+            match fs::remove_dir(path.join(role)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        match fs::remove_dir(path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e), // Populated groups must never be silently forgotten.
@@ -101,7 +115,8 @@ pub(crate) fn verify_member(group: &Path, pid: u32) -> io::Result<()> {
         .lines()
         .find_map(|s| s.strip_prefix("0::"))
         .ok_or_else(|| io::Error::other("worker has no unified cgroup"))?;
-    if Path::new("/sys/fs/cgroup").join(relative.trim_start_matches('/')) != expected {
+    let actual = Path::new("/sys/fs/cgroup").join(relative.trim_start_matches('/'));
+    if actual != expected && actual != expected.join("vmm") && actual != expected.join("netd") {
         return Err(io::Error::other(
             "live worker is outside its VM cgroup; stop it before enabling limits",
         ));
