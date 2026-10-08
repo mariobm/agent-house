@@ -1,13 +1,14 @@
 # Resident idle pause
 
-Ordinary (non-desktop) VMs pause after **30 seconds** without guest activity.
+Ordinary VMs and new or cold-started Omarchy GPU desktops on the qualified
+Linux x86_64 runtime pause after **30 seconds** without guest activity.
 Pause suspends vCPUs and retains the worker, RAM and attached disk. It does not
 snapshot, export a backup, detach storage or free memory. Background disk
 replication continues independently. CPU/RAM reservations remain charged.
 
-Exec, files, opening/attaching a shell, and preview requests resume a paused VM
+Exec, files, opening/attaching a shell or desktop viewer, and preview requests resume a paused VM
 before accessing the guest. This works for both local and replicated storage.
-Connected shells and previews, even quiet ones, and in-flight guest operations
+Connected shells, desktop viewers and previews, even quiet ones, and in-flight guest operations
 prevent automatic pause and idle stop. After the last operation/connection ends,
 the idle timer starts again. Ordinary detached background sessions alone do not
 keep the VM awake.
@@ -38,15 +39,26 @@ requires the existing recovery/start path, not resident resume.
 - `AHVM_IDLE_SECS` remains **3600** by default. This later stop terminates the
   worker and releases RAM. Replicated storage can then evict synced local data
   according to its separate eviction policy. Local stop retains its checkpoint
-  behavior. Changing the pause timeout does not change either policy.
+  behavior for non-desktop VMs. Desktop stop discards RAM and applications;
+  subsequent start boots the retained disk. Changing the pause timeout does
+  not change either policy.
 
 Setting pause to zero prevents future pauses; already-paused VMs resume on guest
 work or explicit start. An already-committed transition finishes before new work
 is admitted. Admin settings are not read from a remote database on guest calls.
 
-Desktop idle pause is not enabled until separately qualified. Ordinary desktop
-stop/start and the existing one-hour idle-stop policy remain unchanged; a desktop
-VM used by a managed run receives the managed stop policy after completion.
+Omarchy resident pause preserves the worker, graphical applications and unsaved
+RAM state during short idle periods. The later **one-hour cold stop** still loses
+that RAM state. A desktop VM used by a managed run receives the managed stop
+policy after completion. Qualification covers local and replicated disks on the
+Intel UHD 770 host; see [measurements and limits](OMARCHY-PAUSE-QUALIFICATION.md).
+Software Ubuntu/XFCE desktop and macOS GPU pause remain disabled.
+
+A desktop worker started by an older runtime has no resident control socket.
+Upgrading the daemon preserves that running session and keeps it ineligible for
+pause until its next cold start with the updated GPU worker. `start` on an already
+running VM does not add this capability. Control-channel failure refuses a pause
+before committing it; an unconfirmed resume never triggers a silent replacement.
 
 Before downgrading to a daemon without pause support, resume or stop paused VMs:
 older daemons cannot read the new persisted `paused` state.
