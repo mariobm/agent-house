@@ -41,10 +41,13 @@ confirms that both backend and metadata are missing. `untracked` requires operat
 recovery; never release a cloud reservation just because the metadata row is gone.
 An unhealthy control channel can make receipt reads fail temporarily.
 
-After restart, verified surviving non-desktop workers are queried over their
-control socket. Paused guests are resumed before being reported Running. A failed
-probe leaves the VM Failed; `start` retries control recovery without creating a
-second worker. Desktop workers have no snapshot control socket and skip this step.
+After restart, verified surviving workers with resident control are queried over
+their private socket. Persisted intentional idle pause remains Paused; an
+interrupted transition is recovered before reporting Running. A failed probe
+leaves the VM Failed; `start` retries control recovery without creating a second
+worker. New Linux x86_64 Omarchy GPU workers support this control path while
+refusing GPU RAM snapshots. Older running desktop workers without the socket
+keep their session and gain pause only on their next cold start.
 
 Keep `daemon.db` and its receipts with the sandbox state during backups/upgrades.
 Do not delete receipts to retry a request: retained keys prevent delayed requests

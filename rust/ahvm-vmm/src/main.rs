@@ -77,6 +77,19 @@ struct VmSpec {
 }
 
 impl VmSpec {
+    fn validate_lifecycle(&self) -> Result<(), &'static str> {
+        if self.gpu && !self.snapshot_dir.is_empty() {
+            return Err("GPU mode does not support snapshots");
+        }
+        if self.gpu
+            && !self.control_socket_uds.is_empty()
+            && !cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        {
+            return Err("GPU resident pause is only qualified on Linux x86_64");
+        }
+        Ok(())
+    }
+
     fn host_socket_access(&self) -> Result<bool, &'static str> {
         if self.trusted_host_socket_access && (!self.net_uds.is_empty() || self.gpu) {
             Err("trusted host sockets cannot be combined with managed networking or GPU mode")
@@ -194,8 +207,8 @@ fn run(spec: VmSpec) {
     }
     #[cfg(not(target_os = "linux"))]
     let _ = &spec.worker_sandbox;
-    if spec.gpu && (!spec.snapshot_dir.is_empty() || !spec.control_socket_uds.is_empty()) {
-        eprintln!("vmm: experimental GPU mode does not support snapshots or control sockets");
+    if let Err(error) = spec.validate_lifecycle() {
+        eprintln!("vmm: {error}");
         std::process::exit(1);
     }
     let mut arena = Arena::default();
@@ -356,5 +369,21 @@ mod tests {
         assert_eq!(spec.host_socket_access(), Ok(true));
         spec.gpu = true;
         assert!(spec.host_socket_access().is_err());
+    }
+
+    #[test]
+    fn gpu_control_is_resident_only_on_the_qualified_platform() {
+        let mut spec: VmSpec = serde_json::from_value(
+            serde_json::json!({"vcpus":1,"mem_mib":256,"gpu":true,"control_socket_uds":"/vm/control.sock"}),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.validate_lifecycle().is_ok(),
+            cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        );
+        spec.snapshot_dir = "/vm/checkpoint".into();
+        assert!(spec.validate_lifecycle().is_err());
+        spec.control_socket_uds.clear();
+        assert!(spec.validate_lifecycle().is_err());
     }
 }

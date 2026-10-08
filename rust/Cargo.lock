@@ -58,6 +58,7 @@ name = "ahvm-daemon"
 version = "0.4.0"
 dependencies = [
  "ahvm-engine",
+ "ahvm-proto",
  "ahvm-store",
  "axum",
  "base64 0.23.1",

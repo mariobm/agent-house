@@ -23,13 +23,33 @@ pub fn measure<T, E>(
     }
     let start = Instant::now();
     let result = work();
+    emit(component, stage, id, start, result.is_ok());
+    result
+}
+
+/// Measure a daemon operation including async lifecycle/scheduler admission.
+pub async fn measure_async<T, E>(
+    component: &'static str,
+    stage: &'static str,
+    id: &str,
+    work: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    if !enabled() {
+        return work.await;
+    }
+    let start = Instant::now();
+    let result = work.await;
+    emit(component, stage, id, start, result.is_ok());
+    result
+}
+
+fn emit(component: &str, stage: &str, id: &str, start: Instant, ok: bool) {
     let event = serde_json::json!({
         "event": "ahvm_timing", "component": component, "stage": stage,
         "id": id, "pid": std::process::id(),
         "elapsed_ms": start.elapsed().as_secs_f64() * 1000.0,
-        "ok": result.is_ok(),
+        "ok": ok,
     });
     // Diagnostics must not turn a successful lifecycle operation into a failure.
     let _ = writeln!(std::io::stderr().lock(), "{event}");
-    result
 }

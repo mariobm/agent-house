@@ -297,8 +297,9 @@ three pause/resume cycles with worker and guest boot identity checks.
 
 All disposable VMs were deleted, replicated volumes reclaimed and isolated
 services removed. Production services and user VMs were unchanged. Desktop
-pause remains unqualified. The next experiment is a bounded prebooted Ubuntu
-pool; desktop replicated-storage qualification follows it.
+pause was still unqualified at that stage. Linux x86_64 Omarchy qualification
+is recorded in [the desktop continuation](OMARCHY-PAUSE-QUALIFICATION.md).
+The next experiment was a bounded prebooted Ubuntu pool.
 
 
 The next bounded-pool experiment is recorded in [PREBOOT-POOL.md](PREBOOT-POOL.md):

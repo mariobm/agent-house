@@ -203,4 +203,7 @@ ahvm desktop omarchy
 ```
 
 The first create downloads the image on a saved SSH host. Defaults to 4 CPUs and
-8 GiB RAM. See [setup, requirements and limitations](docs/OMARCHY-DESKTOP.md).
+8 GiB RAM. Qualified Linux x86_64 Omarchy workers pause after 30 seconds idle,
+preserving apps and RAM; a connected viewer keeps them awake. The later one-hour
+cold stop discards app state and retains files. See [idle policy](docs/IDLE-PAUSE.md)
+and [setup, requirements and limitations](docs/OMARCHY-DESKTOP.md).

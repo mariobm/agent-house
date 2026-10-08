@@ -224,6 +224,7 @@ impl WorkerHandle {
 #[derive(Debug)]
 struct LiveRec {
     needs_resume: bool,
+    resident_control: bool,
     record: SandboxRecord,
     dir: PathBuf,
     worker: Option<WorkerHandle>,
@@ -483,12 +484,13 @@ impl KrucibleBackend {
             let mut info = record.info.clone();
             // A surviving process may be paused inside an interrupted snapshot.
             // Probe once on adoption; process liveness alone cannot prove that
-            // guest commands can run. Desktop workers have no control socket.
+            // guest commands can run. Legacy desktop workers gain a control
+            // socket only on their next cold boot, not during daemon adoption.
             let intentional_pause = worker.is_some() && record.info.state == State::Paused;
             let paused = intentional_pause
                 && send_ctl(control_sock(&dir), "STATUS").is_ok_and(|s| s == "OK paused");
             let needs_resume = worker.is_some()
-                && !record.spec.desktop
+                && (!record.spec.desktop || intentional_pause || worker_has_resident_control(&dir))
                 && !paused
                 && recover_control(&dir).is_err();
             if worker.is_some() {
@@ -507,6 +509,7 @@ impl KrucibleBackend {
                 id,
                 LiveRec {
                     needs_resume,
+                    resident_control: !record.spec.desktop || worker_has_resident_control(&dir),
                     record: SandboxRecord { info, ..record },
                     dir,
                     worker,
@@ -593,6 +596,18 @@ fn validate_id(id: &str) -> Result<()> {
 
 fn sock_dir(dir: &Path) -> PathBuf {
     dir.join("sock")
+}
+
+fn desktop_resident_control_supported(spec: &SandboxSpec) -> bool {
+    cfg!(all(target_os = "linux", target_arch = "x86_64")) && spec.desktop_gpu
+}
+
+fn worker_has_resident_control(dir: &Path) -> bool {
+    std::fs::read(dir.join("spec.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|spec| spec["control_socket_uds"].as_str().map(PathBuf::from))
+        .is_some_and(|path| path == control_sock(dir))
 }
 /// Restore execution after a supervisor died between PAUSE and RESUME.
 /// A failed probe remains retryable via start(), without hiding other VMs.
@@ -898,7 +913,9 @@ impl KrucibleBackend {
         });
         if spec.desktop {
             js["gpu"] = spec.desktop_gpu.into();
-            js.as_object_mut().unwrap().remove("control_socket_uds");
+            if !desktop_resident_control_supported(spec) {
+                js.as_object_mut().unwrap().remove("control_socket_uds");
+            }
         }
         if self.networks.is_some() {
             js["net_uds"] = dir.join("net/net.sock").to_string_lossy().into();
@@ -1014,6 +1031,18 @@ impl KrucibleBackend {
 
     /// Hermetic spawn: the worker inherits NOTHING (see SpawnConfig).
     fn boot_worker(
+        &self,
+        dir: &Path,
+        overlay: &Path,
+        spec: &SandboxSpec,
+        snapshot_dir: Option<&Path>,
+    ) -> Result<LiveWorker> {
+        ahvm_proto::timing::measure("engine", "worker_boot", &spec.name, || {
+            self.boot_worker_inner(dir, overlay, spec, snapshot_dir)
+        })
+    }
+
+    fn boot_worker_inner(
         &self,
         dir: &Path,
         overlay: &Path,
@@ -1513,6 +1542,7 @@ impl KrucibleBackend {
                     new_id.to_string(),
                     LiveRec {
                         needs_resume: false,
+                        resident_control: true,
                         record,
                         dir,
                         worker: Some(WorkerHandle::Owned(worker)),
@@ -1757,7 +1787,9 @@ impl Backend for KrucibleBackend {
         }
 
         let boot = (|| -> Result<LiveWorker> {
-            self.create_overlay(&dir.join("root.qcow2"), &backing)?;
+            ahvm_proto::timing::measure("engine", "overlay_prepare", &spec.name, || {
+                self.create_overlay(&dir.join("root.qcow2"), &backing)
+            })?;
             let worker = self.boot_worker(&dir, &dir.join("root.qcow2"), spec, None)?;
             if let Err(e) = self.ready(&dir) {
                 let mut w = worker;
@@ -1801,6 +1833,7 @@ impl Backend for KrucibleBackend {
                     spec.name.clone(),
                     LiveRec {
                         needs_resume: false,
+                        resident_control: !spec.desktop || desktop_resident_control_supported(spec),
                         record,
                         dir,
                         worker: Some(WorkerHandle::Owned(worker)),
@@ -2033,6 +2066,7 @@ impl Backend for KrucibleBackend {
                     rec.record.info.thermal = Thermal::Warm;
                     rec.worker = Some(WorkerHandle::Owned(worker));
                     rec.needs_resume = false;
+                    rec.resident_control = true;
                     let record = rec.record.clone();
                     self.persist_record(&dir, &record)?;
                 }
@@ -2051,6 +2085,8 @@ impl Backend for KrucibleBackend {
                     rec.record.info.thermal = Thermal::Hot;
                     rec.worker = Some(WorkerHandle::Owned(worker));
                     rec.needs_resume = false;
+                    rec.resident_control =
+                        !spec.desktop || desktop_resident_control_supported(&spec);
                     let record = rec.record.clone();
                     self.persist_record(&dir, &record)?;
                 }
@@ -2060,10 +2096,11 @@ impl Backend for KrucibleBackend {
     }
 
     fn supports_pause(&self, id: &str) -> bool {
-        self.lock()
-            .sandboxes
-            .get(id)
-            .is_some_and(|r| !r.record.spec.desktop)
+        self.lock().sandboxes.get(id).is_some_and(|rec| {
+            rec.resident_control
+                && (!rec.record.spec.desktop
+                    || desktop_resident_control_supported(&rec.record.spec))
+        })
     }
     fn pause(&self, id: &str) -> Result<()> {
         self.pause_resident(id)
@@ -3137,7 +3174,10 @@ mod tests {
                 js.get("gpu").and_then(|v| v.as_bool()).unwrap_or(false),
                 enabled
             );
-            assert_eq!(js.get("control_socket_uds").is_some(), !enabled);
+            assert_eq!(
+                js.get("control_socket_uds").is_some(),
+                !enabled || desktop_resident_control_supported(&spec)
+            );
             assert!(js.get("snapshot_dir").is_none());
         }
     }
@@ -3265,6 +3305,109 @@ mod tests {
             be.restore(&caller2, "new3"),
             Err(Error::InvalidState(_))
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn legacy_live_gpu_desktop_requires_cold_boot_before_pause() {
+        let dir = crate::test_scratch("legacy-desktop-control");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        write_record(&dir, "vm", State::Running);
+        let live = dir.join("data/vm");
+        let path = live.join("sandbox.json");
+        let mut record: SandboxRecord =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record.spec.desktop = true;
+        record.spec.desktop_gpu = true;
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        Worker {
+            id: "vm".into(),
+            pid: std::process::id(),
+            sock_dir: live.clone(),
+            state_path: live.join("state.json"),
+            starttime: crate::process_starttime(std::process::id()),
+            isolation: None,
+        }
+        .persist()
+        .unwrap();
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        assert_eq!(be.status("vm").unwrap().state, State::Running);
+        assert!(!be.supports_pause("vm"));
+        assert!(be.pause("vm").is_err());
+        assert_eq!(be.status("vm").unwrap().state, State::Running);
+        std::fs::remove_file(live.join("state.json")).unwrap();
+        drop(be);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn gpu_desktop_adopts_paused_ram_and_recovers_failed_resume_without_reboot() {
+        let dir = crate::test_scratch("desktop-pause-adopt");
+        std::fs::write(dir.join("vmm"), "x").unwrap();
+        std::fs::write(dir.join("base.ext4"), "x").unwrap();
+        write_record(&dir, "vm", State::Paused);
+        let live = dir.join("data/vm");
+        let path = live.join("sandbox.json");
+        let mut record: SandboxRecord =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record.spec.desktop = true;
+        record.spec.desktop_gpu = true;
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        Worker {
+            id: "vm".into(),
+            pid: std::process::id(),
+            sock_dir: live.clone(),
+            state_path: live.join("state.json"),
+            starttime: crate::process_starttime(std::process::id()),
+            isolation: None,
+        }
+        .persist()
+        .unwrap();
+        std::fs::create_dir_all(sock_dir(&live)).unwrap();
+        std::fs::write(
+            live.join("spec.json"),
+            serde_json::to_vec(&serde_json::json!({"control_socket_uds":control_sock(&live)}))
+                .unwrap(),
+        )
+        .unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(control_sock(&live)).unwrap();
+        let control = std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            for (command, reply) in [
+                ("STATUS", "OK paused\n"),
+                ("STATUS", "OK paused\n"),
+                ("RESUME", "ERR resume unavailable\n"),
+                ("STATUS", "OK paused\n"),
+                ("RESUME", "OK running\n"),
+                ("STATUS", "OK running\n"),
+                ("PAUSE", ""),
+                ("STATUS", "OK paused\n"),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                assert_eq!(line.trim(), command);
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        let be = KrucibleBackend::open(cfg(&dir)).unwrap();
+        assert_eq!(be.status("vm").unwrap().state, State::Paused);
+        assert!(be.supports_pause("vm"));
+        assert!(be.resume_paused("vm").is_err());
+        assert_eq!(be.status("vm").unwrap().state, State::Paused);
+        be.start("vm").unwrap();
+        assert_eq!(be.status("vm").unwrap().state, State::Running);
+        be.pause("vm").unwrap();
+        assert_eq!(be.status("vm").unwrap().state, State::Paused);
+        assert!(!live.join("bundle").exists());
+        control.join().unwrap();
+        std::fs::remove_file(live.join("state.json")).unwrap();
+        drop(be);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(target_os = "linux")]

@@ -38,8 +38,12 @@ For network diagnostics, use `curl -4 -I https://example.com` for HTTPS and
 v0.3.10 or newer; released v0.3.9 and older gateways only support TCP and DNS, so a
 ping timeout on those versions does not mean Internet access is broken. See
 [networking support and limits](STATUS-networking.md#isolation-and-lifecycle).
-Closing the viewer disconnects the display; idle policy still applies. Stop/start
-preserves disk data but starts a new desktop session. GPU RAM snapshots are not supported.
+Closing the viewer disconnects the display. Qualified Linux x86_64 Omarchy
+workers pause after 30 seconds idle and retain apps/RAM; the next connection
+resumes them. The later one-hour idle stop, or explicit stop/start, preserves
+disk data and starts a new desktop session. Older running workers gain resident
+pause on their next cold start after upgrading. GPU RAM snapshots are not
+supported. See [policy](IDLE-PAUSE.md) and [qualification](OMARCHY-PAUSE-QUALIFICATION.md).
 
 On macOS, Command maps to Super. A four-modifier Hyper chord also maps to Super.
 Linux clients preserve their original modifiers. Global host shortcuts can still
@@ -102,7 +106,7 @@ v0.3.9 or newer for Cloud TLS and cold-wake retry support. Earlier viewers
 either lack a TLS crypto provider or time out after 10 seconds. Disk writes replicate asynchronously. A cold restart preserves
 replicated files and opens a new desktop session, without restoring applications
 from RAM. The connected viewer holds an activity guard; closing it allows the
-normal idle-stop policy to apply. The current viewer connection is bounded to
+resident pause and later cold-stop policy to apply. The current viewer connection is bounded to
 one hour and can be reopened. Explicit stop/delete still takes precedence.
 
 ```bash
