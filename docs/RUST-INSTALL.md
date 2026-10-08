@@ -11,7 +11,8 @@ ahvm host add home --ssh root@YOUR_SERVER_IP --install
 The client is distributed separately from the server runtime and Ubuntu image.
 The server downloads its signed guest image directly from `images.ahvm.app`.
 The server requires Linux x86_64/KVM, enabled Landlock ABI 6 (Linux 6.12+),
-systemd 254+, unified cgroup v2 with cpu/memory/pids controllers, and glibc 2.35+.
+systemd 254+, unified cgroup v2 with cpu/memory/pids controllers, glibc 2.35+,
+and a VM-data filesystem supporting idmapped mounts (qualified on ext4).
 The v0.2.0 CLI and daemon use static musl builds; VMM native dependencies retain
 the glibc 2.35 baseline. macOS server packaging and Linux arm64 qualification
 are separate work. Review [licensing](LICENSING.md) before installation.
@@ -45,20 +46,42 @@ sudo /opt/ahvm-rust/bin/ahvm --token-file /etc/ahvm-rust/admin.token list
 
 The installer verifies bundle checksums, creates an `ahvm-rust` service account,
 and installs under `/opt/ahvm-rust`, `/etc/ahvm-rust` and `/var/lib/ahvm-rust`.
+Root-owned worker records and jail mount points live separately in
+`/var/lib/ahvm-rust-worker-broker`; the daemon cannot modify them.
 It refuses existing paths or units: this is a **fresh install**, not an update
 or a Go cutover. `--prefix`, `--config-dir`, `--data-dir`, `--unit-name` and
-`--user` allow a separate test installation. Keep ancestors accessible to the
-service account. Installation requires root; workers run under the dedicated
-account with KVM group access and no new privileges. Fresh installations also
+`--user` allow a separate test installation. `--broker-state-dir` selects the
+separate root-owned state directory. These directories must not nest inside
+one another; ancestors must be root-owned and accessible to the service account.
+Installation requires root. The API daemon remains unprivileged; a small
+root-owned broker starts each VMM and gateway with distinct host UID/GIDs,
+no supplementary groups or capabilities, and a restricted filesystem view.
+Fresh installations also
 create a private slice and a delegated worker service, enabling per-VM CPU,
 memory, swap and task limits. The configured data path
 must be on a filesystem with enough space for disk and RAM snapshots.
 
-New Linux VMM workers apply a per-VM filesystem and signal policy before any
-guest runs. Missing managed networking leaves the VM offline. Existing live
-workers need an explicit stop/start to receive these protections, and upgrades
-preserve existing cgroup configuration. See [worker isolation and migration](WORKER-ISOLATION.md)
-for the remaining shared-identity/socket risks and cgroup migration steps.
+New Linux VMM workers also apply the Landlock filesystem and signal policy
+before any guest runs. Missing managed networking leaves the VM offline.
+The broker accepts fixed worker roles for the configured daemon account; it
+does not accept arbitrary commands, executable paths or requested identities.
+Its root-only configuration is `/etc/ahvm-rust/worker-broker.json`, and the
+daemon uses `AHVM_WORKER_BROKER_SOCKET` to connect to it.
+
+The installer reserves 1,048,576 UID/GID values starting at 1,073,741,824.
+**This is lifetime launch capacity, not a limit on simultaneous VMs.** Each
+VMM or gateway launch consumes a fresh identity, including restarts and failed
+launch intents. Identities are never automatically reused. Use
+`--worker-id-base` and `--worker-id-count` for another reserved range; installation
+rejects overlaps with users, groups, subordinate IDs and previous AHVM installations.
+Reservations are retained in `/etc/ahvm-worker-ranges/` even after uninstall.
+Do not remove them or reset the broker allocation counter to reclaim IDs.
+
+Older installations need an explicit migration and all legacy workers stopped.
+An ordinary host upgrade refuses before stopping services if broker configuration
+is missing. See [worker isolation and migration](WORKER-ISOLATION.md) for the
+migration procedure, replicated NBD and GPU device configuration, and the
+remaining security limits. Existing VM disks do not need to be deleted.
 
 New sandboxes use Ubuntu with Node.js LTS, Bun, Python and the AI CLIs already
 installed. No image selection is required. See [development image usage and
@@ -115,8 +138,9 @@ guest exec limit of 300 seconds. Cancelling the client does not cancel exec.
 
 Interactive shell/attach requires a terminal. It forwards raw input, sends PTY
 resize updates and restores local terminal settings on normal detach or errors.
-Interactive attach uses the WebSocket stream; idle connections do not keep
-VMs active. `session read --follow` uses REST for noninteractive consumers. Ctrl-C goes to the guest; Ctrl-] detaches. The guest
+Interactive attach uses the WebSocket stream and keeps the VM active while
+connected, including while waiting for input. After detaching, the configured
+idle policy applies. `session read --follow` uses REST for noninteractive consumers. Ctrl-C goes to the guest; Ctrl-] detaches. The guest
 session remains listed until explicitly deleted.
 
 ## Previews and private access
@@ -146,19 +170,23 @@ inherited by restored copies. The bootstrap owner is `admin`.
 
 ## Operations and release
 
-`journalctl -u ahvm-rust` shows daemon startup/errors; per-worker logs live under
+`journalctl -u ahvm-rust -u ahvm-rust-worker-broker` shows daemon and launcher
+startup/errors; per-worker logs live under
 the data directory. `LimitNOFILE=65536` accommodates the measured transient VMM
 descriptor peak; `TasksMax=4096` bounds service tasks. Adjust sandbox quotas and
 host capacity together; these settings do not promise a particular VM count.
 The installer chooses an IPv4 resolver from the host's resolv.conf; override
 `AHVM_DNS_RESOLVER` if needed.
 
-Workers survive a daemon restart (`KillMode=process`) so the new daemon can adopt
-them. **Stopping the systemd service does not stop sandboxes.** Stop/delete them
+Workers survive daemon and broker restarts (`KillMode=process`) so they can be
+adopted from verified records. **Stopping either service does not stop sandboxes.** Stop/delete them
 through the CLI before host maintenance or uninstall. To remove a test install,
-first delete all its sandboxes, disable/stop its unit, remove that unit and its
-three install/config/data directories, then run `systemctl daemon-reload`.
-Do not remove a service account while it still owns workers or other installs.
+first delete all its sandboxes, disable/stop the daemon, broker and delegated
+worker services, and remove their units and private slice. Remove the
+installation/configuration/data and broker-state directories only after verifying
+their worker cgroups are empty, then run `systemctl daemon-reload`.
+Retain the identity reservation. Do not remove a service account while it is
+used by another installation.
 
 The manual release workflow builds standalone Mac clients and a server-only
 archive on the qualified native build runner. Use the signed publisher described
@@ -180,17 +208,18 @@ and idle configuration, restarts it, uses at most two guests, restores the
 configuration files and deletes its guests afterward. Stored snapshot bundles
 remain until the disposable data directory is removed.
 
-Verified on `agent_house`: **14.17 seconds, two 1-vCPU/256 MiB guests maximum**.
+Worker-isolation qualification on `agent_house` (2026-10-08): **18.16 seconds,
+two 1-vCPU/256 MiB guests maximum**.
 32 MiB binary file and stdin uploads passed, with checksum verification and a
 full download comparison. Empty upload passed; dropping a real chunked HTTP
 request preserved the old destination and removed the guest temporary file.
 Exec exit codes, DNS, private access and copy
 isolation, preview browser bootstrap/revocation, snapshots, stop/start, worker
 SIGKILL recovery and daemon adoption passed. Real WebSocket PTY input/output,
-resize, detach/reattach and exit status passed; an idle attached terminal still
-allowed automatic VM stop. The daemon and workers ran under the dedicated
-service account. The **11 CLI contract tests** passed on macOS and Linux;
-Clippy and formatting passed. Installer checks reject existing paths and a
-tampered bundle before installation. These historical Phase 6 results predate the split release workflow; the native bundle build and fresh install were tested
-locally on the server. Phase 5's separate two-4-GiB
-network qualification remains documented in `NETWORK-QUALIFICATION.md`.
+resize, detach/reattach and exit status passed. An attached shell stayed alive
+beyond the test idle deadline; detaching allowed automatic VM stop. The daemon
+ran under the dedicated service account; VMM and gateway processes used separate
+broker-assigned identities. See [worker isolation](WORKER-ISOLATION.md) for
+the adversarial and replicated-storage gates, requirements and limitations.
+Phase 5's historical network qualification remains documented in
+`NETWORK-QUALIFICATION.md`.

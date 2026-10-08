@@ -1,23 +1,17 @@
 [package]
-name = "ahvm-engine"
+name = "ahvm-worker-broker"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-ahvm-proto = { path = "../ahvm-proto" }
-base64 = "0.22"
+ahvm-engine = { path = "../ahvm-engine" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-socket2 = "0.6"
-thiserror = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix = { version = "1", features = ["process", "net"] }
-landlock = "0.4.7"
-
-[dev-dependencies]
 libc = "0.2"
+rustix = { version = "1", features = ["process", "net"] }
 
 [lints]
 workspace = true

@@ -80,6 +80,7 @@ fn base_image_bytes(image: &Path) -> u64 {
 
 fn write_spec(path: &Path, image: &Path, sock: &Path, snapshot_dir: Option<&Path>) {
     let mut policy = WorkerSandbox {
+        unix_connect: Vec::new(),
         read_only: vec![std::env::var("AHVM_GUEST_IMAGE").unwrap().into()],
         read_write: vec![path.parent().unwrap().into(), image.into()],
     };

@@ -1,0 +1,55 @@
+{
+  "label": "isolated-b",
+  "memory_mb": 512,
+  "cpus": 1,
+  "checks": {
+    "daemon_adopts_live_worker": true,
+    "snapshot_resume_preserves_file": true,
+    "delete_releases_vm": true
+  },
+  "timings": {
+    "create": 0.438184,
+    "first_exec": 0.014385,
+    "stop_local_snapshot": 0.739065,
+    "start_local_snapshot": 0.523513,
+    "delete": 0.122454
+  },
+  "samples": [
+    {
+      "cpu_sha256_512_mib_seconds": 0.24370773499999998,
+      "write_fsync_64_mib_seconds": 0.08803856599999993,
+      "read_hash_64_mib_seconds": 0.04663449200000003,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.02573629300000002
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24952477900000003,
+      "write_fsync_64_mib_seconds": 0.07574287200000018,
+      "read_hash_64_mib_seconds": 0.049852342000000105,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.024174614999999955
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24108056299999991,
+      "write_fsync_64_mib_seconds": 0.057486696000000004,
+      "read_hash_64_mib_seconds": 0.045458114000000105,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.024215276000000063
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24122903900000003,
+      "write_fsync_64_mib_seconds": 0.06876612299999985,
+      "read_hash_64_mib_seconds": 0.049133006999999784,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.023356098999999908
+    },
+    {
+      "cpu_sha256_512_mib_seconds": 0.24724126299999982,
+      "write_fsync_64_mib_seconds": 0.06672570000000011,
+      "read_hash_64_mib_seconds": 0.0496381669999999,
+      "disk_hash": "e20a69eca39368572e90b9135738a613838f954987a0b44b6220889c171cbb76",
+      "managed_tcp_8_mib_seconds": 0.02292730399999998
+    }
+  ],
+  "ok": true
+}

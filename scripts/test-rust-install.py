@@ -197,18 +197,24 @@ try:
     print('snapshot isolation, two-worker adoption and SIGKILL recovery passed',flush=True)
     cli('session','kill',ids[1],sid);cli('session','delete',ids[1],sid)
     cli('session','kill',ids[1],http_sid);cli('session','delete',ids[1],http_sid)
-    # A forgotten-open interactive terminal must not hold the VM hot forever.
+    # An attached shell pins the VM; the idle deadline starts after detaching.
     (config/'daemon.env').write_text(original_env.replace('AHVM_IDLE_SECS=3600','AHVM_IDLE_SECS=2')+'\nAHVM_SWEEP_SECS=1\n')
     restart()
     def idle(master,slave,p,until):
         until(b'Session ')
-        end=time.monotonic()+12
-        while obj('get',ids[0])['state']!='stopped':
-            assert time.monotonic()<end, 'idle attach kept sandbox running'
+        end=time.monotonic()+5
+        while time.monotonic()<end:
+            assert obj('get',ids[0])['state']=='running', 'attached shell was stopped'
+            assert p.poll() is None, 'attached shell disconnected'
             time.sleep(.2)
-        assert p.wait(timeout=5)==1, 'idle worker stop should disconnect attach'
+        os.write(master,b'\x1d')
+        assert p.wait(timeout=5)==0, 'Ctrl-] should detach successfully'
     terminal_command(['shell',ids[0]],idle)
-    print('idle WebSocket terminal permits automatic stop',flush=True)
+    end=time.monotonic()+12
+    while obj('get',ids[0])['state']!='stopped':
+        assert time.monotonic()<end, 'detached shell prevented automatic stop'
+        time.sleep(.2)
+    print('attached shell stays alive; detaching permits automatic stop',flush=True)
 
 finally:
     # Always attempt deletion of both; never signal unchecked processes.

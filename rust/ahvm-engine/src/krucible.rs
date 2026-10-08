@@ -86,6 +86,10 @@ pub struct KrucibleConfig {
     pub network: Option<crate::NetworkConfig>,
     /// Optional host-delegated per-VM resource limits.
     pub resources: Option<crate::ResourceConfig>,
+    /// Fixed root broker for distinct Linux worker identities and private mounts.
+    /// Direct library callers may explicitly retain standalone Landlock mode;
+    /// the Linux daemon requires this setting.
+    pub worker_broker: Option<crate::WorkerBrokerConfig>,
     /// Optional host-owned project-quota broker; fail closed when unavailable.
     pub storage: Option<crate::StorageConfig>,
     /// Experimental host volume service. Never inferred from guest input.
@@ -104,6 +108,7 @@ impl KrucibleConfig {
             exec_timeout: DEFAULT_EXEC_TIMEOUT,
             network: None,
             resources: None,
+            worker_broker: None,
             storage: None,
             replicated: None,
             default_storage_mode: crate::StorageMode::Local,
@@ -122,6 +127,17 @@ impl KrucibleConfig {
                 "base image missing: {}",
                 self.base_image.display()
             )));
+        }
+        if let Some(broker) = &self.worker_broker {
+            let resources = self.resources.as_ref().ok_or_else(|| {
+                Error::InvalidState("isolated workers require delegated cgroup limits".into())
+            })?;
+            broker.check(
+                &self.data_dir,
+                &self.vmm_bin,
+                &self.lib_path,
+                &resources.root,
+            )?;
         }
         Ok(())
     }
@@ -157,14 +173,15 @@ impl WorkerHandle {
     /// Reaps an owned child that already exited (no zombie left behind).
     /// Adopted pids additionally require identity verification: a reused
     /// pid is NOT our worker, however live it looks.
-    pub(crate) fn alive(&mut self) -> bool {
+    pub(crate) fn alive(&mut self) -> Result<bool> {
         match self {
+            WorkerHandle::Owned(w) if !w.has_supervision() => Ok(false),
             WorkerHandle::Owned(w) => match w.try_reap() {
-                Ok(Some(_)) => false,
-                Ok(None) => true,
-                Err(_) => false,
+                Ok(Some(_)) => Ok(false),
+                Ok(None) => Ok(true),
+                Err(error) => Err(error.into()),
             },
-            WorkerHandle::Adopted(w) => is_alive(w.pid) && verified(w),
+            WorkerHandle::Adopted(w) => w.verified_alive().map_err(Into::into),
         }
     }
 
@@ -174,6 +191,9 @@ impl WorkerHandle {
         match self {
             WorkerHandle::Owned(w) => w.terminate().map_err(Error::Io),
             WorkerHandle::Adopted(w) => {
+                if w.isolation.is_some() {
+                    return terminate_adopted(w);
+                }
                 if !is_alive(w.pid) || !verified(w) {
                     // Already gone, or the pid belongs to someone else now.
                     return Ok(());
@@ -293,8 +313,12 @@ impl KrucibleBackend {
 
     /// Open (or create) `cfg.data_dir`, adopting live workers from
     /// `state.json` records. Dead pids surface as `Failed`.
-    pub fn open(cfg: KrucibleConfig) -> Result<Self> {
+    pub fn open(mut cfg: KrucibleConfig) -> Result<Self> {
         cfg.validate()?;
+        if let Some(net) = cfg.network.as_mut() {
+            net.worker_broker = cfg.worker_broker.clone();
+            net.lib_path = cfg.lib_path.clone();
+        }
         if let Some(resources) = &cfg.resources {
             resources.validate()?;
         }
@@ -383,6 +407,28 @@ impl KrucibleBackend {
                 ));
             }
             let worker = match Worker::load(dir.join("state.json")) {
+                Ok(w) if w.isolation.is_some() => {
+                    let broker = cfg.worker_broker.as_ref().ok_or_else(|| {
+                        Error::InvalidState(
+                            "live isolated worker requires its configured broker".into(),
+                        )
+                    })?;
+                    if w.isolation.as_ref().is_none_or(|i| {
+                        i.socket != broker.socket || i.role != crate::WorkerRole::Vmm
+                    }) {
+                        return Err(Error::InvalidState(
+                            "worker broker adoption configuration mismatch".into(),
+                        ));
+                    }
+                    if broker.status(&w)? {
+                        Some(WorkerHandle::Adopted(w))
+                    } else {
+                        None
+                    }
+                }
+                Ok(w) if cfg.worker_broker.is_some() && is_alive(w.pid) && verified(&w) => {
+                    return Err(Error::InvalidState("stop legacy standalone workers before enabling per-launch identity isolation".into()));
+                }
                 // Identity-verified adoption only: a live pid with a
                 // mismatched starttime belongs to someone else (PID reuse).
                 Ok(w) if is_alive(w.pid) && w.starttime.is_none() => {
@@ -855,7 +901,7 @@ impl KrucibleBackend {
             js.as_object_mut().unwrap().remove("control_socket_uds");
         }
         if self.networks.is_some() {
-            js["net_uds"] = sock.join("net.sock").to_string_lossy().into();
+            js["net_uds"] = dir.join("net/net.sock").to_string_lossy().into();
             js["net_mac"] = "02:00:00:00:00:02".into();
         }
         // Omit (never null): an explicit null is a parse error for workers.
@@ -875,6 +921,7 @@ impl KrucibleBackend {
         snapshot_dir: Option<&Path>,
     ) -> Result<crate::WorkerSandbox> {
         let mut policy = crate::WorkerSandbox {
+            unix_connect: Vec::new(),
             read_only: vec![dir.to_path_buf()],
             read_write: vec![
                 overlay.to_path_buf(),
@@ -895,6 +942,10 @@ impl KrucibleBackend {
         };
         if spec.storage_mode != Some(crate::StorageMode::Replicated) {
             policy.read_only.push(backing);
+        }
+        if self.networks.is_some() {
+            policy.read_only.push(dir.join("net"));
+            policy.unix_connect.push(dir.join("net"));
         }
         policy.read_only.extend(
             self.cfg
@@ -1034,15 +1085,19 @@ impl KrucibleBackend {
         if let Some(net) = &self.networks {
             net.prepare(dir, group.as_deref(), spec.network_bytes_per_sec)?;
         }
-        let result = spawn_worker_cfg(&SpawnConfig {
-            cgroup: group.as_deref(),
-            vmm_binary: worker.as_os_str(),
-            spec_arg: &spec_path,
-            state_path: &dir.join("state.json"),
-            hermetic: true,
-            env: &env,
-            stderr_log: Some(&dir.join("vmm.log")),
-        })
+        let result = if let Some(broker) = &self.cfg.worker_broker {
+            broker.launch(dir, crate::WorkerRole::Vmm)
+        } else {
+            spawn_worker_cfg(&SpawnConfig {
+                cgroup: group.as_deref(),
+                vmm_binary: worker.as_os_str(),
+                spec_arg: &spec_path,
+                state_path: &dir.join("state.json"),
+                hermetic: true,
+                env: &env,
+                stderr_log: Some(&dir.join("vmm.log")),
+            })
+        }
         .map_err(Error::Io);
         match &result {
             Ok(w) => {
@@ -1125,8 +1180,16 @@ impl KrucibleBackend {
             if !reply.starts_with("OK") {
                 return Err(Error::Control(format!("SNAPSHOT refused: {reply}")));
             }
-            // Remove the VMM's path access before validating or adding trusted files.
-            std::fs::rename(&staging, &gen)?;
+            validate_worker_snapshot(&staging)?;
+            // A retained staging directory FD must never name newly created
+            // trusted metadata. Publish into a fresh directory inode and move
+            // only the three validated native payloads. Retained payload FDs
+            // still refer to untrusted native snapshot output.
+            std::fs::create_dir(&gen)?;
+            for name in ["memory.img", "checkpoint.bin", "manifest.json"] {
+                std::fs::rename(staging.join(name), gen.join(name))?;
+            }
+            std::fs::remove_dir(&staging)?;
             validate_worker_snapshot(&gen)?;
             // Freeze the disk while vCPUs are paused: libkrun's checkpoint
             // is RAM-only, so the overlay copy IS the disk snapshot.
@@ -1833,7 +1896,12 @@ impl Backend for KrucibleBackend {
                 if rec.record.spec.network_bytes_per_sec == Some(bytes) {
                     None
                 } else {
-                    let alive = rec.worker.as_mut().is_some_and(|w| w.alive());
+                    let alive = rec
+                        .worker
+                        .as_mut()
+                        .map(|w| w.alive())
+                        .transpose()?
+                        .unwrap_or(false);
                     let old = match rec.record.spec.network_bytes_per_sec {
                         Some(0) => None,
                         Some(v) => Some(v),
@@ -1877,8 +1945,14 @@ impl Backend for KrucibleBackend {
                 .sandboxes
                 .get_mut(id)
                 .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?;
-            (rec.needs_resume && rec.worker.as_mut().is_some_and(|worker| worker.alive()))
-                .then(|| rec.dir.clone())
+            (rec.needs_resume
+                && rec
+                    .worker
+                    .as_mut()
+                    .map(|worker| worker.alive())
+                    .transpose()?
+                    .unwrap_or(false))
+            .then(|| rec.dir.clone())
         };
         if let Some(dir) = recovery_dir {
             recover_control(&dir)?;
@@ -1912,7 +1986,7 @@ impl Backend for KrucibleBackend {
                 .get_mut(id)
                 .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?;
             let alive = match rec.worker.as_mut() {
-                Some(h) => h.alive(),
+                Some(h) => h.alive()?,
                 None => false,
             };
             if !alive {
@@ -2095,7 +2169,7 @@ impl Backend for KrucibleBackend {
             .get_mut(id)
             .ok_or_else(|| Error::NotFound(format!("sandbox {id}")))?;
         let alive = match rec.worker.as_mut() {
-            Some(h) => h.alive(),
+            Some(h) => h.alive()?,
             None => false,
         };
         if rec.worker.is_some() && !alive {
@@ -2552,6 +2626,7 @@ fn recover_bundle(bundle: &Path) -> Result<()> {
 }
 
 fn validate_worker_snapshot(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
     let files = ["memory.img", "checkpoint.bin", "manifest.json"];
     if !std::fs::symlink_metadata(dir)?.is_dir() {
         return Err(Error::InvalidState(
@@ -2567,7 +2642,8 @@ fn validate_worker_snapshot(dir: &Path) -> Result<()> {
         }
     }
     for name in files {
-        if !std::fs::symlink_metadata(dir.join(name))?.is_file() {
+        let metadata = std::fs::symlink_metadata(dir.join(name))?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
             return Err(Error::InvalidState(
                 "worker snapshot is missing a regular artifact".into(),
             ));
@@ -2965,6 +3041,7 @@ mod tests {
             exec_timeout: Duration::from_secs(1),
             network: None,
             resources: None,
+            worker_broker: None,
             storage: None,
             replicated: None,
             default_storage_mode: crate::StorageMode::Local,
@@ -3204,6 +3281,7 @@ mod tests {
             sock_dir: live.clone(),
             state_path: live.join("state.json"),
             starttime: crate::process_starttime(std::process::id()),
+            isolation: None,
         }
         .persist()
         .unwrap();
@@ -3250,6 +3328,7 @@ mod tests {
             sock_dir: live.clone(),
             state_path: live.join("state.json"),
             starttime: crate::process_starttime(std::process::id()),
+            isolation: None,
         }
         .persist()
         .unwrap();
@@ -3293,6 +3372,7 @@ mod tests {
             sock_dir: live.clone(),
             state_path: live.join("state.json"),
             starttime: crate::process_starttime(std::process::id()),
+            isolation: None,
         }
         .persist()
         .unwrap();
@@ -3344,6 +3424,7 @@ mod tests {
             sock_dir: dead.clone(),
             state_path: dead.join("state.json"),
             starttime: None,
+            isolation: None,
         };
         worker.persist().unwrap();
         // Live record: our own test pid is alive by definition, adopted
@@ -3356,6 +3437,7 @@ mod tests {
             sock_dir: live.clone(),
             state_path: live.join("state.json"),
             starttime: crate::process_starttime(std::process::id()),
+            isolation: None,
         };
         worker.persist().unwrap();
         // PID-reuse simulation: our own (live) pid with a WRONG starttime
@@ -3372,6 +3454,7 @@ mod tests {
                     .unwrap_or(0)
                     .wrapping_add(1_000_000),
             ),
+            isolation: None,
         };
         worker.persist().unwrap();
 
@@ -3528,6 +3611,7 @@ mod tests {
             sock_dir: vm.clone(),
             state_path: vm.join("state.json"),
             starttime: None,
+            isolation: None,
         }
         .persist()
         .unwrap();

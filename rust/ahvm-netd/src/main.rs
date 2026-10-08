@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    worker_sandbox: ahvm_engine::WorkerSandbox,
     ethernet_contract: u32,
     socket: PathBuf,
     resolver: Ipv4Addr,
@@ -41,6 +42,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("usage: ahvm-netd CONFIG.json")?;
     let cfg: Config = serde_json::from_slice(&std::fs::read(path)?)?;
+    #[cfg(not(target_os = "linux"))]
+    let _ = &cfg.worker_sandbox;
+    #[cfg(target_os = "linux")]
+    {
+        // Gateway parses guest Ethernet too; it gets filesystem/signal/UDS
+        // confinement with its own broker identity while retaining host TCP.
+        cfg.worker_sandbox.restrict(true)?;
+    }
     if cfg.ethernet_contract != 1 {
         return Err("unsupported Ethernet contract".into());
     }

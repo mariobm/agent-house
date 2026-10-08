@@ -51,6 +51,10 @@ pub struct Worker {
     pub state_path: PathBuf,
     #[serde(default)]
     pub starttime: Option<u64>,
+    /// Distinct host credentials and root-owned supervision. Legacy standalone
+    /// records lack this field and cannot be adopted by an isolated daemon.
+    #[serde(default)]
+    pub isolation: Option<crate::WorkerIdentity>,
 }
 
 impl Worker {
@@ -183,6 +187,7 @@ pub fn spawn_worker_cfg(cfg: &SpawnConfig) -> std::io::Result<LiveWorker> {
         sock_dir,
         state_path,
         starttime: process_starttime(pid),
+        isolation: None,
     };
     if let Err(e) = worker.persist() {
         // Record unwritten: no future owner can find this child. Kill and
@@ -206,10 +211,15 @@ pub struct LiveWorker {
 }
 
 impl LiveWorker {
-    pub(crate) fn owns_child(&self) -> bool {
-        self.child.is_some()
+    pub(crate) fn has_supervision(&self) -> bool {
+        self.child.is_some() || self.record.isolation.is_some()
     }
-
+    pub(crate) fn broker_owned(record: Worker) -> Self {
+        Self {
+            record,
+            child: None,
+        }
+    }
     pub(crate) fn reap_in_background(mut self) {
         if let Some(mut child) = self.child.take() {
             std::thread::spawn(move || {
@@ -234,6 +244,12 @@ impl LiveWorker {
     /// Non-blocking reap: `Some(status)` if the child already exited (no
     /// zombie left behind), `None` if still running.
     pub fn try_reap(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        if self.record.isolation.is_some() {
+            use std::os::unix::process::ExitStatusExt;
+            return Ok(
+                (!self.record.verified_alive()?).then(|| std::process::ExitStatus::from_raw(0))
+            );
+        }
         match self.child.as_mut() {
             Some(child) => child.try_wait(),
             None => Ok(None),
@@ -244,6 +260,12 @@ impl LiveWorker {
     /// After this returns Ok, no zombie remains regardless of prior state.
     /// Idempotent: a second call on an already-reaped worker is Ok.
     pub fn terminate(&mut self) -> std::io::Result<()> {
+        if let Some(identity) = &self.record.isolation {
+            return crate::WorkerBrokerConfig {
+                socket: identity.socket.clone(),
+            }
+            .stop(&self.record);
+        }
         if let Some(mut child) = self.child.take() {
             let _ = child.kill(); // already-dead is fine
             let _ = child.wait(); // reap: never a zombie afterwards
@@ -308,18 +330,33 @@ pub fn is_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    let pid_str = pid.to_string();
-    let exists = Command::new("/bin/kill")
-        .arg("-0")
-        .arg(&pid_str)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    exists && !is_zombie(&pid_str)
+    #[cfg(target_os = "linux")]
+    {
+        // kill(0) returns EPERM for distinct worker UIDs, which is not death.
+        fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|s| {
+                s.rsplit_once(')')
+                    .map(|(_, rest)| rest.split_whitespace().next().unwrap_or("Z").to_string())
+            })
+            .is_some_and(|state| state != "Z" && state != "X")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let pid_str = pid.to_string();
+        let exists = Command::new("/bin/kill")
+            .arg("-0")
+            .arg(&pid_str)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        exists && !is_zombie(&pid_str)
+    }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn is_zombie(pid_str: &str) -> bool {
     Command::new("/bin/ps")
         .args(["-p", pid_str, "-o", "stat="])
@@ -337,6 +374,13 @@ fn is_zombie(pid_str: &str) -> bool {
 /// Signal an adopted worker through a stable process handle, never a bare PID.
 /// Unknown identities and platforms without pidfds fail closed.
 pub fn terminate_adopted(worker: &Worker) -> crate::Result<()> {
+    if let Some(identity) = &worker.isolation {
+        return crate::WorkerBrokerConfig {
+            socket: identity.socket.clone(),
+        }
+        .stop(worker)
+        .map_err(Into::into);
+    }
     let expected = worker.starttime.ok_or_else(|| {
         crate::Error::InvalidState("cannot signal adopted worker without process identity".into())
     })?;
@@ -510,6 +554,7 @@ mod tests {
             sock_dir: PathBuf::new(),
             state_path: PathBuf::new(),
             starttime: Some(1),
+            isolation: None,
         };
         assert!(terminate_adopted(&w).is_err());
     }
@@ -524,6 +569,7 @@ mod tests {
             sock_dir: dir.join("sb-9"),
             state_path: state.clone(),
             starttime: None,
+            isolation: None,
         };
         worker.persist().unwrap();
         assert_eq!(Worker::load(&state).unwrap(), worker);
@@ -571,6 +617,7 @@ mod tests {
             sock_dir: PathBuf::new(),
             state_path: PathBuf::new(),
             starttime: None,
+            isolation: None,
         };
         assert!(matches!(
             terminate_adopted(&w),
@@ -589,6 +636,7 @@ mod tests {
             sock_dir: PathBuf::new(),
             state_path: PathBuf::new(),
             starttime: Some(actual + 1),
+            isolation: None,
         };
         terminate_adopted(&w).unwrap();
         assert!(

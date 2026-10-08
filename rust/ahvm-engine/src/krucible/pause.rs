@@ -12,7 +12,13 @@ impl KrucibleBackend {
             if rec.record.info.state != State::Paused && !rec.needs_resume {
                 return Ok(false);
             }
-            if !rec.worker.as_mut().is_some_and(|w| w.alive()) {
+            if !rec
+                .worker
+                .as_mut()
+                .map(|w| w.alive())
+                .transpose()?
+                .unwrap_or(false)
+            {
                 return Ok(false);
             }
             rec.dir.clone()
@@ -40,7 +46,13 @@ impl KrucibleBackend {
             if rec.record.spec.desktop {
                 return Err(Error::InvalidState("desktop pause is not qualified".into()));
             }
-            if !rec.worker.as_mut().is_some_and(|w| w.alive()) {
+            if !rec
+                .worker
+                .as_mut()
+                .map(|w| w.alive())
+                .transpose()?
+                .unwrap_or(false)
+            {
                 return Err(Error::InvalidState("pause requires a live worker".into()));
             }
             if rec.record.info.state == State::Paused {

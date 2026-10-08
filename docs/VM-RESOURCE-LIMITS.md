@@ -1,8 +1,8 @@
 # Per-VM resource limits
 
 Fresh Linux installations enable `AHVM_CGROUP_ROOT`, pointing at a private
-systemd-delegated cgroup v2 subtree. Upgrades and custom hosts preserve their
-existing policy; manual deployments can enable the setting explicitly. The
+systemd-delegated cgroup v2 subtree. The Linux daemon requires this setting and
+the root-owned worker broker; older hosts need an explicit migration. The
 runtime requires enabled Landlock ABI 6 (Linux 6.12+), and fresh installation
 requires systemd 254+ and cpu/memory/pids controllers. Missing controllers,
 unwritable limits or live workers outside the expected group fail closed; stop
@@ -12,14 +12,18 @@ The standard installer puts the daemon and persistent worker service in a
 private `ahvm_<unit>.slice`, with a root setup step granting only that slice's
 `cgroup.procs` to the service account. It leaves the global system slice
 root-owned. [Worker isolation and migration](WORKER-ISOLATION.md) covers the
-filesystem policy and the remaining shared-identity containment gaps.
+private filesystem views, distinct worker identities and migration procedure.
 
-The cloud deployment uses two services under one aggregate slice:
+The Cloud deployment's daemon and resource services use one aggregate slice:
 
 * `ahvm-cloud-node.service`: independently restartable daemon.
 * `ahvm-cloud-workers.service`: persistent delegated subtree. A small `sleep`
   process in its `keeper` leaf keeps systemd from removing the empty subtree.
 * `ahvm-cloud.slice`: aggregate CPU, memory and task ceilings for both services.
+
+The isolated deployment also runs a root worker broker. It starts workers in
+`vm-<id>/vmm` and `vm-<id>/netd` leaves; the limits remain on their shared
+`vm-<id>` parent. Restarting the gateway therefore does not kill the VMM.
 
 The worker service uses `Delegate=cpu memory pids` and
 `DelegateSubgroup=keeper` (systemd 254+). Configure `AHVM_CGROUP_ROOT` as its actual
@@ -49,11 +53,12 @@ must reserve this overhead in the aggregate ceiling, plus daemon headroom. Guest
 processes run inside the VM and are bounded by its guest RAM/CPU; `pids.max` bounds
 host-side VMM and gateway threads, not the guest's process table.
 
-A constant `/bin/sh` launcher writes its own PID to the group before `exec` of the
-worker. Paths and arguments are passed separately, never interpolated as shell
-code. Admission failure exits before the worker runs. Only the small trusted
-launcher starts in the daemon group. No unsafe Rust or root daemon is required.
-This adds one shell launch per worker start, with no work on the exec/file hot path.
+The root broker accepts only fixed worker roles from its configured daemon UID.
+Its trusted launcher enters the admitted role group, constructs the private
+filesystem view and drops credentials and capabilities before executing the
+worker. The main daemon remains unprivileged. Launch setup adds no broker call
+to guest file or network I/O; see the qualification measurements in
+[worker isolation](WORKER-ISOLATION.md).
 
 Gateway replacement retains the group. Adoption verifies membership without moving
 or signalling an unverified PID. Delete removes the empty group; startup reclaims

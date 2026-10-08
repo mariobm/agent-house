@@ -10,6 +10,9 @@ use std::path::PathBuf;
 pub struct WorkerSandbox {
     pub read_only: Vec<PathBuf>,
     pub read_write: Vec<PathBuf>,
+    /// Exact readonly directories containing the VM's gateway pathname UDS.
+    #[serde(default)]
+    pub unix_connect: Vec<PathBuf>,
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -57,6 +60,7 @@ mod tests {
         let private_memory = *b"private-test";
         let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let policy = WorkerSandbox {
+            unix_connect: Vec::new(),
             read_only: vec![dir.join("base"), dir.join("vm-a")],
             read_write: vec![
                 dir.join("vm-a/disk"),
@@ -302,7 +306,7 @@ impl WorkerSandbox {
             .map_err(io::Error::other)?
             .create()
             .map_err(io::Error::other)?;
-        for path in &self.read_write {
+        for path in self.read_write.iter().chain(&self.unix_connect) {
             if !path.is_dir() {
                 continue;
             }

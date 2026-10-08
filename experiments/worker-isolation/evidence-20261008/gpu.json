@@ -1,0 +1,22 @@
+{
+  "label": "gpu",
+  "memory_mb": 8192,
+  "cpus": 2,
+  "checks": {
+    "display_and_input": true,
+    "daemon_adopts_live_worker": true,
+    "desktop_cold_start_preserves_file": true,
+    "delete_releases_vm": true
+  },
+  "timings": {
+    "create": 7.633761,
+    "first_exec": 0.053756,
+    "stop_desktop": 0.195685,
+    "start_desktop_cold": 6.259884,
+    "delete": 0.086719
+  },
+  "samples": [],
+  "guest_graphics": "uid=0(root) gid=0(root) groups=0(root)\ntotal 0\ndrwxr-xr-x 2 root root         80 Oct  8 09:07 by-path\ncrw-rw---- 1 root video  226,   0 Oct  8 09:07 card0\ncrw-rw-rw- 1 root render 226, 128 Oct  8 09:07 renderD128\n774 Hyprland --watchdog-fd 4 --config /home/desktop/hyprland.lua\n983 /usr/bin/wayvnc -u -f 30 /run/user/1000/vnc.sock\n",
+  "vnc": "VNC desktop: WayVNC 1280 720\nVNC_CAPTURE_OK; keyboard and pointer sent (guest verifies delivery)\n",
+  "ok": true
+}

@@ -56,6 +56,7 @@ fn service(root: &Path) -> Service {
         imports: Mutex::new(BTreeMap::new()),
         config: Config {
             client_uid: 0,
+            worker_broker_socket: None,
             resources: None,
             limits: Limits {
                 max_volume_bytes: 1 << 30,

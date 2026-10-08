@@ -9,6 +9,7 @@ members = [
     "ahvm-cli",
     "ahvm-vmm",
     "ahvm-volume",
+    "ahvm-worker-broker",
 ]
 resolver = "2"
 
@@ -18,9 +19,10 @@ edition = "2021"
 license = "MIT"
 
 [workspace.lints.rust]
-# `deny` (not `forbid`) so the two process-group helpers in ahvm-forge can
-# carry a scoped `#[allow]` with their safety justification. Everything else
-# must stay unsafe-free.
+# `deny` (not `forbid`) permits scoped, justified syscall boundaries in forge,
+# the fixed Linux worker broker/launcher, and isolated qualification probes.
+# Broker pre_exec contains only async-signal-safe fcntl; sandbox setup runs in
+# a fresh single-threaded exec. Ordinary engine code remains unsafe-free.
 unsafe_code = "deny"
 missing_debug_implementations = "warn"
 

@@ -95,6 +95,12 @@ async fn main() {
         });
     backend_cfg.resources = std::env::var_os("AHVM_CGROUP_ROOT")
         .map(|root| ahvm_engine::ResourceConfig { root: root.into() });
+    #[cfg(target_os = "linux")]
+    {
+        backend_cfg.worker_broker = Some(ahvm_engine::WorkerBrokerConfig {
+            socket: PathBuf::from(required("AHVM_WORKER_BROKER_SOCKET")),
+        });
+    }
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Grant {
@@ -133,6 +139,8 @@ async fn main() {
     );
     if let Some(bin) = std::env::var_os("AHVM_NETD_BIN") {
         backend_cfg.network = Some(ahvm_engine::NetworkConfig {
+            worker_broker: backend_cfg.worker_broker.clone(),
+            lib_path: backend_cfg.lib_path.clone(),
             bandwidth_bytes_per_sec: std::env::var("AHVM_NETWORK_BYTES_PER_SEC").ok().map(|v| {
                 v.parse()
                     .expect("AHVM_NETWORK_BYTES_PER_SEC must be an integer")

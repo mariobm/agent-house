@@ -1,0 +1,42 @@
+[Unit]
+Description=Agent House isolated worker launcher
+After=@UNIT@-workers.service
+Requires=@UNIT@-workers.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=20
+User=root
+Group=root
+Slice=@SLICE@
+RuntimeDirectory=@UNIT@-worker-broker
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=@PREFIX@/bin/ahvm-worker-broker @CONFIG@/worker-broker.json
+Restart=on-failure
+RestartSec=2
+# VM role processes have their own cgroups and survive broker restarts.
+KillMode=process
+TimeoutStopSec=15
+LimitNOFILE=65536
+LimitCORE=0
+TasksMax=4096
+UMask=0077
+NoNewPrivileges=yes
+# Retain identity-changing privileges across trusted launcher execs under NNP;
+# the launcher clears ambient/bounding/permitted capabilities before worker exec.
+AmbientCapabilities=CAP_SETUID CAP_SETGID
+PrivateMounts=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictNamespaces=user mnt
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_CHROOT CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_MKNOD CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_KILL
+ReadWritePaths=@DATA@ @BROKER_STATE@ /run/@UNIT@-worker-broker /sys/fs/cgroup/@SLICE@/@UNIT@-workers.service
+
+[Install]
+WantedBy=multi-user.target

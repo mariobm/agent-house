@@ -2,7 +2,7 @@
 
 # Portable tools and unit tests do not need the native VMM or a hypervisor.
 build:
-	cargo build --manifest-path rust/Cargo.toml --locked -p ahvm-cli -p ahvm-daemon -p ahvm-netd
+	cargo build --manifest-path rust/Cargo.toml --locked -p ahvm-cli -p ahvm-daemon -p ahvm-netd -p ahvm-worker-broker
 
 test:
 	cargo test --manifest-path rust/Cargo.toml --locked --workspace --exclude ahvm-vmm

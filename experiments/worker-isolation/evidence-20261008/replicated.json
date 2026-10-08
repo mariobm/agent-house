@@ -1,0 +1,81 @@
+{
+  "source_head": "6e06cebcd437e6476301d5bf402d7967a358c047",
+  "prefix": "worker-isolation-4fb898589ed349153cac67db",
+  "client_uid": 994,
+  "device": "/dev/nbd3",
+  "checks": {
+    "actual_nbd_jail_private_inode_and_root_ledger_initial": true,
+    "exact_nbd_policy_nonroot_and_tcp_initial": true,
+    "actual_nbd_jail_private_inode_and_root_ledger_recovery": true,
+    "exact_nbd_policy_nonroot_and_tcp_recovery": true,
+    "evicted_journal_fresh_storage_absent_base_daemon_restart": true,
+    "default_is_unrelated_nonbootable_placeholder": true,
+    "missing_private_object": "start failed closed before readiness",
+    "known_marker_nbd_read_baseline": true,
+    "known_marker_nbd_read_eio": true,
+    "negative_object_restored_and_verified": true,
+    "actual_nbd_jail_private_inode_and_root_ledger_restored": true,
+    "exact_nbd_policy_nonroot_and_tcp_restored": true,
+    "post_negative_remote_recovery_sha256": true,
+    "native_delete_reclamation": true,
+    "owned_nbd_detached": true,
+    "owned_units_and_cgroups_removed": true,
+    "exact_fresh_prefix_removed": true
+  },
+  "timings_seconds": {
+    "initial_create": 6.075,
+    "initial_stop": 0.883,
+    "initial-cold_eviction": 5.353,
+    "recovery_start": 5.136,
+    "recovery_stop": 0.8,
+    "recovery-cold_eviction": 6.259,
+    "negative-before-delete_eviction": 5.453,
+    "negative_start": 60.871,
+    "negative_stop": 0.153,
+    "negative-cold_eviction": 7.367,
+    "restored_start": 3.803,
+    "restored_delete": 0.242
+  },
+  "binaries": {
+    "vmm": "9e95875c676e1c558b9f02a7cd64c0a7025313b7efa863884a6664818079fb84",
+    "daemon": "136a87ef6ee292dd4373a018e11ee2ef9e82cfb08b85f06fc5b45bb27e6f312a",
+    "volumed": "fc843808caa309afa642ab13c8d68e72fca77bd4dc6f416f969dddeeff5a74e0",
+    "forge": "363088fa18354db8b5ee512dbccec8c2353a067259c61e59538e6f26e30ac0aa",
+    "policy_probe": "b55a2996ff2b29c0bc541f83ec90700476f5c326e6cc2028068a224645fd6b5e",
+    "worker_broker": "33ec7a40bdaec74c29f246fe9330f5aaac2e1f64bb01a1e1c4c5effbe09c111d"
+  },
+  "resource_limits": {
+    "vmm": {
+      "cpu.max": "100000 100000",
+      "memory.max": "805306368",
+      "memory.swap.max": "0",
+      "pids.max": "256"
+    },
+    "storage": {
+      "cpu.max": "100000 100000",
+      "memory.max": "536870912",
+      "memory.swap.max": "0",
+      "pids.max": "128"
+    }
+  },
+  "guest_sha256": "bf63d8a95fcc2e64619813aae35fdcbe871fdd9264caa3f365eb3aed0f679129",
+  "observed_guest_sha256": {
+    "initial": "bf63d8a95fcc2e64619813aae35fdcbe871fdd9264caa3f365eb3aed0f679129",
+    "recovery": "bf63d8a95fcc2e64619813aae35fdcbe871fdd9264caa3f365eb3aed0f679129",
+    "restored": "bf63d8a95fcc2e64619813aae35fdcbe871fdd9264caa3f365eb3aed0f679129"
+  },
+  "storage_pids": [
+    1491241,
+    1491370
+  ],
+  "shared_base_sha256": "32ba6ce66bb63d7213a06e90ffea5a503c3759eccad8adc8e221c8ea2651ab77",
+  "negative_object": {
+    "key": "worker-isolation-4fb898589ed349153cac67db/b7f6635d17c9b9eaa46025e4c543c529480454d737df8f2480c42573e3633f15/chunks/445b20a5fccaf15304611e580edf2da8122b1d9c9ee17d4e861eecae37e33c59",
+    "sha256": "445b20a5fccaf15304611e580edf2da8122b1d9c9ee17d4e861eecae37e33c59",
+    "marker_offset": 196608,
+    "disk_offset": 42074112
+  },
+  "passed": true,
+  "remote_cleanup_objects": 268,
+  "cleanup_errors": []
+}

@@ -168,7 +168,12 @@ impl KrucibleBackend {
         let alive = {
             let mut inner = self.lock();
             let rec = inner.sandboxes.get_mut(id).unwrap();
-            let alive = rec.worker.as_mut().is_some_and(|w| w.alive());
+            let alive = rec
+                .worker
+                .as_mut()
+                .map(|w| w.alive())
+                .transpose()?
+                .unwrap_or(false);
             if !alive {
                 rec.worker = None;
             }
@@ -247,7 +252,9 @@ impl KrucibleBackend {
             .unwrap()
             .worker
             .as_mut()
-            .is_some_and(|w| w.alive());
+            .map(|w| w.alive())
+            .transpose()?
+            .unwrap_or(false);
         if alive {
             let result = rpc_exec(
                 &forge_sock(&dir),
@@ -309,7 +316,9 @@ impl KrucibleBackend {
             .ok_or_else(|| Error::NotFound(id.into()))?
             .worker
             .as_mut()
-            .is_some_and(|w| w.alive());
+            .map(|w| w.alive())
+            .transpose()?
+            .unwrap_or(false);
         if record.deleting
             || (matches!(info.state, State::Running | State::Paused)
                 && (!alive
