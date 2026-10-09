@@ -27,28 +27,34 @@ requires the existing recovery/start path, not resident resume.
   otherwise **5–86400** seconds.
 - `AHVM_AGENT_IDLE_STOP_SECS`: initial managed-agent stop default **300**;
   **60–86400** seconds. Applies only to VMs used by managed runs, after work ends.
+- `AHVM_IDLE_SECS`: initial ordinary VM stop default **3600** (one hour).
+  Administrators can change it with `idle_stop_secs`, **60–86400** seconds.
+  Existing environment overrides, including shorter qualification values, remain supported.
 - Authenticated host administrator: `GET`/`PUT /v1/admin/idle-policy` with
-  `{"pause_after_secs":30,"agent_idle_stop_secs":300}`. PUT accepts either field
+  `{"pause_after_secs":30,"agent_idle_stop_secs":300,"idle_stop_secs":3600}`. PUT accepts any field
   independently; omitted fields are preserved. Changes persist in the daemon database, override the
-  environment default after restart, and affect subsequent pause decisions.
-- AHVM Cloud: the admin dashboard's separate **Idle pause** and **Agent idle stop** forms update this same host
+  environment default after restart, and affect subsequent pause/stop decisions.
+- AHVM Cloud: the admin dashboard's separate **Idle pause**, **Agent idle stop** and **VM idle stop** forms update this same host
   policy. Ordinary users cannot change it. An older/unreachable host disables
   the form rather than claiming a setting was saved.
 - Sweep interval is `AHVM_SWEEP_SECS`, capped at five seconds (minimum one).
   An idle VM pauses on the next available sweep after crossing the threshold.
-- `AHVM_IDLE_SECS` remains **3600** by default. This later stop terminates the
+- Ordinary idle stop terminates the
   worker and releases RAM. Replicated storage can then evict synced local data
   according to its separate eviction policy. Local stop retains its checkpoint
   behavior for non-desktop VMs. Desktop stop discards RAM and applications;
-  subsequent start boots the retained disk. Changing the pause timeout does
-  not change either policy.
+  subsequent start boots the retained disk. Pause, ordinary stop and managed-agent
+  stop are independent timers measured from the latest guest activity.
 
 Setting pause to zero prevents future pauses; already-paused VMs resume on guest
 work or explicit start. An already-committed transition finishes before new work
 is admitted. Admin settings are not read from a remote database on guest calls.
+Shortening a stop timeout can stop a VM that is already idle long enough. The
+runtime rechecks the current policy and active holds when committing a stop;
+completed managed VMs retain the agent timeout even if the ordinary timeout is shorter.
 
 Omarchy resident pause preserves the worker, graphical applications and unsaved
-RAM state during short idle periods. The later **one-hour cold stop** still loses
+RAM state during short idle periods. The later **cold stop (one hour by default)** still loses
 that RAM state. A desktop VM used by a managed run receives the managed stop
 policy after completion. Qualification covers local and replicated disks on the
 Intel UHD 770 host; see [measurements and limits](OMARCHY-PAUSE-QUALIFICATION.md).

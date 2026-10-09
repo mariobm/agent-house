@@ -18,6 +18,7 @@
 //! AHVM_PRIVATE_ACCESS_FILE optional owner-bound exact TCP grant JSON
 //! AHVM_ADMIN_TOKEN  bootstrap admin token (created once when missing)
 //! AHVM_AGENT_IDLE_STOP_SECS initial managed-agent idle stop (default 300; 60..86400)
+//! AHVM_IDLE_SECS    initial ordinary VM idle stop (default 3600)
 //! ```
 
 use std::net::SocketAddr;
@@ -35,6 +36,13 @@ fn required(key: &str) -> String {
         eprintln!("ahvm-daemon: {key} is required");
         std::process::exit(1);
     })
+}
+
+fn load_idle_stop_secs(store: &ahvm_store::Store, initial: impl FnOnce() -> u64) -> u64 {
+    store
+        .idle_stop_secs()
+        .expect("load ordinary idle policy")
+        .unwrap_or_else(initial)
 }
 
 #[tokio::main]
@@ -241,11 +249,18 @@ async fn main() {
         (60..=86400).contains(&agent_idle_stop_secs),
         "agent idle stop timeout must be 60..86400"
     );
+    let idle_stop_secs = load_idle_stop_secs(&state.store, || {
+        std::env::var("AHVM_IDLE_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(ahvm_daemon::thermal::DEFAULT_IDLE_STOP_SECS)
+    });
     state
         .activity
         .set_idle_policy(ahvm_daemon::thermal::IdlePolicy {
             pause_after_secs: pause,
             agent_idle_stop_secs,
+            idle_stop_secs,
         });
     // Restore durable detached-job holds before any automatic idle action.
     ahvm_daemon::snapshots::recover(&state).expect("recover snapshot accounting and cleanup");
@@ -254,10 +269,7 @@ async fn main() {
     // Shutdown is process exit: activity rebuilds, records persist per-op.
     let thermal_state = state.clone();
     let thermal_cfg = ahvm_daemon::thermal::ThermalConfig {
-        idle_secs: std::env::var("AHVM_IDLE_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3600),
+        idle_secs: idle_stop_secs,
         sweep_secs: std::env::var("AHVM_SWEEP_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -308,4 +320,37 @@ async fn main() {
         eprintln!("ahvm-daemon: serve: {e}");
         std::process::exit(1);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_idle_stop_wins_over_initial_default_after_restart() {
+        let path = std::env::temp_dir().join(format!(
+            "ahvm-daemon-idle-policy-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = ahvm_store::Store::open(&path).unwrap();
+        store.set_idle_policy(45, 600, 7200).unwrap();
+        drop(store);
+        let reopened = ahvm_store::Store::open(&path).unwrap();
+        assert_eq!(
+            load_idle_stop_secs(&reopened, || panic!("saved policy consulted environment")),
+            7200
+        );
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+        let fresh = ahvm_store::Store::open_in_memory().unwrap();
+        assert_eq!(load_idle_stop_secs(&fresh, || 2), 2);
+        assert_eq!(
+            load_idle_stop_secs(&fresh, || ahvm_daemon::thermal::DEFAULT_IDLE_STOP_SECS),
+            3600
+        );
+    }
 }

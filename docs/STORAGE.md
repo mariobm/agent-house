@@ -23,8 +23,10 @@ The interactive shell defaults to /bin/bash. Typing "exit" ends that shell sessi
 and returns to your terminal; it does not delete or stop the VM. Ctrl-] detaches
 while leaving the session running.
 
-The standard daemon stops idle VMs after 3600 seconds, checked every 60 seconds
-(AHVM_IDLE_SECS and AHVM_SWEEP_SECS). Active operations and connected shells defer idle stop, including a quiet
+The standard daemon stops ordinary idle VMs after 3600 seconds by default.
+Administrators can change `idle_stop_secs` through the [host idle policy](IDLE-PAUSE.md);
+`AHVM_IDLE_SECS` supplies the initial value. Sweeps use a 1–5 second cadence
+(`AHVM_SWEEP_SECS`). Active operations and connected shells defer idle stop, including a quiet
 shell waiting for an agent. After the last shell disconnects, the idle timer
 starts again. Wake currently requires
 "ahvm start dev".
