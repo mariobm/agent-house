@@ -88,6 +88,16 @@ installed. No image selection is required. See [development image usage and
 qualification](DEVELOPMENT-IMAGE.md). The explicit minimal profile is intended
 for lightweight tests.
 
+For Cloud-managed agent streaming, explicitly add
+`AHVM_AGENT_EVENT_ORIGIN=https://YOUR_CLOUD_ORIGIN` to the host's
+`/etc/ahvm-rust/daemon.env` (or the configured installation's environment file)
+before starting the upgraded daemon. The destination must be an HTTPS origin.
+`ahvm health` advertises `managed-agent-events-v1` only with a valid configured
+origin; installations without it retain the existing managed-run protocol.
+See [event delivery and rollout](MANAGED-AGENT-EVENTS.md) for the private grant,
+replay, pressure and retention contract. The installer does not choose a Cloud
+destination automatically.
+
 ## Connection and commands
 
 Build a standalone client with:

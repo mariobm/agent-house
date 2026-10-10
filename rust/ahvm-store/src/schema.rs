@@ -85,6 +85,29 @@ CREATE INDEX IF NOT EXISTS managed_run_active_sandbox
     ON managed_runs(sandbox_id) WHERE finished_at IS NULL;
 CREATE INDEX IF NOT EXISTS managed_run_finished
     ON managed_runs(sandbox_id, finished_at) WHERE finished_at IS NOT NULL;
+-- Guest byte/sequence cursors advance atomically with durable host events.
+-- A final event is committed in the same transaction as its terminal receipt.
+CREATE TABLE IF NOT EXISTS managed_run_event_streams (
+    -- Terminal delivery survives VM/run deletion and therefore has no VM FK.
+    run_id TEXT PRIMARY KEY,
+    delivery_json TEXT NOT NULL,
+    retry_until INTEGER NOT NULL,
+    source_offset INTEGER NOT NULL DEFAULT 0 CHECK(source_offset >= 0),
+    guest_seq INTEGER NOT NULL DEFAULT 0 CHECK(guest_seq >= 0),
+    next_event_seq INTEGER NOT NULL DEFAULT 1 CHECK(next_event_seq > 0),
+    acked_seq INTEGER NOT NULL DEFAULT 0 CHECK(acked_seq >= 0),
+    checkpoint_json TEXT,
+    pending_bytes INTEGER NOT NULL DEFAULT 0 CHECK(pending_bytes >= 0),
+    source_failed INTEGER NOT NULL DEFAULT 0 CHECK(source_failed IN (0,1)),
+    sealed INTEGER NOT NULL DEFAULT 0 CHECK(sealed IN (0,1))
+);
+CREATE TABLE IF NOT EXISTS managed_run_events (
+    run_id TEXT NOT NULL REFERENCES managed_run_event_streams(run_id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL CHECK(seq > 0),
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(run_id,seq)
+);
 CREATE TABLE IF NOT EXISTS preview_ports (
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     port INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),

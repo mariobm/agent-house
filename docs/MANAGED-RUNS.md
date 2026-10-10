@@ -138,6 +138,10 @@ active. Response fields include `phase`, `epoch`, `session_id`, `boot_id`,
 phase is `succeeded`, `failed` or `interrupted`. Cancellation acceptance is not
 itself a terminal result. Native stdout remains in Forge's bounded scrollback;
 these receipts are **not** a durable transcript or chat-event journal.
+Agent controllers can opt into the separate host-owned
+[managed agent event delivery](MANAGED-AGENT-EVENTS.md) protocol for durable
+ordered projections and terminal receipt push without exposing Cloud credentials
+to the guest.
 
 A run ID binds the VM, owner and canonical command/budget. Identical retries
 return the same receipt; changed payloads conflict. Legacy runs remain exclusive
