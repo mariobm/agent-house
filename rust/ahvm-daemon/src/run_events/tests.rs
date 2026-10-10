@@ -661,3 +661,189 @@ async fn transport_retries_exact_bytes_and_only_accepts_matching_bounded_ack() {
     ));
     server.abort();
 }
+
+#[tokio::test]
+async fn sender_permit_precedes_payload_loading_and_error_releases_capacity() {
+    let (state, run, _) = fixture();
+    state
+        .store
+        .append_managed_run_checkpoint("job", run.epoch, 100, 1, &checkpoint().to_string(), 3)
+        .unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let pool = DeliveryPool::new(client);
+    let held = (0..MAX_CONCURRENT_DELIVERIES)
+        .map(|_| pool.slots.clone().try_acquire_owned().unwrap())
+        .collect::<Vec<_>>();
+    let mut pending = Box::pin(pool.prepare(&state.store, "job"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut pending)
+            .await
+            .is_err()
+    );
+    // If the waiter had loaded payload bytes before its permit, this ACK would
+    // leave a stale event copy in the eventual PreparedDelivery.
+    state.store.acknowledge_managed_run_event("job", 1).unwrap();
+    drop(held);
+    let prepared = pending.await.unwrap();
+    assert!(prepared.event.is_none());
+    drop(prepared);
+    assert_eq!(pool.slots.available_permits(), MAX_CONCURRENT_DELIVERIES);
+    assert!(pool
+        .prepare_with(|| Err(ahvm_store::Error::Conflict("test load failure".into())))
+        .await
+        .is_err());
+    assert_eq!(pool.slots.available_permits(), MAX_CONCURRENT_DELIVERIES);
+}
+
+#[tokio::test]
+async fn queued_sender_rechecks_expiry_before_http_and_keeps_event() {
+    use axum::{routing::post, Json, Router};
+    let (state, run, mut grant) = fixture();
+    state
+        .store
+        .append_managed_run_checkpoint("job", run.epoch, 100, 1, &checkpoint().to_string(), 3)
+        .unwrap();
+    let frozen = state.store.first_managed_run_event("job").unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let router = Router::new().route(
+        "/events",
+        post(move || {
+            let calls = observed.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Json(json!({"schema":1,"run_id":"job","event_seq":1}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    grant.url = format!("http://{}/events", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let pool = DeliveryPool::new(
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap(),
+    );
+    let held = (0..MAX_CONCURRENT_DELIVERIES)
+        .map(|_| pool.slots.clone().try_acquire_owned().unwrap())
+        .collect::<Vec<_>>();
+    let retry_until = unix_now();
+    let mut pending = Box::pin(delivery_attempt(
+        &pool,
+        &state.store,
+        "job",
+        &grant,
+        retry_until,
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut pending)
+            .await
+            .is_err()
+    );
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    drop(held);
+    assert!(!pending.await);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.store.first_managed_run_event("job").unwrap(), frozen);
+    assert_eq!(pool.slots.available_permits(), MAX_CONCURRENT_DELIVERIES);
+    server.abort();
+}
+
+#[tokio::test]
+async fn shared_client_delivers_64_streams_with_at_most_16_in_flight_and_no_drops() {
+    use axum::{routing::post, Json, Router};
+    let (state, run, grant) = fixture();
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (release, ready) = tokio::sync::watch::channel(false);
+    let server_active = active.clone();
+    let server_peak = peak.clone();
+    let router = Router::new().route(
+        "/events",
+        post(move |Json(body): Json<Value>| {
+            let active = server_active.clone();
+            let peak = server_peak.clone();
+            let mut ready = ready.clone();
+            async move {
+                let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(count, Ordering::SeqCst);
+                ready.wait_for(|released| *released).await.unwrap();
+                active.fetch_sub(1, Ordering::SeqCst);
+                Json(json!({"schema":1,"run_id":body["run_id"],"event_seq":body["event_seq"]}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/events", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let pool = Arc::new(DeliveryPool::new(
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap(),
+    ));
+    let mut workers = Vec::new();
+    for index in 0..64 {
+        let id = format!("send{index}");
+        let mut request: RunRequest = serde_json::from_str(&run.request_json).unwrap();
+        let mut delivery = grant.clone();
+        delivery.url = url.clone();
+        request.event_delivery = Some(delivery.clone());
+        state
+            .store
+            .admit_managed_run(
+                &id,
+                "vm",
+                "admin",
+                &serde_json::to_string(&request).unwrap(),
+                1,
+                121,
+            )
+            .unwrap();
+        state
+            .store
+            .update_managed_run(&id, 1, "interrupted", None, None, None, None, 2, true)
+            .unwrap();
+        let store = state.store.clone();
+        let pool = pool.clone();
+        workers.push(tokio::spawn(async move {
+            delivery_attempt(&pool, &store, &id, &delivery, unix_now() + 60).await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while peak.load(Ordering::SeqCst) < MAX_CONCURRENT_DELIVERIES {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(peak.load(Ordering::SeqCst), MAX_CONCURRENT_DELIVERIES);
+    assert_eq!(pool.slots.available_permits(), 0);
+    release.send(true).unwrap();
+    for worker in workers {
+        assert!(worker.await.unwrap());
+    }
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    assert_eq!(pool.slots.available_permits(), MAX_CONCURRENT_DELIVERIES);
+    for index in 0..64 {
+        let id = format!("send{index}");
+        assert_eq!(
+            state.store.managed_run_event_delivery_state(&id).unwrap(),
+            (false, false)
+        );
+        assert!(state.store.first_managed_run_event(&id).unwrap().is_none());
+    }
+    assert!(std::ptr::eq(
+        shared_delivery_pool().unwrap(),
+        shared_delivery_pool().unwrap()
+    ));
+    server.abort();
+}

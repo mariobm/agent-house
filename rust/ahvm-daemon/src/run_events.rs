@@ -5,11 +5,17 @@ use ahvm_engine::{Error as EngineError, State as VmState};
 use ahvm_store::{ManagedRun, ManagedRunEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fmt, time::Duration};
+use std::{
+    fmt,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const MAX_GUEST_LINE: usize = 262144;
 const MAX_GUEST_JOURNAL: u64 = 16 * 1024 * 1024;
 const CAPTURE_INTERVAL: Duration = Duration::from_millis(250);
+const MAX_CONCURRENT_DELIVERIES: usize = 16;
 const PATCH_ROOTS: &[&str] = &[
     "text",
     "tools",
@@ -474,20 +480,33 @@ pub(crate) fn prepare_terminal(state: &AppState, run: &ManagedRun) -> ApiResult<
 }
 
 pub(crate) fn recover(state: &AppState) -> ApiResult<()> {
+    state.store.cleanup_managed_run_event_streams()?;
     for id in state.store.list_managed_run_event_streams()? {
-        start_relay(state.clone(), id);
+        let active = match state.store.get_managed_run(&id) {
+            Ok(run) => run.finished_at.is_none(),
+            Err(ahvm_store::Error::NotFound(_)) => false,
+            Err(error) => return Err(error.into()),
+        };
+        start_relay(state.clone(), id, active);
     }
     Ok(())
 }
 pub(crate) fn spawn(state: AppState, run: &ManagedRun) {
     if delivery(run).ok().flatten().is_some() {
-        start_relay(state, run.id.clone());
+        start_relay(state, run.id.clone(), true);
     }
 }
 
-fn start_relay(state: AppState, id: String) {
-    let capture_state = state.clone();
-    let capture_id = id.clone();
+fn start_relay(state: AppState, id: String, capture_active: bool) {
+    if capture_active {
+        start_capture(state.clone(), id.clone());
+    }
+    tokio::spawn(async move {
+        send_events(state, id).await;
+    });
+}
+
+fn start_capture(capture_state: AppState, capture_id: String) {
     tokio::spawn(async move {
         let mut capture_pending = false;
         loop {
@@ -532,9 +551,6 @@ fn start_relay(state: AppState, id: String) {
             }
             tokio::time::sleep(CAPTURE_INTERVAL).await;
         }
-    });
-    tokio::spawn(async move {
-        send_events(state, id).await;
     });
 }
 
@@ -598,21 +614,98 @@ async fn deliver(
     accepted_ack(&body, event, response.status() == reqwest::StatusCode::GONE)
 }
 
+#[derive(Debug)]
+struct DeliveryPool {
+    client: reqwest::Client,
+    slots: Arc<Semaphore>,
+}
+
+#[derive(Debug)]
+struct PreparedDelivery {
+    event: Option<ManagedRunEvent>,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl DeliveryPool {
+    fn new(client: reqwest::Client) -> Self {
+        Self {
+            client,
+            slots: Arc::new(Semaphore::new(MAX_CONCURRENT_DELIVERIES)),
+        }
+    }
+
+    async fn prepare(&self, store: &ahvm_store::Store, id: &str) -> ApiResult<PreparedDelivery> {
+        self.prepare_with(|| store.first_managed_run_event(id))
+            .await
+    }
+
+    async fn prepare_with(
+        &self,
+        load: impl FnOnce() -> ahvm_store::Result<Option<ManagedRunEvent>>,
+    ) -> ApiResult<PreparedDelivery> {
+        let permit = self
+            .slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| ApiError::Unavailable("managed event sender unavailable".into()))?;
+        // Acquire before SQLite loads/clones up to 300 KiB of frozen bytes.
+        let event = load()?;
+        Ok(PreparedDelivery {
+            event,
+            _permit: permit,
+        })
+    }
+}
+
+fn shared_delivery_pool() -> Option<&'static DeliveryPool> {
+    static SHARED: OnceLock<DeliveryPool> = OnceLock::new();
+    if SHARED.get().is_none() {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .https_only(true)
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(MAX_CONCURRENT_DELIVERIES)
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build()
+            .ok()?;
+        // Concurrent initial callers may build temporary clients; only one is
+        // retained and used. Failed construction remains retryable.
+        let _ = SHARED.set(DeliveryPool::new(client));
+    }
+    SHARED.get()
+}
+
+async fn delivery_attempt(
+    pool: &DeliveryPool,
+    store: &ahvm_store::Store,
+    id: &str,
+    grant: &RunEventDelivery,
+    retry_until: i64,
+) -> bool {
+    let Ok(prepared) = pool.prepare(store, id).await else {
+        return false;
+    };
+    // A fair queue can wait past expiry while other bounded requests run.
+    if unix_now() > retry_until {
+        return false;
+    }
+    let Some(event) = prepared.event.as_ref() else {
+        return false;
+    };
+    // The permit spans HTTP and durable ACK. Returning drops both the event
+    // copy and permit before the caller idles, backs off or joins the fair queue.
+    deliver(&pool.client, grant, event).await
+        && store.acknowledge_managed_run_event(id, event.seq).is_ok()
+}
+
 async fn send_events(state: AppState, id: String) {
     let Ok((raw, retry_until)) = state.store.managed_run_event_delivery(&id) else {
         return;
     };
     let Ok(grant) = serde_json::from_str::<RunEventDelivery>(&raw) else {
-        return;
-    };
-    let Ok(client) = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .https_only(true)
-        .no_proxy()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(10))
-        .build()
-    else {
         return;
     };
     let mut failures = 0;
@@ -621,31 +714,31 @@ async fn send_events(state: AppState, id: String) {
             eprintln!("managed run {id} event delivery expired; payload retained");
             return;
         }
-        let event = match state.store.first_managed_run_event(&id) {
-            Ok(Some(event)) => event,
-            Ok(None) => {
-                match state.store.managed_run_event_stream(&id) {
-                    Ok(source) if !source.sealed => {}
-                    _ => return,
-                }
+        match state.store.managed_run_event_delivery_state(&id) {
+            Ok((false, _)) => return,
+            Ok((true, false)) => {
                 tokio::time::sleep(CAPTURE_INTERVAL).await;
                 continue;
             }
+            Ok((true, true)) => {}
             Err(_) => {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
-        };
+        }
         let allowed = std::env::var("AHVM_AGENT_EVENT_ORIGIN")
             .ok()
             .is_some_and(|origin| validate_origin(&id, &grant, &origin).is_ok());
-        if allowed
-            && deliver(&client, &grant, &event).await
-            && state
-                .store
-                .acknowledge_managed_run_event(&id, event.seq)
-                .is_ok()
-        {
+        let delivered = if allowed {
+            if let Some(pool) = shared_delivery_pool() {
+                delivery_attempt(pool, &state.store, &id, &grant, retry_until).await
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if delivered {
             failures = 0;
             continue;
         }

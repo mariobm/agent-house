@@ -232,3 +232,127 @@ fn admission_reserves_every_final_event_or_refuses_without_a_receipt() {
         admitted as usize
     );
 }
+
+#[test]
+fn deleted_vm_churn_is_bounded_by_pending_stream_count_and_ack_restores_admission() {
+    let store = Store::open_in_memory().unwrap();
+    setup(&store);
+    for index in 0..MAX_PENDING_STREAMS {
+        let id = format!("churn{index}");
+        admit(&store, &id);
+        if index == 0 {
+            store
+                .append_managed_run_checkpoint(&id, 1, 100, 1, "{}", 2)
+                .unwrap();
+        }
+        store
+            .update_managed_run(&id, 1, "interrupted", None, None, None, None, 2, true)
+            .unwrap();
+        store.delete_sandbox("vm").unwrap();
+        setup(&store);
+    }
+    assert!(store.list_active_managed_runs().unwrap().is_empty());
+    assert_eq!(
+        store.list_managed_run_event_streams().unwrap().len(),
+        MAX_PENDING_STREAMS as usize
+    );
+    let payloads = store.with_conn(|conn| Ok(totals(conn)?.0)).unwrap();
+    assert!(payloads < MAX_TOTAL_PENDING / 8); // Byte capacity alone permits much more churn.
+    let retained = store.first_managed_run_event("churn0").unwrap().unwrap();
+    assert!(matches!(
+        store.admit_managed_run("blocked", "vm", "u", &request(), 3, 100),
+        Err(Error::Conflict(_))
+    ));
+    assert!(store.get_managed_run("blocked").is_err());
+    assert_eq!(
+        store.first_managed_run_event("churn0").unwrap(),
+        Some(retained)
+    );
+    store.acknowledge_managed_run_event("churn0", 1).unwrap();
+    assert!(matches!(
+        store.admit_managed_run("still-blocked", "vm", "u", &request(), 3, 100),
+        Err(Error::Conflict(_))
+    ));
+    assert!(store.managed_run_event_stream("churn0").is_ok());
+    store.acknowledge_managed_run_event("churn0", 2).unwrap();
+    assert!(store.managed_run_event_stream("churn0").is_err());
+    assert!(store
+        .admit_managed_run("after-ack", "vm", "u", &request(), 3, 100)
+        .is_ok());
+    assert_eq!(
+        store.list_managed_run_event_streams().unwrap().len(),
+        MAX_PENDING_STREAMS as usize
+    );
+}
+
+#[test]
+fn final_ack_and_vm_delete_or_crash_cleanup_remove_only_retired_complete_streams() {
+    let store = Store::open_in_memory().unwrap();
+    setup(&store);
+    admit(&store, "acked-before-delete");
+    store
+        .update_managed_run(
+            "acked-before-delete",
+            1,
+            "interrupted",
+            None,
+            None,
+            None,
+            None,
+            2,
+            true,
+        )
+        .unwrap();
+    store
+        .acknowledge_managed_run_event("acked-before-delete", 1)
+        .unwrap();
+    assert!(store
+        .managed_run_event_stream("acked-before-delete")
+        .is_ok());
+    assert_eq!(
+        store
+            .managed_run_event_delivery_state("acked-before-delete")
+            .unwrap(),
+        (false, false)
+    );
+    store.delete_sandbox("vm").unwrap();
+    assert!(store
+        .managed_run_event_stream("acked-before-delete")
+        .is_err());
+    setup(&store);
+    admit(&store, "ack-orphan");
+    admit(&store, "pending-orphan");
+    for id in ["ack-orphan", "pending-orphan"] {
+        store
+            .update_managed_run(id, 1, "interrupted", None, None, None, None, 2, true)
+            .unwrap();
+    }
+    store
+        .acknowledge_managed_run_event("ack-orphan", 1)
+        .unwrap();
+    let pending = store.first_managed_run_event("pending-orphan").unwrap();
+    // Simulate a process crash after the VM/receipt delete committed, before
+    // the opportunistic fully-ACKed orphan cleanup statement ran.
+    store
+        .with_conn(|conn| {
+            conn.execute("DELETE FROM sandboxes WHERE id='vm'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    store.cleanup_managed_run_event_streams().unwrap();
+    assert!(store.managed_run_event_stream("ack-orphan").is_err());
+    assert_eq!(
+        store.first_managed_run_event("pending-orphan").unwrap(),
+        pending
+    );
+    assert_eq!(
+        store
+            .managed_run_event_delivery_state("pending-orphan")
+            .unwrap(),
+        (true, true)
+    );
+    setup(&store);
+    assert!(store
+        .admit_managed_run("new", "vm", "u", &request(), 3, 100)
+        .is_ok());
+}

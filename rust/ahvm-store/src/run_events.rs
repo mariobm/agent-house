@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 pub const MAX_MANAGED_EVENT_BYTES: usize = 300 * 1024;
 const MAX_RUN_PENDING: i64 = 8 * 1024 * 1024;
 const MAX_TOTAL_PENDING: i64 = 128 * 1024 * 1024;
+const MAX_PENDING_STREAMS: i64 = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagedRunEventStream {
@@ -41,14 +42,25 @@ fn stream(conn: &Connection, id: &str) -> Result<ManagedRunEventStream> {
     ).optional()?.ok_or_else(|| Error::NotFound(format!("managed run event stream {id}")))
 }
 
-fn totals(conn: &Connection) -> Result<(i64, i64)> {
+fn totals(conn: &Connection) -> Result<(i64, i64, i64)> {
     Ok(conn.query_row(
-        "SELECT coalesce(sum(pending_bytes),0),coalesce(sum(CASE WHEN sealed=0 THEN 1 ELSE 0 END),0)
-         FROM managed_run_event_streams", [], |r| Ok((r.get(0)?,r.get(1)?)),
+        "SELECT coalesce(sum(pending_bytes),0),coalesce(sum(CASE WHEN sealed=0 THEN 1 ELSE 0 END),0),
+         coalesce(sum(CASE WHEN sealed=0 OR acked_seq<next_event_seq-1 THEN 1 ELSE 0 END),0)
+         FROM managed_run_event_streams", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
     )?)
 }
 
+pub(crate) fn cleanup_retired_streams(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "DELETE FROM managed_run_event_streams WHERE sealed=1 AND acked_seq=next_event_seq-1
+        AND NOT EXISTS(SELECT 1 FROM managed_runs WHERE managed_runs.id=run_id)",
+        [],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn admit(conn: &Connection, id: &str, request: &str) -> Result<()> {
+    cleanup_retired_streams(conn)?;
     let retained: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM managed_run_event_streams WHERE run_id=?1)",
         [id],
@@ -72,8 +84,10 @@ pub(crate) fn admit(conn: &Connection, id: &str, request: &str) -> Result<()> {
         "INSERT INTO managed_run_event_streams(run_id,delivery_json,retry_until) VALUES(?1,?2,?3)",
         params![id, value["event_delivery"].to_string(), retry_until],
     )?;
-    let (pending, open) = totals(conn)?;
-    if pending + open * MAX_MANAGED_EVENT_BYTES as i64 > MAX_TOTAL_PENDING {
+    let (pending, open, streams) = totals(conn)?;
+    if pending + open * MAX_MANAGED_EVENT_BYTES as i64 > MAX_TOTAL_PENDING
+        || streams > MAX_PENDING_STREAMS
+    {
         return Err(Error::Conflict(
             "managed event retention capacity exhausted".into(),
         ));
@@ -126,7 +140,7 @@ fn append(
         } else {
             MAX_MANAGED_EVENT_BYTES as i64
         };
-    let (pending, open) = totals(conn)?;
+    let (pending, open, _) = totals(conn)?;
     let remaining_reserve = (open - i64::from(final_event)) * MAX_MANAGED_EVENT_BYTES as i64;
     if source.pending_bytes as i64 + size > per_run
         || pending + size + remaining_reserve > MAX_TOTAL_PENDING
@@ -165,6 +179,26 @@ pub(crate) fn terminal(conn: &Connection, run: &ManagedRun, now: i64) -> Result<
 }
 
 impl Store {
+    pub fn cleanup_managed_run_event_streams(&self) -> Result<()> {
+        self.with_conn(cleanup_retired_streams)
+    }
+
+    /// Lightweight sender state; waiting workers must not load projections or
+    /// payload copies until they own a global delivery permit.
+    pub fn managed_run_event_delivery_state(&self, id: &str) -> Result<(bool, bool)> {
+        self.with_conn(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT sealed=0 OR acked_seq<next_event_seq-1,pending_bytes>0
+            FROM managed_run_event_streams WHERE run_id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .unwrap_or((false, false)))
+        })
+    }
+
     /// Private relay configuration is retained independently of VM deletion.
     /// This method is for the host sender, never an API response or log.
     pub fn managed_run_event_delivery(&self, id: &str) -> Result<(String, i64)> {

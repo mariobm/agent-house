@@ -338,7 +338,7 @@ impl Store {
     pub fn delete_sandbox(&self, id: &str) -> Result<()> {
         self.with_conn(|c| {
             c.execute("DELETE FROM sandboxes WHERE id=?1", params![id])?;
-            c.execute("DELETE FROM managed_run_event_streams WHERE sealed=1 AND acked_seq=next_event_seq-1 AND NOT EXISTS(SELECT 1 FROM managed_runs WHERE managed_runs.id=run_id)", [])?;
+            run_events::cleanup_retired_streams(c)?;
             Ok(())
         })
     }

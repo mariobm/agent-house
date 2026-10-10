@@ -143,8 +143,17 @@ VM stop produces a final host receipt without a checkpoint; Cloud must report an
 interrupted result rather than infer chat success. These checks preserve shared
 VM isolation and never replay a prompt or stop a sibling conversation.
 
-Pending event payloads are bounded to 8 MiB per run and 128 MiB per host. Admission
-reserves a maximum-size final event (300 KiB) for every open stream. Normal
+Pending event payloads are bounded to 8 MiB per run and 128 MiB per host. A host
+retains at most 4096 open or unacknowledged streams, including terminal
+outboxes retained after VM deletion. This is delivery-queue backpressure; it does
+not change agent/runtime concurrency. Fully acknowledged identities do not count,
+and only final acknowledgement releases a pending stream's slot. The sender
+shares one daemon HTTP client and allows at most 16 simultaneous deliveries.
+It acquires capacity before loading payload bytes, releases it before idle/retry
+sleeps, and rechecks grant expiry after waiting. Recovery starts guest capture
+only for unfinished runs and cleans up fully acknowledged orphan stream rows.
+
+Admission reserves a maximum-size final event (300 KiB) for every open stream. Normal
 checkpoints cannot consume that reservation. Exhaustion refuses new admission or
 pauses collection without advancing its cursor; it never evicts an unacknowledged
 event or silently loses a final receipt. The reservation protects final receipt
@@ -177,6 +186,7 @@ runs, callers must never reuse deleted run or VM IDs.
 Run `cargo test -p ahvm-store -p ahvm-daemon --lib` from `rust/`. Tests cover
 database reopen, ownership fencing, frozen-byte retries, wrong/retired ACKs,
 backpressure and final reservation, atomic receipt/outbox failure, VM deletion,
+deleted-VM stream churn, bounded shared HTTP delivery, queued expiry,
 partial/missing/corrupt guest records, boot changes, and callback redaction. The
 shared TypeScript-generated fixture exercises Unicode byte prefixes, tool-array
 changes, null/removal and malicious patches in both runtimes.
