@@ -162,8 +162,13 @@ Delivery failures back off from one to thirty seconds. Network retries end seven
 days after the run deadline, matching Cloud grant retention; remaining payloads
 stay on the host for operator recovery. They are not automatically discarded.
 Terminal outbox delivery survives explicit VM deletion independently of VM/quota
-records. Acknowledging the final event clears its private delivery config and
-checkpoint. Deleted VM streams are removed only after final acknowledgement;
+records. Acknowledging the final event clears the **outbox's copy** of its private
+delivery config and checkpoint. The original immutable `managed_runs.request_json`
+retains delivery configuration while its managed receipt is retained, preserving
+byte-for-byte admission retries; that private record stays redacted on the wire
+and in debug logs. VM deletion removes the managed receipt, while its independent
+pending outbox survives until acknowledgement. Deleted VM streams are removed
+only after final acknowledgement;
 retained live-VM receipt identities preserve ordinary idempotency. As with managed
 runs, callers must never reuse deleted run or VM IDs.
 
