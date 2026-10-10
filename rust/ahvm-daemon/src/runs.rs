@@ -29,6 +29,9 @@ pub struct RunRequest {
     /// Guest aborts its own remote session on a cancellation file, then exits.
     #[serde(default, skip_serializing_if = "is_false")]
     pub session_isolated: bool,
+    /// Host-only callback grant. Never forwarded in argv or guest input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_delivery: Option<crate::run_events::RunEventDelivery>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -119,10 +122,13 @@ pub async fn submit(
                     "run id already has a different request".into(),
                 ));
             }
-            return Ok(Json(existing));
+            return Ok(Json(ahvm_store::public_managed_run(existing)));
         }
         Err(ahvm_store::Error::NotFound(_)) => {}
         Err(e) => return Err(e.into()),
+    }
+    if let Some(delivery) = &body.event_delivery {
+        crate::run_events::validate_delivery(&id, &body, delivery)?;
     }
     if state
         .store
@@ -179,7 +185,7 @@ pub async fn submit(
         spawn(state, run.clone(), true);
     }
     drop(lc);
-    Ok(Json(run))
+    Ok(Json(ahvm_store::public_managed_run(run)))
 }
 
 pub async fn get(
@@ -188,7 +194,9 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> ApiResult<Json<ManagedRun>> {
     admin(&user)?;
-    Ok(Json(state.store.get_managed_run(&id)?))
+    Ok(Json(ahvm_store::public_managed_run(
+        state.store.get_managed_run(&id)?,
+    )))
 }
 
 pub async fn cancel(
@@ -201,9 +209,9 @@ pub async fn cancel(
     let _lc = state.lifecycle.lock(&initial.sandbox_id).await;
     let run = state.store.get_managed_run(&id)?;
     if run.finished_at.is_some() || run.phase == "cancelling" {
-        return Ok(Json(run));
+        return Ok(Json(ahvm_store::public_managed_run(run)));
     }
-    Ok(Json(update(
+    Ok(Json(ahvm_store::public_managed_run(update(
         &state,
         &run,
         "cancelling",
@@ -212,7 +220,7 @@ pub async fn cancel(
         None,
         Some("cancellation requested"),
         false,
-    )?))
+    )?)))
 }
 
 /// Call once at startup, before accepting HTTP or starting the idle sweeper.
@@ -240,6 +248,7 @@ pub fn recover(state: &AppState) -> ApiResult<()> {
     for run in claimed {
         spawn(state.clone(), run, false);
     }
+    crate::run_events::recover(state)?;
     Ok(())
 }
 
@@ -263,6 +272,9 @@ fn update(
     detail: Option<&str>,
     terminal: bool,
 ) -> ApiResult<ManagedRun> {
+    if terminal {
+        crate::run_events::prepare_terminal(state, run)?;
+    }
     let saved = state.store.update_managed_run(
         &run.id,
         run.epoch,
@@ -370,6 +382,9 @@ fn boot_id(state: &AppState, sandbox: &str) -> ApiResult<String> {
 }
 
 fn spawn(state: AppState, run: ManagedRun, launch: bool) {
+    if launch {
+        crate::run_events::spawn(state.clone(), &run);
+    }
     tokio::spawn(async move {
         let mut launch = launch;
         loop {

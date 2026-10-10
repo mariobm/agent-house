@@ -24,6 +24,7 @@ pub mod previews;
 pub mod quotas;
 pub mod replicated;
 pub mod routes;
+pub mod run_events;
 pub mod runs;
 pub mod sandboxes;
 pub mod scheduler;
@@ -329,11 +330,32 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+fn health_features(event_origin: Option<&str>) -> Vec<&'static str> {
+    let mut features = vec![
+        "managed-runs-v1",
+        "managed-runs-session-isolated-v1",
+        "managed-runs-fenced-v1",
+        "lifecycle-omarchy-v1",
+        "idle-pause-v1",
+        "lifecycle-storage-v1",
+        "replicated-storage-v1",
+        "lifecycle-operations-v1",
+        "named-images-v1",
+        "desktop-v1",
+        "omarchy-desktop-v1",
+    ];
+    if event_origin.is_some_and(run_events::configured_origin) {
+        features.push("managed-agent-events-v1");
+    }
+    features
+}
+
 async fn healthz() -> Json<serde_json::Value> {
     let custom = std::env::var_os("AHVM_DESKTOP_IMAGE").is_some();
+    let origin = std::env::var("AHVM_AGENT_EVENT_ORIGIN").ok();
     Json(serde_json::json!({
         "status": "ok", "version": env!("CARGO_PKG_VERSION"),
-        "features": ["managed-runs-v1", "managed-runs-session-isolated-v1", "managed-runs-fenced-v1", "lifecycle-omarchy-v1", "idle-pause-v1", "lifecycle-storage-v1", "replicated-storage-v1", "lifecycle-operations-v1", "named-images-v1", "desktop-v1", "omarchy-desktop-v1"],
+        "features": health_features(origin.as_deref()),
         "desktop_images": {
             "ubuntu-desktop": sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
             "omarchy-desktop": sandboxes::resolve_image(Some("omarchy-desktop")).is_ok(),

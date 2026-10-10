@@ -191,7 +191,95 @@ fn request() -> RunRequest {
         max_runtime_secs: 3600,
         fence_on_failure: false,
         session_isolated: false,
+        event_delivery: None,
     }
+}
+
+#[test]
+fn final_event_backlog_keeps_managed_hold_until_ack_frees_capacity() {
+    let (state, fake) = setup();
+    let now = unix_now();
+    let mut body = request();
+    body.session_isolated = true;
+    body.event_delivery = Some(crate::run_events::RunEventDelivery {
+        url: "https://cloud.example/internal/agent-events/job".into(),
+        token: "A".repeat(43),
+        request_hash: "a".repeat(64),
+    });
+    body.argv = vec![
+        "/usr/local/bin/ahvm-dev".into(),
+        "/usr/bin/env".into(),
+        "node".into(),
+        "/home/ahvm/.local/state/ahvm-agent/runs/job/controller.mjs".into(),
+        "/home/ahvm/.local/state/ahvm-agent/runs/job/input.json".into(),
+    ];
+    let run = state
+        .store
+        .admit_managed_run(
+            "job",
+            "vm",
+            "admin",
+            &serde_json::to_string(&body).unwrap(),
+            now,
+            now + 3600,
+        )
+        .unwrap()
+        .0;
+    assert!(state.activity.set_managed_run("vm", "job", run.epoch));
+    assert!(!step(&state, "job", run.epoch, true).unwrap());
+    let initial = serde_json::json!({"schema":1,"runId":"job","requestHash":"a".repeat(64),"sessionId":"ses_a","messageId":"msg_a","bootId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","phase":"running","text":"x".repeat(32768),"tools":[]});
+    let mut journal =
+        serde_json::json!({"schema":1,"seq":1,"checkpoint":initial}).to_string() + "\n";
+    for seq in 2..=400 {
+        let mut patch = vec![
+            serde_json::json!({"op":"text","path":["text"],"prefix":32767,"append":if seq%2==0{"a"}else{"b"}}),
+        ];
+        if seq == 400 {
+            patch.push(serde_json::json!({"op":"set","path":["phase"],"value":"succeeded"}));
+        }
+        journal.push_str(&serde_json::json!({"schema":1,"seq":seq,"patch":patch}).to_string());
+        journal.push('\n');
+    }
+    state
+        .backend
+        .file_write(
+            "vm",
+            "/home/ahvm/.local/state/ahvm-agent/runs/job/events.ndjson",
+            journal.as_bytes(),
+        )
+        .unwrap();
+    fake.running.store(false, Ordering::SeqCst);
+    assert!(step(&state, "job", run.epoch, false).is_err());
+    let blocked = state.store.managed_run_event_stream("job").unwrap();
+    assert!(blocked.guest_seq > 100 && blocked.guest_seq < 400);
+    assert!(!blocked.sealed);
+    assert_eq!(
+        state.store.get_managed_run("job").unwrap().finished_at,
+        None
+    );
+    assert!(state.activity.has_managed_run("vm"));
+    assert_eq!(fake.stops.load(Ordering::SeqCst), 0);
+    while let Some(event) = state.store.first_managed_run_event("job").unwrap() {
+        state
+            .store
+            .acknowledge_managed_run_event("job", event.seq)
+            .unwrap();
+    }
+    assert!(step(&state, "job", run.epoch, false).unwrap());
+    assert_eq!(
+        state.store.get_managed_run("job").unwrap().phase,
+        "succeeded"
+    );
+    assert_eq!(
+        state
+            .store
+            .managed_run_event_stream("job")
+            .unwrap()
+            .guest_seq,
+        400
+    );
+    assert!(!state.activity.has_managed_run("vm"));
+    assert_eq!(fake.stops.load(Ordering::SeqCst), 0);
 }
 fn admit(state: &AppState) -> ManagedRun {
     let now = unix_now();

@@ -11,6 +11,7 @@ workspace = true
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 ahvm-engine = { path = "../ahvm-engine" }
 ahvm-proto = { path = "../ahvm-proto" }

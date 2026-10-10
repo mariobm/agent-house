@@ -11,7 +11,7 @@ const MAX_RETAINED: i64 = 4096;
 const COLUMNS: &str = "id,sandbox_id,owner_id,request_json,phase,epoch,session_id,boot_id,\
                       created_at,updated_at,deadline_at,finished_at,exit_code,detail";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagedRun {
     pub id: String,
     pub sandbox_id: String,
@@ -27,6 +27,21 @@ pub struct ManagedRun {
     pub finished_at: Option<i64>,
     pub exit_code: Option<i32>,
     pub detail: Option<String>,
+}
+
+impl std::fmt::Debug for ManagedRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let public = crate::run_events::public_managed_run(self.clone());
+        f.debug_struct("ManagedRun")
+            .field("id", &self.id)
+            .field("sandbox_id", &self.sandbox_id)
+            .field("request_json", &public.request_json)
+            .field("phase", &self.phase)
+            .field("epoch", &self.epoch)
+            .field("boot_id", &self.boot_id)
+            .field("finished_at", &self.finished_at)
+            .finish_non_exhaustive()
+    }
 }
 
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ManagedRun> {
@@ -58,7 +73,7 @@ fn find(conn: &Connection, id: &str) -> Result<Option<ManagedRun>> {
         .optional()?)
 }
 
-fn get(conn: &Connection, id: &str) -> Result<ManagedRun> {
+pub(crate) fn get(conn: &Connection, id: &str) -> Result<ManagedRun> {
     find(conn, id)?.ok_or_else(|| Error::NotFound(format!("managed run {id}")))
 }
 
@@ -123,6 +138,7 @@ impl Store {
                  VALUES(?1,?2,?3,?4,'starting',1,?5,?5,?6)",
                 params![id, sandbox_id, owner_id, request_json, now, deadline_at],
             )?;
+            crate::run_events::admit(conn, id, request_json)?;
             Ok((get(conn, id)?, true))
         })
     }
@@ -250,7 +266,11 @@ impl Store {
             if changed != 1 {
                 return Err(Error::Conflict("managed run update lost".into()));
             }
-            get(&tx.tx, id)
+            let saved = get(&tx.tx, id)?;
+            if terminal {
+                crate::run_events::terminal(&tx.tx, &saved, now)?;
+            }
+            Ok(saved)
         })
     }
 }

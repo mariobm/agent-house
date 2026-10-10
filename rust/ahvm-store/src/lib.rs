@@ -9,10 +9,14 @@ mod entities;
 mod events;
 mod operations;
 mod replicated;
+mod run_events;
 mod runs;
 mod schema;
 pub use operations::LifecycleOperation;
 pub use replicated::{ReplicatedReservation, ReplicatedUsage};
+pub use run_events::{
+    public_managed_run, ManagedRunEvent, ManagedRunEventStream, MAX_MANAGED_EVENT_BYTES,
+};
 pub use runs::ManagedRun;
 #[cfg(test)]
 mod tests;
@@ -334,6 +338,7 @@ impl Store {
     pub fn delete_sandbox(&self, id: &str) -> Result<()> {
         self.with_conn(|c| {
             c.execute("DELETE FROM sandboxes WHERE id=?1", params![id])?;
+            run_events::cleanup_retired_streams(c)?;
             Ok(())
         })
     }
