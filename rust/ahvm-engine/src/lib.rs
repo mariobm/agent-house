@@ -32,7 +32,7 @@ mod project_image;
 mod replicated;
 pub use project_image::{
     project_digest, project_uuid, ProjectImageCapacity, ProjectImageInfo, ProjectImageMetadata,
-    ProjectImageRequest, ProjectImageRetirement, ProjectImageSelection,
+    ProjectImageRequest, ProjectImageRetirement, ProjectImageSelection, ProjectImageStatus,
     PROJECT_IMAGE_HEADROOM_BYTES, PROJECT_IMAGE_MAX_BYTES, PROJECT_IMAGE_TRAILER_BYTES,
 };
 pub use replicated::{

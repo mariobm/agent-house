@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "profile": {
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "available": true,
+    "reason": "ready",
+    "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "base_image_logical_bytes": 17179869184,
+    "candidate_logical_bytes": 17179934720,
+    "logical_quota_bytes": 1099511627776,
+    "logical_image_usage_bytes": 0,
+    "logical_disk_usage_bytes": 17179869184,
+    "logical_remaining_bytes": 1082331758592,
+    "max_image_bytes": 68719476736,
+    "scratch_reserve_bytes": 536870912,
+    "physical_available_bytes": 223338299392,
+    "physical_reserved_bytes": 0,
+    "physical_remaining_bytes": 223338299392
+  },
+  "builderRequest": {
+    "metadata": {
+      "schema": 1,
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "build_id": "22222222-2222-4222-8222-222222222222",
+      "source_commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "start_hook_digest": null,
+      "canonical_workdir": "/workspace/project"
+    },
+    "cpus": 1,
+    "memory_mb": 2048
+  },
+  "builder": {
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "builder_id": "22222222-2222-4222-8222-222222222222",
+    "sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
+    "phase": "running",
+    "metadata": {
+      "schema": 1,
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "build_id": "22222222-2222-4222-8222-222222222222",
+      "source_commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "start_hook_digest": null,
+      "canonical_workdir": "/workspace/project"
+    },
+    "lifecycle_operation_id": "project-builder-22222222-2222-4222-8222-222222222222",
+    "lifecycle_operation": {
+      "id": "project-builder-22222222-2222-4222-8222-222222222222",
+      "sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
+      "state": "done",
+      "status": 201,
+      "sandbox_state": "running",
+      "error": null,
+      "retirement_pending": false
+    },
+    "capture_source_logical_bytes": 17179869184,
+    "candidate_logical_bytes": 17179934720
+  },
+  "captureRequest": {
+    "builder_id": "22222222-2222-4222-8222-222222222222",
+    "install_run_id": "44444444-4444-4444-8444-444444444444",
+    "clone_credentials_revoked": true
+  },
+  "readyImage": {
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "image_id": "22222222-2222-4222-8222-222222222222",
+    "builder_id": "22222222-2222-4222-8222-222222222222",
+    "phase": "ready",
+    "metadata": {
+      "schema": 1,
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "build_id": "22222222-2222-4222-8222-222222222222",
+      "source_commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "start_hook_digest": null,
+      "canonical_workdir": "/workspace/project"
+    },
+    "source_sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
+    "source_volume_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "capture_source_logical_bytes": 17179869184,
+    "logical_bytes": 17179934720,
+    "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "error_code": null,
+    "created_at": 1791715200,
+    "updated_at": 1791715201,
+    "logical_released": false,
+    "reclamation_complete": false
+  },
+  "retiredImage": {
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "image_id": "22222222-2222-4222-8222-222222222222",
+    "builder_id": "22222222-2222-4222-8222-222222222222",
+    "phase": "retired",
+    "metadata": {
+      "schema": 1,
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "build_id": "22222222-2222-4222-8222-222222222222",
+      "source_commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "start_hook_digest": null,
+      "canonical_workdir": "/workspace/project"
+    },
+    "source_sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
+    "source_volume_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "capture_source_logical_bytes": 17179869184,
+    "logical_bytes": 17179934720,
+    "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "error_code": null,
+    "created_at": 1791715200,
+    "updated_at": 1791715202,
+    "logical_released": true,
+    "reclamation_complete": true
+  },
+  "createRequest": {
+    "action": "create",
+    "sandbox_id": "new-chat",
+    "cpus": 1,
+    "memory_mb": 2048,
+    "storage_mode": "replicated",
+    "project_image": {
+      "image_id": "22222222-2222-4222-8222-222222222222",
+      "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "project_id": "11111111-1111-4111-8111-111111111111"
+    }
+  },
+  "retentionRequest": {
+    "generation": 1,
+    "current_image_id": "22222222-2222-4222-8222-222222222222",
+    "previous_image_id": null,
+    "active_build_ids": [],
+    "release_build_ids": [
+      "22222222-2222-4222-8222-222222222222"
+    ]
+  },
+  "retentionResponse": {
+    "generation": 1,
+    "current_image_id": "22222222-2222-4222-8222-222222222222",
+    "previous_image_id": null,
+    "active_build_ids": [],
+    "release_build_ids": [
+      "22222222-2222-4222-8222-222222222222"
+    ],
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "tenant_id": "33333333-3333-4333-8333-333333333333",
+    "project_id": "11111111-1111-4111-8111-111111111111"
+  }
+}

@@ -38,6 +38,13 @@ struct Inner {
     files: HashMap<(String, String), Vec<u8>>,
     sessions: HashMap<(String, String), MockSession>,
     session_next: u64,
+    project_capacity: Option<crate::ProjectImageCapacity>,
+    project_images: HashMap<String, crate::ProjectImageInfo>,
+    project_plans: HashMap<String, (crate::ProjectImageInfo, bool)>,
+    project_failures: HashMap<String, String>,
+    project_capture_calls: usize,
+    exec_calls: usize,
+    sync_failures: usize,
 }
 
 /// In-memory backend. Create with [`MockBackend::new`] pointing at a
@@ -57,9 +64,34 @@ impl MockBackend {
                 files: HashMap::new(),
                 sessions: HashMap::new(),
                 session_next: 0,
+                project_capacity: None,
+                project_images: HashMap::new(),
+                project_plans: HashMap::new(),
+                project_failures: HashMap::new(),
+                project_capture_calls: 0,
+                exec_calls: 0,
+                sync_failures: 0,
             }),
             snapshot_dir: snapshot_dir.as_ref().to_path_buf(),
         }
+    }
+    pub fn enable_project_images(&self, capacity: crate::ProjectImageCapacity) {
+        self.lock().project_capacity = Some(capacity);
+    }
+    pub fn plan_project_image_capture(&self, info: crate::ProjectImageInfo, lose_reply: bool) {
+        self.lock()
+            .project_plans
+            .insert(info.image_id.clone(), (info, lose_reply));
+    }
+    pub fn fail_project_image(&self, id: &str, code: &str) {
+        self.lock().project_failures.insert(id.into(), code.into());
+    }
+    pub fn project_test_counts(&self) -> (usize, usize) {
+        let inner = self.lock();
+        (inner.project_capture_calls, inner.exec_calls)
+    }
+    pub fn fail_sync_calls(&self, count: usize) {
+        self.lock().sync_failures = count;
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -113,6 +145,119 @@ impl MockBackend {
 }
 
 impl Backend for MockBackend {
+    fn project_image_capacity(&self) -> Result<Option<crate::ProjectImageCapacity>> {
+        Ok(self.lock().project_capacity)
+    }
+    fn capture_project_image(
+        &self,
+        _sandbox: &str,
+        metadata: &crate::ProjectImageMetadata,
+    ) -> Result<crate::ProjectImageInfo> {
+        let mut inner = self.lock();
+        inner.project_capture_calls += 1;
+        let (info, lost) = inner
+            .project_plans
+            .remove(&metadata.build_id)
+            .ok_or_else(|| Error::NotFound("mock project image plan".into()))?;
+        inner
+            .project_images
+            .insert(info.image_id.clone(), info.clone());
+        if lost {
+            return Err(Error::Control("mock capture reply lost".into()));
+        }
+        Ok(info)
+    }
+    fn project_image(
+        &self,
+        _sandbox: &str,
+        _volume: &str,
+        image: &str,
+    ) -> Result<Option<crate::ProjectImageInfo>> {
+        Ok(self.lock().project_images.get(image).cloned())
+    }
+    fn project_image_status(
+        &self,
+        _sandbox: &str,
+        _volume: &str,
+        image: &str,
+    ) -> Result<crate::ProjectImageStatus> {
+        let inner = self.lock();
+        if let Some(code) = inner.project_failures.get(image) {
+            return Ok(crate::ProjectImageStatus {
+                phase: "failed".into(),
+                quiescent: true,
+                error_code: Some(code.clone()),
+                image: None,
+            });
+        }
+        let info = inner.project_images.get(image).cloned();
+        Ok(crate::ProjectImageStatus {
+            phase: if info.is_some() { "ready" } else { "absent" }.into(),
+            quiescent: info.is_some(),
+            error_code: None,
+            image: info,
+        })
+    }
+    fn retire_project_image(
+        &self,
+        _sandbox: &str,
+        _volume: &str,
+        image: &str,
+        _digest: Option<&str>,
+    ) -> Result<crate::ProjectImageRetirement> {
+        self.lock().project_images.remove(image);
+        Ok(crate::ProjectImageRetirement {
+            logical_released: true,
+            reclamation_complete: true,
+        })
+    }
+    fn sync_remote(&self, _id: &str) -> Result<crate::ReplicationStatus> {
+        let mut inner = self.lock();
+        if inner.project_capacity.is_none() {
+            return Err(Error::InvalidState("remote sync unavailable".into()));
+        }
+        if inner.sync_failures > 0 {
+            inner.sync_failures -= 1;
+            return Err(Error::Control("mock sync unavailable".into()));
+        }
+        Ok(crate::ReplicationStatus {
+            local_sequence: 1,
+            remote_sequence: 1,
+            pending_bytes: 0,
+            local_failed: false,
+            replication_failed: false,
+        })
+    }
+    fn create_with_storage_admission(
+        &self,
+        spec: &SandboxSpec,
+        admit: &mut dyn FnMut(&str, u64) -> Result<()>,
+    ) -> Result<SandboxInfo> {
+        if spec.storage_mode != Some(crate::StorageMode::Replicated) {
+            return self.create(spec);
+        }
+        if self.lock().project_capacity.is_none() {
+            return Err(Error::InvalidState(
+                "replicated storage unavailable in mock".into(),
+            ));
+        }
+        let path = spec
+            .root_image
+            .as_ref()
+            .ok_or_else(|| Error::InvalidState("mock replicated image required".into()))?;
+        let bytes = std::fs::metadata(path)?.len();
+        let volume = crate::replicated::new_volume()?;
+        admit(&volume, bytes)?;
+        let mut local = spec.clone();
+        local.storage_mode = None;
+        self.create(&local)?;
+        let mut inner = self.lock();
+        let (stored, info) = inner.sandboxes.get_mut(&spec.name).unwrap();
+        *stored = spec.clone();
+        info.storage.mode = crate::StorageMode::Replicated;
+        info.storage.volume_id = Some(volume);
+        Ok(info.clone())
+    }
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo> {
         if spec.storage_mode == Some(crate::StorageMode::Replicated) {
             return Err(Error::InvalidState(
@@ -222,7 +367,8 @@ impl Backend for MockBackend {
     }
 
     fn exec(&self, id: &str, argv: &[String]) -> Result<ExecResult> {
-        let inner = self.lock();
+        let mut inner = self.lock();
+        inner.exec_calls += 1;
         let (_, info) = inner
             .sandboxes
             .get(id)

@@ -206,6 +206,18 @@ impl Store {
             Ok(())
         })
     }
+    pub fn set_project_image_detail(
+        &self,
+        id: &str,
+        expected: &str,
+        detail: &str,
+        now: i64,
+    ) -> Result<()> {
+        self.with_conn(|c| {
+            if c.execute("UPDATE project_environment_images SET detail=?3,updated_at=?4 WHERE id=?1 AND phase=?2",params![id,expected,detail,now])?!=1 {return Err(Error::Conflict("image phase already advanced".into()));}
+            Ok(())
+        })
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn pin_project_image_vm(
         &self,
@@ -228,7 +240,7 @@ impl Store {
     /// Caller must prove the original VM/volume has retired or never existed.
     pub fn release_project_image_vm(&self, sandbox: &str) -> Result<()> {
         self.transaction(|tx| {
-            let retained:bool=tx.tx.query_row("SELECT EXISTS(SELECT 1 FROM sandboxes WHERE id=?1) OR EXISTS(SELECT 1 FROM replicated_reservations WHERE sandbox_id=?1 AND logical_released=0)",[sandbox],|r|r.get(0))?;
+            let retained:bool=tx.tx.query_row("SELECT EXISTS(SELECT 1 FROM sandboxes WHERE id=?1) OR EXISTS(SELECT 1 FROM replicated_reservations WHERE sandbox_id=?1 AND logical_released=0) OR EXISTS(SELECT 1 FROM lifecycle_operations WHERE sandbox_id=?1 AND state='pending')",[sandbox],|r|r.get(0))?;
             if retained {return Err(Error::Conflict("VM image pin still owns a retained disk".into()));}
             tx.tx.execute("DELETE FROM project_environment_image_refs WHERE kind='vm' AND reference_id=?1",[sandbox])?;
             Ok(())
@@ -238,6 +250,30 @@ impl Store {
         self.with_conn(|c| {
             let id:Option<String>=c.query_row("SELECT image_id FROM project_environment_image_refs WHERE kind='vm' AND reference_id=?1",[sandbox],|r|r.get(0)).optional()?;
             id.map(|id|image(c,&id)).transpose()
+        })
+    }
+    pub fn project_image_vm_pins(&self) -> Result<Vec<(String, ProjectEnvironmentImage)>> {
+        self.with_conn(|c| {
+            let mut statement=c.prepare("SELECT reference_id,image_id FROM project_environment_image_refs WHERE kind='vm' ORDER BY reference_id LIMIT 4096")?;
+            let refs=statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            refs.into_iter().map(|(sandbox,id)|Ok((sandbox,image(c,&id)?))).collect()
+        })
+    }
+    pub fn terminal_project_image_create(
+        &self,
+        sandbox: &str,
+        image_id: &str,
+    ) -> Result<Option<String>> {
+        self.with_conn(|c| {
+            let mut statement=c.prepare("SELECT id,request,state FROM lifecycle_operations WHERE sandbox_id=?1 ORDER BY created_at DESC,id DESC LIMIT 1024")?;
+            let rows=statement.query_map([sandbox],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id,request,state) in rows {
+                let value:serde_json::Value=serde_json::from_str(&request)?;
+                if value["action"]=="create" && value["project_image"]["image_id"]==image_id {
+                    return Ok((state!="pending").then_some(id));
+                }
+            }
+            Ok(None)
         })
     }
     #[allow(clippy::too_many_arguments)]

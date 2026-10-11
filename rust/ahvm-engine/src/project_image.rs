@@ -132,3 +132,11 @@ pub struct ProjectImageSelection {
     pub tenant_id: String,
     pub project_id: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectImageStatus {
+    pub phase: String,
+    pub quiescent: bool,
+    pub error_code: Option<String>,
+    pub image: Option<ProjectImageInfo>,
+}

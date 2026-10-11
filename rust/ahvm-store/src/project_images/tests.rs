@@ -243,3 +243,36 @@ fn capture_admission_cannot_change_builder_project_under_shared_daemon_owner() {
     assert!(store.admit_project_image(&row).is_err());
     assert_eq!(store.project_image("a").unwrap().project_id, "project");
 }
+
+#[test]
+fn pending_create_pin_survives_absent_vm_rows_and_restart_reconciliation() {
+    let store = fixture();
+    candidate(&store, "a", 'a', true);
+    store
+        .admit_lifecycle_operation(
+            &crate::LifecycleOperation {
+                id: "create-chat".into(),
+                owner_user_id: "admin".into(),
+                sandbox_id: "chat".into(),
+                request: "{\"action\":\"create\"}".into(),
+                state: "pending".into(),
+                status: None,
+                error: None,
+                sandbox_state: None,
+                storage_volume_id: None,
+            },
+            1,
+        )
+        .unwrap();
+    store
+        .pin_project_image_vm("a", "admin", "tenant", "project", &"a".repeat(64), "chat")
+        .unwrap();
+    retain(&store, 1, None, None, &[], &["a"]).unwrap();
+    assert!(store.release_project_image_vm("chat").is_err());
+    assert!(store.begin_project_image_delete("a", "admin", 2).is_err());
+    store.interrupt_lifecycle_operations().unwrap();
+    // The caller additionally proves backend absence; only a terminal operation
+    // and absent VM/disk rows allow it to release this interrupted create pin.
+    store.release_project_image_vm("chat").unwrap();
+    assert!(store.begin_project_image_delete("a", "admin", 3).is_ok());
+}
