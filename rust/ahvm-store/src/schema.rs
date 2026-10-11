@@ -147,6 +147,51 @@ CREATE TABLE IF NOT EXISTS images (
     size_mb     INTEGER NOT NULL DEFAULT 0,
     created_at  INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS project_environment_builders (
+    id TEXT PRIMARY KEY,
+    sandbox_id TEXT NOT NULL UNIQUE,
+    owner_user_id TEXT NOT NULL REFERENCES users(id),
+    request_json TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    phase TEXT NOT NULL DEFAULT 'creating',
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_environment_images (
+    id TEXT PRIMARY KEY REFERENCES project_environment_builders(id),
+    owner_user_id TEXT NOT NULL REFERENCES users(id),
+    tenant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    source_volume_id TEXT NOT NULL,
+    source_sandbox_id TEXT NOT NULL,
+    source_logical_bytes INTEGER NOT NULL,
+    logical_bytes INTEGER NOT NULL,
+    phase TEXT NOT NULL,
+    digest TEXT,
+    image_path TEXT,
+    detail TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_project_environment_images_owner
+    ON project_environment_images(owner_user_id,phase);
+CREATE TABLE IF NOT EXISTS project_environment_image_refs (
+    kind TEXT NOT NULL,
+    reference_id TEXT NOT NULL,
+    image_id TEXT NOT NULL REFERENCES project_environment_images(id),
+    PRIMARY KEY(kind,reference_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_environment_image_refs_image
+    ON project_environment_image_refs(image_id);
+CREATE TABLE IF NOT EXISTS project_environment_retention (
+    owner_user_id TEXT NOT NULL REFERENCES users(id),
+    tenant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    request_json TEXT NOT NULL,
+    PRIMARY KEY(owner_user_id,tenant_id,project_id)
+);
 CREATE TABLE IF NOT EXISTS tasks (
     id          TEXT PRIMARY KEY,
     kind        TEXT NOT NULL, -- image-pull | snapshot-push | snapshot-pull

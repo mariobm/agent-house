@@ -98,7 +98,9 @@ impl Store {
             let legacy_bytes = legacy_mb.checked_mul(1024 * 1024)
                 .filter(|_| smallest >= 0)
                 .ok_or_else(|| Error::Conflict("invalid existing volume usage".into()))?;
+            let image_bytes = crate::project_images::image_usage(&tx.tx, owner)?;
             let total = usage(&tx.tx, owner)?.logical_bytes.checked_add(legacy_bytes)
+                .and_then(|n| n.checked_add(image_bytes))
                 .and_then(|n| n.checked_add(bytes))
                 .ok_or_else(|| Error::Conflict("storage accounting overflow".into()))?;
             if total > maximum {

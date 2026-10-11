@@ -8,11 +8,13 @@
 mod entities;
 mod events;
 mod operations;
+mod project_images;
 mod replicated;
 mod run_events;
 mod runs;
 mod schema;
 pub use operations::LifecycleOperation;
+pub use project_images::{ProjectEnvironmentBuilder, ProjectEnvironmentImage};
 pub use replicated::{ReplicatedReservation, ReplicatedUsage};
 pub use run_events::{
     public_managed_run, ManagedRunEvent, ManagedRunEventStream, MAX_MANAGED_EVENT_BYTES,
