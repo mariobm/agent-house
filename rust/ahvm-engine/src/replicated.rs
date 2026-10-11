@@ -208,7 +208,10 @@ impl ReplicatedConfig {
         sandbox: &Path,
         image: &str,
     ) -> Result<Option<crate::ProjectImageInfo>> {
-        Ok(self.project_image_status(volume, sandbox, image)?.image)
+        let status = self.project_image_status(volume, sandbox, image)?;
+        Ok((status.phase == "ready" && status.quiescent)
+            .then_some(status.image)
+            .flatten())
     }
     pub(crate) fn project_image_status(
         &self,
@@ -236,6 +239,8 @@ impl ReplicatedConfig {
         if !["absent", "capturing", "ready", "failed", "retired"].contains(&phase.as_str())
             || (phase == "ready" && (!quiescent || info.is_none()))
             || (phase == "failed" && !quiescent)
+            || (phase == "absent" && (quiescent || info.is_some()))
+            || (phase != "ready" && info.is_some())
             || reply.project_image_error_code.as_ref().is_some_and(|s| {
                 s.is_empty()
                     || s.len() > 80
@@ -605,6 +610,38 @@ mod tests {
                         Some(&"d".repeat(64))
                     )
                     .is_err())
+            },
+        );
+    }
+    #[test]
+    fn project_status_requires_ready_quiescence_and_distinguishes_absence() {
+        let volume = "e".repeat(64);
+        let image = project_metadata().build_id;
+        for (phase, quiet, code) in [
+            ("absent", false, None),
+            ("failed", true, Some("project_image_capture_failed")),
+            ("retired", true, None),
+        ] {
+            reply(
+                &format!("proof-{phase}"),
+                serde_json::json!({"ok":true,"volume_id":volume,"project_image_phase":phase,"project_image_quiescent":quiet,"project_image_error_code":code}),
+                |c| {
+                    let status = c
+                        .project_image_status(&volume, Path::new("/tmp/deleted-source"), &image)
+                        .unwrap();
+                    assert_eq!(status.phase, phase);
+                    assert_eq!(status.quiescent, quiet);
+                    assert!(status.image.is_none());
+                },
+            );
+        }
+        reply(
+            "absence-not-quiescence",
+            serde_json::json!({"ok":true,"volume_id":volume,"project_image_phase":"absent","project_image_quiescent":true}),
+            |c| {
+                assert!(c
+                    .project_image_status(&volume, Path::new("/tmp/source"), &image)
+                    .is_err());
             },
         );
     }

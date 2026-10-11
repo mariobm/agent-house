@@ -277,9 +277,10 @@ pub async fn capture(
     let builder = owned_builder(&state, &user.0, &id)?;
     let canonical = serde_json::to_string(&body)
         .map_err(|_| ApiError::Invalid("invalid capture request".into()))?;
+    let image_lc = state.lifecycle.lock(&format!("project-image:{id}")).await;
     match state.store.project_image(&id) {
         Ok(row) => {
-            if row.request_json != canonical {
+            if row.phase == "retired" || row.request_json != canonical {
                 return Err(ApiError::Conflict(
                     "capture identity already has another request".into(),
                 ));
@@ -289,7 +290,6 @@ pub async fn capture(
         Err(ahvm_store::Error::NotFound(_)) => {}
         Err(e) => return Err(e.into()),
     }
-    let image_lc = state.lifecycle.lock(&format!("project-image:{id}")).await;
     let reservation = state
         .store
         .replicated_for_sandbox(&user.0, &builder.sandbox_id)?
@@ -612,27 +612,25 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     admin(&user)?;
+    if !project_uuid(&id) {
+        return Err(ApiError::Invalid("invalid project image identity".into()));
+    }
     let _lc = state.lifecycle.lock(&format!("project-image:{id}")).await;
+    match state.store.project_image(&id) {
+        Ok(_) => {}
+        Err(ahvm_store::Error::NotFound(_)) => {
+            let row = state
+                .store
+                .retire_unadmitted_project_image(&id, &user.0, unix_now())?;
+            return Ok((StatusCode::OK, Json(image_view(&row)?)));
+        }
+        Err(e) => return Err(e.into()),
+    }
     let row = state
         .store
         .begin_project_image_delete(&id, &user.0, unix_now())?;
     if row.phase != "retired" {
-        let worker = state.clone();
-        let owned = row.clone();
-        let proof = crate::blocking(move || {
-            worker.backend.retire_project_image(
-                &owned.source_sandbox_id,
-                &owned.source_volume_id,
-                &owned.id,
-                owned.digest.as_deref(),
-            )
-        })
-        .await?;
-        if proof.logical_released && proof.reclamation_complete {
-            state
-                .store
-                .finish_project_image_retirement(&id, unix_now())?;
-        }
+        retire_step(&state, &row).await?;
     }
     let row = owned_image(&state, &user.0, &id)?;
     Ok((
@@ -643,6 +641,25 @@ pub async fn delete(
         },
         Json(image_view(&row)?),
     ))
+}
+async fn retire_step(state: &AppState, row: &ProjectEnvironmentImage) -> ApiResult<()> {
+    let worker = state.clone();
+    let owned = row.clone();
+    let proof = crate::blocking(move || {
+        worker.backend.retire_project_image(
+            &owned.source_sandbox_id,
+            &owned.source_volume_id,
+            &owned.id,
+            owned.digest.as_deref(),
+        )
+    })
+    .await?;
+    if proof.logical_released && proof.reclamation_complete {
+        state
+            .store
+            .finish_project_image_retirement(&row.id, unix_now())?;
+    }
+    Ok(())
 }
 pub(crate) async fn select_image(
     state: &AppState,
@@ -724,6 +741,14 @@ pub fn recover(state: &AppState) -> ApiResult<()> {
         loop {
             let _ = reconcile_vm_pins(&owned).await;
             for row in owned.store.unfinished_project_images().unwrap_or_default() {
+                if row.phase == "deleting" {
+                    let _guard = owned
+                        .lifecycle
+                        .lock(&format!("project-image:{}", row.id))
+                        .await;
+                    let _ = retire_step(&owned, &row).await;
+                    continue;
+                }
                 if matches!(row.phase.as_str(), "preparing" | "capturing") {
                     if let Ok(body) = serde_json::from_str::<CaptureRequest>(&row.request_json) {
                         spawn_capture(owned.clone(), row, body, None);

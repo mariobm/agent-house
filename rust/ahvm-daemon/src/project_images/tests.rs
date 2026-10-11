@@ -346,3 +346,116 @@ async fn failed_preflight_before_volume_intent_releases_only_derived_image_charg
         65536
     );
 }
+
+#[tokio::test]
+async fn unadmitted_delete_fences_delayed_capture_without_charge_or_source_mutation() {
+    let (state, backend, _) = state();
+    let fixture = http_fixture();
+    let body: BuilderRequest = serde_json::from_value(fixture["builderRequest"].clone()).unwrap();
+    let id = body.metadata.build_id.clone();
+    state
+        .store
+        .admit_project_builder(&ProjectEnvironmentBuilder {
+            id: id.clone(),
+            sandbox_id: builder_name(&id),
+            owner_user_id: "admin".into(),
+            request_json: serde_json::to_string(&body).unwrap(),
+            metadata_json: String::from_utf8(body.metadata.canonical_bytes().unwrap()).unwrap(),
+            phase: "creating".into(),
+            created_at: 1,
+        })
+        .unwrap();
+    let guard = state.lifecycle.lock(&format!("project-image:{id}")).await;
+    let delayed = tokio::spawn({
+        let state = state.clone();
+        let id = id.clone();
+        async move {
+            capture(
+                State(state),
+                Extension(UserId("admin".into())),
+                Path(id),
+                Json(serde_json::from_value(http_fixture()["captureRequest"].clone()).unwrap()),
+            )
+            .await
+        }
+    });
+    let tombstone = state
+        .store
+        .retire_unadmitted_project_image(&id, "admin", 1)
+        .unwrap();
+    assert_eq!(tombstone.logical_bytes, 0);
+    drop(guard);
+    assert!(delayed.await.unwrap().is_err());
+    let (status, Json(receipt)) = delete(
+        State(state.clone()),
+        Extension(UserId("admin".into())),
+        Path(id.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, StatusCode::OK);
+    let expected = &fixture["retiredUnadmittedImage"];
+    for field in [
+        "phase",
+        "metadata",
+        "source_volume_id",
+        "capture_source_logical_bytes",
+        "logical_bytes",
+        "digest",
+        "error_code",
+        "logical_released",
+        "reclamation_complete",
+    ] {
+        assert_eq!(receipt[field], expected[field], "{field}");
+    }
+    assert_eq!(state.store.project_image_usage("admin").unwrap(), 0);
+    assert_eq!(backend.project_test_counts().0, 0);
+}
+
+#[tokio::test]
+async fn delete_before_first_capture_records_retired_intent() {
+    let (state, _backend, _) = state();
+    let body: BuilderRequest =
+        serde_json::from_value(http_fixture()["builderRequest"].clone()).unwrap();
+    let id = body.metadata.build_id.clone();
+    state
+        .store
+        .admit_project_builder(&ProjectEnvironmentBuilder {
+            id: id.clone(),
+            sandbox_id: builder_name(&id),
+            owner_user_id: "admin".into(),
+            request_json: serde_json::to_string(&body).unwrap(),
+            metadata_json: String::from_utf8(body.metadata.canonical_bytes().unwrap()).unwrap(),
+            phase: "creating".into(),
+            created_at: 1,
+        })
+        .unwrap();
+    assert!(state.store.project_image(&id).is_err());
+    let (_, Json(receipt)) = delete(
+        State(state.clone()),
+        Extension(UserId("admin".into())),
+        Path(id.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(receipt["phase"], "retired");
+    assert!(state.store.project_image(&id).is_ok());
+    assert_eq!(state.store.project_image_usage("admin").unwrap(), 0);
+}
+
+#[test]
+fn shared_admission_errors_have_fixed_capacity_codes() {
+    for entry in http_fixture()["admissionErrors"].as_array().unwrap() {
+        let message = entry["message"].as_str().unwrap().to_owned();
+        let error = if entry["status"] == 422 {
+            ApiError::Invalid(message)
+        } else {
+            ApiError::Conflict(message)
+        };
+        assert_eq!(error.code(), entry["code"].as_str().unwrap());
+        assert_eq!(
+            error.status().as_u16(),
+            entry["status"].as_u64().unwrap() as u16
+        );
+    }
+}

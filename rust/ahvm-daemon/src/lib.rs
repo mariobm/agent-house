@@ -107,7 +107,21 @@ impl ApiError {
             }
             ApiError::Forbidden(_) => "forbidden",
             ApiError::NotFound(_) => "not_found",
+            ApiError::Conflict(message) if message == "project image storage quota exceeded" => {
+                "project_image_quota_reached"
+            }
+            ApiError::Conflict(message)
+                if message == "project image disk headroom is unavailable" =>
+            {
+                "project_image_headroom_unavailable"
+            }
+            ApiError::Conflict(message) if message == "project image storage is not configured" => {
+                "project_image_storage_unavailable"
+            }
             ApiError::Conflict(_) => "conflict",
+            ApiError::Invalid(message) if message == "builder disk exceeds image limit" => {
+                "project_image_size_invalid"
+            }
             ApiError::Invalid(_) => "invalid",
             ApiError::Unavailable(_) => "backend_unavailable",
             ApiError::Internal(_) => "internal",

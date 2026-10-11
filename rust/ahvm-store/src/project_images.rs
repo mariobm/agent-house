@@ -163,6 +163,33 @@ impl Store {
     pub fn project_image(&self, id: &str) -> Result<ProjectEnvironmentImage> {
         self.with_conn(|c| image(c, id))
     }
+    /// Fence a cancelled capture before it has reserved an artifact. The node
+    /// holds the same image lifecycle lock used by capture admission. No volume
+    /// RPC can have been sent without an image row, so this retired ledger is
+    /// sufficient proof for a delayed HTTP capture to remain refused.
+    pub fn retire_unadmitted_project_image(
+        &self,
+        id: &str,
+        owner: &str,
+        now: i64,
+    ) -> Result<ProjectEnvironmentImage> {
+        self.transaction(|tx| {
+            match image(&tx.tx, id) {
+                Ok(_) => return Err(Error::Conflict("capture has already been admitted".into())),
+                Err(Error::NotFound(_)) => {},
+                Err(e) => return Err(e),
+            }
+            let builder = tx.tx.query_row("SELECT id,sandbox_id,owner_user_id,request_json,metadata_json,phase,created_at FROM project_environment_builders WHERE id=?1", [id], builder_row).optional()?.ok_or_else(|| Error::NotFound("project builder".into()))?;
+            if builder.owner_user_id != owner { return Err(Error::NotFound("project builder".into())); }
+            let metadata: serde_json::Value = serde_json::from_str(&builder.metadata_json)?;
+            let tenant = metadata["tenant_id"].as_str().ok_or_else(|| Error::Conflict("invalid builder provenance".into()))?;
+            let project = metadata["project_id"].as_str().ok_or_else(|| Error::Conflict("invalid builder provenance".into()))?;
+            let source: Option<(String, i64)> = tx.tx.query_row("SELECT volume_id,logical_bytes FROM replicated_reservations WHERE owner_user_id=?1 AND sandbox_id=?2 ORDER BY created_at DESC LIMIT 1", params![owner, builder.sandbox_id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+            let (volume, bytes) = source.unwrap_or_else(|| ("0".repeat(64), 0));
+            tx.tx.execute("INSERT INTO project_environment_images(id,owner_user_id,tenant_id,project_id,metadata_json,request_json,source_volume_id,source_sandbox_id,source_logical_bytes,logical_bytes,phase,detail,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'{}',?6,?7,?8,0,'retired','capture_not_admitted',?9,?9)", params![id,owner,tenant,project,builder.metadata_json,volume,builder.sandbox_id,bytes,now])?;
+            image(&tx.tx, id)
+        })
+    }
     pub fn project_image_usage(&self, owner: &str) -> Result<i64> {
         self.with_conn(|c| image_usage(c, owner))
     }

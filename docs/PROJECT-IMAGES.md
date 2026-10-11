@@ -105,7 +105,11 @@ retirement returns JSON with both `logical_released` and
 private image SHAs and waits for dependent volume records to finish reclamation.
 Operator images and arbitrary object prefixes cannot be selected. Even a failed
 preflight with no storage candidate receives a durable retired intent, fencing
-late captures before its node reservation is released.
+late captures before its node reservation is released. If cancellation happens
+before capture admission, the node journals a retired tombstone under the same
+image lock. Its frozen-builder receipt has zero image bytes, no digest and both
+release flags true; a delayed capture cannot overwrite it. No artifact or image
+charge exists for that retired-only variant, and source deletion remains explicit.
 
 ## Recovery limits and cost
 

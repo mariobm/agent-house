@@ -162,5 +162,56 @@
     "protocol": "project-images-v1",
     "tenant_id": "33333333-3333-4333-8333-333333333333",
     "project_id": "11111111-1111-4111-8111-111111111111"
-  }
+  },
+  "retiredUnadmittedImage": {
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "image_id": "22222222-2222-4222-8222-222222222222",
+    "builder_id": "22222222-2222-4222-8222-222222222222",
+    "phase": "retired",
+    "metadata": {
+      "schema": 1,
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "build_id": "22222222-2222-4222-8222-222222222222",
+      "source_commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "start_hook_digest": null,
+      "canonical_workdir": "/workspace/project"
+    },
+    "source_sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
+    "source_volume_id": "0000000000000000000000000000000000000000000000000000000000000000",
+    "capture_source_logical_bytes": 0,
+    "logical_bytes": 0,
+    "digest": null,
+    "error_code": "capture_not_admitted",
+    "created_at": 1791715200,
+    "updated_at": 1791715202,
+    "logical_released": true,
+    "reclamation_complete": true
+  },
+  "admissionErrors": [
+    {
+      "status": 409,
+      "code": "project_image_quota_reached",
+      "message": "project image storage quota exceeded"
+    },
+    {
+      "status": 409,
+      "code": "project_image_headroom_unavailable",
+      "message": "project image disk headroom is unavailable"
+    },
+    {
+      "status": 409,
+      "code": "project_image_storage_unavailable",
+      "message": "project image storage is not configured"
+    },
+    {
+      "status": 422,
+      "code": "project_image_size_invalid",
+      "message": "builder disk exceeds image limit"
+    }
+  ]
 }
