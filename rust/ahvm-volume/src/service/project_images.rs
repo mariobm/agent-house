@@ -1270,11 +1270,8 @@ impl Service {
     fn retire_project_image(&self, candidate: &mut Candidate) -> Result<ProjectImageRetirement> {
         self.retire_project_image_with(candidate, || {
             Ok(Arc::new(
-                S3Store::with_timeout(
-                    S3Config::from_file(&self.config.credentials)?,
-                    Duration::from_secs(3),
-                )?
-                .bases()?,
+                S3Store::project_retirement(S3Config::from_file(&self.config.credentials)?)?
+                    .bases()?,
             ))
         })
     }

@@ -139,6 +139,11 @@ capture requests from starting later. A volume-supervisor restart may seal an
 incomplete export/import as failed; explicit retry uses a new build UUID. A
 previous active image remains available.
 
+Private retirement uses a 20-second request budget for bounded 1,000-object
+delete passes. Exact acknowledgements and an observed empty listing are required
+before local cleanup and charge release; lost replies retain the charged ledger
+for retry. The engine retirement RPC has a separate 300-second bound.
+
 Private capture does not take the global ordinary import lock. Retirement holds
 that lock only through its reference check and durable Retiring barrier, then
 releases it before hashing or remote cleanup. Existing admissions and delayed

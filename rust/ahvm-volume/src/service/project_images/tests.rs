@@ -641,6 +641,61 @@ fn real_ready_indexed_capture_retires_only_after_observed_empty_sweep() {
     assert!(f.raw.head(&f.candidate.source_volume_id).unwrap().is_some());
 }
 
+#[derive(Debug)]
+struct LostDeleteReply(Arc<Store>);
+impl ObjectStore for LostDeleteReply {
+    fn head(&self, id: &str) -> crate::Result<Option<crate::Head>> {
+        self.0.head(id)
+    }
+    fn chunk(&self, id: &str, hash: &str) -> crate::Result<Vec<u8>> {
+        self.0.chunk(id, hash)
+    }
+    fn put_chunk(&self, id: &str, hash: &str, bytes: &[u8]) -> crate::Result<()> {
+        self.0.put_chunk(id, hash, bytes)
+    }
+    fn publish(&self, id: &str, expected: Option<&str>, bytes: &[u8]) -> crate::Result<String> {
+        self.0.publish(id, expected, bytes)
+    }
+    fn list_chunks(&self, id: &str, limit: usize) -> crate::Result<Vec<String>> {
+        self.0.list_chunks(id, limit)
+    }
+    fn delete_chunks(&self, id: &str, hashes: &[String]) -> crate::Result<()> {
+        self.0.delete_chunks(id, hashes)?;
+        Err(crate::Error::Store)
+    }
+}
+
+#[test]
+fn lost_bulk_delete_reply_retains_charge_until_retry_observes_empty() {
+    if !root_tests() {
+        return;
+    }
+    let mut f = fixture();
+    let image = capture(&mut f);
+    let raw = Arc::new(LostDeleteReply(f.raw.clone()));
+    assert!(f
+        .service
+        .retire_project_image_with(&mut f.candidate, || Ok(raw))
+        .is_err());
+    let mut restarted = load(&f.service.config, &image.image_id).unwrap();
+    assert_eq!(restarted.phase, Phase::Retiring);
+    assert!(restarted.remote_retired && !restarted.remote_clean);
+    assert!(!restarted.logical_released && !restarted.reclamation_complete);
+    assert_eq!(
+        logical_charge(&f.service.config).unwrap(),
+        image.logical_bytes
+    );
+    assert!(image.image_path.exists());
+    let raw = f.raw.clone();
+    let completed = f
+        .service
+        .retire_project_image_with(&mut restarted, || Ok(raw))
+        .unwrap();
+    assert!(completed.logical_released && completed.reclamation_complete);
+    assert_eq!(logical_charge(&f.service.config).unwrap(), 0);
+    assert!(!image.image_path.exists());
+}
+
 #[test]
 fn interrupted_append_rebuilds_the_same_frozen_source_and_never_publishes_partial() {
     if !root_tests() {

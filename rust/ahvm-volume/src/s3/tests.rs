@@ -211,6 +211,59 @@ fn slow_response_hits_total_deadline() {
     assert!(matches!(store.head("disk"), Err(Error::Store)));
     worker.join().unwrap();
 }
+
+#[test]
+fn private_retirement_client_accepts_bulk_ack_after_foreground_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let store = S3Store::build_project_retirement(
+        config(format!("http://{}", listener.local_addr().unwrap())),
+        true,
+    )
+    .unwrap()
+    .bases()
+    .unwrap();
+    let image = "b".repeat(64);
+    let hash = "a".repeat(64);
+    let key = format!("qualification/bases/{image}/chunks/{hash}");
+    let expected_key = key.clone();
+    let worker = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut request = String::new();
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            assert!(!line.is_empty());
+            if let Some(s) = line.to_lowercase().strip_prefix("content-length:") {
+                length = s.trim().parse().unwrap();
+            }
+            request.push_str(&line);
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        assert!(request.starts_with("POST /test-bucket?delete "));
+        assert!(request.contains("content-md5:"));
+        assert!(String::from_utf8(body).unwrap().contains(&expected_key));
+        // The former private cleanup client always expired before this valid
+        // acknowledgement; foreground/capture budgets are unchanged.
+        thread::sleep(Duration::from_secs(4));
+        let xml =
+            format!("<DeleteResult><Deleted><Key>{expected_key}</Key></Deleted></DeleteResult>");
+        reader
+            .get_mut()
+            .write_all(&response("200 OK", "", xml.as_bytes()))
+            .unwrap();
+    });
+    store.delete_chunks(&image, &[hash]).unwrap();
+    worker.join().unwrap();
+}
 #[cfg(unix)]
 #[test]
 fn credential_file_requires_private_permissions_and_is_bounded() {
