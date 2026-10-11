@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+sha2 = "0.10"
 ahvm-proto = { path = "../ahvm-proto" }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }

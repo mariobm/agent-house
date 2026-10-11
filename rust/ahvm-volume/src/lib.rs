@@ -20,6 +20,7 @@ pub mod local;
 pub mod nbd;
 #[cfg(unix)]
 pub mod owned;
+pub mod project_image;
 #[cfg(unix)]
 pub mod reclaim;
 pub mod s3;

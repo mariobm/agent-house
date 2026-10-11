@@ -1602,6 +1602,79 @@ fn require_op(v: &serde_json::Value, op: &str) -> Result<()> {
 }
 
 impl Backend for KrucibleBackend {
+    fn project_image_base_status(
+        &self,
+        path: &Path,
+        expected: &str,
+    ) -> crate::ProjectImageBaseProof {
+        crate::project_image::base_proof_status(path, expected)
+    }
+    fn project_image_capacity(&self) -> Result<Option<crate::ProjectImageCapacity>> {
+        let Some(replica) = &self.cfg.replicated else {
+            return Ok(None);
+        };
+        replica.project_capacity(&self.cfg.data_dir)
+    }
+    fn capture_project_image(
+        &self,
+        id: &str,
+        metadata: &crate::ProjectImageMetadata,
+    ) -> Result<crate::ProjectImageInfo> {
+        validate_id(id)?;
+        let _guard = OpGuard::take(self, id)?;
+        let (dir, record) = self.replicated_record(id)?;
+        if record.info.state != State::Stopped || record.deleting {
+            return Err(Error::InvalidState(
+                "project image source must be a retained stopped builder".into(),
+            ));
+        }
+        let volume = record
+            .info
+            .storage
+            .volume_id
+            .as_deref()
+            .ok_or_else(|| Error::InvalidState("project image source has no volume".into()))?;
+        let bytes = record.admitted_bytes.ok_or_else(|| {
+            Error::InvalidState("project image source geometry unavailable".into())
+        })?;
+        self.replica()?
+            .capture_project_image(volume, &dir, metadata, bytes)
+    }
+    fn project_image(
+        &self,
+        sandbox: &str,
+        volume: &str,
+        image: &str,
+    ) -> Result<Option<crate::ProjectImageInfo>> {
+        validate_id(sandbox)?;
+        self.replica()?
+            .project_image(volume, &self.cfg.data_dir.join(sandbox), image)
+    }
+    fn project_image_status(
+        &self,
+        sandbox: &str,
+        volume: &str,
+        image: &str,
+    ) -> Result<crate::ProjectImageStatus> {
+        validate_id(sandbox)?;
+        self.replica()?
+            .project_image_status(volume, &self.cfg.data_dir.join(sandbox), image)
+    }
+    fn retire_project_image(
+        &self,
+        sandbox: &str,
+        volume: &str,
+        image: &str,
+        digest: Option<&str>,
+    ) -> Result<crate::ProjectImageRetirement> {
+        validate_id(sandbox)?;
+        self.replica()?.retire_project_image(
+            volume,
+            &self.cfg.data_dir.join(sandbox),
+            image,
+            digest,
+        )
+    }
     fn replication_backlog(&self, id: &str) -> Option<u64> {
         let (dir, volume) = {
             let inner = self.inner.try_lock().ok()?;

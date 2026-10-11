@@ -25,6 +25,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image_digest: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_image: Option<ahvm_engine::ProjectImageSelection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         storage_mode: Option<ahvm_engine::StorageMode>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         network_bytes_per_sec: Option<u64>,
@@ -148,6 +150,30 @@ pub async fn submit(
     {
         if !matches!(image.as_str(), "ubuntu-dev" | "omarchy-desktop") {
             return Err(ApiError::Invalid("unsupported lifecycle image".into()));
+        }
+    }
+    if let Request::Create {
+        project_image: Some(selection),
+        image,
+        image_digest,
+        storage_mode,
+        ..
+    } = &request
+    {
+        if user.0 != "admin" {
+            return Err(ApiError::Forbidden(
+                "admin required for project image".into(),
+            ));
+        }
+        if image.is_some()
+            || image_digest.is_some()
+            || storage_mode.is_some_and(|m| m != ahvm_engine::StorageMode::Replicated)
+            || !ahvm_engine::project_uuid(&selection.image_id)
+            || !ahvm_engine::project_uuid(&selection.tenant_id)
+            || !ahvm_engine::project_uuid(&selection.project_id)
+            || !ahvm_engine::project_digest(&selection.digest)
+        {
+            return Err(ApiError::Invalid("invalid project image selection".into()));
         }
     }
     if let Request::Create {
@@ -281,6 +307,13 @@ pub async fn submit(
                     storage_volume_id.as_deref(),
                 ) {
                     eprintln!("ahvm-daemon: persist operation {operation_id}: {error}");
+                } else {
+                    let _ = crate::project_images::release_vm_pin(
+                        &task_state,
+                        &operation_sandbox,
+                        &operation_id,
+                    )
+                    .await;
                 }
             });
         // Fast operations retain the synchronous CLI experience; slow ones have
@@ -308,6 +341,7 @@ async fn execute(
             memory_mb,
             image,
             image_digest,
+            project_image,
             storage_mode,
             network_bytes_per_sec,
         } => sandboxes::create_operation(
@@ -324,6 +358,7 @@ async fn execute(
             Some(operation_id),
             network_bytes_per_sec,
             image_digest.as_deref(),
+            project_image,
         )
         .await
         .map(|response| response.into_response().status()),

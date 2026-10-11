@@ -64,7 +64,16 @@ pub async fn create(
     Extension(user): Extension<UserId>,
     Json(body): Json<CreateBody>,
 ) -> ApiResult<impl IntoResponse> {
-    create_operation(State(state), Extension(user), Json(body), None, None, None).await
+    create_operation(
+        State(state),
+        Extension(user),
+        Json(body),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
 }
 
 pub(crate) async fn create_operation(
@@ -74,6 +83,7 @@ pub(crate) async fn create_operation(
     operation: Option<&str>,
     network_bytes_per_sec: Option<u64>,
     image_digest: Option<&str>,
+    project_image: Option<ahvm_engine::ProjectImageSelection>,
 ) -> ApiResult<impl IntoResponse> {
     let id = body.name.clone();
     ahvm_proto::timing::measure_async(
@@ -87,6 +97,7 @@ pub(crate) async fn create_operation(
             operation,
             network_bytes_per_sec,
             image_digest,
+            project_image,
         ),
     )
     .await
@@ -99,6 +110,7 @@ async fn create_inner(
     operation: Option<&str>,
     network_bytes_per_sec: Option<u64>,
     image_digest: Option<&str>,
+    project_image: Option<ahvm_engine::ProjectImageSelection>,
 ) -> ApiResult<impl IntoResponse> {
     if body.name.is_empty() || body.name.len() > 64 {
         return Err(ApiError::Invalid("name must be 1..=64 chars".to_string()));
@@ -108,6 +120,7 @@ async fn create_inner(
     let _lc = state.lifecycle.lock(&body.name).await;
     crate::routes::identity_available(&state, &body.name)?;
     state.store.check_lifecycle_fence(&body.name, operation)?;
+    crate::project_images::check_builder_create(&state, &body.name, operation)?;
     // A retained disk owns the name even after its sandbox row is gone.
     crate::routes::reserved_owner(&state, &user.0, &body.name)?;
     state.store.check_replicated_name_available(&body.name)?;
@@ -127,7 +140,19 @@ async fn create_inner(
             "desktop requires ubuntu-desktop or omarchy-desktop".into(),
         ));
     }
-    let root_image = if let Some(expected) = image_digest {
+    let selected_image = if let Some(selection) = &project_image {
+        if user.0 != "admin" || body.image.is_some() || image_digest.is_some() || desktop {
+            return Err(ApiError::Invalid(
+                "invalid private project image create".into(),
+            ));
+        }
+        Some(crate::project_images::select_image(&state, &user.0, &body.name, selection).await?)
+    } else {
+        None
+    };
+    let root_image = if let Some((_, path)) = &selected_image {
+        Some(path.clone())
+    } else if let Some(expected) = image_digest {
         let path = resolve_image(Some(body.image.as_deref().unwrap_or("ubuntu-dev")))?
             .ok_or_else(|| ApiError::Invalid("named image unavailable".into()))?;
         if std::path::Path::new(&path)
@@ -152,7 +177,11 @@ async fn create_inner(
         resolve_image(body.image.as_deref())?
     };
     let spec = ahvm_engine::SandboxSpec {
-        storage_mode: body.storage_mode,
+        storage_mode: if project_image.is_some() {
+            Some(ahvm_engine::StorageMode::Replicated)
+        } else {
+            body.storage_mode
+        },
         name: body.name.clone(),
         cpus: body.cpus,
         memory_mb: body.memory_mb,
@@ -173,6 +202,7 @@ async fn create_inner(
     // to orphan recovery while import is still running.
     let (row, info) = tokio::task::spawn_blocking(move || {
         let _lifecycle = _lc;
+        let _image_guard = selected_image;
         let _permit = permit;
         crate::replicated::create(&state, &user.0, &spec)
     })
@@ -259,7 +289,13 @@ pub(crate) async fn destroy_operation(
     let _lc = state.lifecycle.lock(&id).await;
     crate::routes::unchanged_identity(&_lc)?;
     state.store.check_lifecycle_fence(&id, operation)?;
-    owned(&state, &user.0, &id).await?;
+    let builder = state.store.project_builder_for_sandbox(&id)?;
+    match owned(&state, &user.0, &id).await {
+        Ok(_) => {}
+        Err(ApiError::NotFound(_))
+            if builder.as_ref().is_some_and(|b| b.owner_user_id == user.0) => {}
+        Err(error) => return Err(error),
+    }
     crate::runs::check_lifecycle(&state, &id)?;
     let reservation = state.store.replicated_for_sandbox(&user.0, &id)?;
     let _permit = state.ops.acquire().await;
@@ -271,6 +307,11 @@ pub(crate) async fn destroy_operation(
     let transfers = state.ops.transfers.clone();
     blocking(move || -> Result<(), ahvm_engine::Error> {
         let (_lifecycle, _permit) = (_lc, _permit);
+        if let Some(builder) = builder {
+            store
+                .set_project_builder_phase(&builder.id, "retired")
+                .map_err(|e| ahvm_engine::Error::Control(e.to_string()))?;
+        }
         // Persist deletion only after admission, inside the cancellation-safe
         // worker; a canceled permit wait must leave the running disk usable.
         if let Some(reservation) = &reservation {
@@ -400,6 +441,9 @@ async fn set_running(
     // same order as the sweep, so neither can deadlock the other.
     let _lc = state.lifecycle.lock(id).await;
     crate::routes::unchanged_identity(&_lc)?;
+    if matches!(transition, RunningTransition::Start { .. }) {
+        crate::project_images::check_builder_mutable(state, id)?;
+    }
     owned(state, user, id).await?;
     state.store.check_lifecycle_fence(id, operation)?;
     let _permit = state.ops.acquire().await;

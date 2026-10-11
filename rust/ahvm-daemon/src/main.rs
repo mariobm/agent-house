@@ -265,6 +265,7 @@ async fn main() {
     // Restore durable detached-job holds before any automatic idle action.
     ahvm_daemon::snapshots::recover(&state).expect("recover snapshot accounting and cleanup");
     ahvm_daemon::runs::recover(&state).expect("recover managed runs");
+    ahvm_daemon::project_images::recover(&state).expect("recover project image lifecycle");
     // Thermal sweep (idle stop + reconcile) runs for the daemon lifetime.
     // Shutdown is process exit: activity rebuilds, records persist per-op.
     let thermal_state = state.clone();

@@ -67,6 +67,7 @@ async fn admit(
     let lifecycle = state.lifecycle.lock(id).await;
     unchanged_identity(&lifecycle)?;
     owned(state, user, id).await?;
+    crate::project_images::check_builder_mutable(state, id)?;
     if let Some((port, expected)) = preview {
         if state.store.preview_generation(id, port)?.as_deref() != Some(expected) {
             return Err(ApiError::Unauthorized);

@@ -21,6 +21,7 @@ pub mod files;
 pub mod metrics;
 pub mod operations;
 pub mod previews;
+pub mod project_images;
 pub mod quotas;
 pub mod replicated;
 pub mod routes;
@@ -106,7 +107,31 @@ impl ApiError {
             }
             ApiError::Forbidden(_) => "forbidden",
             ApiError::NotFound(_) => "not_found",
+            ApiError::Conflict(message)
+                if message == "installed Ubuntu base verification is pending" =>
+            {
+                "project_image_base_verifying"
+            }
+            ApiError::Conflict(message)
+                if message == "installed Ubuntu base does not match its frozen digest" =>
+            {
+                "project_image_base_invalid"
+            }
+            ApiError::Conflict(message) if message == "project image storage quota exceeded" => {
+                "project_image_quota_reached"
+            }
+            ApiError::Conflict(message)
+                if message == "project image disk headroom is unavailable" =>
+            {
+                "project_image_headroom_unavailable"
+            }
+            ApiError::Conflict(message) if message == "project image storage is not configured" => {
+                "project_image_storage_unavailable"
+            }
             ApiError::Conflict(_) => "conflict",
+            ApiError::Invalid(message) if message == "builder disk exceeds image limit" => {
+                "project_image_size_invalid"
+            }
             ApiError::Invalid(_) => "invalid",
             ApiError::Unavailable(_) => "backend_unavailable",
             ApiError::Internal(_) => "internal",
@@ -223,6 +248,26 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/admin/metrics", get(metrics::sample))
         .route("/v1/admin/metrics/storage/{id}", get(metrics::backlog))
         .route("/v1/admin/pool-profile", get(pool_profile))
+        .route(
+            "/v1/admin/project-image-profile",
+            get(project_images::profile),
+        )
+        .route(
+            "/v1/admin/project-builders/{id}",
+            get(project_images::get_builder).post(project_images::create_builder),
+        )
+        .route(
+            "/v1/admin/project-images/{id}",
+            get(project_images::get_image).delete(project_images::delete),
+        )
+        .route(
+            "/v1/admin/project-images/{id}/capture",
+            axum::routing::post(project_images::capture),
+        )
+        .route(
+            "/v1/admin/project-images/retention/{tenant}/{project}",
+            axum::routing::put(project_images::retain),
+        )
         .route("/v1/admin/desktop-profile", get(desktop_profile))
         .route(
             "/v1/admin/idle-policy",
@@ -351,12 +396,22 @@ fn health_features(event_origin: Option<&str>) -> Vec<&'static str> {
     features
 }
 
-async fn healthz() -> Json<serde_json::Value> {
+async fn healthz(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<serde_json::Value> {
     let custom = std::env::var_os("AHVM_DESKTOP_IMAGE").is_some();
     let origin = std::env::var("AHVM_AGENT_EVENT_ORIGIN").ok();
+    let backend = state.backend.clone();
+    let available = crate::blocking(move || backend.project_image_capacity())
+        .await
+        .is_ok_and(|c| c.is_some());
+    let mut features = health_features(origin.as_deref());
+    if available {
+        features.push("project-images-v1");
+    }
     Json(serde_json::json!({
         "status": "ok", "version": env!("CARGO_PKG_VERSION"),
-        "features": health_features(origin.as_deref()),
+        "features": features,
         "desktop_images": {
             "ubuntu-desktop": sandboxes::resolve_image(Some("ubuntu-desktop")).is_ok(),
             "omarchy-desktop": sandboxes::resolve_image(Some("omarchy-desktop")).is_ok(),

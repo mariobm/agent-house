@@ -28,7 +28,14 @@
 //!   sandbox, cold snapshot/restore, crash recovery by pid adoption).
 //! * [`mock`]: in-memory [`Backend`] for unit tests.
 
+mod project_image;
 mod replicated;
+pub use project_image::{
+    project_digest, project_uuid, ProjectImageBaseProof, ProjectImageBaseStatus,
+    ProjectImageCapacity, ProjectImageInfo, ProjectImageMetadata, ProjectImageRequest,
+    ProjectImageRetirement, ProjectImageSelection, ProjectImageStatus,
+    PROJECT_IMAGE_HEADROOM_BYTES, PROJECT_IMAGE_MAX_BYTES, PROJECT_IMAGE_TRAILER_BYTES,
+};
 pub use replicated::{
     ReplicatedConfig, ReplicationStatus, RetirementStatus, SandboxStorage, StorageMode,
 };

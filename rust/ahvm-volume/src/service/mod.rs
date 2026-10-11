@@ -30,6 +30,7 @@ mod accounting;
 mod export;
 mod host;
 mod jobs;
+mod project_images;
 mod resources;
 use accounting::{Limits, Usage, CACHE_BYTES};
 #[cfg(test)]
@@ -54,6 +55,10 @@ struct Config {
     limits: Limits,
     #[serde(default)]
     image_roots: Vec<PathBuf>,
+    #[serde(default)]
+    project_image_root: Option<PathBuf>,
+    #[serde(default)]
+    worker_broker_config: Option<PathBuf>,
     #[serde(default = "local_base_default")]
     local_base_reads: bool,
     #[serde(default)]
@@ -220,7 +225,7 @@ impl std::ops::Deref for Slot {
         &self.operation
     }
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
     version: u32,
@@ -231,6 +236,8 @@ struct Request {
     image: Option<PathBuf>,
     #[serde(default)]
     logical_bytes: Option<u64>,
+    #[serde(default)]
+    project_image: Option<ahvm_engine::ProjectImageRequest>,
 }
 // Device, inode, size, mtime/ns, ctime/ns of a trusted image file.
 type ImageIdentity = (u64, u64, u64, i64, i64, i64, i64);
@@ -240,6 +247,7 @@ struct Service {
     admission_failed: AtomicBool,
     reclamation: Mutex<()>,
     imports: Mutex<BTreeMap<ImageIdentity, String>>,
+    project_images: Mutex<()>,
     config: Config,
     entries: Mutex<BTreeMap<String, Arc<Slot>>>,
     _locks: Vec<Lock>,
@@ -290,6 +298,7 @@ impl Service {
             }
             trusted_image_path(image_root)?;
         }
+        project_images::initialize(&config)?;
         let mut locks = vec![Lock::take(&config.root.join("service.lock"))?];
         if config.engine_root.canonicalize()? != config.engine_root
             || !config.nbd_client.is_absolute()
@@ -412,6 +421,7 @@ impl Service {
             admission_failed: AtomicBool::new(false),
             reclamation: Mutex::new(()),
             imports: Mutex::new(BTreeMap::new()),
+            project_images: Mutex::new(()),
             config,
             entries: Mutex::new(entries),
             _locks: locks,
@@ -516,6 +526,7 @@ impl Service {
         }
         self.binding(&q.volume_id, &q.sandbox_dir)?;
         let image = q.image.as_ref().ok_or("missing image")?.canonicalize()?;
+        project_images::check_image_admission(self, &image)?;
         if self.config.client_uid != 0 || !self.config.image_roots.is_empty() {
             if !self
                 .config
@@ -564,6 +575,10 @@ impl Service {
         if unreclaimed >= MAX_UNRECLAIMED_RECORDS {
             return Err("unreclaimed volume record limit".into());
         }
+        usage.logical_bytes = usage
+            .logical_bytes
+            .checked_add(project_images::logical_charge(&self.config)?)
+            .ok_or("storage accounting overflow")?;
         self.config.limits.admit(&usage, logical_bytes)?;
         let device = self
             .config
@@ -646,6 +661,10 @@ impl Service {
                 used.insert(other.device);
             }
         }
+        usage.logical_bytes = usage
+            .logical_bytes
+            .checked_add(project_images::logical_charge(&self.config)?)
+            .ok_or("storage accounting overflow")?;
         self.config.limits.admit(&usage, r.logical_bytes)?;
         let device = self
             .config
@@ -733,6 +752,10 @@ impl Service {
                 usage.add_record(r.logical_bytes, !r.evicted, !r.logical_released)?;
             }
         }
+        usage.logical_bytes = usage
+            .logical_bytes
+            .checked_add(project_images::logical_charge(&self.config)?)
+            .ok_or("storage accounting overflow")?;
         Ok(usage)
     }
     fn store(&self) -> Result<Arc<dyn ObjectStore>> {
@@ -748,6 +771,18 @@ impl Service {
         ))
     }
     fn prepare(&self, r: &mut Record) -> Result<()> {
+        self.prepare_with(
+            r,
+            || self.store(),
+            |file, image, size, bytes| self.import_base(file, image, size, bytes),
+        )
+    }
+    fn prepare_with(
+        &self,
+        r: &mut Record,
+        raw: impl FnOnce() -> Result<Arc<dyn ObjectStore>>,
+        import: impl FnOnce(&mut File, &str, u64, &mut [u8]) -> Result<crate::BaseRef>,
+    ) -> Result<()> {
         if r.prepared {
             return Ok(());
         }
@@ -770,17 +805,18 @@ impl Service {
         let hash = measure("volume", "image_hash", &r.id, || {
             self.cached_image_hash(&mut file, &mut imports, &mut bytes)
         })?;
+        project_images::check_digest_admission(self, &hash)?;
         if r.image_hash.is_empty() {
             r.image_hash = hash;
             self.persist(r)?;
         } else if r.image_hash != hash {
             return Err("import source changed".into());
         }
-        let store = self.store()?;
+        let store = raw()?;
         let mut disk = match measure("volume", "head", &r.id, || store.head(&r.id))? {
             None => {
                 let reference = measure("volume", "base_reference", &r.id, || {
-                    self.import_base(&mut file, &r.image_hash, size, &mut bytes)
+                    import(&mut file, &r.image_hash, size, &mut bytes)
                 })?;
                 measure("volume", "create_from_base", &r.id, || {
                     IndexedVolume::create_from_base(store.clone(), &r.id, reference)
@@ -827,8 +863,16 @@ impl Service {
         size: u64,
         bytes: &mut [u8],
     ) -> Result<crate::BaseRef> {
-        use sha2::{Digest, Sha256};
-        use std::io::{Seek, SeekFrom};
+        self.import_base_bounded(file, image, size, bytes, None)
+    }
+    fn import_base_bounded(
+        &self,
+        file: &mut File,
+        image: &str,
+        size: u64,
+        bytes: &mut [u8],
+        deadline: Option<Instant>,
+    ) -> Result<crate::BaseRef> {
         let bases: Arc<dyn ObjectStore> = Arc::new(CachedStore::new(
             Arc::new(
                 S3Store::with_timeout(
@@ -839,37 +883,7 @@ impl Service {
             ),
             CACHE_BYTES as usize,
         )?);
-        let mut disk = match IndexedVolume::open(bases.clone(), image) {
-            Ok(disk) => {
-                if disk.size() != size {
-                    return Err("base image size mismatch".into());
-                }
-                return Ok(disk.export_base()?);
-            }
-            Err(crate::Error::NotFound) => {
-                IndexedVolume::create_import(bases.clone(), image, size)?
-            }
-            Err(crate::Error::NotReady) => {
-                IndexedVolume::resume_import(bases.clone(), image, size)?
-            }
-            Err(error) => return Err(error.into()),
-        };
-        file.seek(SeekFrom::Start(0))?;
-        let mut check = Sha256::new();
-        let mut at = 0;
-        while at < size {
-            let n = bytes.len().min((size - at) as usize);
-            file.read_exact(&mut bytes[..n])?;
-            check.update(&bytes[..n]);
-            disk.write(at, &bytes[..n])?;
-            disk.commit_import()?;
-            at += n as u64;
-        }
-        if format!("{:x}", check.finalize()) != image {
-            return Err("base image changed during import".into());
-        }
-        disk.finish_import()?;
-        Ok(disk.export_base()?)
+        project_images::import_base_file(bases, file, image, size, bytes, deadline)
     }
     fn control(&self, r: &Record, op: &str) -> Result<crate::local::Status> {
         let worker = r.worker.as_ref().ok_or("worker unavailable")?;
@@ -1177,6 +1191,12 @@ impl Service {
         self.inspect(r)
     }
     fn request(&self, q: Request) -> Result<serde_json::Value> {
+        if q.operation.starts_with("project-image-") {
+            return self.project_image_request(q);
+        }
+        if q.project_image.is_some() {
+            return Err("project image fields on a volume operation".into());
+        }
         if q.operation == "resources" {
             if q.version != 1
                 || !valid_id(&q.volume_id)
@@ -1488,6 +1508,9 @@ pub fn run() -> Result<()> {
         return Err("usage (root): ahvm-volumed CONFIG.json".into());
     }
     let config: Config = read(Path::new(&args[0]))?;
+    if config.project_image_root.is_some() {
+        trusted_image_path(Path::new(&args[0]))?;
+    }
     let service = Service::open(config)?;
     let socket = service
         .config

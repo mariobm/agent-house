@@ -87,6 +87,16 @@ impl S3Store {
         }
         Self::build(config, false, timeout)
     }
+    /// Private image cleanup includes bounded bulk deletes, whose acknowledgement
+    /// can take longer than the foreground block-service request budget.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn project_retirement(config: Config) -> Result<Self> {
+        Self::build_project_retirement(config, false)
+    }
+    #[cfg(any(target_os = "linux", test))]
+    fn build_project_retirement(config: Config, test_http: bool) -> Result<Self> {
+        Self::build(config, test_http, Duration::from_secs(20))
+    }
     fn build(config: Config, test_http: bool, timeout: Duration) -> Result<Self> {
         let url = Url::parse(&config.endpoint).map_err(|_| Error::InvalidInput)?;
         let allowed_scheme = url.scheme() == "https"

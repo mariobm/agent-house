@@ -42,6 +42,13 @@ pub struct Capabilities {
 /// expected to block the calling thread (the daemon dispatches them off
 /// its async core).
 pub trait Backend: Send + Sync + std::fmt::Debug {
+    fn project_image_base_status(
+        &self,
+        _path: &std::path::Path,
+        _expected: &str,
+    ) -> crate::ProjectImageBaseProof {
+        crate::ProjectImageBaseProof::unavailable(crate::ProjectImageBaseStatus::Invalid)
+    }
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo>;
     /// Reserve authenticated tenant capacity before replicated import. The
     /// backend supplies its immutable volume identity and validated image size.
@@ -117,6 +124,53 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     /// Explicit remote barrier. Local storage has no remote durability contract.
     fn sync_remote(&self, _id: &str) -> Result<crate::ReplicationStatus> {
         Err(crate::Error::InvalidState("remote sync unavailable".into()))
+    }
+    fn project_image_capacity(&self) -> Result<Option<crate::ProjectImageCapacity>> {
+        Ok(None)
+    }
+    fn capture_project_image(
+        &self,
+        _sandbox: &str,
+        _metadata: &crate::ProjectImageMetadata,
+    ) -> Result<crate::ProjectImageInfo> {
+        Err(crate::Error::InvalidState(
+            "project image capture unavailable".into(),
+        ))
+    }
+    fn project_image(
+        &self,
+        _sandbox: &str,
+        _volume: &str,
+        _image: &str,
+    ) -> Result<Option<crate::ProjectImageInfo>> {
+        Err(crate::Error::InvalidState(
+            "project image registry unavailable".into(),
+        ))
+    }
+    fn project_image_status(
+        &self,
+        sandbox: &str,
+        volume: &str,
+        image: &str,
+    ) -> Result<crate::ProjectImageStatus> {
+        let info = self.project_image(sandbox, volume, image)?;
+        Ok(crate::ProjectImageStatus {
+            phase: if info.is_some() { "ready" } else { "absent" }.into(),
+            quiescent: info.is_some(),
+            error_code: None,
+            image: info,
+        })
+    }
+    fn retire_project_image(
+        &self,
+        _sandbox: &str,
+        _volume: &str,
+        _image: &str,
+        _digest: Option<&str>,
+    ) -> Result<crate::ProjectImageRetirement> {
+        Err(crate::Error::InvalidState(
+            "project image retirement unavailable".into(),
+        ))
     }
 
     /// Trusted accounting reconciler: retire an abandoned/deleting replicated

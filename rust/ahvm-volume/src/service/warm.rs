@@ -89,6 +89,7 @@ impl Service {
     }
     pub(super) fn warm_base(&self, image: &Path) -> Result<serde_json::Value> {
         let image = image.canonicalize()?;
+        project_images::check_image_admission(self, &image)?;
         if !self
             .config
             .image_roots
@@ -112,6 +113,7 @@ impl Service {
         let mut imports = self.imports.lock().map_err(|_| "import lock poisoned")?;
         let mut bytes = vec![0; crate::indexed::WRITE_LIMIT];
         let hash = self.cached_image_hash(&mut file, &mut imports, &mut bytes)?;
+        project_images::check_digest_admission(self, &hash)?;
         let reference = self.import_base(&mut file, &hash, size, &mut bytes)?;
         Ok(serde_json::json!({"ok":true,"base":reference,"logical_bytes":size}))
     }

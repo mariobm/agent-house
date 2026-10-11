@@ -127,6 +127,7 @@ pub async fn submit(
         Err(ahvm_store::Error::NotFound(_)) => {}
         Err(e) => return Err(e.into()),
     }
+    crate::project_images::check_builder_mutable(&state, &body.sandbox_id)?;
     if let Some(delivery) = &body.event_delivery {
         crate::run_events::validate_delivery(&id, &body, delivery)?;
     }
