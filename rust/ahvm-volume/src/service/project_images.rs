@@ -774,6 +774,50 @@ fn validate_builder_record(
 }
 
 impl Service {
+    fn capture_store(&self, record: &Record) -> Result<Arc<dyn ObjectStore>> {
+        self.capture_store_with(
+            record,
+            Arc::new(S3Store::with_timeout(
+                S3Config::from_file(&self.config.credentials)?,
+                Duration::from_secs(3),
+            )?),
+        )
+    }
+
+    fn capture_store_with(
+        &self,
+        record: &Record,
+        raw: Arc<dyn ObjectStore>,
+    ) -> Result<Arc<dyn ObjectStore>> {
+        let remote = || {
+            CachedStore::new(raw.clone(), CACHE_BYTES as usize)?
+                .with_metadata_cache(&self.config.root.join("base-metadata"))
+        };
+        let cache = remote()?;
+        if self.config.local_base_reads {
+            // Only the stopped volume's persisted base is a cache candidate.
+            // NOFOLLOW/NONBLOCK prevents a replaced leaf redirecting or hanging
+            // export. CachedStore verifies every inherited block against the
+            // immutable remote map; private changes still come from the store.
+            if let Ok(file) = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(
+                    (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+                )
+                .open(&record.image)
+            {
+                if let Ok(cache) = cache.with_local_base(record.image_hash.clone(), file) {
+                    return Ok(Arc::new(cache));
+                }
+                // An absent/untrusted cache or metadata race cannot change the
+                // source. Rebuild the unchanged remote cache after attachment
+                // consumes its candidate.
+                return Ok(Arc::new(remote()?));
+            }
+        }
+        Ok(Arc::new(cache))
+    }
+
     fn capture_project_image_with(
         &self,
         candidate: &mut Candidate,
@@ -1128,7 +1172,7 @@ impl Service {
                     }
                     unused(&r.device)?;
                 }
-                let raw = self.store()?;
+                let raw = self.capture_store(r)?;
                 let owner = self.dir(r).join("owner");
                 private_dir(&owner)?;
                 let disk = OwnedDisk::open(raw.clone(), &r.id, &owner)?;

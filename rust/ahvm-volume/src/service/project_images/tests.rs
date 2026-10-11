@@ -47,6 +47,7 @@ fn fixture() -> Fixture {
         "images",
         "images/projects",
         "state/volumes",
+        "state/base-metadata",
     ] {
         fs::create_dir(root.join(name)).unwrap();
         fs::set_permissions(
@@ -341,6 +342,172 @@ struct PausedGc {
     started: mpsc::Sender<()>,
     release: Mutex<mpsc::Receiver<()>>,
 }
+
+#[derive(Debug)]
+struct ExportReads {
+    raw: Arc<Store>,
+    base_data: Vec<String>,
+    source: String,
+    base_gets: AtomicU64,
+    private_gets: AtomicU64,
+}
+impl ObjectStore for ExportReads {
+    fn base_chunk(&self, image: &str, hash: &str, offset: Option<u64>) -> crate::Result<Vec<u8>> {
+        if self.base_data.iter().any(|data| data == hash) {
+            self.base_gets.fetch_add(1, Ordering::SeqCst);
+        }
+        self.raw.base_chunk(image, hash, offset)
+    }
+    fn head(&self, id: &str) -> crate::Result<Option<crate::Head>> {
+        self.raw.head(id)
+    }
+    fn chunk(&self, id: &str, hash: &str) -> crate::Result<Vec<u8>> {
+        if id == self.source {
+            self.private_gets.fetch_add(1, Ordering::SeqCst);
+        }
+        self.raw.chunk(id, hash)
+    }
+    fn put_chunk(&self, id: &str, hash: &str, bytes: &[u8]) -> crate::Result<()> {
+        self.raw.put_chunk(id, hash, bytes)
+    }
+    fn publish(&self, id: &str, expected: Option<&str>, bytes: &[u8]) -> crate::Result<String> {
+        self.raw.publish(id, expected, bytes)
+    }
+}
+
+#[test]
+fn capture_verifies_local_inherited_base_and_falls_back_without_losing_private_changes() {
+    if !root_tests() {
+        return;
+    }
+    for cache in [
+        "valid", "corrupt", "missing", "writable", "owner", "symlink", "fifo",
+    ] {
+        let mut f = fixture();
+        // Separate the inherited block from the sixteen-block private pack
+        // rewritten below, so this fixture actually exercises both read paths.
+        f.bytes.resize(crate::CHUNK_BYTES * 17, 0);
+        f.candidate.source_logical_bytes = f.bytes.len() as u64;
+        f.candidate.logical_bytes =
+            crate::project_image::logical_bytes(f.bytes.len() as u64).unwrap();
+        let image = f.root.join("images/base.ext4");
+        fs::write(&image, &f.bytes).unwrap();
+        fs::set_permissions(&image, fs::Permissions::from_mode(0o444)).unwrap();
+        let raw_digest = crate::digest(&f.bytes);
+        assert_ne!(raw_digest, f.candidate.metadata.base_image_digest);
+        let mut file = File::open(&image).unwrap();
+        let base = import_base_file(
+            f.raw.clone(),
+            &mut file,
+            &raw_digest,
+            f.bytes.len() as u64,
+            &mut vec![0; crate::indexed::WRITE_LIMIT],
+            None,
+        )
+        .unwrap();
+        drop(file);
+        let source = "9".repeat(64);
+        let mut disk = IndexedVolume::create_from_base(f.raw.clone(), &source, base).unwrap();
+        let mut expected = f.bytes.clone();
+        let offset = crate::CHUNK_BYTES * 16 + 20;
+        expected[offset..offset + 4].copy_from_slice(b"edit");
+        disk.write(offset as u64, b"edit").unwrap();
+        disk.commit().unwrap();
+        OwnedDisk::enroll(f.raw.clone(), &source).unwrap();
+        let before = f.raw.head(&source).unwrap().unwrap();
+        f.candidate.source_volume_id = source.clone();
+        f.candidate.source_revision = before.revision.clone();
+        f.candidate.source_manifest_sha256 = crate::digest(&before.manifest);
+        f.candidate.metadata.base_content_digest = raw_digest.clone();
+        persist(&f.service.config, &f.candidate).unwrap();
+        let mut record = volume(
+            source.clone(),
+            f.candidate.sandbox_dir.clone(),
+            image.clone(),
+            f.bytes.len() as u64,
+        );
+        record.image_hash = raw_digest;
+        record.prepared = true;
+        record.evicted = true;
+        register(&f.service, record.clone());
+        validate_builder_record(
+            &record,
+            &f.candidate.metadata,
+            f.candidate.source_logical_bytes,
+        )
+        .unwrap();
+        match cache {
+            "valid" => (),
+            "corrupt" => fs::write(&image, vec![0; f.bytes.len()]).unwrap(),
+            "missing" => fs::remove_file(&image).unwrap(),
+            "writable" => fs::set_permissions(&image, fs::Permissions::from_mode(0o666)).unwrap(),
+            "owner" => std::os::unix::fs::chown(&image, Some(65534), None).unwrap(),
+            "symlink" => {
+                let target = f.root.join("images/other.ext4");
+                fs::rename(&image, &target).unwrap();
+                std::os::unix::fs::symlink(&target, &image).unwrap();
+            }
+            "fifo" => {
+                fs::remove_file(&image).unwrap();
+                rustix::fs::mkfifoat(rustix::fs::CWD, &image, rustix::fs::Mode::RUSR).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let reads = Arc::new(ExportReads {
+            raw: f.raw.clone(),
+            base_data: f
+                .bytes
+                .as_chunks::<{ crate::CHUNK_BYTES }>()
+                .0
+                .iter()
+                .map(|bytes| crate::digest(bytes))
+                .collect(),
+            source: source.clone(),
+            base_gets: AtomicU64::new(0),
+            private_gets: AtomicU64::new(0),
+        });
+        let store = f
+            .service
+            .capture_store_with(&record, reads.clone())
+            .unwrap();
+        let raw = f.raw.clone();
+        let captured = f
+            .service
+            .capture_project_image_with(
+                &mut f.candidate,
+                store,
+                |file, digest, size, bytes, deadline| {
+                    import_base_file(raw.clone(), file, digest, size, bytes, Some(deadline))
+                },
+            )
+            .unwrap();
+        let mut exported = fs::read(&captured.image_path).unwrap();
+        assert_eq!(&exported[..expected.len()], expected, "{cache}");
+        assert_eq!(crate::digest(&exported), captured.digest, "{cache}");
+        exported.truncate(expected.len());
+        assert_eq!(
+            f.candidate.export_sha256.as_deref(),
+            Some(crate::digest(&exported).as_str()),
+            "{cache}"
+        );
+        assert!(
+            reads.private_gets.load(Ordering::SeqCst) > 0,
+            "private changes must stay remote: {cache}"
+        );
+        if cache == "valid" {
+            assert_eq!(reads.base_gets.load(Ordering::SeqCst), 0);
+        } else {
+            assert!(
+                reads.base_gets.load(Ordering::SeqCst) > 0,
+                "fallback: {cache}"
+            );
+        }
+        let after = f.raw.head(&source).unwrap().unwrap();
+        assert_eq!(after.revision, before.revision, "{cache}");
+        assert_eq!(after.manifest, before.manifest, "{cache}");
+    }
+}
+
 impl ObjectStore for PausedGc {
     fn head(&self, id: &str) -> crate::Result<Option<crate::Head>> {
         self.raw.head(id)
