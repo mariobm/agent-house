@@ -123,6 +123,18 @@ impl Store {
             Ok(())
         })
     }
+    /// A rejected frozen create is terminal even if the operator later repairs
+    /// its base catalog. Nothing can have launched before this receipt exists.
+    pub fn reject_project_builder(&self, id: &str, request: &str, now: i64) -> Result<()> {
+        self.transaction(|tx| {
+            let builder = tx.tx.query_row("SELECT id,sandbox_id,owner_user_id,request_json,metadata_json,phase,created_at FROM project_environment_builders WHERE id=?1", [id], builder_row)?;
+            let retained: bool = tx.tx.query_row("SELECT EXISTS(SELECT 1 FROM sandboxes WHERE id=?1) OR EXISTS(SELECT 1 FROM replicated_reservations WHERE sandbox_id=?1 AND logical_released=0) OR EXISTS(SELECT 1 FROM lifecycle_operations WHERE sandbox_id=?1)", [&builder.sandbox_id], |r| r.get(0))?;
+            if retained || builder.phase != "creating" { return Err(Error::Conflict("builder create already admitted or retired".into())); }
+            tx.tx.execute("INSERT INTO lifecycle_operations(id,owner_user_id,sandbox_id,request,state,status,error_json,sandbox_state,created_at) VALUES(?1,?2,?3,?4,'done',409,?5,'absent',?6)", params![format!("project-builder-{id}"),builder.owner_user_id,builder.sandbox_id,request,"{\"code\":\"project_image_base_invalid\",\"message\":\"installed Ubuntu base does not match its frozen digest\"}",now])?;
+            tx.tx.execute("UPDATE project_environment_builders SET phase='failed' WHERE id=?1", [id])?;
+            Ok(())
+        })
+    }
     pub fn admit_project_image(&self, row: &ProjectEnvironmentImage) -> Result<bool> {
         if row.logical_bytes
             != row

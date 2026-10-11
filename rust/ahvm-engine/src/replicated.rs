@@ -510,6 +510,7 @@ mod tests {
             build_id: "22222222-2222-4222-8222-222222222222".into(),
             source_commit: "c".repeat(40),
             base_image_digest: "a".repeat(64),
+            base_content_digest: "e".repeat(64),
             revision_id: "b".repeat(64),
             install_hook_digest: None,
             start_hook_digest: None,

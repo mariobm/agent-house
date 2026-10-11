@@ -107,6 +107,16 @@ impl ApiError {
             }
             ApiError::Forbidden(_) => "forbidden",
             ApiError::NotFound(_) => "not_found",
+            ApiError::Conflict(message)
+                if message == "installed Ubuntu base verification is pending" =>
+            {
+                "project_image_base_verifying"
+            }
+            ApiError::Conflict(message)
+                if message == "installed Ubuntu base does not match its frozen digest" =>
+            {
+                "project_image_base_invalid"
+            }
             ApiError::Conflict(message) if message == "project image storage quota exceeded" => {
                 "project_image_quota_reached"
             }

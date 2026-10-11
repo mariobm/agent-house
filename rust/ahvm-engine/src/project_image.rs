@@ -4,6 +4,28 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+mod base_proof;
+pub(crate) use base_proof::status as base_proof_status;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectImageBaseStatus {
+    Verifying,
+    Verified,
+    Invalid,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectImageBaseProof {
+    pub status: ProjectImageBaseStatus,
+    pub content_digest: Option<String>,
+}
+impl ProjectImageBaseProof {
+    pub fn unavailable(status: ProjectImageBaseStatus) -> Self {
+        Self {
+            status,
+            content_digest: None,
+        }
+    }
+}
 
 pub const PROJECT_IMAGE_TRAILER_BYTES: u64 = 65536;
 pub const PROJECT_IMAGE_MAX_BYTES: u64 = 64 * 1024 * 1024 * 1024;
@@ -18,6 +40,7 @@ pub struct ProjectImageMetadata {
     pub build_id: String,
     pub source_commit: String,
     pub base_image_digest: String,
+    pub base_content_digest: String,
     pub revision_id: String,
     pub install_hook_digest: Option<String>,
     pub start_hook_digest: Option<String>,
@@ -54,6 +77,7 @@ impl ProjectImageMetadata {
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             || !project_digest(&self.base_image_digest)
+            || !project_digest(&self.base_content_digest)
             || !project_digest(&self.revision_id)
             || self
                 .install_hook_digest

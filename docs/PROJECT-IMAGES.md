@@ -16,20 +16,35 @@ image. The complete shared HTTP example is
 ## Admission and capture
 
 `GET /v1/admin/project-image-profile` reports backing storage capability, the
-original Ubuntu base digest, estimated base/candidate geometry, aggregate logical
-quota/usage/remaining and physical staging headroom. Capability is unavailable
+original Ubuntu catalog/artifact identity and separate raw disk SHA, estimated
+base/candidate geometry, aggregate logical
+quota/usage/remaining and physical staging headroom. Catalog `sha256` names the
+compressed download; `base_content_digest` binds the installed raw bytes. These
+identities are intentionally distinct. Capability is unavailable
 unless the root volume service validates its private image configuration and
 trusted daemon UID outside the worker allocation range. Public health advertises
 `project-images-v1` only after the backing service confirms this capability.
 
 `POST /v1/admin/project-builders/{build_uuid}` takes `metadata`, `cpus` and
 `memory_mb`. Frozen metadata binds schema 1, tenant/project/build UUIDs, original
-Ubuntu base SHA, source commit, installation revision and both optional hook
+Ubuntu artifact identity and raw disk SHA, source commit, installation revision and both optional hook
 SHAs. `canonical_workdir` must be `/workspace/project`. The node creates only a
 fresh pinned Ubuntu VM and journals its purpose before lifecycle admission.
+An enabled storage capability schedules one bounded background raw checksum
+verification at startup. Profiles return transient `base_image_verifying` without
+waiting for a disk scan; Cloud waits/retries. The proof is cached in memory by
+canonical path, artifact ID and strong file identity, and checks both its open FD
+and pathname after hashing. It uses one 8-MiB buffer, one worker and a 300-second
+limit. Disabled deployments do not scan. A changed/invalid frozen source fails
+builder admission before a VM or disk is allocated.
+
 `GET` of the same route returns its lifecycle receipt and geometry. Replaying an
 identical request fills a missing lifecycle-admission receipt after a crash;
-changed requests conflict. Capture geometry comes from the actual builder disk,
+changed requests conflict. The immutable builder purpose can exist while raw
+verification is pending with no disk charge or lifecycle create. A permanent
+refusal records the exact terminal create receipt and absent source state;
+later repair cannot admit that old UUID. Explicit deletion retires the purpose
+and fences a delayed actual Create. Capture geometry comes from the actual builder disk,
 not a guest-supplied size or the initial profile estimate.
 
 Cloud resolves the exact source and bounded hook contents before creation,
@@ -55,7 +70,8 @@ start/thaw. Status and explicit deletion remain available. The node confirms a
 cold stop and fully synced disk before the root volume service exports it. No
 untrusted guest filesystem is mounted on the host. The service verifies the
 export's reported SHA/generation, ext4 declared extent, size and alignment, then
-appends one 64-KiB block containing bounded canonical frozen provenance outside
+compares the protected source volume hash with frozen `base_content_digest`,
+then appends one 64-KiB block containing bounded canonical frozen provenance outside
 that ext4 extent. A final full-image SHA owns the unchanged content-addressed
 base format. The unique build ID in the trusted trailer gives each generation
 its own registered private catalog. A guest filesystem resize can consume that
@@ -122,6 +138,12 @@ A definitive quiescent failure is durably sealed, preventing delayed duplicate
 capture requests from starting later. A volume-supervisor restart may seal an
 incomplete export/import as failed; explicit retry uses a new build UUID. A
 previous active image remains available.
+
+Private capture does not take the global ordinary import lock. Retirement holds
+that lock only through its reference check and durable Retiring barrier, then
+releases it before hashing or remote cleanup. Existing admissions and delayed
+alias prewarm still recheck that barrier. A prepared build or garbage collection
+therefore does not make an unrelated cached Ubuntu create wait for its upload.
 
 The first implementation materializes a bounded sparse disk and scans/hashes the
 entire logical image. Existing base namespaces are per content SHA, so each new

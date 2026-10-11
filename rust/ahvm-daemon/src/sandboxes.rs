@@ -120,6 +120,7 @@ async fn create_inner(
     let _lc = state.lifecycle.lock(&body.name).await;
     crate::routes::identity_available(&state, &body.name)?;
     state.store.check_lifecycle_fence(&body.name, operation)?;
+    crate::project_images::check_builder_create(&state, &body.name, operation)?;
     // A retained disk owns the name even after its sandbox row is gone.
     crate::routes::reserved_owner(&state, &user.0, &body.name)?;
     state.store.check_replicated_name_available(&body.name)?;
@@ -288,7 +289,13 @@ pub(crate) async fn destroy_operation(
     let _lc = state.lifecycle.lock(&id).await;
     crate::routes::unchanged_identity(&_lc)?;
     state.store.check_lifecycle_fence(&id, operation)?;
-    owned(&state, &user.0, &id).await?;
+    let builder = state.store.project_builder_for_sandbox(&id)?;
+    match owned(&state, &user.0, &id).await {
+        Ok(_) => {}
+        Err(ApiError::NotFound(_))
+            if builder.as_ref().is_some_and(|b| b.owner_user_id == user.0) => {}
+        Err(error) => return Err(error),
+    }
     crate::runs::check_lifecycle(&state, &id)?;
     let reservation = state.store.replicated_for_sandbox(&user.0, &id)?;
     let _permit = state.ops.acquire().await;
@@ -300,6 +307,11 @@ pub(crate) async fn destroy_operation(
     let transfers = state.ops.transfers.clone();
     blocking(move || -> Result<(), ahvm_engine::Error> {
         let (_lifecycle, _permit) = (_lc, _permit);
+        if let Some(builder) = builder {
+            store
+                .set_project_builder_phase(&builder.id, "retired")
+                .map_err(|e| ahvm_engine::Error::Control(e.to_string()))?;
+        }
         // Persist deletion only after admission, inside the cancellation-safe
         // worker; a canceled permit wait must leave the running disk usable.
         if let Some(reservation) = &reservation {

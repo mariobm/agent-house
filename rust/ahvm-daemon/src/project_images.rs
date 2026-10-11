@@ -2,9 +2,9 @@
 //! accept control-plane provenance, never guest-selected source VMs or paths.
 use crate::{auth::UserId, operations, unix_now, ApiError, ApiResult, AppState};
 use ahvm_engine::{
-    project_digest, project_uuid, ProjectImageInfo, ProjectImageMetadata, ProjectImageSelection,
-    State as VmState, StorageMode, PROJECT_IMAGE_HEADROOM_BYTES, PROJECT_IMAGE_MAX_BYTES,
-    PROJECT_IMAGE_TRAILER_BYTES,
+    project_digest, project_uuid, ProjectImageBaseStatus, ProjectImageInfo, ProjectImageMetadata,
+    ProjectImageSelection, State as VmState, StorageMode, PROJECT_IMAGE_HEADROOM_BYTES,
+    PROJECT_IMAGE_MAX_BYTES, PROJECT_IMAGE_TRAILER_BYTES,
 };
 use ahvm_store::{ProjectEnvironmentBuilder, ProjectEnvironmentImage};
 use axum::{
@@ -63,6 +63,20 @@ fn metadata(row: &ProjectEnvironmentBuilder) -> ApiResult<ProjectImageMetadata> 
     m.validate()?;
     Ok(m)
 }
+fn named_ubuntu_base() -> Option<String> {
+    let path = crate::sandboxes::resolve_image(Some("ubuntu-dev"))
+        .ok()
+        .flatten()?;
+    if !std::fs::symlink_metadata(&path).ok()?.is_file() {
+        return None;
+    }
+    std::path::Path::new(&path)
+        .canonicalize()
+        .ok()?
+        .to_str()
+        .map(str::to_owned)
+}
+
 fn image_metadata(row: &ProjectEnvironmentImage) -> ApiResult<ProjectImageMetadata> {
     let m: ProjectImageMetadata = serde_json::from_str(&row.metadata_json)
         .map_err(|_| ApiError::Internal("invalid image provenance".into()))?;
@@ -131,9 +145,7 @@ pub async fn profile(
     admin(&user)?;
     let capacity = state.backend.clone();
     let capacity = crate::blocking(move || capacity.project_image_capacity()).await;
-    let image = crate::sandboxes::resolve_image(Some("ubuntu-dev"))
-        .ok()
-        .flatten();
+    let image = named_ubuntu_base();
     let digest = image
         .as_ref()
         .and_then(|p| std::path::Path::new(p).file_stem())
@@ -148,8 +160,38 @@ pub async fn profile(
         .filter(|b| *b <= PROJECT_IMAGE_MAX_BYTES);
     let (quota, images, disks) = state.store.project_storage_usage(&user.0)?;
     let pending = state.store.pending_project_image_bytes()?.max(0) as u64;
+    let base_status = if matches!(&capacity, Ok(Some(_))) {
+        image.as_ref().zip(digest).map(|(path, digest)| {
+            state
+                .backend
+                .project_image_base_status(std::path::Path::new(path), digest)
+        })
+    } else {
+        None
+    };
     let (available, reason, physical) = match capacity {
-        Ok(Some(c)) if digest.is_some() && candidate.is_some() => (true, "ready", Some(c)),
+        Ok(Some(c))
+            if candidate.is_some()
+                && base_status
+                    .as_ref()
+                    .is_some_and(|p| p.status == ProjectImageBaseStatus::Verified) =>
+        {
+            (true, "ready", Some(c))
+        }
+        Ok(Some(c))
+            if base_status
+                .as_ref()
+                .is_some_and(|p| p.status == ProjectImageBaseStatus::Verifying) =>
+        {
+            (false, "base_image_verifying", Some(c))
+        }
+        Ok(Some(c))
+            if base_status
+                .as_ref()
+                .is_some_and(|p| p.status == ProjectImageBaseStatus::Invalid) =>
+        {
+            (false, "base_image_invalid", Some(c))
+        }
         Ok(Some(c)) => (false, "base_image_unavailable", Some(c)),
         Ok(None) => (false, "storage_not_supported", None),
         Err(_) => (false, "storage_unavailable", None),
@@ -158,7 +200,7 @@ pub async fn profile(
         .map(|c| c.physical_reserved_bytes.max(pending))
         .unwrap_or(pending);
     Ok(Json(
-        json!({"schema":1,"protocol":"project-images-v1","available":available,"reason":reason,"base_image_digest":digest,"base_image_logical_bytes":bytes,"candidate_logical_bytes":candidate,"logical_quota_bytes":quota,"logical_image_usage_bytes":images,"logical_disk_usage_bytes":disks,"logical_remaining_bytes":quota.saturating_sub(images).saturating_sub(disks).max(0),"max_image_bytes":PROJECT_IMAGE_MAX_BYTES,"scratch_reserve_bytes":PROJECT_IMAGE_HEADROOM_BYTES,"physical_available_bytes":physical.map(|c|c.physical_available_bytes),"physical_reserved_bytes":reserved,"physical_remaining_bytes":physical.map(|c|c.physical_available_bytes.saturating_sub(reserved))}),
+        json!({"schema":1,"protocol":"project-images-v1","available":available,"reason":reason,"base_image_digest":digest,"base_content_digest":base_status.as_ref().and_then(|p|p.content_digest.as_deref()),"base_image_logical_bytes":bytes,"candidate_logical_bytes":candidate,"logical_quota_bytes":quota,"logical_image_usage_bytes":images,"logical_disk_usage_bytes":disks,"logical_remaining_bytes":quota.saturating_sub(images).saturating_sub(disks).max(0),"max_image_bytes":PROJECT_IMAGE_MAX_BYTES,"scratch_reserve_bytes":PROJECT_IMAGE_HEADROOM_BYTES,"physical_available_bytes":physical.map(|c|c.physical_available_bytes),"physical_reserved_bytes":reserved,"physical_remaining_bytes":physical.map(|c|c.physical_available_bytes.saturating_sub(reserved))}),
     ))
 }
 pub async fn create_builder(
@@ -177,15 +219,6 @@ pub async fn create_builder(
     {
         return Err(ApiError::Invalid("invalid clean builder request".into()));
     }
-    let probe = state.backend.clone();
-    if crate::blocking(move || probe.project_image_capacity())
-        .await?
-        .is_none()
-    {
-        return Err(ApiError::Conflict(
-            "project image storage is not configured".into(),
-        ));
-    }
     let row = ProjectEnvironmentBuilder {
         id: id.clone(),
         sandbox_id: builder_name(&id),
@@ -197,30 +230,95 @@ pub async fn create_builder(
         phase: "creating".into(),
         created_at: unix_now(),
     };
+    let guard = state.lifecycle.lock(&row.sandbox_id).await;
+    crate::routes::identity_available(&state, &row.sandbox_id)?;
     let fresh = state.store.admit_project_builder(&row)?;
+    let saved = state.store.project_builder(&id)?;
+    let request = operations::Request::Create {
+        sandbox_id: row.sandbox_id.clone(),
+        cpus: body.cpus,
+        memory_mb: body.memory_mb,
+        image: Some("ubuntu-dev".into()),
+        image_digest: Some(body.metadata.base_image_digest.clone()),
+        project_image: None,
+        storage_mode: Some(StorageMode::Replicated),
+        network_bytes_per_sec: None,
+    };
+    let receipt = state
+        .store
+        .lifecycle_operation(&builder_operation(&id), &user.0)
+        .ok();
+    if saved.phase == "failed"
+        && receipt.as_ref().is_some_and(|r| {
+            r.status == Some(409)
+                && r.error
+                    .as_ref()
+                    .is_some_and(|e| e["code"] == "project_image_base_invalid")
+        })
     {
-        let request = operations::Request::Create {
-            sandbox_id: row.sandbox_id.clone(),
-            cpus: body.cpus,
-            memory_mb: body.memory_mb,
-            image: Some("ubuntu-dev".into()),
-            image_digest: Some(body.metadata.base_image_digest),
-            project_image: None,
-            storage_mode: Some(StorageMode::Replicated),
-            network_bytes_per_sec: None,
-        };
-        let result = operations::submit(
-            State(state.clone()),
-            Extension(user),
-            Path(builder_operation(&id)),
-            Json(request),
-        )
-        .await;
-        if result.is_err() {
-            state.store.set_project_builder_phase(&id, "failed")?;
-        }
-        result?;
+        return Err(ApiError::Conflict(
+            "installed Ubuntu base does not match its frozen digest".into(),
+        ));
     }
+    if matches!(saved.phase.as_str(), "retired" | "sealed" | "captured") {
+        return Ok((StatusCode::OK, Json(builder_view(&state, &saved)?)));
+    }
+    if receipt.is_none() {
+        let probe = state.backend.clone();
+        if crate::blocking(move || probe.project_image_capacity())
+            .await?
+            .is_none()
+        {
+            return Err(ApiError::Conflict(
+                "project image storage is not configured".into(),
+            ));
+        }
+        let base = named_ubuntu_base().unwrap_or_default();
+        let proof = state.backend.project_image_base_status(
+            std::path::Path::new(&base),
+            &body.metadata.base_image_digest,
+        );
+        match proof.status {
+            ProjectImageBaseStatus::Verifying => {
+                return Err(ApiError::Conflict(
+                    "installed Ubuntu base verification is pending".into(),
+                ))
+            }
+            ProjectImageBaseStatus::Invalid => {
+                state.store.reject_project_builder(
+                    &id,
+                    &serde_json::to_string(&request)
+                        .map_err(|_| ApiError::Internal("invalid create intent".into()))?,
+                    unix_now(),
+                )?;
+                return Err(ApiError::Conflict(
+                    "installed Ubuntu base does not match its frozen digest".into(),
+                ));
+            }
+            ProjectImageBaseStatus::Verified
+                if proof.content_digest.as_deref() == Some(&body.metadata.base_content_digest) => {}
+            ProjectImageBaseStatus::Verified => {
+                state.store.reject_project_builder(
+                    &id,
+                    &serde_json::to_string(&request)
+                        .map_err(|_| ApiError::Internal("invalid create intent".into()))?,
+                    unix_now(),
+                )?;
+                return Err(ApiError::Conflict(
+                    "installed Ubuntu base does not match its frozen digest".into(),
+                ));
+            }
+        }
+    }
+    drop(guard);
+    let result = operations::submit(
+        State(state.clone()),
+        Extension(user),
+        Path(builder_operation(&id)),
+        Json(request),
+    )
+    .await;
+    result?;
     let row = state.store.project_builder(&id)?;
     Ok((
         if fresh {
@@ -231,6 +329,7 @@ pub async fn create_builder(
         Json(builder_view(&state, &row)?),
     ))
 }
+
 pub async fn get_builder(
     State(state): State<AppState>,
     Extension(user): Extension<UserId>,
@@ -704,6 +803,22 @@ pub(crate) async fn select_image(
     )?;
     Ok((guard, info.image_path.to_string_lossy().into_owned()))
 }
+pub(crate) fn check_builder_create(
+    state: &AppState,
+    sandbox: &str,
+    operation: Option<&str>,
+) -> ApiResult<()> {
+    if let Some(builder) = state.store.project_builder_for_sandbox(sandbox)? {
+        if builder.phase != "creating" || operation != Some(builder_operation(&builder.id).as_str())
+        {
+            return Err(ApiError::Conflict(
+                "builder create is retired, rejected or has another intent".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn check_builder_mutable(state: &AppState, sandbox: &str) -> ApiResult<()> {
     if state
         .store
@@ -720,6 +835,19 @@ pub(crate) fn check_builder_mutable(state: &AppState, sandbox: &str) -> ApiResul
 /// Startup observes persisted intents; it never replays an uncertain guest
 /// preflight. Sealed sources can idempotently complete stop/sync/export.
 pub fn recover(state: &AppState) -> ApiResult<()> {
+    let verifier = state.backend.clone();
+    tokio::task::spawn_blocking(move || {
+        if verifier.project_image_capacity().ok().flatten().is_some() {
+            if let Some(path) = named_ubuntu_base() {
+                if let Some(digest) = std::path::Path::new(&path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                {
+                    let _ = verifier.project_image_base_status(std::path::Path::new(&path), digest);
+                }
+            }
+        }
+    });
     for row in state.store.unfinished_project_images()? {
         if row.phase == "preparing" && state.store.project_builder(&row.id)?.phase != "sealed" {
             state.store.set_project_image_phase(

@@ -27,6 +27,8 @@ try:
  context=request['projectEnvironment']
  assert context['projectId']==metadata['project_id'] and context['revisionId']==metadata['revision_id']
  assert context['sourceCommit']==metadata['source_commit']
+ assert context.get('baseImageDigest')==metadata['base_image_digest']
+ assert context.get('baseContentDigest')==metadata['base_content_digest']
  assert context.get('installDigest')==metadata['install_hook_digest']
  assert context.get('startDigest')==metadata['start_hook_digest']
  assert request.get('workspaceDirectory')==str(workspace)

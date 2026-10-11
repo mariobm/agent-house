@@ -42,6 +42,13 @@ pub struct Capabilities {
 /// expected to block the calling thread (the daemon dispatches them off
 /// its async core).
 pub trait Backend: Send + Sync + std::fmt::Debug {
+    fn project_image_base_status(
+        &self,
+        _path: &std::path::Path,
+        _expected: &str,
+    ) -> crate::ProjectImageBaseProof {
+        crate::ProjectImageBaseProof::unavailable(crate::ProjectImageBaseStatus::Invalid)
+    }
     fn create(&self, spec: &SandboxSpec) -> Result<SandboxInfo>;
     /// Reserve authenticated tenant capacity before replicated import. The
     /// backend supplies its immutable volume identity and validated image size.

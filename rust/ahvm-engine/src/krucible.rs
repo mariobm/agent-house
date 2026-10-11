@@ -1602,6 +1602,13 @@ fn require_op(v: &serde_json::Value, op: &str) -> Result<()> {
 }
 
 impl Backend for KrucibleBackend {
+    fn project_image_base_status(
+        &self,
+        path: &Path,
+        expected: &str,
+    ) -> crate::ProjectImageBaseProof {
+        crate::project_image::base_proof_status(path, expected)
+    }
     fn project_image_capacity(&self) -> Result<Option<crate::ProjectImageCapacity>> {
         let Some(replica) = &self.cfg.replicated else {
             return Ok(None);

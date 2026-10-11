@@ -26,6 +26,7 @@ fn state() -> (AppState, Arc<MockBackend>, std::path::PathBuf) {
         physical_available_bytes: 128 * 1024 * 1024 * 1024,
         physical_reserved_bytes: 0,
     });
+    backend.set_project_image_base_content("e".repeat(64));
     (
         AppState {
             private_owners: Default::default(),
@@ -458,4 +459,150 @@ fn shared_admission_errors_have_fixed_capacity_codes() {
             entry["status"].as_u64().unwrap() as u16
         );
     }
+}
+
+#[tokio::test]
+async fn raw_change_between_profile_and_post_is_terminal_after_catalog_repair() {
+    let (state, backend, _) = state();
+    let fixture = http_fixture();
+    let body: BuilderRequest = serde_json::from_value(fixture["builderRequest"].clone()).unwrap();
+    assert_ne!(
+        body.metadata.base_image_digest,
+        body.metadata.base_content_digest
+    );
+    let id = body.metadata.build_id.clone();
+    // Frozen profile/raw provenance was e; operator replacement derives f.
+    backend.set_project_image_base_content("f".repeat(64));
+    let rejected = create_builder(
+        State(state.clone()),
+        Extension(UserId("admin".into())),
+        Path(id.clone()),
+        Json(body.clone()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(rejected.code(), "project_image_base_invalid");
+    let Json(value) = get_builder(
+        State(state.clone()),
+        Extension(UserId("admin".into())),
+        Path(id.clone()),
+    )
+    .await
+    .unwrap();
+    for key in [
+        "phase",
+        "metadata",
+        "lifecycle_operation",
+        "capture_source_logical_bytes",
+        "candidate_logical_bytes",
+    ] {
+        assert_eq!(value[key], fixture["invalidBuilder"][key], "{key}");
+    }
+    assert_eq!(
+        state.store.replicated_usage("admin").unwrap().logical_bytes,
+        0
+    );
+    backend.set_project_image_base_content(body.metadata.base_content_digest.clone());
+    assert_eq!(
+        create_builder(
+            State(state.clone()),
+            Extension(UserId("admin".into())),
+            Path(id),
+            Json(body)
+        )
+        .await
+        .unwrap_err()
+        .code(),
+        "project_image_base_invalid"
+    );
+}
+
+#[tokio::test]
+async fn verifying_delete_fences_late_post_and_actual_create_after_verification() {
+    let (state, backend, _) = state();
+    let fixture = http_fixture();
+    let body: BuilderRequest = serde_json::from_value(fixture["builderRequest"].clone()).unwrap();
+    let id = body.metadata.build_id.clone();
+    backend.set_project_image_base_status(ProjectImageBaseStatus::Verifying);
+    assert_eq!(
+        create_builder(
+            State(state.clone()),
+            Extension(UserId("admin".into())),
+            Path(id.clone()),
+            Json(body.clone())
+        )
+        .await
+        .unwrap_err()
+        .code(),
+        "project_image_base_verifying"
+    );
+    let Json(value) = get_builder(
+        State(state.clone()),
+        Extension(UserId("admin".into())),
+        Path(id.clone()),
+    )
+    .await
+    .unwrap();
+    for key in [
+        "phase",
+        "metadata",
+        "lifecycle_operation",
+        "capture_source_logical_bytes",
+        "candidate_logical_bytes",
+    ] {
+        assert_eq!(value[key], fixture["verifyingBuilder"][key], "{key}");
+    }
+    let _ = operations::submit(
+        State(state.clone()),
+        Extension(UserId("admin".into())),
+        Path("cancel-unverified-builder".into()),
+        Json(operations::Request::Delete {
+            sandbox_id: builder_name(&id),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(state.store.project_builder(&id).unwrap().phase, "retired");
+    backend.set_project_image_base_status(ProjectImageBaseStatus::Verified);
+    let (_, Json(value)) = create_builder(
+        State(state.clone()),
+        Extension(UserId("admin".into())),
+        Path(id.clone()),
+        Json(body.clone()),
+    )
+    .await
+    .unwrap();
+    for key in [
+        "phase",
+        "metadata",
+        "lifecycle_operation",
+        "capture_source_logical_bytes",
+        "candidate_logical_bytes",
+    ] {
+        assert_eq!(value[key], fixture["retiredBuilder"][key], "{key}");
+    }
+    let rejected = crate::sandboxes::create_operation(
+        State(state.clone()),
+        Extension(UserId("admin".into())),
+        Json(crate::sandboxes::CreateBody {
+            name: builder_name(&id),
+            storage_mode: Some(StorageMode::Replicated),
+            cpus: 1,
+            memory_mb: 1024,
+            desktop: false,
+            image: Some("ubuntu-dev".into()),
+        }),
+        Some(&builder_operation(&id)),
+        None,
+        Some(&body.metadata.base_image_digest),
+        None,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(matches!(rejected, ApiError::Conflict(_)));
+    assert_eq!(
+        state.store.replicated_usage("admin").unwrap().logical_bytes,
+        0
+    );
 }

@@ -39,6 +39,8 @@ struct Inner {
     sessions: HashMap<(String, String), MockSession>,
     session_next: u64,
     project_capacity: Option<crate::ProjectImageCapacity>,
+    project_base: crate::ProjectImageBaseStatus,
+    project_base_content: Option<String>,
     project_images: HashMap<String, crate::ProjectImageInfo>,
     project_plans: HashMap<String, (crate::ProjectImageInfo, bool)>,
     project_failures: HashMap<String, String>,
@@ -65,6 +67,8 @@ impl MockBackend {
                 sessions: HashMap::new(),
                 session_next: 0,
                 project_capacity: None,
+                project_base: crate::ProjectImageBaseStatus::Verified,
+                project_base_content: None,
                 project_images: HashMap::new(),
                 project_plans: HashMap::new(),
                 project_failures: HashMap::new(),
@@ -77,6 +81,12 @@ impl MockBackend {
     }
     pub fn enable_project_images(&self, capacity: crate::ProjectImageCapacity) {
         self.lock().project_capacity = Some(capacity);
+    }
+    pub fn set_project_image_base_status(&self, status: crate::ProjectImageBaseStatus) {
+        self.lock().project_base = status;
+    }
+    pub fn set_project_image_base_content(&self, digest: String) {
+        self.lock().project_base_content = Some(digest);
     }
     pub fn plan_project_image_capture(&self, info: crate::ProjectImageInfo, lose_reply: bool) {
         self.lock()
@@ -145,6 +155,24 @@ impl MockBackend {
 }
 
 impl Backend for MockBackend {
+    fn project_image_base_status(
+        &self,
+        _path: &Path,
+        expected: &str,
+    ) -> crate::ProjectImageBaseProof {
+        let inner = self.lock();
+        crate::ProjectImageBaseProof {
+            status: inner.project_base,
+            content_digest: (inner.project_base == crate::ProjectImageBaseStatus::Verified).then(
+                || {
+                    inner
+                        .project_base_content
+                        .clone()
+                        .unwrap_or_else(|| expected.to_owned())
+                },
+            ),
+        }
+    }
     fn project_image_capacity(&self) -> Result<Option<crate::ProjectImageCapacity>> {
         Ok(self.lock().project_capacity)
     }

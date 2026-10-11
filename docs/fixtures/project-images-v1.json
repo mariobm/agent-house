@@ -16,7 +16,8 @@
     "scratch_reserve_bytes": 536870912,
     "physical_available_bytes": 223338299392,
     "physical_reserved_bytes": 0,
-    "physical_remaining_bytes": 223338299392
+    "physical_remaining_bytes": 223338299392,
+    "base_content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
   },
   "builderRequest": {
     "metadata": {
@@ -29,7 +30,8 @@
       "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
       "start_hook_digest": null,
-      "canonical_workdir": "/workspace/project"
+      "canonical_workdir": "/workspace/project",
+      "base_content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     },
     "cpus": 1,
     "memory_mb": 2048
@@ -50,7 +52,8 @@
       "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
       "start_hook_digest": null,
-      "canonical_workdir": "/workspace/project"
+      "canonical_workdir": "/workspace/project",
+      "base_content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     },
     "lifecycle_operation_id": "project-builder-22222222-2222-4222-8222-222222222222",
     "lifecycle_operation": {
@@ -86,7 +89,8 @@
       "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
       "start_hook_digest": null,
-      "canonical_workdir": "/workspace/project"
+      "canonical_workdir": "/workspace/project",
+      "base_content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     },
     "source_sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
     "source_volume_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -115,7 +119,8 @@
       "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
       "start_hook_digest": null,
-      "canonical_workdir": "/workspace/project"
+      "canonical_workdir": "/workspace/project",
+      "base_content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     },
     "source_sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
     "source_volume_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -179,7 +184,8 @@
       "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
       "start_hook_digest": null,
-      "canonical_workdir": "/workspace/project"
+      "canonical_workdir": "/workspace/project",
+      "base_content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     },
     "source_sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
     "source_volume_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -212,6 +218,137 @@
       "status": 422,
       "code": "project_image_size_invalid",
       "message": "builder disk exceeds image limit"
+    },
+    {
+      "status": 409,
+      "code": "project_image_base_verifying",
+      "message": "installed Ubuntu base verification is pending"
+    },
+    {
+      "status": 409,
+      "code": "project_image_base_invalid",
+      "message": "installed Ubuntu base does not match its frozen digest"
     }
-  ]
+  ],
+  "verifyingProfile": {
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "available": false,
+    "reason": "base_image_verifying",
+    "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "base_image_logical_bytes": 17179869184,
+    "candidate_logical_bytes": 17179934720,
+    "logical_quota_bytes": 1099511627776,
+    "logical_image_usage_bytes": 0,
+    "logical_disk_usage_bytes": 17179869184,
+    "logical_remaining_bytes": 1082331758592,
+    "max_image_bytes": 68719476736,
+    "scratch_reserve_bytes": 536870912,
+    "physical_available_bytes": 223338299392,
+    "physical_reserved_bytes": 0,
+    "physical_remaining_bytes": 223338299392,
+    "base_content_digest": null
+  },
+  "invalidProfile": {
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "available": false,
+    "reason": "base_image_invalid",
+    "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "base_image_logical_bytes": 17179869184,
+    "candidate_logical_bytes": 17179934720,
+    "logical_quota_bytes": 1099511627776,
+    "logical_image_usage_bytes": 0,
+    "logical_disk_usage_bytes": 17179869184,
+    "logical_remaining_bytes": 1082331758592,
+    "max_image_bytes": 68719476736,
+    "scratch_reserve_bytes": 536870912,
+    "physical_available_bytes": 223338299392,
+    "physical_reserved_bytes": 0,
+    "physical_remaining_bytes": 223338299392,
+    "base_content_digest": null
+  },
+  "verifyingBuilder": {
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "builder_id": "22222222-2222-4222-8222-222222222222",
+    "sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
+    "phase": "creating",
+    "metadata": {
+      "schema": 1,
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "build_id": "22222222-2222-4222-8222-222222222222",
+      "source_commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "start_hook_digest": null,
+      "canonical_workdir": "/workspace/project",
+      "base_content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "lifecycle_operation_id": "project-builder-22222222-2222-4222-8222-222222222222",
+    "lifecycle_operation": null,
+    "capture_source_logical_bytes": null,
+    "candidate_logical_bytes": null
+  },
+  "retiredBuilder": {
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "builder_id": "22222222-2222-4222-8222-222222222222",
+    "sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
+    "phase": "retired",
+    "metadata": {
+      "schema": 1,
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "build_id": "22222222-2222-4222-8222-222222222222",
+      "source_commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "start_hook_digest": null,
+      "canonical_workdir": "/workspace/project",
+      "base_content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "lifecycle_operation_id": "project-builder-22222222-2222-4222-8222-222222222222",
+    "lifecycle_operation": null,
+    "capture_source_logical_bytes": null,
+    "candidate_logical_bytes": null
+  },
+  "invalidBuilder": {
+    "schema": 1,
+    "protocol": "project-images-v1",
+    "builder_id": "22222222-2222-4222-8222-222222222222",
+    "sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
+    "phase": "failed",
+    "metadata": {
+      "schema": 1,
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "build_id": "22222222-2222-4222-8222-222222222222",
+      "source_commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "base_image_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "install_hook_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "start_hook_digest": null,
+      "canonical_workdir": "/workspace/project",
+      "base_content_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "lifecycle_operation_id": "project-builder-22222222-2222-4222-8222-222222222222",
+    "lifecycle_operation": {
+      "id": "project-builder-22222222-2222-4222-8222-222222222222",
+      "sandbox_id": "env-build-22222222-2222-4222-8222-222222222222",
+      "state": "done",
+      "status": 409,
+      "sandbox_state": "absent",
+      "error": {
+        "code": "project_image_base_invalid",
+        "message": "installed Ubuntu base does not match its frozen digest"
+      },
+      "retirement_pending": false
+    },
+    "capture_source_logical_bytes": null,
+    "candidate_logical_bytes": null
+  }
 }
