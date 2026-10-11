@@ -771,6 +771,18 @@ impl Service {
         ))
     }
     fn prepare(&self, r: &mut Record) -> Result<()> {
+        self.prepare_with(
+            r,
+            || self.store(),
+            |file, image, size, bytes| self.import_base(file, image, size, bytes),
+        )
+    }
+    fn prepare_with(
+        &self,
+        r: &mut Record,
+        raw: impl FnOnce() -> Result<Arc<dyn ObjectStore>>,
+        import: impl FnOnce(&mut File, &str, u64, &mut [u8]) -> Result<crate::BaseRef>,
+    ) -> Result<()> {
         if r.prepared {
             return Ok(());
         }
@@ -800,11 +812,11 @@ impl Service {
         } else if r.image_hash != hash {
             return Err("import source changed".into());
         }
-        let store = self.store()?;
+        let store = raw()?;
         let mut disk = match measure("volume", "head", &r.id, || store.head(&r.id))? {
             None => {
                 let reference = measure("volume", "base_reference", &r.id, || {
-                    self.import_base(&mut file, &r.image_hash, size, &mut bytes)
+                    import(&mut file, &r.image_hash, size, &mut bytes)
                 })?;
                 measure("volume", "create_from_base", &r.id, || {
                     IndexedVolume::create_from_base(store.clone(), &r.id, reference)

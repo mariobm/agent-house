@@ -241,14 +241,23 @@ Sparse holes still count toward logical capacity. Every new image uses the
 ordinary complete nonzero immutable-base upload path; this does not provide
 incremental image uploads or a claim of delta-sized storage cost.
 
-Capture is bounded to one hour. Its import shares the existing import lock,
-which can delay other imports and prewarming but does not lock unrelated live
-VM I/O, status or detach. The global entries/admission lock is held only for
-short reservation/reference checks. A durable retiring barrier, rechecked under
-the shared import lock, prevents new admission or delayed prewarming of that
-private SHA. The daemon separately serializes image retirement against its
-project/build/create/VM pins. Service volume records retain an image reference
-until their reclamation completes, including partially imported/deleted volumes.
+Capture is bounded to one hour and one private operation at a time. Its unique
+provenance SHA and durable Importing barrier isolate export and upload from the
+ordinary import lock. Publishing a new immutable file does not invalidate the
+ordinary cache of device/inode/size/mtime/ctime identities. Ordinary creates and
+prewarming retain their existing serialization, so one ordinary import can run
+alongside one private capture. Both still share CPU, disk and network bandwidth.
+Export file locks are explicitly unlocked before
+Ready and on every scope exit; an unrelated fork cannot retain a completed flock.
+
+Retirement waits for existing ordinary prepare/prewarm under the shared import
+lock, then takes entries/admission to check references and persist Retiring.
+It releases both locks before ownership hashing or remote GC. New path admission
+and delayed alias imports recheck the barrier. The lock order is private operation
+then imports then entries; retirement takes no volume Slot. Live VM I/O, status
+and detach remain independent. The daemon separately fences project/build/create/VM
+pins. Service volume records retain an image reference until reclamation completes,
+including partially imported/deleted volumes.
 
 Byte recovery uses only the original frozen source generation. Status adds
 `project_image_phase`, `project_image_quiescent` and a fixed nullable

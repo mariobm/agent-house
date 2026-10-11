@@ -413,7 +413,38 @@ fn identity(file: &File) -> Result<ImageIdentity> {
         m.ctime_nsec(),
     ))
 }
-fn open_file(path: &Path, writable: bool, create: bool) -> Result<File> {
+struct LockedFile {
+    file: File,
+    locked: bool,
+}
+impl std::ops::Deref for LockedFile {
+    type Target = File;
+    fn deref(&self) -> &File {
+        &self.file
+    }
+}
+impl std::ops::DerefMut for LockedFile {
+    fn deref_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+}
+impl LockedFile {
+    fn release(mut self) -> Result<()> {
+        self.file.unlock()?;
+        self.locked = false;
+        Ok(())
+    }
+}
+impl Drop for LockedFile {
+    fn drop(&mut self) {
+        if self.locked {
+            // Forked children can briefly retain the open file description even
+            // with CLOEXEC. Closing our FD alone would not release that flock.
+            let _ = self.file.unlock();
+        }
+    }
+}
+fn open_file(path: &Path, writable: bool, create: bool) -> Result<LockedFile> {
     let file = fs::OpenOptions::new()
         .read(true)
         .write(writable)
@@ -423,8 +454,13 @@ fn open_file(path: &Path, writable: bool, create: bool) -> Result<File> {
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
         .open(path)?;
     identity(&file)?;
-    file.try_lock().map_err(|_| "project image file busy")?;
-    Ok(file)
+    file.try_lock().map_err(|error| match error {
+        fs::TryLockError::WouldBlock => {
+            io::Error::new(io::ErrorKind::WouldBlock, "project image file busy")
+        }
+        fs::TryLockError::Error(error) => error,
+    })?;
+    Ok(LockedFile { file, locked: true })
 }
 fn info(candidate: &Candidate) -> Result<ProjectImageInfo> {
     if candidate.phase != Phase::Ready {
@@ -709,14 +745,27 @@ fn capture_bytes(
     }
     candidate.base = Some(base);
     candidate.file_identity = Some(identity(&file)?);
-    // Release the exclusive export FD before advertising Ready to observers.
-    drop(file);
+    // Unlock explicitly before Ready even if an unrelated launch inherited the
+    // descriptor between fork and exec. Error exits also unlock through Drop.
+    file.release()?;
     candidate.phase = Phase::Ready;
     persist(config, candidate)?;
     info(candidate)
 }
 
 impl Service {
+    fn capture_project_image_with(
+        &self,
+        candidate: &mut Candidate,
+        raw: Arc<dyn ObjectStore>,
+        import: impl FnMut(&mut File, &str, u64, &mut [u8], Instant) -> Result<crate::BaseRef>,
+    ) -> Result<ProjectImageInfo> {
+        // One private operation is already bounded by project_images and its
+        // per-intent lock. Importing path/digest barriers prevent ordinary
+        // importers from touching this build-unique SHA before it becomes Ready.
+        capture_bytes(&self.config, candidate, raw, import)
+    }
+
     pub(super) fn project_image_request(&self, q: Request) -> Result<serde_json::Value> {
         if q.operation == "project-image-capabilities" {
             return self.project_image_request_inner(q);
@@ -1141,19 +1190,13 @@ impl Service {
                     candidate
                 };
                 candidate.matching(&q, request)?;
-                let mut imports = self
-                    .imports
-                    .lock()
-                    .map_err(|_| "image import lock poisoned")?;
-                let captured = capture_bytes(
-                    &self.config,
+                let captured = self.capture_project_image_with(
                     &mut candidate,
                     raw,
                     |file, digest, size, bytes, deadline| {
                         self.import_base_bounded(file, digest, size, bytes, Some(deadline))
                     },
                 )?;
-                imports.clear();
                 drop(disk);
                 Ok(serde_json::json!({"ok":true,"volume_id":q.volume_id,"project_image":captured}))
             }
@@ -1189,10 +1232,11 @@ impl Service {
             return Ok(candidate.retirement());
         }
         // Lock order: project operation -> shared imports -> entries/admission.
-        // Wait for an existing import WITHOUT holding the global entries mutex.
-        // No entry Slot is acquired here. Hash/upload/cleanup hold neither the
-        // entries lock nor any live VM I/O lock.
-        let _imports = self
+        // Wait for existing prepare/prewarm WITHOUT holding entries, then
+        // atomically check references and seal Retiring. Alias prewarm has no
+        // volume record, so this short import fence must precede the barrier.
+        // No Slot is acquired here; slow verification/GC holds neither lock.
+        let imports = self
             .imports
             .lock()
             .map_err(|_| "image import lock poisoned")?;
@@ -1206,6 +1250,7 @@ impl Service {
             persist(&self.config, candidate)?;
         }
         drop(entries);
+        drop(imports);
         if !candidate.retirement_verified {
             if let Some(digest) = candidate.digest.as_ref() {
                 let path = if candidate.path()?.exists() {

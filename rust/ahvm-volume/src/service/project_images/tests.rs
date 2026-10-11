@@ -151,15 +151,15 @@ fn fixture() -> Fixture {
 }
 fn capture(f: &mut Fixture) -> ProjectImageInfo {
     let raw = f.raw.clone();
-    capture_bytes(
-        &f.service.config,
-        &mut f.candidate,
-        f.raw.clone(),
-        move |file, digest, size, bytes, deadline| {
-            import_base_file(raw.clone(), file, digest, size, bytes, Some(deadline))
-        },
-    )
-    .unwrap()
+    f.service
+        .capture_project_image_with(
+            &mut f.candidate,
+            f.raw.clone(),
+            move |file, digest, size, bytes, deadline| {
+                import_base_file(raw.clone(), file, digest, size, bytes, Some(deadline))
+            },
+        )
+        .unwrap()
 }
 fn volume(id: String, sandbox: PathBuf, image: PathBuf, bytes: u64) -> Record {
     Record {
@@ -197,6 +197,189 @@ fn register(service: &Service, record: Record) {
             retry_at: Instant::now(),
         })),
     );
+}
+
+fn cached_ubuntu(f: &Fixture) -> (Record, Arc<Store>) {
+    let image = f.root.join("images/ubuntu-dev.ext4");
+    fs::write(&image, &f.bytes).unwrap();
+    fs::set_permissions(&image, fs::Permissions::from_mode(0o444)).unwrap();
+    let raw = Arc::new(Store::default());
+    let mut file = File::open(&image).unwrap();
+    let mut bytes = vec![0; crate::indexed::WRITE_LIMIT];
+    let hash = f
+        .service
+        .cached_image_hash(
+            &mut file,
+            &mut f.service.imports.lock().unwrap(),
+            &mut bytes,
+        )
+        .unwrap();
+    import_base_file(
+        raw.clone(),
+        &mut file,
+        &hash,
+        f.bytes.len() as u64,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    assert!(IndexedVolume::open(raw.clone(), &hash).is_ok());
+    let record = volume(
+        "e".repeat(64),
+        f.service.config.engine_root.join("ordinary-ubuntu"),
+        image,
+        f.bytes.len() as u64,
+    );
+    register(&f.service, record.clone());
+    (record, raw)
+}
+
+fn prepare_cached_ubuntu(service: &Service, mut record: Record, raw: Arc<Store>) -> Result<Record> {
+    let bases = raw.clone();
+    service.prepare_with(
+        &mut record,
+        || Ok(raw),
+        |file, digest, size, bytes| import_base_file(bases, file, digest, size, bytes, None),
+    )?;
+    assert!(record.prepared && !record.image_hash.is_empty());
+    Ok(record)
+}
+
+#[test]
+fn cached_ubuntu_prepare_completes_during_private_upload() {
+    if !root_tests() {
+        return;
+    }
+    let f = fixture();
+    let (ordinary, ordinary_raw) = cached_ubuntu(&f);
+    let (started, receive) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let service = f.service.clone();
+    let raw = f.raw.clone();
+    let mut candidate = f.candidate.clone();
+    let private = thread::spawn(move || {
+        let _operation = service.project_images.lock().unwrap();
+        service.capture_project_image_with(
+            &mut candidate,
+            raw.clone(),
+            |file, digest, size, bytes, deadline| {
+                started.send(()).unwrap();
+                wait.recv_timeout(Duration::from_secs(10))?;
+                import_base_file(raw.clone(), file, digest, size, bytes, Some(deadline))
+            },
+        )
+    });
+    receive.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (done, completed) = mpsc::channel();
+    let service = f.service.clone();
+    let ordinary = thread::spawn(move || {
+        done.send(prepare_cached_ubuntu(&service, ordinary, ordinary_raw))
+            .unwrap();
+    });
+    let result = completed.recv_timeout(Duration::from_secs(2));
+    release.send(()).unwrap();
+    private.join().unwrap().unwrap();
+    ordinary.join().unwrap();
+    assert!(result.unwrap().unwrap().prepared);
+}
+
+#[derive(Debug)]
+struct PausedGc {
+    raw: Arc<Store>,
+    started: mpsc::Sender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+impl ObjectStore for PausedGc {
+    fn head(&self, id: &str) -> crate::Result<Option<crate::Head>> {
+        self.raw.head(id)
+    }
+    fn chunk(&self, id: &str, hash: &str) -> crate::Result<Vec<u8>> {
+        self.raw.chunk(id, hash)
+    }
+    fn put_chunk(&self, id: &str, hash: &str, bytes: &[u8]) -> crate::Result<()> {
+        self.raw.put_chunk(id, hash, bytes)
+    }
+    fn publish(&self, id: &str, expected: Option<&str>, bytes: &[u8]) -> crate::Result<String> {
+        self.raw.publish(id, expected, bytes)
+    }
+    fn list_chunks(&self, id: &str, limit: usize) -> crate::Result<Vec<String>> {
+        self.started.send(()).map_err(|_| crate::Error::Store)?;
+        self.release
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|_| crate::Error::Store)?;
+        self.raw.list_chunks(id, limit)
+    }
+    fn delete_chunk(&self, id: &str, hash: &str) -> crate::Result<()> {
+        self.raw.delete_chunk(id, hash)
+    }
+}
+
+#[test]
+fn cached_ubuntu_prepare_completes_during_private_gc_and_alias_stays_fenced() {
+    if !root_tests() {
+        return;
+    }
+    let mut f = fixture();
+    let image = capture(&mut f);
+    let (ordinary, ordinary_raw) = cached_ubuntu(&f);
+    let alias = f.root.join("images/operator-alias.ext4");
+    fs::copy(&image.image_path, &alias).unwrap();
+    fs::set_permissions(&alias, fs::Permissions::from_mode(0o444)).unwrap();
+    let (started, receive) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let raw = Arc::new(PausedGc {
+        raw: f.raw.clone(),
+        started,
+        release: Mutex::new(wait),
+    });
+    let service = f.service.clone();
+    let mut candidate = f.candidate.clone();
+    let private = thread::spawn(move || {
+        let _operation = service.project_images.lock().unwrap();
+        service.retire_project_image_with(&mut candidate, || Ok(raw))
+    });
+    receive.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        load(&f.service.config, &image.image_id).unwrap().phase,
+        Phase::Retiring
+    );
+    assert!(check_image_admission(&f.service, &image.image_path).is_err());
+    let (done, completed) = mpsc::channel();
+    let service = f.service.clone();
+    let ordinary = thread::spawn(move || {
+        let prepared = prepare_cached_ubuntu(&service, ordinary, ordinary_raw);
+        let alias = service.warm_base(&alias).unwrap_err().to_string();
+        done.send((prepared, alias)).unwrap();
+    });
+    let result = completed.recv_timeout(Duration::from_secs(2));
+    release.send(()).unwrap();
+    assert!(!private.join().unwrap().unwrap().reclamation_complete);
+    ordinary.join().unwrap();
+    let (prepared, alias) = result.unwrap();
+    assert!(prepared.unwrap().prepared);
+    assert!(alias.contains("private project image is not available"));
+}
+
+#[test]
+fn export_lock_releases_on_drop_even_with_an_inherited_descriptor() {
+    if !root_tests() {
+        return;
+    }
+    let f = fixture();
+    let path = f.candidate.temporary();
+    let file = open_file(&path, true, true).unwrap();
+    let inherited = file.try_clone().unwrap();
+    assert!(open_file(&path, false, false).is_err());
+    drop(file);
+    // A cloned descriptor models the shared open file description inherited at
+    // fork. It remains alive, but must not retain the completed export's flock.
+    let reopened = open_file(&path, false, false).unwrap();
+    drop(inherited);
+    assert!(open_file(&path, false, false).is_err());
+    reopened.release().unwrap();
+    assert!(open_file(&path, false, false).is_ok());
 }
 
 #[test]
