@@ -76,6 +76,13 @@ fi
 exec sudo -H -u ahvm -- "$@"
 DEV
 chmod 755 /usr/local/bin/ahvm-dev
+chmod 755 /opt/ahvm-project-environment/helper.py
+cat > /usr/local/bin/ahvm-project-environment <<'ENVIRONMENT'
+#!/bin/sh
+set -eu
+exec /usr/bin/python3 -I /opt/ahvm-project-environment/helper.py "$@"
+ENVIRONMENT
+chmod 755 /usr/local/bin/ahvm-project-environment
 # Default interactive entry point. Forge retains root for network/file operations.
 cat > /usr/local/bin/ahvm-shell <<'SHELL'
 #!/bin/sh

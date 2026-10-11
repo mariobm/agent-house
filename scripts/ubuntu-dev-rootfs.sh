@@ -34,6 +34,7 @@ mkdir -p "$ROOT/opt/ahvm-pi-durable"
 for asset in package.json package-lock.json check.mjs tool.py; do
     install -m644 "$REPO/images/ubuntu-dev/pi-durable/$asset" "$ROOT/opt/ahvm-pi-durable/$asset"
 done
+install -Dm644 "$REPO/images/ubuntu-dev/project-environment/helper.py" "$ROOT/opt/ahvm-project-environment/helper.py"
 # Ubuntu base has no host credentials. Only DNS configuration crosses over.
 rm -f "$ROOT/etc/resolv.conf"
 cp -L /etc/resolv.conf "$ROOT/etc/resolv.conf"
