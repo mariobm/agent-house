@@ -122,7 +122,7 @@ fn hash(mut file: File, key: &Key) -> Proof {
 struct Cache {
     running: bool,
     jobs: u64,
-    entries: Vec<(Key, Proof)>,
+    entries: Vec<(Key, Proof, Option<Instant>)>,
 }
 #[derive(Default)]
 struct Verifier {
@@ -144,8 +144,12 @@ impl Verifier {
         let Ok(mut cache) = self.cache.lock() else {
             return Proof::unavailable(Status::Invalid);
         };
-        if let Some((_, status)) = cache.entries.iter().find(|(old, _)| old == &key) {
-            return status.clone();
+        if let Some(index) = cache.entries.iter().position(|(old, _, _)| old == &key) {
+            let (_, proof, retry) = &cache.entries[index];
+            if retry.is_none_or(|at| Instant::now() < at) {
+                return proof.clone();
+            }
+            cache.entries.remove(index);
         }
         if cache.running {
             return Proof::unavailable(Status::Verifying);
@@ -163,7 +167,15 @@ impl Verifier {
                     if cache.entries.len() >= 4 {
                         cache.entries.remove(0);
                     }
-                    cache.entries.push((saved, status));
+                    let (status, retry) = if status.status == Status::Invalid {
+                        (
+                            Proof::unavailable(Status::Verifying),
+                            Some(Instant::now() + Duration::from_secs(30)),
+                        )
+                    } else {
+                        (status, None)
+                    };
+                    cache.entries.push((saved, status, retry));
                 }
             })
             .is_err()
@@ -285,11 +297,39 @@ mod tests {
         while v.cache.lock().unwrap().running {
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(v.cache.lock().unwrap().entries[0].1.status, Status::Invalid);
+        assert_eq!(
+            v.cache.lock().unwrap().entries[0].1.status,
+            Status::Verifying
+        );
         assert_eq!(
             completed(&v, &p, &d).content_digest.as_deref(),
             Some(d.as_str())
         );
         fs::remove_file(p).unwrap();
+    }
+    #[test]
+    fn transient_read_failure_backs_off_then_retries_without_touching_source() {
+        let (path, digest) = fixture();
+        let verifier = Verifier::default();
+        assert_eq!(
+            verifier
+                .status_with(&path, &digest, |_, _| Proof::unavailable(Status::Invalid))
+                .status,
+            Status::Verifying
+        );
+        while verifier.cache.lock().unwrap().running {
+            std::thread::yield_now();
+        }
+        assert_eq!(verifier.status(&path, &digest).status, Status::Verifying);
+        assert_eq!(verifier.cache.lock().unwrap().jobs, 1);
+        verifier.cache.lock().unwrap().entries[0].2 = Some(Instant::now() - Duration::from_secs(1));
+        assert_eq!(
+            completed(&verifier, &path, &digest)
+                .content_digest
+                .as_deref(),
+            Some(digest.as_str())
+        );
+        assert_eq!(verifier.cache.lock().unwrap().jobs, 2);
+        fs::remove_file(path).unwrap();
     }
 }
