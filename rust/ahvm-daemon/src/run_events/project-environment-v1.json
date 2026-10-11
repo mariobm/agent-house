@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "buildCheckpoint": {
+    "schema": 1,
+    "kind": "project-environment",
+    "harness": "environment",
+    "runId": "22222222-2222-4222-8222-222222222222",
+    "buildId": "22222222-2222-4222-8222-222222222222",
+    "projectId": "11111111-1111-4111-8111-111111111111",
+    "revisionId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "hookDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "requestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bootId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "phase": "installing",
+    "sourceCommit": null,
+    "installHook": false,
+    "startHook": false,
+    "log": "",
+    "logTruncated": false
+  },
+  "agentEnvironment": {
+    "schema": 1,
+    "projectId": "11111111-1111-4111-8111-111111111111",
+    "revisionId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "hookDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "stage": "installing",
+    "log": "Živjo 🦀\n",
+    "logTruncated": false,
+    "installHook": true,
+    "startHook": true,
+    "sourceCommit": "cccccccccccccccccccccccccccccccccccccccc"
+  },
+  "buildRecords": [
+    {
+      "schema": 1,
+      "seq": 1,
+      "checkpoint": {
+        "schema": 1,
+        "kind": "project-environment",
+        "harness": "environment",
+        "runId": "22222222-2222-4222-8222-222222222222",
+        "buildId": "22222222-2222-4222-8222-222222222222",
+        "projectId": "11111111-1111-4111-8111-111111111111",
+        "revisionId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "hookDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "requestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bootId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "phase": "installing",
+        "sourceCommit": null,
+        "installHook": false,
+        "startHook": false,
+        "log": "",
+        "logTruncated": false
+      }
+    },
+    {
+      "schema": 1,
+      "seq": 2,
+      "patch": [
+        {
+          "op": "set",
+          "path": [
+            "sourceCommit"
+          ],
+          "value": "cccccccccccccccccccccccccccccccccccccccc"
+        },
+        {
+          "op": "set",
+          "path": [
+            "phase"
+          ],
+          "value": "starting"
+        },
+        {
+          "op": "text",
+          "path": [
+            "log"
+          ],
+          "prefix": 0,
+          "append": "Starting services\n"
+        }
+      ]
+    },
+    {
+      "schema": 1,
+      "seq": 3,
+      "patch": [
+        {
+          "op": "set",
+          "path": [
+            "phase"
+          ],
+          "value": "ready"
+        },
+        {
+          "op": "text",
+          "path": [
+            "log"
+          ],
+          "prefix": 18,
+          "append": "Ready 🦀\n"
+        }
+      ]
+    }
+  ],
+  "readyCheckpoint": {
+    "schema": 1,
+    "kind": "project-environment",
+    "harness": "environment",
+    "runId": "22222222-2222-4222-8222-222222222222",
+    "buildId": "22222222-2222-4222-8222-222222222222",
+    "projectId": "11111111-1111-4111-8111-111111111111",
+    "revisionId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "hookDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "requestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bootId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "phase": "ready",
+    "sourceCommit": "cccccccccccccccccccccccccccccccccccccccc",
+    "installHook": false,
+    "startHook": false,
+    "log": "Starting services\nReady 🦀\n",
+    "logTruncated": false
+  }
+}

@@ -346,6 +346,7 @@ fn health_features(event_origin: Option<&str>) -> Vec<&'static str> {
     ];
     if event_origin.is_some_and(run_events::configured_origin) {
         features.push("managed-agent-events-v1");
+        features.push("managed-project-environment-events-v1");
     }
     features
 }

@@ -12,6 +12,8 @@ use std::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+mod project_environment;
+
 const MAX_GUEST_LINE: usize = 262144;
 const MAX_GUEST_JOURNAL: u64 = 16 * 1024 * 1024;
 const CAPTURE_INTERVAL: Duration = Duration::from_millis(250);
@@ -24,6 +26,7 @@ const PATCH_ROOTS: &[&str] = &[
     "detail",
     "githubPublish",
     "admissionError",
+    "environment",
 ];
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -150,6 +153,9 @@ fn valid_native_id(value: &Value, prefix: &str) -> bool {
 }
 
 fn validate_checkpoint(value: &Value, run: &ManagedRun, grant: &RunEventDelivery) -> ApiResult<()> {
+    if value.get("harness").is_some_and(|h| h == "environment") {
+        return project_environment::validate_build(value, run, grant);
+    }
     let Some(object) = value.as_object() else {
         return Err(invalid());
     };
@@ -168,6 +174,7 @@ fn validate_checkpoint(value: &Value, run: &ManagedRun, grant: &RunEventDelivery
         "tools",
         "question",
         "githubPublish",
+        "environment",
     ];
     if object.keys().any(|key| !allowed.contains(&key.as_str()))
         || value["schema"] != 1
@@ -201,6 +208,9 @@ fn validate_checkpoint(value: &Value, run: &ManagedRun, grant: &RunEventDelivery
                     && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
             })
         })
+        || value
+            .get("environment")
+            .is_some_and(|v| !project_environment::valid_projection(v))
         || !bounded_json(value, 0)
         || value.to_string().len() > MAX_GUEST_LINE
     {
@@ -255,7 +265,15 @@ fn apply_patch(checkpoint: &mut Value, operations: &Value) -> ApiResult<()> {
                     .ok_or_else(invalid)
             })
             .collect::<ApiResult<Vec<_>>>()?;
-        if !PATCH_ROOTS.contains(&path[0].as_str()) {
+        let roots = if checkpoint
+            .get("harness")
+            .is_some_and(|h| h == "environment")
+        {
+            project_environment::PATCH_ROOTS
+        } else {
+            PATCH_ROOTS
+        };
+        if !roots.contains(&path[0].as_str()) {
             return Err(invalid());
         }
         let op = operation["op"].as_str().ok_or_else(invalid)?;
@@ -348,11 +366,15 @@ fn guest_record(
             "sessionId",
             "messageId",
             "bootId",
+            "kind",
+            "buildId",
+            "projectId",
         ] {
             if checkpoint.get(key) != previous.get(key) {
                 return Err(invalid());
             }
         }
+        project_environment::unchanged_identity(&previous, &checkpoint)?;
     }
     // Normalize guest JSON before freezing host payload bytes.
     checkpoint = serde_json::from_str(&checkpoint.to_string()).map_err(|_| invalid())?;

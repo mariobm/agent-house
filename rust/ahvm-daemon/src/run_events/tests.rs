@@ -11,6 +11,7 @@ const BOOT: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 #[test]
 fn health_capability_requires_configured_https_origin() {
     assert!(!crate::health_features(None).contains(&"managed-agent-events-v1"));
+    assert!(!crate::health_features(None).contains(&"managed-project-environment-events-v1"));
     for origin in [
         "",
         "not-a-url",
@@ -27,6 +28,8 @@ fn health_capability_requires_configured_https_origin() {
     assert!(
         crate::health_features(Some("https://cloud.example/")).contains(&"managed-agent-events-v1")
     );
+    assert!(crate::health_features(Some("https://cloud.example/"))
+        .contains(&"managed-project-environment-events-v1"));
 }
 fn grant() -> RunEventDelivery {
     RunEventDelivery {
@@ -125,6 +128,139 @@ fn fixture() -> (AppState, ManagedRun, RunEventDelivery) {
 }
 fn checkpoint() -> Value {
     json!({"schema":1,"harness":"pi","runId":"job","requestHash":"a".repeat(64),"sessionId":"ses_a","messageId":"msg_a","bootId":BOOT,"phase":"running","text":"Živjo 🦀","tools":[{"id":"tool_a","name":"bash","status":"pending","input":"echo one"}]})
+}
+
+fn environment_progress() -> Value {
+    environment_fixture()["agentEnvironment"].clone()
+}
+
+fn environment_build(id: &str) -> Value {
+    let mut value = environment_fixture()["buildCheckpoint"].clone();
+    value["runId"] = id.into();
+    value["buildId"] = id.into();
+    value
+}
+
+fn environment_fixture() -> Value {
+    serde_json::from_str(include_str!("project-environment-v1.json")).unwrap()
+}
+
+#[test]
+fn shared_project_environment_fixture_reconstructs_ready_checkpoint() {
+    let (state, mut run, grant) = fixture();
+    let fixture = environment_fixture();
+    run.id = fixture["buildCheckpoint"]["runId"].as_str().unwrap().into();
+    let mut source = state.store.managed_run_event_stream("job").unwrap();
+    let mut next = Value::Null;
+    for record in fixture["buildRecords"].as_array().unwrap() {
+        let (seq, value) =
+            guest_record(record.to_string().as_bytes(), &source, &run, &grant).unwrap();
+        source.guest_seq = seq;
+        source.checkpoint_json = Some(value.to_string());
+        next = value;
+    }
+    assert_eq!(next, fixture["readyCheckpoint"]);
+}
+
+#[test]
+fn build_progress_requires_no_agent_identity_and_freezes_project_source() {
+    let (state, mut run, grant) = fixture();
+    run.id = "22222222-2222-4222-8222-222222222222".into();
+    let mut source = state.store.managed_run_event_stream("job").unwrap();
+    let value = environment_build(&run.id);
+    let record = json!({"schema":1,"seq":1,"checkpoint":value});
+    let (_, checkpoint) =
+        guest_record(record.to_string().as_bytes(), &source, &run, &grant).unwrap();
+    assert!(checkpoint.get("sessionId").is_none());
+    assert!(checkpoint.get("messageId").is_none());
+    source.guest_seq = 1;
+    source.checkpoint_json = Some(value.to_string());
+    let patch = json!([{"op":"set","path":["sourceCommit"],"value":"c".repeat(40)},
+        {"op":"set","path":["phase"],"value":"starting"},
+        {"op":"text","path":["log"],"prefix":0,"append":"Starting services\n"}]);
+    let record = json!({"schema":1,"seq":2,"patch":patch});
+    let (seq, next) = guest_record(record.to_string().as_bytes(), &source, &run, &grant).unwrap();
+    source.guest_seq = seq;
+    source.checkpoint_json = Some(next.to_string());
+    for key in [
+        "sourceCommit",
+        "revisionId",
+        "hookDigest",
+        "projectId",
+        "buildId",
+        "bootId",
+    ] {
+        let mut changed = next.clone();
+        changed[key] = "e"
+            .repeat(match key {
+                "sourceCommit" => 40,
+                "revisionId" | "hookDigest" => 64,
+                _ => 36,
+            })
+            .into();
+        let record = json!({"schema":1,"seq":3,"checkpoint":changed});
+        assert!(
+            guest_record(record.to_string().as_bytes(), &source, &run, &grant).is_err(),
+            "{key}"
+        );
+    }
+    for (key, changed) in [
+        ("sessionId", json!("ses_unwanted")),
+        ("token", json!("secret")),
+        ("phase", json!("succeeded")),
+        ("log", json!("🦀".repeat(4097))),
+        ("errorCode", json!("raw provider error")),
+        ("installHook", json!("true")),
+        ("sourceCommit", json!("C".repeat(40))),
+        ("revisionId", json!("b".repeat(63))),
+        ("hookDigest", json!("D".repeat(64))),
+    ] {
+        let mut changed_value = value.clone();
+        changed_value[key] = changed;
+        assert!(
+            validate_checkpoint(&changed_value, &run, &grant).is_err(),
+            "{key}"
+        );
+    }
+}
+
+#[test]
+fn ordinary_agent_progress_is_additive_bounded_and_cannot_change_revision() {
+    let (state, run, grant) = fixture();
+    let mut source = state.store.managed_run_event_stream("job").unwrap();
+    let mut value = checkpoint();
+    value["environment"] = environment_progress();
+    assert!(validate_checkpoint(&value, &run, &grant).is_ok());
+    source.checkpoint_json = Some(value.to_string());
+    source.guest_seq = 1;
+    let patch = json!({"schema":1,"seq":2,"patch":[
+        {"op":"set","path":["environment","stage"],"value":"ready"},
+        {"op":"text","path":["environment","log"],"prefix":11,"append":"Ready"}]});
+    let (seq, next) = guest_record(patch.to_string().as_bytes(), &source, &run, &grant).unwrap();
+    assert_eq!(next["environment"]["stage"], "ready");
+    source.guest_seq = seq;
+    source.checkpoint_json = Some(next.to_string());
+    for key in ["projectId", "revisionId", "hookDigest", "sourceCommit"] {
+        let mut changed = next.clone();
+        changed["environment"][key] = match key {
+            "projectId" => json!("22222222-2222-4222-8222-222222222222"),
+            "revisionId" => json!("d".repeat(64)),
+            "hookDigest" => json!("e".repeat(64)),
+            _ => json!("d".repeat(40)),
+        };
+        let record = json!({"schema":1,"seq":3,"checkpoint":changed});
+        assert!(
+            guest_record(record.to_string().as_bytes(), &source, &run, &grant).is_err(),
+            "{key}"
+        );
+    }
+    for bad in [
+        json!({"schema":1,"seq":3,"patch":[{"op":"set","path":["environment","token"],"value":"secret"}]}),
+        json!({"schema":1,"seq":3,"patch":[{"op":"set","path":["environment","log"],"value":"x".repeat(16385)}]}),
+        json!({"schema":1,"seq":3,"patch":[{"op":"remove","path":["environment"]}]}),
+    ] {
+        assert!(guest_record(bad.to_string().as_bytes(), &source, &run, &grant).is_err());
+    }
 }
 fn line(seq: u64, key: &str, value: Value) -> Vec<u8> {
     let mut out = json!({"schema":1,"seq":seq,key:value})
