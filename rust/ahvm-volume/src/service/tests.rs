@@ -54,6 +54,7 @@ fn service(root: &Path) -> Service {
         admission_failed: AtomicBool::new(false),
         reclamation: Mutex::new(()),
         imports: Mutex::new(BTreeMap::new()),
+        project_images: Mutex::new(()),
         config: Config {
             client_uid: 0,
             worker_broker_socket: None,
@@ -65,6 +66,8 @@ fn service(root: &Path) -> Service {
                 max_cache_bytes: 1 << 30,
             },
             image_roots: vec![],
+            project_image_root: None,
+            worker_broker_config: None,
             local_base_reads: true,
             socket_dir: None,
             root: root.into(),
@@ -101,6 +104,7 @@ fn busy_volume_does_not_block_other_volume_lookup() {
         sandbox_dir: dir.join("sandbox"),
         image: None,
         logical_bytes: None,
+        project_image: None,
     };
     let first = s.entry(&request(&a)).unwrap();
     let _held = first.lock().unwrap();
@@ -130,6 +134,7 @@ fn copied_sandbox_path_cannot_reuse_attachment() {
             sandbox_dir: dir.join("copy"),
             image: None,
             logical_bytes: None,
+            project_image: None,
         })
         .is_err());
     fs::remove_dir_all(dir).unwrap();
@@ -159,6 +164,7 @@ fn unknown_and_oversized_requests_are_not_records() {
             sandbox_dir: dir.clone(),
             image: None,
             logical_bytes: None,
+            project_image: None,
         })
         .is_err());
     assert!(s.entries.lock().unwrap().is_empty());
@@ -217,6 +223,7 @@ fn prepare_request(s: &Service, suffix: char) -> Request {
         sandbox_dir: sandbox,
         image: Some(image),
         logical_bytes: None,
+        project_image: None,
     }
 }
 fn budget_service(dir: &Path) -> Service {
@@ -509,6 +516,7 @@ fn busy_foreground_admission_cancels_an_already_admitted_collector() {
             sandbox_dir: dir.join("sandbox"),
             image: None,
             logical_bytes: None,
+            project_image: None,
         })
         .unwrap_err();
     assert_eq!(err.to_string(), "volume busy");
@@ -635,6 +643,7 @@ fn retirement_of_unregistered_disk_releases_logical_capacity_before_cleanup() {
         sandbox_dir: s.config.engine_root.join("missing-sandbox"),
         image: None,
         logical_bytes: Some(crate::CHUNK_BYTES as u64),
+        project_image: None,
     };
     let ack = s.request(request()).unwrap();
     assert_eq!(ack["reclamation_complete"], false);
@@ -683,6 +692,7 @@ fn unknown_retirement_cannot_claim_a_foreign_owned_disk() {
         sandbox_dir: dir.join("missing"),
         image: None,
         logical_bytes: Some(crate::CHUNK_BYTES as u64),
+        project_image: None,
     };
     assert_eq!(s.request(request()).unwrap()["reclamation_complete"], false);
     let entry = s.entry(&request()).unwrap();
@@ -883,6 +893,7 @@ fn reclaimed_churn_beyond_record_limit_preserves_fences_and_allows_admission() {
         sandbox_dir: dir.join(format!("retired-{n}")),
         image: None,
         logical_bytes: Some(crate::CHUNK_BYTES as u64),
+        project_image: None,
     };
     for n in 0..=MAX_UNRECLAIMED_RECORDS {
         let q = retire(n);
@@ -945,6 +956,7 @@ fn unreclaimed_limit_bounds_prepare_but_never_blocks_missing_record_retirement()
         sandbox_dir: dir.join(format!("missing-{n}")),
         image: None,
         logical_bytes: Some(crate::CHUNK_BYTES as u64),
+        project_image: None,
     };
     for n in 0..MAX_UNRECLAIMED_RECORDS {
         assert_eq!(s.request(retire(n)).unwrap()["reclamation_complete"], false);

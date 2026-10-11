@@ -184,6 +184,90 @@ Legacy Python state directories are rejected. Upgrade/migration from experiments
 is explicit. Unknown device bindings and malformed records fail closed instead
 of importing a fresh disk. Retain the state directory for operator recovery.
 
+## Private project images
+
+Project capture is disabled when `project_image_root` is absent. Enable it only
+with a dedicated canonical directory beneath an existing `image_roots` entry.
+The directory is owned by root, with mode 0750 and the trusted daemon's primary
+group. `worker_broker_config` names the same root-owned configuration used by the
+configured worker broker. The service checks its socket, daemon UID/GID and
+disjoint worker identity ranges before enabling capture. The daemon group cannot
+write this directory; unrelated worker identities cannot traverse it. Root-only
+configurations without a broker may use root:root mode 0700 or 0750.
+
+Example additions to the existing configuration:
+
+```json
+{
+  "image_roots": ["/opt/ahvm-rust/share", "/var/lib/ahvm-images"],
+  "project_image_root": "/var/lib/ahvm-images/projects",
+  "worker_broker_config": "/etc/ahvm-rust/worker-broker.json"
+}
+```
+
+The existing socket's `SO_PEERCRED` policy permits root or the explicitly
+configured trusted `client_uid`. Guest/worker identities and other host UIDs
+gain no authority. Root owns the configuration, registry and generated images;
+the private registry lives at `<root>/project-images` with mode 0700. Export
+partials are mode 0600. Completed `<sha256>.ext4` files are root-owned mode 0444:
+the broker can grant an exact read-only leaf without granting its private parent
+directory. Public VM creation must not expose arbitrary private image paths.
+
+Private protocol version 1 adds optional `project_image` request/reply fields
+and operations `project-image-capabilities`, `project-image-capture`,
+`project-image-status` and `project-image-retire`. Capabilities use the all-zero
+64-character volume sentinel and exact configured `engine_root`, without a live
+VM. Their optional `project_image_capacity` reports filesystem available bytes
+and conservative pending export reservations. Other operations are bound to the
+source volume's persisted ID and original sandbox path, including after builder
+deletion. Callers cannot choose export paths or retire an operator base by SHA.
+
+The trusted runtime prepares and sanitizes a dedicated builder before capture.
+The service independently requires its stopped, detached volume and a fully
+synchronized offline journal, verifies its admitted size/base digest, and holds
+the source's exclusive operation/owner locks. Export checks the unchanged remote
+generation and SHA. The supervisor rehashes the exported file, checks the ext4
+declared extent directly from its superblock, and appends an aligned 64-KiB
+`AHVMPJ01` trailer outside that extent. The trailer contains canonical frozen
+tenant/project/build/source/base/hook provenance, not credentials or chat state.
+It contributes to the normal full-image SHA. No guest filesystem is mounted on
+the host and no disk/catalog format migration is introduced.
+
+Capture reserves the source logical bytes plus the 64-KiB trailer before external
+effects. A source already at the existing 64-GiB image limit is refused. Admission
+also requires filesystem headroom for that worst-case export, other pending
+exports, and 512 MiB of scratch space; the 512 MiB is not a logical quota charge.
+Sparse holes still count toward logical capacity. Every new image uses the
+ordinary complete nonzero immutable-base upload path; this does not provide
+incremental image uploads or a claim of delta-sized storage cost.
+
+Capture is bounded to one hour. Its import shares the existing import lock,
+which can delay other imports and prewarming but does not lock unrelated live
+VM I/O, status or detach. The global entries/admission lock is held only for
+short reservation/reference checks. A durable retiring barrier, rechecked under
+the shared import lock, prevents new admission or delayed prewarming of that
+private SHA. The daemon separately serializes image retirement against its
+project/build/create/VM pins. Service volume records retain an image reference
+until their reclamation completes, including partially imported/deleted volumes.
+
+Byte recovery uses only the original frozen source generation. Status adds
+`project_image_phase`, `project_image_quiescent` and a fixed nullable
+`project_image_error_code`. An unknown image returns `ok:true`, null image,
+`absent` and `quiescent:false`; absence cannot rule out a delayed request. A
+live capture remains observable across node restart or lost responses. A failed
+attempt gets a durable per-image seal, including rejection before export
+registration. After volume-supervisor restart, an incomplete attempt can be
+sealed failed only after its exclusive intent lock proves no writer scopes
+survive. A published ready result remains recoverable. Retrying a sealed failure
+requires a new build/image UUID; delayed duplicates cannot start another export.
+Failed or ambiguous captures remain charged. Retirement uses the
+private owned-SHA registry, a durable remote tombstone, bounded first-page sweeps
+and durable local file removal. Logical capacity is released only after an
+observed empty remote sweep and completed local cleanup. Cleanup can be retried
+after restart; its small tombstone/registry records remain as identity fences.
+Storage readiness alone does not select a project's active environment: the
+runtime must validate a fresh derived VM before publishing its current artifact.
+
 ## Validation
 
 `cargo test -p ahvm-volume` covers the launch gate (EOF before commit cannot
