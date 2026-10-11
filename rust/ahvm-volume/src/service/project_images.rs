@@ -753,6 +753,26 @@ fn capture_bytes(
     info(candidate)
 }
 
+fn validate_builder_record(
+    r: &Record,
+    metadata: &ProjectImageMetadata,
+    source_bytes: u64,
+) -> Result<()> {
+    if r.deleted
+        || r.reclaimed
+        || !r.prepared
+        || r.desired
+        || r.worker.is_some()
+        || r.client.is_some()
+        || r.vm.is_some()
+        || r.logical_bytes != source_bytes
+        || r.image_hash != metadata.base_content_digest
+    {
+        return Err("project image capture requires its stopped builder volume".into());
+    }
+    Ok(())
+}
+
 impl Service {
     fn capture_project_image_with(
         &self,
@@ -1092,17 +1112,8 @@ impl Service {
                 }
                 let entry = source.foreground(true)?;
                 let r = &entry.record;
-                if r.deleted
-                    || r.reclaimed
-                    || !r.prepared
-                    || r.desired
-                    || r.worker.is_some()
-                    || r.client.is_some()
-                    || r.vm.is_some()
-                    || r.logical_bytes != source_bytes
-                    || r.image_hash != metadata.base_image_digest
-                    || self.vm(r)?.is_some()
-                {
+                validate_builder_record(r, metadata, source_bytes)?;
+                if self.vm(r)?.is_some() {
                     return Err("project image capture requires its stopped builder volume".into());
                 }
                 self.binding(&r.id, &r.sandbox)?;

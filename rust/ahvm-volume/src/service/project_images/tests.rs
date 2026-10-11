@@ -26,6 +26,7 @@ fn metadata() -> ProjectImageMetadata {
         build_id: "33333333-3333-3333-3333-333333333333".into(),
         source_commit: "a".repeat(40),
         base_image_digest: "b".repeat(64),
+        base_content_digest: "e".repeat(64),
         revision_id: "c".repeat(64),
         install_hook_digest: Some("d".repeat(64)),
         start_hook_digest: None,
@@ -137,7 +138,7 @@ fn fixture() -> Fixture {
         root.join("images/base.ext4"),
         candidate.source_logical_bytes,
     );
-    builder.image_hash = candidate.metadata.base_image_digest.clone();
+    builder.image_hash = candidate.metadata.base_content_digest.clone();
     builder.prepared = true;
     builder.evicted = true;
     register(&service, builder);
@@ -150,16 +151,30 @@ fn fixture() -> Fixture {
     }
 }
 fn capture(f: &mut Fixture) -> ProjectImageInfo {
+    capture_result(f).unwrap()
+}
+fn capture_result(f: &mut Fixture) -> Result<ProjectImageInfo> {
+    let record: Record = read(
+        &f.service
+            .config
+            .root
+            .join("volumes")
+            .join(&f.candidate.source_volume_id)
+            .join("record.json"),
+    )?;
+    validate_builder_record(
+        &record,
+        &f.candidate.metadata,
+        f.candidate.source_logical_bytes,
+    )?;
     let raw = f.raw.clone();
-    f.service
-        .capture_project_image_with(
-            &mut f.candidate,
-            f.raw.clone(),
-            move |file, digest, size, bytes, deadline| {
-                import_base_file(raw.clone(), file, digest, size, bytes, Some(deadline))
-            },
-        )
-        .unwrap()
+    f.service.capture_project_image_with(
+        &mut f.candidate,
+        f.raw.clone(),
+        move |file, digest, size, bytes, deadline| {
+            import_base_file(raw.clone(), file, digest, size, bytes, Some(deadline))
+        },
+    )
 }
 fn volume(id: String, sandbox: PathBuf, image: PathBuf, bytes: u64) -> Record {
     Record {
@@ -243,6 +258,43 @@ fn prepare_cached_ubuntu(service: &Service, mut record: Record, raw: Arc<Store>)
     )?;
     assert!(record.prepared && !record.image_hash.is_empty());
     Ok(record)
+}
+
+#[test]
+fn distinct_catalog_and_raw_content_digests_capture_and_wrong_raw_is_rejected() {
+    if !root_tests() {
+        return;
+    }
+    let mut f = fixture();
+    assert_ne!(
+        f.candidate.metadata.base_image_digest,
+        f.candidate.metadata.base_content_digest
+    );
+    let image = capture_result(&mut f).unwrap();
+    assert_eq!(image.metadata.base_image_digest, "b".repeat(64));
+    assert_eq!(image.metadata.base_content_digest, "e".repeat(64));
+    assert_eq!(
+        image.metadata,
+        crate::project_image::read_metadata(&mut File::open(image.image_path).unwrap()).unwrap()
+    );
+
+    let mut wrong = fixture();
+    // A catalog/gzip digest cannot stand in for the raw ext4 SHA persisted by
+    // ordinary prepare, even when both digest values are syntactically valid.
+    wrong.candidate.metadata.base_content_digest =
+        wrong.candidate.metadata.base_image_digest.clone();
+    persist(&wrong.service.config, &wrong.candidate).unwrap();
+    assert!(capture_result(&mut wrong)
+        .unwrap_err()
+        .to_string()
+        .contains("stopped builder"));
+    assert!(!wrong.candidate.temporary().exists());
+    assert_eq!(
+        load(&wrong.service.config, &wrong.candidate.image_id)
+            .unwrap()
+            .phase,
+        Phase::Exporting
+    );
 }
 
 #[test]

@@ -203,6 +203,7 @@ mod tests {
             build_id: "33333333-3333-3333-3333-333333333333".into(),
             source_commit: "a".repeat(40),
             base_image_digest: "b".repeat(64),
+            base_content_digest: "e".repeat(64),
             revision_id: "c".repeat(64),
             install_hook_digest: Some("d".repeat(64)),
             start_hook_digest: None,
