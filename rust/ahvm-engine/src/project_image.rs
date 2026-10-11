@@ -114,3 +114,21 @@ pub struct ProjectImageRetirement {
     pub logical_released: bool,
     pub reclamation_complete: bool,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectImageCapacity {
+    pub physical_available_bytes: u64,
+    pub physical_reserved_bytes: u64,
+}
+
+/// A create request pins the exact generation and its target project, even
+/// when a node's daemon owner represents several Cloud tenants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectImageSelection {
+    pub image_id: String,
+    pub digest: String,
+    pub tenant_id: String,
+    pub project_id: String,
+}
